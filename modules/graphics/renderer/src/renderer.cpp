@@ -6054,7 +6054,7 @@ Status Renderer::prepareGpuPreviewCamera(GpuPreview handle, const ViewDescriptio
                                                    job.Uniform,
                                                    camera,
                                                    revision,
-                                                   mState->GpuPreview->ComputeLayout,
+                                                   GetGpuComputeLayout(*mState->GpuPreview, job),
                                                    {bindings.GetData(), mState->GpuPreview->ComputeBindingCount});
     job.HasPendingCamera = status == Status::Ready || status == Status::Pending;
     if (job.HasPendingCamera == true)
@@ -6161,7 +6161,7 @@ Status Renderer::prepareGpuPreviewTiles(GpuPreview handle, uint32 count, uint32 
         StaticArray<rhi::RasterBindingResource, internal::GPU_PREVIEW_COMPUTE_BINDING_CAPACITY> bindings{};
         const usize bindingCount = MakeGpuComputeBindings(state, job, tiles.Parameters, job.Failures, bindings);
         const Status bound = rhi::CreateBindingSet(mState->Device,
-                                                   state.ComputeLayout,
+                                                   GetGpuComputeLayout(state, job),
                                                    {bindings.GetData(), bindingCount},
                                                    tiles.Bindings);
         if (bound != Status::Ready && bound != Status::Pending)

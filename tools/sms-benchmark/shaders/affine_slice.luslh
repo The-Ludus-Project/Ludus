@@ -1,0 +1,222 @@
+// Affine slice sampling of the SMS Figure 17 reflector through its triangulated guide.
+#pragma once
+
+#include "figure17.luslh"
+
+// Thanks to Shlomi Steinberg, "Slice Sampling: Importance sampling with an auxiliary map", draft,
+// sections 3-5. Enumerate ALL inverse triangles of the explicitly triangulated surrogate, with
+// inverse-determinant branch probabilities and retained null outcomes. This is NOT a finite-start
+// Newton density for the nonlinear physical map. Physical radiance is evaluated independently.
+StructuredBuffer<float32x4> guideVertices;
+StructuredBuffer<float32x4> guideAcceleration;
+StructuredBuffer<uint32x2> guideBins;
+StructuredBuffer<uint32> guideTriangles;
+
+struct RootList
+{
+    uint32 Offset;
+    uint32 Count;
+    bool IsExplicit;
+};
+
+RootList GetRootList(in float32x2 residual, in uint32 resolution, in uint32 accelerationGuide)
+{
+    RootList result = { .Offset = 0, .Count = 2 * resolution * resolution, .IsExplicit = false };
+    if (accelerationGuide == ACCELERATION_DISABLED)
+    {
+        return result;
+    }
+    result.IsExplicit = true;
+    result.Count = 0;
+    uint32 record = accelerationGuide * ACCELERATION_RECORD_COUNT;
+    float32x4 bounds = guideAcceleration[record];
+    if (any(residual < bounds.xy) == true || any(residual > bounds.zw) == true)
+    {
+        return result;
+    }
+    uint32x2 positionBin =
+        min(uint32x2((residual - bounds.xy) / (bounds.zw - bounds.xy) * float32(ACCELERATION_GRID_SIDE)),
+            ACCELERATION_GRID_SIDE - 1);
+    uint32 binOffset = uint32(guideAcceleration[record + 1].x);
+    uint32x2 bin = guideBins[binOffset + positionBin.y * ACCELERATION_GRID_SIDE + positionBin.x];
+    result.Offset = bin.x;
+    result.Count = bin.y;
+    return result;
+}
+
+struct AffineRoot
+{
+    float32x2 CoordinatesUv;
+    float32 Weight;
+    bool HasRoot;
+};
+
+float32 ComputeDeterminant(in float32x2 first, in float32x2 second)
+{
+    return first.x * second.y - first.y * second.x;
+}
+
+void ReadGuideTriangle(in uint32 triangle,
+                       in uint32 resolution,
+                       in uint32 offset,
+                       out float32x2 outFirst,
+                       out float32x2 outSecond,
+                       out float32x2 outThird,
+                       out float32x2 outOrigin,
+                       out float32 outSign)
+{
+    uint32 cell = triangle / 2;
+    uint32 column = cell % resolution;
+    uint32 row = cell / resolution;
+    uint32 vertex = offset + row * (resolution + 1) + column;
+    outSign = (triangle % 2) == 0 ? 1.0 : -1.0;
+    if (outSign > 0)
+    {
+        outFirst = guideVertices[vertex].xy;
+        outSecond = guideVertices[vertex + 1].xy;
+        outThird = guideVertices[vertex + resolution + 1].xy;
+        outOrigin = float32x2(float32(column), float32(row)) / float32(resolution);
+    }
+    else
+    {
+        outFirst = guideVertices[vertex + resolution + 2].xy;
+        outSecond = guideVertices[vertex + resolution + 1].xy;
+        outThird = guideVertices[vertex + 1].xy;
+        outOrigin = float32x2(float32(column + 1), float32(row + 1)) / float32(resolution);
+    }
+}
+
+AffineRoot FindAffineRoot(in float32x2 residual, in uint32 triangle, in uint32 resolution, in uint32 offset)
+{
+    float32x2 first;
+    float32x2 second;
+    float32x2 third;
+    float32x2 origin;
+    float32 sign;
+    ReadGuideTriangle(triangle, resolution, offset, out first, out second, out third, out origin, out sign);
+    float32x2 firstColumn = second - first;
+    float32x2 secondColumn = third - first;
+    float32 determinant = ComputeDeterminant(firstColumn, secondColumn);
+    AffineRoot result = 0;
+    float32 absoluteJacobian = abs(determinant) * float32(resolution) * float32(resolution);
+    if (absoluteJacobian < MINIMUM_TRIANGLE_DETERMINANT)
+    {
+        return result;
+    }
+    float32x2 difference = residual - first;
+    float32x2 barycentric =
+        float32x2(ComputeDeterminant(difference, secondColumn), ComputeDeterminant(firstColumn, difference)) /
+        determinant;
+    bool isInside = sign > 0 ? (all(barycentric >= float32x2(0)) == true && barycentric.x + barycentric.y < 1)
+        : (all(barycentric > float32x2(0)) == true && barycentric.x + barycentric.y <= 1);
+    if (isInside == false)
+    {
+        return result;
+    }
+    result.CoordinatesUv = origin + sign * barycentric / float32(resolution);
+    result.Weight = 1 / absoluteJacobian;
+    result.HasRoot = true;
+    return result;
+}
+
+float32x2 EvaluateAffineMap(in float32x2 coordinates, in uint32 resolution, in uint32 offset, out bool outIsRegular)
+{
+    float32x2 positionGrid = coordinates * float32(resolution);
+    uint32x2 cell = min(uint32x2(floor(positionGrid)), resolution - 1);
+    float32x2 barycentric = positionGrid - float32x2(cell);
+    uint32 triangle = (cell.y * resolution + cell.x) * 2;
+    if (barycentric.x + barycentric.y >= 1)
+    {
+        triangle += 1;
+        barycentric = 1 - barycentric;
+    }
+    float32x2 first;
+    float32x2 second;
+    float32x2 third;
+    float32x2 origin;
+    float32 sign;
+    ReadGuideTriangle(triangle, resolution, offset, out first, out second, out third, out origin, out sign);
+    outIsRegular = abs(ComputeDeterminant(second - first, third - first)) * float32(resolution) *
+        float32(resolution) >=
+        MINIMUM_TRIANGLE_DETERMINANT;
+    return first + barycentric.x * (second - first) + barycentric.y * (third - first);
+}
+
+float32 SumBranchWeights(in float32x2 residual,
+                         in uint32 resolution,
+                         in uint32 offset,
+                         out uint32 outRootCount,
+                         in uint32 accelerationGuide = ACCELERATION_DISABLED)
+{
+    float32 totalWeight = 0;
+    outRootCount = 0;
+    RootList list = GetRootList(residual, resolution, accelerationGuide);
+    for (uint32 index = 0; index < list.Count; ++index)
+    {
+        uint32 triangle = list.IsExplicit == true ? guideTriangles[list.Offset + index] : index;
+        AffineRoot root = FindAffineRoot(residual, triangle, resolution, offset);
+        totalWeight += root.Weight;
+        outRootCount += root.HasRoot == true ? 1 : 0;
+    }
+    return totalWeight;
+}
+
+float32 ComputeAffineDensity(in float32x2 residual, in float32 alpha, in float32 totalWeight)
+{
+    return DEFENSIVE_FRACTION + (1 - DEFENSIVE_FRACTION) * exp(-dot(residual, residual) / (alpha * alpha)) /
+        (PI * alpha * alpha * totalWeight);
+}
+
+float32 EvaluateAffineDensity(in float32x2 coordinates,
+                              in float32 alpha,
+                              in uint32 resolution,
+                              in uint32 offset,
+                              in uint32 accelerationGuide = ACCELERATION_DISABLED)
+{
+    bool isRegular;
+    float32x2 residual = EvaluateAffineMap(coordinates, resolution, offset, out isRegular);
+    if (isRegular == false)
+    {
+        return DEFENSIVE_FRACTION;
+    }
+    uint32 rootCount;
+    float32 totalWeight = SumBranchWeights(residual, resolution, offset, out rootCount, accelerationGuide);
+    return totalWeight > 0 ? ComputeAffineDensity(residual, alpha, totalWeight) : DEFENSIVE_FRACTION;
+}
+
+float32x4 SampleAffineSlice(in float32x2 residual,
+                            in float32 branchUniform,
+                            in float32 alpha,
+                            in uint32 resolution,
+                            in uint32 offset,
+                            out uint32 outRootCount,
+                            out float32 outTotalWeight,
+                            in uint32 accelerationGuide = ACCELERATION_DISABLED)
+{
+    float32 totalWeight = SumBranchWeights(residual, resolution, offset, out outRootCount, accelerationGuide);
+    outTotalWeight = totalWeight;
+    if (totalWeight <= 0)
+    {
+        return float32x4(0);
+    }
+    float32 target = branchUniform * totalWeight;
+    float32 cumulativeWeight = 0;
+    float32x2 selected = 0;
+    RootList list = GetRootList(residual, resolution, accelerationGuide);
+    for (uint32 index = 0; index < list.Count; ++index)
+    {
+        uint32 triangle = list.IsExplicit == true ? guideTriangles[list.Offset + index] : index;
+        AffineRoot root = FindAffineRoot(residual, triangle, resolution, offset);
+        if (root.HasRoot == false)
+        {
+            continue;
+        }
+        selected = root.CoordinatesUv;
+        cumulativeWeight += root.Weight;
+        if (target < cumulativeWeight)
+        {
+            break;
+        }
+    }
+    return float32x4(selected, ComputeAffineDensity(residual, alpha, totalWeight), 1);
+}

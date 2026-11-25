@@ -1,5 +1,6 @@
 #include <ludus/localization/catalog.hpp>
 #include <ludus/localization/formatter.hpp>
+#include <ludus/localization/locale_publication.hpp>
 
 // Installed header, static link closure, empty lifecycle and explicit errors.
 // Cooker/runtime roundtrips are exercised by the native and wasm corpus tests.
@@ -19,7 +20,13 @@ bool ExerciseInstalledLocalization() noexcept
         PrepareFormatterContext(catalog, {}, ludus::foundation::GetSystemAllocationDomain(), context) ==
             Status::Invalid &&
         context.IsValid() == false && Format(context, binding, {}, output, result) == Status::Invalid;
-    return isFormatterExplicit == true &&
+    LocalizationContext publication(0, ludus::foundation::GetSystemAllocationDomain());
+    LocalizationSnapshot snapshot;
+    LocaleRequest request{};
+    const bool isPublicationExplicit = publication.AcquireSnapshot(snapshot) == Status::NotReady &&
+                                       publication.RequestLocaleChange({}, request) == Status::Invalid &&
+                                       snapshot.GetGeneration() == LocaleRequest{} && request == LocaleRequest{};
+    return isFormatterExplicit == true && isPublicationExplicit == true &&
            PrepareCatalog(invalid, ludus::foundation::GetSystemAllocationDomain(), catalog, diagnostic) ==
                Status::Invalid &&
            catalog.IsValid() == false && catalog.GetDomain().empty() && catalog.GetLocale().empty() &&

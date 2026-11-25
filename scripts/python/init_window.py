@@ -6,6 +6,8 @@ child's output to the launching terminal, to ``out/init/setup.log`` and to a
 queue that the Tk event loop drains. Steps come from the progress markers
 documented in ``init_progress``. The child keeps the terminal as its standard
 input, so sudo still prompts there; the window says when it is waiting.
+After a setup that built the editor succeeds, **Run editor** starts it through
+the trusted ``editor_launch`` launcher in its own session.
 """
 from __future__ import annotations
 
@@ -47,12 +49,20 @@ FAILURE_LOG_HEIGHT_LINES = 15
 MAX_SUMMARY_LINES = 3
 RUNNING_HINT = "Esc to cancel setup"
 SUCCESS_HINT = "Enter to close"
+SUCCESS_EDITOR_HINT = "Enter to run the editor · Esc to close"
 FAILURE_HINT = "Enter to retry · Esc to close"
 COPY_OUTPUT_LABEL = "Copy output"
 COPY_REPORT_LABEL = "Copy error report"
 DEFAULT_FAILURE_ADVICE = "Fix the reported problem, then choose Retry or run ./init.sh again."
 OPEN_LOG_FAILED_NOTE = "Could not open a viewer for the log. Its path is on the clipboard."
 CANCELLED_EXIT_CODE = 130
+RUN_EDITOR_LABEL = "Run editor"
+STARTING_EDITOR_STATUS = "Starting the editor…"
+# The editor runs on after setup exits, so its output goes to a log instead of the terminal.
+EDITOR_LOG_RELATIVE_PATH = Path("out/init/editor.log")
+# Run editor waits this long for the launcher to fail (for example, no built editor) before closing setup.
+EDITOR_START_CHECK_MILLISECONDS = 1500
+MAX_EDITOR_FAILURE_LINES = 4
 
 
 def child_command(args, root: Path) -> list[str]:
@@ -60,9 +70,21 @@ def child_command(args, root: Path) -> list[str]:
     return [sys.executable, str(root / "scripts/python/engine.py"), "init", *selection_to_argv(args)]
 
 
+def editor_command(args, root: Path, engine) -> list[str] | None:
+    """The trusted ``scripts/editor`` launch for a setup that builds the editor, or None.
+
+    Setup that only configures the editor (``--configure-editor-only``) or
+    leaves it out has nothing to launch.
+    """
+    if not getattr(args, "with_editor", False) or getattr(args, "configure_editor_only", False):
+        return None
+    return [str(engine.venv_python(root)), str(root / "scripts/python/editor_launch.py"), "--preset", args.preset]
+
+
 def child_environment() -> dict[str, str]:
     environment = dict(os.environ)
     environment[init_progress.PROGRESS_ENVIRONMENT] = "1"
+    environment[init_progress.GUI_ENVIRONMENT] = "1"
     environment["PYTHONUNBUFFERED"] = "1"
     return environment
 
@@ -185,7 +207,8 @@ class SetupWindow:
 
     def __init__(self, tk, ttk, *, steps: Sequence[init_progress.Step], command: Sequence[str],
                  title: str, log_path: Path | None, cwd: Path, environment: dict[str, str],
-                 geometry: str | None = None, echo=None, messagebox=None, clock: Callable[[], float] = time.monotonic):
+                 geometry: str | None = None, echo=None, messagebox=None, clock: Callable[[], float] = time.monotonic,
+                 editor_command: Sequence[str] | None = None, editor_log_path: Path | None = None):
         self.tk = tk
         self.ttk = ttk
         self.messagebox = messagebox
@@ -210,6 +233,11 @@ class SetupWindow:
         self.failure_hint: init_failure.FailureHint | None = None
         self.step_rows: list[tuple] = []
         self.timers: dict[str, str] = {}
+        # Run editor, offered once setup that built the editor succeeds.
+        self.editor_command = list(editor_command) if editor_command else None
+        self.editor_log_path = editor_log_path
+        self.editor_process: subprocess.Popen | None = None
+        self.is_editor_started = False
 
         self.window = init_theme.create_root(tk)
         self.theme = init_theme.Theme(self.window, ttk)
@@ -341,6 +369,9 @@ class SetupWindow:
         # cancellation it reruns the same selection.
         self.initialize_button = ttk.Button(buttons, text="Initialize", state="disabled", command=self.retry)
         self.initialize_button.pack(side="left", padx=gap)
+        # Shown only after a successful setup that built the editor.
+        self.editor_button = ttk.Button(buttons, text=RUN_EDITOR_LABEL, style="Primary.TButton",
+                                        command=self.run_editor)
         self.cancel_button = ttk.Button(buttons, text="Cancel", command=self.request_cancel)
         self.cancel_button.pack(side="left")
 
@@ -437,11 +468,14 @@ class SetupWindow:
             signal_process_tree(self.process, force=True)
 
     def activate_default(self) -> None:
-        """Enter: close after success, retry after a failure or cancellation; nothing while running."""
+        """Enter: run the editor or close after success, retry after a failure or cancellation; nothing while running."""
         if self.finished_at is None:
             return
         if self.progress.outcome == init_progress.DONE:
-            self.window.quit()
+            if self.editor_command is not None:
+                self.run_editor()
+            else:
+                self.window.quit()
         else:
             self.retry()
 
@@ -550,8 +584,9 @@ class SetupWindow:
             self.detail.set("Working…" if progress.has_started_step else "")
         # The newest output line shows activity even when a step reports no counts.
         self.activity.set("" if progress.is_last_line_status else shorten(progress.last_line))
-        if progress.note:
-            self.note.set(progress.note)
+        notice = progress.user_action or progress.note
+        if notice:
+            self.note.set(notice)
             self.note_label.grid()
         else:
             self.note_label.grid_remove()
@@ -588,7 +623,7 @@ class SetupWindow:
             summary = "\n".join(self.progress.summary[:MAX_SUMMARY_LINES]) or "Ludus initialization complete."
             self.outcome.set(summary)
             self.outcome_banner.set_kind(init_theme.SUCCESS)
-            self.footer.hint.configure(text=SUCCESS_HINT)
+            self.footer.hint.configure(text=SUCCESS_HINT if self.editor_command is None else SUCCESS_EDITOR_HINT)
         elif outcome == init_progress.CANCELLED:
             self.heading.set("Setup cancelled")
             self.status.set("Setup was cancelled. Run ./init.sh again to continue.")
@@ -616,17 +651,88 @@ class SetupWindow:
         if self.outcome.get():
             # On a short screen the summary may sit below the fold; bring it into view.
             self.window.after_idle(lambda: self.scroll.show(self.outcome_label))
+        offers_editor = outcome == init_progress.DONE and self.editor_command is not None
         self.cancel_button.configure(text="Close", state="normal", command=self.window.quit,
-                                     style="Primary.TButton" if outcome == init_progress.DONE else "TButton")
+                                     style="Primary.TButton" if outcome == init_progress.DONE and not offers_editor
+                                     else "TButton")
         if outcome != init_progress.DONE:
             self.initialize_button.configure(text="Retry", state="normal", style="Primary.TButton")
             self.initialize_button.focus_set()
+        elif offers_editor:
+            # The editor is built: running it is the next step, Close the alternative.
+            self.initialize_button.pack_forget()
+            self.editor_button.pack(side="left", padx=(0, self.theme.space(init_theme.SPACE_SMALL)),
+                                    before=self.cancel_button)
+            self.editor_button.focus_set()
         else:
             # Nothing is left to run; Close is the only action.
             self.initialize_button.pack_forget()
             self.cancel_button.focus_set()
         if self.should_close_when_done:
             self.window.quit()
+
+    def run_editor(self) -> bool:
+        """Start the built editor through its launcher, then close setup once it has not failed at once.
+
+        The editor gets its own session and keeps running after setup exits.
+        When the launcher cannot start or exits with an error, the window stays
+        open and shows the launcher's last lines, which name the fix.
+        """
+        if (self.editor_command is None or self.finished_at is None or self.progress.outcome != init_progress.DONE
+                or self.editor_process is not None):
+            return False
+        environment = {name: value for name, value in self.environment.items()
+                       if name != init_progress.PROGRESS_ENVIRONMENT}
+        output = subprocess.DEVNULL
+        try:
+            if self.editor_log_path is not None:
+                self.editor_log_path.parent.mkdir(parents=True, exist_ok=True)
+                output = self.editor_log_path.open("wb")
+            try:
+                self.editor_process = subprocess.Popen(self.editor_command, cwd=str(self.cwd), env=environment,
+                                                       stdin=subprocess.DEVNULL, stdout=output,
+                                                       stderr=subprocess.STDOUT, start_new_session=True)
+            finally:
+                if output is not subprocess.DEVNULL:
+                    output.close()
+        except OSError as error:
+            self._show_editor_failure([f"The editor could not start: {error}"])
+            return False
+        self.editor_button.configure(state="disabled")
+        self.status.set(STARTING_EDITOR_STATUS)
+        self._schedule(EDITOR_START_CHECK_MILLISECONDS, self._check_editor)
+        return True
+
+    def _check_editor(self) -> None:
+        assert self.editor_process is not None
+        exit_code = self.editor_process.poll()
+        if exit_code is None or exit_code == 0:
+            self.is_editor_started = True
+            self.window.quit()
+            return
+        self.editor_process = None
+        lines = [f"The editor did not start (exit code {exit_code})."]
+        lines.extend(self.editor_log_tail())
+        self._show_editor_failure(lines)
+
+    def editor_log_tail(self) -> list[str]:
+        if self.editor_log_path is None:
+            return []
+        try:
+            text = self.editor_log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        return [line for line in text.splitlines() if line.strip()][-MAX_EDITOR_FAILURE_LINES:]
+
+    def _show_editor_failure(self, lines: list[str]) -> None:
+        if self.editor_log_path is not None:
+            lines = [*lines, f"Full output: {self.editor_log_path}"]
+        self.status.set("Setup finished successfully.")
+        self.note.set("\n".join(lines))
+        self.note_label.grid()
+        self.editor_button.configure(state="normal")
+        self.fit_to_content()
+        self.window.after_idle(lambda: self.scroll.show(self.note_label))
 
     def retry(self) -> None:
         """Run the same selection again after a failure or cancellation."""
@@ -734,14 +840,18 @@ def run_setup(args, engine, *, geometry: str | None = None) -> int:
         environment["CI"] = "true"
     steps = init_progress.plan(args, environment=environment)
     echo = getattr(sys.stdout, "buffer", None)
+    editor_log_path = root / EDITOR_LOG_RELATIVE_PATH
     try:
         window = SetupWindow(tk, ttk, steps=steps, command=child_command(args, root), title=describe(args),
                              log_path=root / "out/init/setup.log", cwd=root, environment=environment,
-                             geometry=geometry, echo=echo, messagebox=messagebox)
+                             geometry=geometry, echo=echo, messagebox=messagebox,
+                             editor_command=editor_command(args, root, engine), editor_log_path=editor_log_path)
     except tk.TclError as error:
         print(f"Graphical progress unavailable: {error}\nContinuing in this terminal.", file=sys.stderr)
         return int(args.func(args))
     result = window.run()
+    if window.is_editor_started:
+        print(f"Started the Ludus editor from the setup window. Its output goes to {editor_log_path}.")
     if result == CANCELLED_EXIT_CODE:
         print("Initialization cancelled from the setup window.")
     elif window.progress.outcome == init_progress.FAILED:

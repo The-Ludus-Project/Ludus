@@ -19,7 +19,6 @@
 
 #include <iostream>
 #include <ludus/foundation/base/diagnostic_output.hpp>
-#include <span>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -35,6 +34,8 @@ int ExerciseInstalledAsync() noexcept;
 int ExerciseInstalledPersistence() noexcept;
 bool ExerciseInstalledStrings() noexcept;
 bool ExerciseInstalledStringDictionary() noexcept;
+bool ExerciseInstalledFoliagePages() noexcept;
+bool ExerciseInstalledWeather() noexcept;
 bool ExerciseInstalledParsing() noexcept;
 bool ExerciseInstalledConfiguration() noexcept;
 bool ExerciseInstalledReflection() noexcept;
@@ -42,6 +43,7 @@ int ExerciseInstalledTime() noexcept;
 int ExerciseInstalledIdentity() noexcept;
 bool ExerciseInstalledFluid() noexcept;
 bool ExerciseInstalledCollision() noexcept;
+bool ExerciseInstalledRigid() noexcept;
 bool ExerciseInstalledCurves() noexcept;
 bool ExerciseInstalledGeometry() noexcept;
 bool ExerciseInstalledCamera() noexcept;
@@ -206,6 +208,9 @@ static_assert(LUDUS_ENABLE_ASSERTS == EXPECTED_ASSERTS);
 static_assert(LUDUS_BREAK_ON_CHECK == EXPECTED_CHECK_BREAK);
 int PolicyWithoutNdebug();
 
+/// Exit code when the installed weather targets do not reproduce the golden corpus.
+constexpr int WEATHER_FAILURE = 111;
+
 constexpr bool PrimitiveContract(ludus::foundation::usize increment = 1) noexcept
 {
     using namespace ludus::foundation;
@@ -224,8 +229,8 @@ constexpr bool PrimitiveContract(ludus::foundation::usize increment = 1) noexcep
            TryMultiply(-int64{9223372036854775807} - 1, static_cast<int64>(increment) + 1, signedProduct) == false &&
            signedProduct == 42 && TryIntegerCast(int32{-1}, length) == false && length == 42 &&
            TryWriteLittleEndian(word, bytes) && bytes[0] == increment && bytes[3] == 0x12 &&
-           TryReadLittleEndian(bytes, length) && length == word &&
-           TryReadBigEndian(std::span<const uint8>{bytes, 3}, length) == false && length == word;
+           TryReadLittleEndian(bytes, length) && length == word && TryReadBigEndian({bytes, 3}, length) == false &&
+           length == word;
 }
 static_assert(PrimitiveContract());
 
@@ -297,6 +302,10 @@ int main()
     {
         return 14;
     }
+    if (ExerciseInstalledRigid() == false)
+    {
+        return 110;
+    }
     if (ExerciseInstalledStrings() == false)
     {
         return 9;
@@ -304,6 +313,14 @@ int main()
     if (ExerciseInstalledStringDictionary() == false)
     {
         return 13;
+    }
+    if (ExerciseInstalledFoliagePages() == false)
+    {
+        return 109;
+    }
+    if (ExerciseInstalledWeather() == false)
+    {
+        return WEATHER_FAILURE;
     }
     if (PrimitiveContract() == false)
     {
@@ -331,7 +348,8 @@ int main()
         return threadingResult;
     }
     // Verify the lifecycle API and static link without requiring a GPU adapter on CI.
-    static_assert(noexcept(ludus::graphics::rhi::Initialize({})));
+    static_assert(noexcept(ludus::graphics::rhi::BeginFrameStatus()));
+    static_assert(noexcept(ludus::graphics::rhi::EndFrameStatus()));
     static_assert(noexcept(ludus::graphics::rhi::SetFrameTarget({})));
     static_assert(noexcept(ludus::graphics::rhi::GetStartup()));
     static_assert(noexcept(ludus::graphics::rhi::Start({}, {})));
@@ -362,7 +380,9 @@ int main()
     {
         return 2;
     }
-    if (ludus::graphics::rhi::SetFrameTarget({}) != ludus::graphics::rhi::FrameStatus::NotReady)
+    if (ludus::graphics::rhi::SetFrameTarget({}) != ludus::graphics::rhi::FrameStatus::NotReady ||
+        ludus::graphics::rhi::BeginFrameStatus() != ludus::graphics::rhi::FrameStatus::NotReady ||
+        ludus::graphics::rhi::EndFrameStatus() != ludus::graphics::rhi::FrameStatus::NotReady)
     {
         return 5;
     }

@@ -16,7 +16,7 @@ function encode(value, srgb) {
 function upload(gl, buffer, contract, width, height, elapsed) {
   const bytes = new ArrayBuffer(contract.size);
   const view = new DataView(bytes);
-  const values = {resolution: [width, height], elapsedTime: [elapsed], direction: [0.2, 0.4, 0.6], tint: [0.6, 0.4, 0.2, 1]};
+  const values = {Resolution: [width, height], ElapsedTime: [elapsed], Direction: [0.2, 0.4, 0.6], Tint: [0.6, 0.4, 0.2, 1]};
   for (const [field, data] of Object.entries(values)) {
     data.forEach((value, i) => view.setFloat32(contract.offsets[field] + 4 * i, value, true));
   }

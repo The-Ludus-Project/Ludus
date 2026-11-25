@@ -18,6 +18,14 @@ class WorldDocument;
 /// The default World's built-in terrain component identifier.
 [[nodiscard]] QString GetTerrainComponentId();
 
+/// Recipe field that stores the content::terrain::TerrainNoiseLayout version of generated elevation and surface
+/// variation. New terrain records TERRAIN_NOISE_LAYOUT_VERSION; a recipe that omits the field, as every World saved
+/// before it existed does, keeps layout 1 (the cubic fade) and its exact heights.
+[[nodiscard]] QString GetTerrainNoiseLayoutKey();
+
+/// Record the noise layout new terrain generates with in a recipe that has no saved layout yet.
+void SetLatestTerrainNoiseLayout(QJsonObject& inoutRecipe);
+
 /// Optional built-in payloads validated separately from editable scalar properties.
 [[nodiscard]] qsizetype CountTerrainPayloadFields(const QJsonObject& recipe);
 

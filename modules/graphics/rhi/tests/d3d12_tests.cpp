@@ -166,17 +166,16 @@ TEST_CASE("Direct3D 12 reports the bring-up limits explicitly", "[rhi][windows][
     CHECK(rhi::CreateShader(description, shader) == rhi::ResourceStatus::InvalidDescription);
 }
 
-TEST_CASE("Direct3D 12 legacy sessions restart and abort an open frame", "[rhi][windows][gpu]")
+TEST_CASE("Direct3D 12 sessions restart and abort an open frame", "[rhi][windows][gpu]")
 {
     Guard guard;
-    REQUIRE(rhi::Initialize({}) == true);
-    REQUIRE(rhi::ConnectWindow({ .Width = WIDTH, .Height = HEIGHT }) == true);
-    REQUIRE(rhi::InitializeRendering() == true);
-    REQUIRE(rhi::BeginFrame() == true);
-    REQUIRE(rhi::EndFrame() == true);
-    rhi::ShutdownRendering();
-    REQUIRE(rhi::InitializeRendering() == true);
-    REQUIRE(rhi::BeginFrame() == true);
+    REQUIRE(rhi::Start({}, { .Width = WIDTH, .Height = HEIGHT }) == rhi::StartStatus::Ready);
+    REQUIRE(rhi::GetStartup().State == rhi::StartupState::Ready);
+    REQUIRE(rhi::BeginFrameStatus() == rhi::FrameStatus::Ready);
+    REQUIRE(rhi::EndFrameStatus() == rhi::FrameStatus::Ready);
+    rhi::Shutdown();
+    REQUIRE(rhi::Start({}, { .Width = WIDTH, .Height = HEIGHT }) == rhi::StartStatus::Ready);
+    REQUIRE(rhi::BeginFrameStatus() == rhi::FrameStatus::Ready);
     // Shut down with the command list still recording.
     rhi::Shutdown();
     REQUIRE(rhi::Start({}, {}) == rhi::StartStatus::Ready);

@@ -193,7 +193,11 @@ The packager performs these steps under the existing cooperative build lock:
    list. Keep platform GPU drivers and the supported OS baseline external.
    Validate loader paths such as package-relative RPATHs. Reject producer paths,
    SDK headers, static link archives, editor/tool binaries and debug sidecars in
-   the player payload. A separate debug archive can be added later.
+   the player payload. A separate debug archive can be added later. Log and
+   assertion sites name their file through `__FILE__`, so the SDK's
+   `ludus_apply_app_policy` maps the project's source and build directories
+   out of those literals with `-fmacro-prefix-map` on Clang and GCC. MSVC
+   builds have no equivalent mapping yet.
 5. Write a payload manifest, create a ZIP, extract into a new empty directory and
    verify paths, bytes, modes, dependency rules and entry point again. Tests use
    this extracted copy. Publish the completed package directory atomically to an

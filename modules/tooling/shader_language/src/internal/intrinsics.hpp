@@ -14,24 +14,30 @@ namespace ludus::tooling::shader_language::internal
 /// Signature shape shared by a group of built-in functions. "T" is a scalar or vector.
 enum class IntrinsicFamily : foundation::uint8
 {
-    FloatUnary,     ///< (float T) -> T: sqrt, sin, floor, saturate, ...
-    FloatVector,    ///< (float vector V) -> V: normalize.
-    NumericUnary,   ///< (numeric T) -> T: abs.
-    NumericBinary,  ///< (numeric T, T) -> T: min, max.
-    FloatBinary,    ///< (float T, T) -> T: pow, atan2, step, fmod.
-    NumericTernary, ///< (numeric T, T, T) -> T: clamp.
-    FloatTernary,   ///< (float T, T, T) -> T: lerp, smoothstep.
-    Dot,            ///< (numeric vector V, V) -> scalar.
-    Length,         ///< (float vector V) -> scalar.
-    Distance,       ///< (float vector V, V) -> scalar.
-    Cross,          ///< (float 3-vector, same) -> same.
-    Reflect,        ///< (float vector V, V) -> V.
-    BoolReduce,     ///< (bool T) -> bool: any, all.
-    BitcastToUint,  ///< (32-bit T) -> uint32 T: asuint.
-    BitcastToInt,   ///< (32-bit T) -> int32 T: asint.
-    BitcastToFloat, ///< (32-bit T) -> float32 T: asfloat.
-    BitCount,       ///< (32-bit integer T) -> uint32 T: countbits, firstbithigh, firstbitlow, reversebits.
-    Transpose,      ///< (matrix R x C) -> matrix C x R.
+    FloatUnary,         ///< (float T) -> T: sqrt, sin, floor, saturate, ...
+    FloatVector,        ///< (float vector V) -> V: normalize.
+    FloatVectorTernary, ///< (float vector V, V, V) -> V: faceforward.
+    NumericUnary,       ///< (numeric T) -> T: abs.
+    NumericBinary,      ///< (numeric T, T) -> T: min, max.
+    FloatBinary,        ///< (float T, T) -> T: pow, atan2, step, fmod.
+    NumericTernary,     ///< (numeric T, T, T) -> T: clamp.
+    FloatTernary,       ///< (float T, T, T) -> T: lerp, smoothstep.
+    Dot,                ///< (numeric vector V, V) -> scalar.
+    Length,             ///< (float vector V) -> scalar.
+    Distance,           ///< (float vector V, V) -> scalar.
+    Cross,              ///< (float 3-vector, same) -> same.
+    Reflect,            ///< (float vector V, V) -> V.
+    BoolReduce,         ///< (bool T) -> bool: any, all.
+    BitcastToUint,      ///< (32-bit T) -> uint32 T: asuint.
+    BitcastToInt,       ///< (32-bit T) -> int32 T: asint.
+    BitcastToFloat,     ///< (32-bit T) -> float32 T: asfloat.
+    BitCount,           ///< (32-bit integer T) -> uint32 T: countbits, firstbithigh, firstbitlow, reversebits.
+    Transpose,          ///< (matrix R x C) -> matrix C x R.
+    Determinant,        ///< (square float matrix) -> scalar.
+    Sign,               ///< (signed numeric T) -> the same shape of int32.
+    Refract,            ///< (float vector V, V, float) -> V.
+    Select,             ///< (bool scalar or matching bool vector, T, T) -> T.
+    Clip,               ///< (float T) -> void.
     /// (destination, value, out original?) -> void: InterlockedAdd, And, Or, Xor, Min, Max.
     AtomicUpdate,
     /// (destination, value, out original) -> void: InterlockedExchange.
@@ -50,7 +56,7 @@ struct IntrinsicSpelling final
 };
 
 /// Number of built-in functions.
-inline constexpr foundation::usize INTRINSIC_COUNT = 55;
+inline constexpr foundation::usize INTRINSIC_COUNT = 64;
 
 /// The built-in functions. Most lower 1:1 to the Slang intrinsics of the same name; the atomic
 /// families lower to `Atomic<T>` methods for LUSL atomic storage (GetAtomicMethodName).
@@ -101,6 +107,15 @@ inline constexpr foundation::StaticArray<IntrinsicSpelling, INTRINSIC_COUNT> INT
     {"firstbitlow", IntrinsicFamily::BitCount},
     {"reversebits", IntrinsicFamily::BitCount},
     {"transpose", IntrinsicFamily::Transpose},
+    {"select", IntrinsicFamily::Select},
+    {"sign", IntrinsicFamily::Sign},
+    {"fma", IntrinsicFamily::FloatTernary},
+    {"tanh", IntrinsicFamily::FloatUnary},
+    {"faceforward", IntrinsicFamily::FloatVectorTernary},
+    {"determinant", IntrinsicFamily::Determinant},
+    {"refract", IntrinsicFamily::Refract},
+    {"clip", IntrinsicFamily::Clip},
+    {"fwidth", IntrinsicFamily::FloatUnary},
     {"InterlockedAdd", IntrinsicFamily::AtomicUpdate},
     {"InterlockedAnd", IntrinsicFamily::AtomicUpdate},
     {"InterlockedOr", IntrinsicFamily::AtomicUpdate},
@@ -155,6 +170,12 @@ enum class AtomicOriginal : foundation::uint8
 
 /// Number of arguments a family takes.
 [[nodiscard]] foundation::uint32 GetIntrinsicArity(IntrinsicFamily family) noexcept;
+
+/// A heterogeneous argument does not participate in selecting the common operand type.
+[[nodiscard]] constexpr bool IsHeterogeneousOperand(IntrinsicFamily family, foundation::usize index) noexcept
+{
+    return (family == IntrinsicFamily::Select && index == 0) || (family == IntrinsicFamily::Refract && index == 2);
+}
 
 /// @brief Resolve a built-in call from its argument types.
 /// @param argumentTypes Checked argument types; untyped constants adapt to the other arguments.

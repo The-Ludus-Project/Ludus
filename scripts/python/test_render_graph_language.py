@@ -150,6 +150,26 @@ class RenderGraphLanguageTests(unittest.TestCase):
         with self.assertRaises(ToolingError):
             language._parse_report('surprise\tx\n', build, 'main.lusl')
 
+    def test_configuration_values_reject_free_form_macros_and_conflicting_selections(self):
+        program = {'id': 'Color', 'source': 'main_shaders/color.lusl',
+                   'configuration_values': {'UseTint': True, 'TintMode': 2}}
+        self.assertEqual(language.configuration_arguments(language.configuration_values(program, build)),
+                         ['--define', 'TintMode=2', '--define', 'UseTint=1'])
+        with self.assertRaisesRegex(ToolingError, 'sharing a LUSL source'):
+            self.lower({'Color': program, 'Other': {'id': 'Other', 'source': program['source']}})
+        for values in ({'Wrong Name': 1}, {'TintMode': '1 + 2'}, {'TintMode': 2**31}):
+            with self.assertRaises(ToolingError):
+                language.configuration_values({**program, 'configuration_values': values}, build)
+        with self.assertRaises(ToolingError):
+            language.configuration_values({**program, 'source': 'color.slang'}, build)
+
+    def test_configuration_report_requires_one_bit_per_define(self):
+        configuration = {'Read': 1, 'Unused': 2}
+        for report in ('', 'configuration-read-mask\t1\n', 'configuration-read-mask\t12\n',
+                       'configuration-read-mask\t10\nconfiguration-read-mask\t10\n'):
+            with self.assertRaisesRegex(ToolingError, 'configuration read'):
+                language._parse_report(report, build, 'color.lusl', configuration)
+
     def test_manifest_budget_of_specializations_is_optional_and_positive(self):
         manifest = {'version': 1, 'id': 'Graph', 'profiles': ['spirv'], 'schemas': [], 'programs': [],
                     'techniques': [], 'budgets': {'configurations': 1, 'programs': 1}}

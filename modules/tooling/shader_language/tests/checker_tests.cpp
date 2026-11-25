@@ -16,6 +16,7 @@ using ludus::tooling::shader_language::PreprocessRequest;
 using ludus::tooling::shader_language::PreprocessResult;
 using ludus::tooling::shader_language::SemanticModel;
 using ludus::tooling::shader_language::Status;
+using ludus::tooling::shader_language::Symbol;
 using ludus::tooling::shader_language::SymbolKind;
 using ludus::tooling::shader_language::SyntaxKind;
 using ludus::tooling::shader_language::SyntaxTree;
@@ -304,6 +305,83 @@ TEST_CASE("LUSL checker checks methods and mutation", "[shader-language][checker
     RequireTopLevelError("[mutating] void Free() {}\n", DiagnosticCode::InvalidAttribute);
     RequireTopLevelError(counter + "void G() { Counter c = 0; c.Missing(); }\n", DiagnosticCode::UnknownMember);
     RequireTopLevelError(counter + "void G() { Counter c = 0; uint32 v = c.Get; }\n", DiagnosticCode::TypeMismatch);
+}
+
+TEST_CASE("LUSL checker binds runtime values to const locals", "[shader-language][checker]")
+{
+    const std::string functions = R"(struct LightSample
+{
+    float32x3 Radiance;
+    float32 Pdf;
+    float32 Weights[COUNT];
+    float32 GetPdf() { return Pdf; }
+    [mutating] void Clear() { Pdf = 0; }
+};
+LightSample SampleIncidentLight(in float32x3 receiver) { return { .Radiance = receiver, .Pdf = 1.0 }; }
+void Scale(inout float32 inoutValue) { inoutValue *= 2.0; }
+void Store(in float32 value, out float32 outValue) { outValue = value; }
+)";
+    const std::string open =
+        "void G(float32x3 v, uint32 u)\n{\n    const LightSample sample = SampleIncidentLight(v);\n";
+    // Scalars and structs returned by value; reads, value copies, non-mutating methods and `in` arguments.
+    RequireTopLevelValid(functions + open +
+                         "    const float32 pdf = sample.GetPdf();\n    const uint32 index = u + 1;\n"
+                         "    LightSample copy = sample;\n    copy.Clear();\n    float32 weight = sample.Weights[0];\n"
+                         "    float32 stored = 0;\n    Store(sample.Radiance.x * pdf, out stored);\n"
+                         "    const float32x3 tint = sample.Radiance * float32(index);\n}\n");
+    // Constant-initialized locals keep their compile-time uses.
+    RequireValid("const uint32 size = COUNT * 2; float32 w[size] = 0; static_assert(size == 8, \"size\");");
+    RequireValid("static const uint32 SIZE = COUNT; float32 w[SIZE] = 0;");
+
+    // The local, its fields, its elements and its components are read-only.
+    RequireTopLevelError(functions + open + "    sample = sample;\n}\n", DiagnosticCode::NotAssignable);
+    RequireTopLevelError(functions + open + "    sample.Pdf = 0;\n}\n", DiagnosticCode::NotAssignable);
+    RequireTopLevelError(functions + open + "    sample.Radiance.x += 1.0;\n}\n", DiagnosticCode::NotAssignable);
+    RequireTopLevelError(functions + open + "    sample.Weights[u] = 0;\n}\n", DiagnosticCode::NotAssignable);
+    RequireTopLevelError(functions + open + "    sample.Clear();\n}\n", DiagnosticCode::NotAssignable);
+    RequireTopLevelError(functions + open + "    Scale(inout sample.Pdf);\n}\n", DiagnosticCode::NotAssignable);
+    RequireTopLevelError(functions + open + "    Store(1.0, out sample.Weights[0]);\n}\n",
+                         DiagnosticCode::NotAssignable);
+    RequireTopLevelError(functions + "void G(uint32 u) { const uint32 index = u; index++; }\n",
+                         DiagnosticCode::NotAssignable);
+
+    // A const local needs a value.
+    RequireError("const float32 a;", DiagnosticCode::NotConstant);
+    RequireError("const float32 a = void;", DiagnosticCode::InvalidInitializer);
+    RequireTopLevelError("static const float32 UNSET = void;\n", DiagnosticCode::InvalidInitializer);
+
+    // A runtime-initialized local is not a constant expression, nor is a const local built from one.
+    RequireError("const uint32 size = u; float32 w[size] = 0;", DiagnosticCode::NotConstant);
+    RequireError("const uint32 size = u; const uint32 twice = size * 2; float32 w[twice] = 0;",
+                 DiagnosticCode::NotConstant);
+    RequireError("const uint32 size = u; static_assert(size == 4, \"size\");", DiagnosticCode::NotConstant);
+    RequireError("const uint32 size = u; static const uint32 SIZE = size;", DiagnosticCode::NotConstant);
+    RequireError("static const float32 HALF = x * 0.5;", DiagnosticCode::NotConstant);
+}
+
+TEST_CASE("LUSL checker records whether a const local is a runtime value", "[shader-language][checker]")
+{
+    const CheckedSource checked(std::string(PRELUDE) +
+                                "void G(float32x3 v)\n{\n    const float32 bright = Luminance(v);\n"
+                                "    const uint32 doubled = COUNT * 2;\n    float32 scaled = bright * 2.0;\n}\n");
+    INFO(checked.DescribeDiagnostics());
+    REQUIRE(checked.GetStatus() == Status::Ready);
+    const SemanticModel& model = checked.GetModel();
+    const ludus::foundation::uint32 bright = checked.FindNode(SyntaxKind::VariableDeclaration, "bright");
+    const ludus::foundation::uint32 doubled = checked.FindNode(SyntaxKind::VariableDeclaration, "doubled");
+    REQUIRE(bright != NO_NODE);
+    REQUIRE(doubled != NO_NODE);
+    REQUIRE(model.NodeSymbols[bright] != NO_SYMBOL);
+    REQUIRE(model.NodeSymbols[doubled] != NO_SYMBOL);
+    const Symbol& runtime = model.Symbols[model.NodeSymbols[bright]];
+    const Symbol& constant = model.Symbols[model.NodeSymbols[doubled]];
+    CHECK(runtime.IsConstant == true);
+    CHECK(runtime.IsRuntimeConstant == true);
+    CHECK(runtime.HasIntegerValue == false);
+    CHECK(constant.IsConstant == true);
+    CHECK(constant.IsRuntimeConstant == false);
+    CHECK(constant.HasIntegerValue == true);
+    CHECK(constant.IntegerValue == 8);
 }
 
 TEST_CASE("LUSL checker checks returns and jumps", "[shader-language][checker]")

@@ -1,6 +1,6 @@
 add_executable(ludus_config main.cpp)
 set_target_properties(ludus_config PROPERTIES OUTPUT_NAME ludus-config)
-target_link_libraries(ludus_config PRIVATE Ludus::RuntimeConfiguration Ludus::FoundationConfigJson Ludus::FoundationLogging)
+target_link_libraries(ludus_config PRIVATE Ludus::RuntimeConfiguration Ludus::RuntimeConfigurationSchemas Ludus::FoundationConfigJson Ludus::FoundationLogging)
 ludus_apply_project_defaults(ludus_config)
 install(TARGETS ludus_config RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 if(LUDUS_BUILD_TESTS)

@@ -3,6 +3,7 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 // Thanks to Microsoft and the DirectX Shader Compiler contributors for the container
 // and pipeline state validation layouts in "DxilContainer.h" and
@@ -54,7 +55,8 @@ constexpr usize RUNTIME_VERSION3_BYTES = 52;
 
 [[nodiscard]] bool ReadUint32(std::span<const uint8> bytes, usize offset, uint32& outValue) noexcept
 {
-    return offset <= bytes.size() && core::TryReadLittleEndian(bytes.subspan(offset), outValue) == true;
+    return offset <= bytes.size() &&
+           core::TryReadLittleEndian(MakeBorrowedView(bytes.subspan(offset)), outValue) == true;
 }
 
 [[nodiscard]] uint32 GetShaderKind(ShaderStage stage) noexcept
@@ -287,7 +289,7 @@ bool HasDxilBindings(std::span<const uint8> bytes, const RasterLayout& layout) n
             ReadUint32(part, record + 2 * UINT32_BYTES, lower) == false ||
             ReadUint32(part, record + UPPER_OFFSET, upper) == false ||
             ReadUint32(part, record + KIND_OFFSET, kind) == false || space != 0 || lower != upper ||
-            lower >= RASTER_BINDING_COUNT || (matchedBindings & (uint32{1} << lower)) != 0)
+            lower >= RASTER_COMPUTE_BINDING_COUNT || (matchedBindings & (uint32{1} << lower)) != 0)
         {
             return false;
         }

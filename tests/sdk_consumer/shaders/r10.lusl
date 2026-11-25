@@ -1,0 +1,91 @@
+// R10 attachment fixture: multiple render targets, color write masks, alpha-to-coverage, and
+// sampled color, depth and stencil attachments. Each entry point is built as its own program
+// (r10write, r10mask, r10sample, r10depth, r10stencil, r10coverage); host code binds the slots
+// and vertex input locations in their generated <NAME>_slots.h.
+Texture2D<float32x4> colorImage;
+SamplerState colorSampler;
+Texture2D<float32> depthImage;
+Texture2D<uint32> stencilImage;
+
+// The sampled depth and stencil attachments are 8 x 8 texels.
+static const float32 ATTACHMENT_TEXELS = 8;
+static const float32 STENCIL_MAXIMUM = 255;
+static const float32 QUAD_DEPTH = 0.25;
+// CoverageMain's alpha is 0 in the left quarter, 0.5 in the middle and 1 in the right quarter.
+static const float32 QUARTER_WIDTH = 0.25;
+
+struct R10Input
+{
+    float32x2 Position;
+    float32x2 Uv;
+};
+
+struct R10Varying
+{
+    float32x4 Position : ClipPosition;
+    float32x2 Uv;
+};
+
+struct Targets
+{
+    float32x4 First;
+    float32x4 Second;
+};
+
+float32 GetHalfStep(in float32 value)
+{
+    return value >= 0.5 ? 1.0 : 0.0;
+}
+
+[stage(vertex)]
+R10Varying VertexMain(in R10Input input)
+{
+    R10Varying output = { .Position = float32x4(input.Position, QUAD_DEPTH, 1), .Uv = input.Uv };
+    return output;
+}
+
+[stage(fragment)]
+Targets WriteMain(in R10Varying input)
+{
+    Targets output =
+    {
+        .First = float32x4(GetHalfStep(input.Uv.x), 0, GetHalfStep(input.Uv.y), 1),
+        .Second = float32x4(0, GetHalfStep(input.Uv.y), GetHalfStep(input.Uv.x), 1),
+    };
+    return output;
+}
+
+[stage(fragment)]
+Targets MaskMain(in R10Varying input)
+{
+    Targets output = { .First = float32x4(1, 1, 0, 1), .Second = float32x4(0, 1, 1, 1) };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 SampleMain(in R10Varying input)
+{
+    return colorImage.SampleLevel(colorSampler, input.Uv, 0);
+}
+
+[stage(fragment)]
+float32x4 DepthMain(in R10Varying input)
+{
+    float32 d = depthImage.Load(int32x3(int32x2(input.Uv * ATTACHMENT_TEXELS), 0));
+    return float32x4(d, d, d, 1);
+}
+
+[stage(fragment)]
+float32x4 StencilMain(in R10Varying input)
+{
+    float32 s = float32(stencilImage.Load(int32x3(int32x2(input.Uv * ATTACHMENT_TEXELS), 0))) / STENCIL_MAXIMUM;
+    return float32x4(s, s, s, 1);
+}
+
+[stage(fragment)]
+Targets CoverageMain(in R10Varying input)
+{
+    float32 coverage = input.Uv.x < QUARTER_WIDTH ? 0.0 : input.Uv.x < 1 - QUARTER_WIDTH ? 0.5 : 1.0;
+    Targets output = { .First = float32x4(1, 0, 0, coverage), .Second = float32x4(0, 1, 0, 1) };
+    return output;
+}

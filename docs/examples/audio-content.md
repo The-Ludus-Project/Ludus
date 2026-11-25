@@ -99,5 +99,23 @@ python3 generate_fixtures.py out/flac --flac
 ```
 
 The optional FLAC fixture generation uses host `ffmpeg`; playback has no ffmpeg
-dependency. Dynamic stems/transitions, runtime MIDI/tracker playback and browser
-content acquisition are later milestones.
+dependency. Runtime MIDI/tracker playback and browser content acquisition remain later milestones.
+
+## Render a dynamic music transition
+
+Build the installed sample with the matching native SDK. Run
+`ctest --preset native-development -R audio_transition_timing -V` in
+`examples/audio-content`. CTest generates the original four-stream score and
+writes `out/development/transition-replacement.wav`. Listen to the left channel
+for the two sections and inspect the right channel for the incoming marker.
+The fixture checks early replacement, a late replacement at the sealed
+boundary, cancellation, and a cue outside the two-second submission horizon.
+It compares the outgoing samples with an independently rendered uninterrupted take.
+
+For game playback, acquire the v2 music ID through `Loader::Begin` and
+`Poll`, then pass the live lease to `MusicDirector::Start`. Keep the loader,
+audio system and lease alive throughout playback. Call `Service` on the control
+owner. Use `SelectState` with the desired absolute session frame. `Pending`
+retains a plan outside the submission horizon. `TooLate` retains the sealed
+transition. Read `GetTransport().AppliedFrame` after service to observe where
+the replacement began. See the [music score grammar](../architecture/audio-authoring.md#dynamic-music-extension).

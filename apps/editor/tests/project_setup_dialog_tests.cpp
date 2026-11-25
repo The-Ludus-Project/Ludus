@@ -208,7 +208,7 @@ TEST_CASE("Bundled samples are complete writable copies", "[editor][setup]")
     CHECK(first != second);
     const auto root = QFileInfo(first).absolutePath();
     CHECK(QFileInfo::exists(QDir(root).filePath(QStringLiteral("src/main.cpp"))));
-    CHECK(QFileInfo::exists(QDir(root).filePath(QStringLiteral("shaders/cornell.slang"))));
+    CHECK(QFileInfo::exists(QDir(root).filePath(QStringLiteral("shaders/cornell.lusl"))));
     CHECK(QFileInfo::exists(QDir(root).filePath(QStringLiteral("CMakeLists.txt"))));
     QFile descriptor(first);
     REQUIRE(descriptor.open(QIODevice::WriteOnly | QIODevice::Append));

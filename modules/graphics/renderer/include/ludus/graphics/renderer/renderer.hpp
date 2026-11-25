@@ -1,9 +1,11 @@
 #pragma once
 
+#include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -73,6 +75,31 @@ struct GpuPreviewGraphInvocation final
     /// Positive logical invocation count for a compatible buffer-only graph kernel. Requires a 1x1 private
     /// scratch extent in BeginGpuPreview and graph storage bindings. Zero selects the image launch.
     foundation::uint32 WorkItemCount = 0;
+    /// Earlier ordered scene pass's single-sample RGBA8 color texture. The graph must retain it through
+    /// job release and submitted completion. Null selects the renderer's black fallback when the compute
+    /// layout includes a sampled color binding. Buffer-only launches require null.
+    rhi::TextureHandle ColorInput{};
+    /// Optional initialized RGBA8Unorm storage view's allocation for a shader-owned output.
+    /// Its extent is independent of the invocation extent. Retain it through job release
+    /// and submitted completion. A null handle selects the existing image or buffer path.
+    rhi::TextureHandle StorageTexture{};
+    /// Allow the returned image to use a different extent from the graph attachment. The image is placed
+    /// at the attachment origin and clipped to its bounds after the attachment clear. Requires an image job.
+    bool HasExplicitImageLaunch = false;
+    /// Use the ordered compute kernel with a read-only shared graph record binding.
+    bool IsRecordReadCompute = false;
+    /// Independently bound storage allocations in shader-slot order. A null entry uses a private fallback.
+    /// The graph keeps each allocation alive through job release and submitted completion.
+    foundation::StaticArray<rhi::TextureHandle, content::render_graph_format::MAX_SHADER_TEXTURES> ShaderTextures{};
+    /// Dispatch and publish shader texture writes without compositing returned RGB.
+    bool HasShaderOutputsOnly = false;
+    /// Sampled color inputs after ColorInput, in shader slot order. Null entries use the black fallback.
+    /// Keep each supplied allocation alive through job release and submitted completion.
+    foundation::StaticArray<rhi::TextureHandle, content::render_graph_format::MAX_ADDITIONAL_SAMPLED_TEXTURES>
+        AdditionalSampledTextures{};
+    /// One bit per bound ShaderTextures slot. Clear the full attachment to transparent black before dispatch.
+    /// Each selected allocation must also support color attachment use.
+    foundation::uint32 ShaderTextureClearMask = 0;
 };
 namespace internal
 {
@@ -599,7 +626,8 @@ public:
     /// only after that producer finishes. The GPU job/target outlive graph encoding; RHI retains
     /// submitted resources through completion. Job progress/preview frame leases are unaffected.
     /// @param job Ready GPU job; do not also AdvanceGpuPreview this job.
-    /// @param target Borrowed attachment, cleared/stored in color; private depth is discarded.
+    /// @param target Borrowed attachment, cleared/stored in color; private depth is discarded. An image
+    /// job uses its exact extent unless HasExplicitImageLaunch permits clipping to the attachment bounds.
     /// @param visibilityOrNull Optional visibility producer, appended before the ray dispatch; source differs from
     /// target.
     /// @param outGraph Null graph receives the commands. Failure preserves it and releases temporary leases.
@@ -629,7 +657,8 @@ public:
     /// @param visibilityOrNull Optional opaque visibility producer, appended once before the first ray dispatch.
     /// Every job then samples that same written color/depth image, so the source must not be any job's target.
     /// @param jobs Ready jobs from this Renderer; never also AdvanceGpuPreview them.
-    /// @param targets Borrowed ready RGBA8 attachments with each job's exact extent.
+    /// @param targets Borrowed ready RGBA8 attachments. An image job requires its own extent unless
+    /// HasExplicitImageLaunch permits clipping to the attachment bounds.
     /// @param outGraph Receives compiled commands on Ready; caller discards or encodes once.
     [[nodiscard]] rhi::RasterStatus
     PrepareGpuPreviewGraphSequence(foundation::BorrowedView<const GpuPreview> jobs,

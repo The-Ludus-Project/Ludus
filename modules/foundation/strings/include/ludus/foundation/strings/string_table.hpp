@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/hash/hash.hpp>
 #include <ludus/foundation/memory/allocation_domain.hpp>
 #include <ludus/foundation/strings/status.hpp>
@@ -98,6 +99,62 @@ struct StringTableConfig final
     /// Reject spellings containing a zero byte with EmbeddedZero. Checked before UTF-8 validation.
     bool RejectEmbeddedZero{true};
 };
+/// @brief Number of power-of-two probe-distance buckets in StringTableSnapshot::ProbeDistanceCounts.
+///
+/// Bucket 0 counts entries in their home lookup slot, bucket `k` in `1..COUNT - 2` counts probe
+/// distances `2^(k-1)` through `2^k - 1`, and the last bucket counts every distance of at least
+/// `2^(COUNT - 2)` (64) slots.
+inline constexpr usize STRING_TABLE_PROBE_BUCKET_COUNT = 8;
+/// @brief Footprint, retention and probe counters of one table, captured in constant time.
+///
+/// All byte counts come from the table's own allocation accounting, so `AllocatedBytes` equals
+/// `StateBytes + EntryBytes + LookupBytes + PageBytes` and matches the bytes the creation domain
+/// currently holds for the table. Logical deduplication (DuplicateAdmissions) is reported separately
+/// from committed memory: a table can avoid copies while spending more on metadata and page slack.
+/// A snapshot copies counters only; it contains no spelling bytes and borrows nothing from the table.
+struct StringTableSnapshot final
+{
+    /// Entries, including the empty spelling at index zero; valid indices are `0..EntryCount - 1`.
+    uint32 EntryCount{};
+    /// Configured entry limit (StringTableConfig::MaxEntries), including the empty entry.
+    uint32 MaxEntries{};
+    /// Entries the directory can hold before it must grow.
+    usize EntryCapacity{};
+    /// Lookup slots; insertion keeps at most three quarters of them occupied.
+    usize LookupSlotCount{};
+    /// Spelling payload bytes of every entry, excluding the terminator stored after each spelling.
+    usize SpellingBytes{};
+    /// Terminator bytes, one per entry.
+    usize TerminatorBytes{};
+    /// Spelling pages allocated; pages are never released before the table is destroyed.
+    usize PageCount{};
+    /// Bytes allocated for spelling pages, including their headers.
+    usize PageBytes{};
+    /// Page bytes holding neither spellings, terminators nor headers: unused tails of every page.
+    usize PageSlackBytes{};
+    /// Bytes allocated for the entry directory.
+    usize EntryBytes{};
+    /// Bytes allocated for the lookup array.
+    usize LookupBytes{};
+    /// Bytes of the fixed table state allocated by CreateTable.
+    usize StateBytes{};
+    /// Bytes currently allocated from the creation domain; never above MaxAllocatedBytes.
+    usize AllocatedBytes{};
+    /// Highest AllocatedBytes since creation, including the moments when an old and a replacement
+    /// directory or lookup array coexisted during growth; never above MaxAllocatedBytes.
+    usize PeakAllocatedBytes{};
+    /// Configured byte budget (StringTableConfig::MaxAllocatedBytes).
+    usize MaxAllocatedBytes{};
+    /// Successful TryIntern calls that returned an existing entry instead of inserting one.
+    uint64 DuplicateAdmissions{};
+    /// Largest distance, in slots, between any entry's home lookup slot and the slot holding it.
+    usize MaxProbeDistance{};
+    /// Entries per probe-distance bucket (see STRING_TABLE_PROBE_BUCKET_COUNT); the counts sum to
+    /// EntryCount. A successful lookup of an entry at distance `d` compares `d + 1` slots.
+    StaticArray<uint32, STRING_TABLE_PROBE_BUCKET_COUNT> ProbeDistanceCounts{};
+    /// Compares every counter, for example a frozen owner's snapshot with the one taken before freezing.
+    friend constexpr bool operator==(const StringTableSnapshot&, const StringTableSnapshot&) noexcept = default;
+};
 class FrozenStringTable;
 /// @brief Mutable, append-only owner of deduplicated spellings and their table-qualified IDs.
 ///
@@ -165,6 +222,46 @@ public:
     [[nodiscard]] StringStatus TryResolve(NameId id, std::string_view& outSpelling) const& noexcept;
     /// Deleted so a view cannot borrow from a temporary table that is about to be destroyed.
     StringStatus TryResolve(NameId, std::string_view&) const&& = delete;
+    /// @brief Borrows the stored spelling at a table-local index, without allocating.
+    ///
+    /// Use it for compact records that store a StringIndex beside their known owning table. The index
+    /// carries no table token, so this checks only that it names an existing entry of this table: an
+    /// index issued by another table that happens to be in range resolves to this table's spelling.
+    /// Serialized by the table mutex; the view has the lifetime described for the class.
+    /// @param index Entry index, typically `NameId::Index` of an ID issued by this table.
+    /// @param outSpelling Receives the spelling on success; unchanged on failure.
+    /// @return Ok; or InvalidHandle for an empty table, StringIndex::INVALID_VALUE or an index at or
+    /// beyond this table's entry count.
+    [[nodiscard]] StringStatus TryResolveIndex(StringIndex index, std::string_view& outSpelling) const& noexcept;
+    /// Deleted so a view cannot borrow from a temporary table that is about to be destroyed.
+    StringStatus TryResolveIndex(StringIndex, std::string_view&) const&& = delete;
+    /// @brief Preallocates room for a known number of new spellings so that interning them allocates nothing.
+    ///
+    /// After success, TryIntern calls that add at most `entryCount` new entries whose spellings total
+    /// at most `spellingBytes` bytes allocate nothing; duplicates consume no reservation. The entry
+    /// directory and lookup array grow to their exact final capacity, and missing page room is
+    /// reserved as one page of exactly `spellingBytes + entryCount` bytes (each spelling also stores a
+    /// terminator); unused space in the current page is kept as slack because a spelling never spans
+    /// pages. A reservation already satisfied allocates nothing. The budget check covers the growth
+    /// peak, when an old and a replacement array coexist, before anything is allocated. Serialized
+    /// by the table mutex.
+    /// @param entryCount Distinct spellings that will be added beyond the current entries.
+    /// @param spellingBytes Total payload bytes of those spellings, excluding terminators.
+    /// @return Ok; InvalidHandle for an empty table; InvalidArgument when `spellingBytes` is nonzero
+    /// but `entryCount` is zero; CapacityExceeded when the entries would exceed
+    /// `StringTableConfig::MaxEntries` or the peak would exceed `MaxAllocatedBytes` (nothing is
+    /// allocated); TooLarge when a size computation overflows; or OutOfMemory when the domain fails.
+    /// After OutOfMemory, completed growth steps remain within the budget; entries, IDs and views
+    /// never change.
+    [[nodiscard]] StringStatus TryReserve(uint32 entryCount, usize spellingBytes) noexcept;
+    /// @brief Copies footprint, retention and probe counters without allocating.
+    ///
+    /// Takes the table mutex for a constant-time copy, independent of the entry count: insertion
+    /// maintains the counters in constant time and rehashing, which already visits every entry,
+    /// rebuilds the probe histogram. The snapshot does not change the table.
+    /// @param outSnapshot Receives the counters on success; unchanged on failure.
+    /// @return Ok; or InvalidHandle for an empty table.
+    [[nodiscard]] StringStatus TryCaptureSnapshot(StringTableSnapshot& outSnapshot) const noexcept;
     /// @brief Caller quiesces ALL concurrent operations.
     ///
     /// Consumes this table and keeps every token/index stable; `outTable` must be empty. No allocation required.
@@ -229,6 +326,26 @@ public:
     [[nodiscard]] StringStatus TryResolve(NameId id, std::string_view& outSpelling) const& noexcept;
     /// Deleted so a view cannot borrow from a temporary owner that is about to be destroyed.
     StringStatus TryResolve(NameId, std::string_view&) const&& = delete;
+    /// @brief Borrows the stored spelling at a table-local index without locking or allocating.
+    ///
+    /// The index carries no table token: this checks only that it names one of the frozen entries,
+    /// so an in-range index issued by another table resolves to this owner's spelling. Concurrent
+    /// calls are safe while the owner lives and is not moved or destroyed; the view stays valid
+    /// until this owner is destroyed or assigned over.
+    /// @param index Entry index, typically `NameId::Index` of an ID issued before freezing.
+    /// @param outSpelling Receives the spelling on success; unchanged on failure.
+    /// @return Ok; or InvalidHandle for an empty owner, StringIndex::INVALID_VALUE or an index at or
+    /// beyond the frozen entry count.
+    [[nodiscard]] StringStatus TryResolveIndex(StringIndex index, std::string_view& outSpelling) const& noexcept;
+    /// Deleted so a view cannot borrow from a temporary owner that is about to be destroyed.
+    StringStatus TryResolveIndex(StringIndex, std::string_view&) const&& = delete;
+    /// @brief Copies the frozen table's counters in constant time without locking or allocating.
+    ///
+    /// The counters are those of the table at freezing and never change afterwards. Concurrent calls
+    /// are safe while the owner lives and is not moved or destroyed.
+    /// @param outSnapshot Receives the counters on success; unchanged on failure.
+    /// @return Ok; or InvalidHandle for an empty owner.
+    [[nodiscard]] StringStatus TryCaptureSnapshot(StringTableSnapshot& outSnapshot) const noexcept;
 
 private:
     StringTable::State* mState{};

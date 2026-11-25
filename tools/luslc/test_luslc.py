@@ -67,9 +67,12 @@ class LuslcTests(unittest.TestCase):
 
     def test_define_selects_configuration(self):
         self.write("mode.lusl", "#if MODE == 2\nstatic const uint32 SELECTED = 2;\n#endif\n")
-        result = run("lower", "mode.lusl", "--define", "MODE=2", root=self.root)
+        report = self.root / "report.txt"
+        result = run("lower", "mode.lusl", "--define", "UNUSED=1", "--define", "MODE=2",
+                     "--report", str(report), root=self.root)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("SELECTED", result.stdout)
+        self.assertEqual(report.read_text(encoding="utf-8"), "configuration-read-mask\t01\n")
 
     def test_include_directory(self):
         self.write("_sdk/ray.luslh", '#pragma once\nextern slang "ray.slang"\n{\n    struct Ray;\n};\n')
@@ -157,8 +160,8 @@ class LuslcTests(unittest.TestCase):
 class LanguageServer:
     """A minimal LSP client: framed JSON-RPC over the server's standard input and output."""
 
-    def __init__(self, root):
-        self.process = subprocess.Popen([LUSLC, "lsp", "--root", str(root)], stdin=subprocess.PIPE,
+    def __init__(self, root, *arguments):
+        self.process = subprocess.Popen([LUSLC, "lsp", "--root", str(root), *arguments], stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.next_id = 0
         self.notifications = []
@@ -223,6 +226,23 @@ class LanguageServerTests(unittest.TestCase):
         self.server.process.stdin.close()
         self.server.process.stdout.close()
         self.server.process.stderr.close()
+
+    def test_preprocesses_documents_with_selected_configuration(self):
+        server = LanguageServer(self.root, "--define", "MODE=2")
+        with server.process:
+            try:
+                server.request("initialize", {"processId": None, "rootUri": self.root.as_uri(),
+                                              "capabilities": {}})
+                server.notify("initialized", {})
+                uri = (self.root / "mode.lusl").as_uri()
+                text = "#if MODE == 2\nstatic const uint32 SELECTED = 2;\n#else\n#error Wrong mode\n#endif\n"
+                server.notify("textDocument/didOpen", {"textDocument": {
+                    "uri": uri, "languageId": "lusl", "version": 1, "text": text}})
+                self.assertEqual(server.diagnostics()["diagnostics"], [])
+                self.assertEqual(server.close(), 0)
+            finally:
+                if server.process.poll() is None:
+                    server.process.kill()
 
     def test_serves_diagnostics_navigation_formatting_and_completion(self):
         server = self.server
@@ -293,6 +313,34 @@ class LanguageServerTests(unittest.TestCase):
         self.assertEqual(unknown["error"]["code"], -32601)
         server.notify("textDocument/didClose", {"textDocument": {"uri": uri}})
         self.assertEqual(server.diagnostics()["diagnostics"], [])
+        self.assertEqual(server.close(), 0)
+
+    def test_describes_const_locals_as_function_scoped(self):
+        server = self.server
+        server.request("initialize", {"processId": None, "rootUri": self.root.as_uri(), "capabilities": {}})
+        server.notify("initialized", {})
+        uri = (self.root / "main.lusl").as_uri()
+        text = ('#include "common.luslh"\nstatic const float32 GAIN = 2.0;\n'
+                "float32 Shade(in Light light)\n{\n    const float32 scaled = Scale(light.Power);\n"
+                "    return scaled * GAIN;\n}\n")
+        server.notify("textDocument/didOpen", {"textDocument": {"uri": uri, "languageId": "lusl", "version": 1,
+                                                                "text": text}})
+        self.assertEqual(server.diagnostics()["diagnostics"], [])
+
+        local = server.request("textDocument/hover", {"textDocument": {"uri": uri},
+                                                       "position": {"line": 5, "character": 12}})
+        self.assertIn("const float32 scaled", local["result"]["contents"]["value"])
+        self.assertNotIn("static const float32 scaled", local["result"]["contents"]["value"])
+        constant = server.request("textDocument/hover", {"textDocument": {"uri": uri},
+                                                          "position": {"line": 5, "character": 22}})
+        self.assertIn("static const float32 GAIN", constant["result"]["contents"]["value"])
+
+        # Module-level names are offered everywhere; the function's const local is not one of them.
+        names = server.request("textDocument/completion", {"textDocument": {"uri": uri},
+                                                            "position": {"line": 1, "character": 0}})
+        labels = {item["label"] for item in names["result"]}
+        self.assertIn("GAIN", labels)
+        self.assertNotIn("scaled", labels)
         self.assertEqual(server.close(), 0)
 
     def test_exit_without_shutdown_fails(self):

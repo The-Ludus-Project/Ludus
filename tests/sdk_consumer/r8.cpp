@@ -7,6 +7,7 @@
 #include <ludus/graphics/rhi/lifetime.h>
 
 #include "raster.h"
+#include "raster_slots.h"
 
 #include <cstring>
 
@@ -19,6 +20,9 @@ namespace
 {
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
+// Slots and vertex input locations that the LUSL compiler assigned to raster.lusl.
+namespace raster_slots = ludus::shaders::raster::slots;
+namespace raster_locations = ludus::shaders::raster::locations;
 constexpr logging::LogCategory LOG_R8{"R8-Fixture"};
 rhi::DeviceHandle gDevice;
 rhi::SurfaceHandle gSurface;
@@ -337,13 +341,14 @@ void Tick() noexcept
         {
             return;
         }
-        const rhi::RasterBindingResource resources[3]{{ .Buffer = gTint, .Size = 16 },
-                                                      { .Binding = 1, .Texture = gView },
-                                                      { .Binding = 2, .Sampler = gSampler }};
+        const rhi::RasterBindingResource resources[3]{{ .Binding = raster_slots::TINT, .Buffer = gTint, .Size = 16 },
+                                                      { .Binding = raster_slots::IMAGE, .Texture = gView },
+                                                      { .Binding = raster_slots::IMAGE_SAMPLER, .Sampler = gSampler }};
         const rhi::RasterVertexStream streams[2]{{20, false}, {8, true}};
-        const rhi::RasterVertexAttribute attributes[3]{{0, 0, 0, rhi::RasterVertexFormat::Float3},
-                                                       {1, 0, 12, rhi::RasterVertexFormat::Float2},
-                                                       {2, 1, 0, rhi::RasterVertexFormat::Float2}};
+        const rhi::RasterVertexAttribute attributes[3]{
+            {raster_locations::INPUT_POSITION, 0, 0, rhi::RasterVertexFormat::Float3},
+            {raster_locations::INPUT_UV, 0, 12, rhi::RasterVertexFormat::Float2},
+            {raster_locations::INPUT_OFFSET, 1, 0, rhi::RasterVertexFormat::Float2}};
         rhi::RasterPipelineDescription pipeline;
         pipeline.Vertex = gVertex;
         pipeline.Fragment = gFragment;

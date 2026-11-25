@@ -26,6 +26,8 @@ RayCapabilities RayLimits() noexcept
     RayCapabilities limits;
     limits.StaticTriangles = true;
     limits.InlineQueries = true;
+    limits.Updates = true;
+    limits.CanCompact = true;
     limits.MaxInstances = REFERENCE_RAY_INSTANCES;
     limits.MaxRays = REFERENCE_RAY_COUNT;
     limits.MaxBufferBytes = REFERENCE_RAY_BUFFER_BYTES;
@@ -43,6 +45,34 @@ RasterStatus
 RayCreateScene(foundation::usize, const internal::NativeRaySceneDescription&, RayAllocation& outAllocation) noexcept
 {
     return reference::IsRayAvailable == true ? StartBuild(outAllocation) : RasterStatus::Unsupported;
+}
+RasterStatus RayUpdateGeometry(foundation::usize,
+                               foundation::usize,
+                               const RayGeometryDescription&,
+                               RayAllocation& outAllocation) noexcept
+{
+    ++reference::RayGeometryUpdates;
+    return StartBuild(outAllocation);
+}
+RasterStatus RayUpdateScene(foundation::usize,
+                            foundation::usize,
+                            const internal::NativeRaySceneDescription&,
+                            RayAllocation& outAllocation) noexcept
+{
+    ++reference::RaySceneUpdates;
+    return StartBuild(outAllocation);
+}
+RasterStatus RayCompactGeometry(foundation::usize,
+                                const internal::NativeRayCompaction& compaction,
+                                RayAllocation& outAllocation) noexcept
+{
+    ++reference::RayCompactions;
+    if (reference::RayCompactedBytes > compaction.ByteBudget)
+    {
+        return RasterStatus::CapacityExceeded;
+    }
+    outAllocation = {reference::RayCompactedBytes, 0};
+    return reference::RayBuildResult;
 }
 RasterStatus RaySubmit(foundation::usize, const internal::NativeRaySubmission&, RayAllocation&) noexcept
 {

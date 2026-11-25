@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <QChar>
 #include <QStringDecoder>
 
 namespace ludus::editor
@@ -33,6 +34,100 @@ bool IsContinuation(char character) noexcept
 {
     return (static_cast<uint8>(character) & CONTINUATION_MASK) == CONTINUATION_PREFIX;
 }
+
+bool IsPhysicalLineBreak(QChar character) noexcept
+{
+    return character == u'\n' || character == u'\r' || character == QChar::ParagraphSeparator;
+}
+
+isize SkipLineContinuations(QStringView source, isize position) noexcept
+{
+    while (position + 1 < source.size() && source.at(position) == u'\\' &&
+           IsPhysicalLineBreak(source.at(position + 1)) == true)
+    {
+        position += 2;
+        if (position < source.size() && source.at(position - 1) == u'\r' && source.at(position) == u'\n')
+        {
+            ++position;
+        }
+    }
+    return position;
+}
+
+isize SkipQuotedSlangText(QStringView source, isize position, QChar quote) noexcept
+{
+    while (position < source.size())
+    {
+        position = SkipLineContinuations(source, position);
+        if (position == source.size() || IsPhysicalLineBreak(source.at(position)) == true)
+        {
+            return position;
+        }
+        const QChar character = source.at(position++);
+        if (character == quote)
+        {
+            return position;
+        }
+        if (character == u'\\' && position < source.size())
+        {
+            position = SkipLineContinuations(source, position);
+            position += position < source.size() ? 1 : 0;
+        }
+    }
+    return position;
+}
+
+isize SkipSlangComment(QStringView source, isize position, bool isBlock) noexcept
+{
+    while (position < source.size())
+    {
+        position = SkipLineContinuations(source, position);
+        if (position == source.size())
+        {
+            break;
+        }
+        const QChar character = source.at(position);
+        if (isBlock == false && IsPhysicalLineBreak(character) == true)
+        {
+            return position;
+        }
+        ++position;
+        if (isBlock == true && character == u'*')
+        {
+            const isize next = SkipLineContinuations(source, position);
+            if (next < source.size() && source.at(next) == u'/')
+            {
+                return next + 1;
+            }
+        }
+    }
+    return position;
+}
+
+// Thanks to the Slang authors, "Literal Expressions", String Literal Expressions:
+// https://docs.shader-slang.org/en/latest/external/slang/docs/language-reference/expressions-literal.html
+// A raw string's closing delimiter is paired with the opening delimiter. Inner quotes
+// and newlines are data, so the regular quoted-string scan cannot classify them.
+isize SkipRawSlangString(QStringView source, isize delimiterStart)
+{
+    for (isize position = delimiterStart; position < source.size(); ++position)
+    {
+        const QChar character = source.at(position);
+        if (character == u'(')
+        {
+            QString terminator(u')');
+            terminator.append(source.sliced(delimiterStart, position - delimiterStart));
+            terminator.append(u'"');
+            const isize close = source.indexOf(terminator, position + 1);
+            return close < 0 ? source.size() : close + terminator.size();
+        }
+        if (character == u'"' || character == u')' || IsPhysicalLineBreak(character) == true)
+        {
+            break;
+        }
+    }
+    return SkipQuotedSlangText(source, delimiterStart, u'"');
+}
 } // namespace
 
 bool DecodeCodeText(const QByteArray& bytes, QString& outText)
@@ -47,6 +142,70 @@ bool DecodeCodeText(const QByteArray& bytes, QString& outText)
     text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
     outText = Move(text);
     return true;
+}
+
+QString RepairSlangLineSeparators(QStringView source, QStringView newline)
+{
+    const isize lastSeparator = source.lastIndexOf(QChar::LineSeparator);
+    QString repaired;
+    isize retainedStart = 0;
+    for (isize position = 0; position <= lastSeparator;)
+    {
+        position = SkipLineContinuations(source, position);
+        if (position > lastSeparator)
+        {
+            break;
+        }
+        const QChar character = source.at(position);
+        const isize nextPosition = SkipLineContinuations(source, position + 1);
+        const QChar next = nextPosition < source.size() ? source.at(nextPosition) : QChar();
+        if (character == u'/' && (next == u'/' || next == u'*'))
+        {
+            position = SkipSlangComment(source, nextPosition + 1, next == u'*');
+        }
+        else if (character == u'R' && next == u'"')
+        {
+            position = SkipRawSlangString(source, nextPosition + 1);
+        }
+        else if (character == u'"' || character == u'\'')
+        {
+            position = SkipQuotedSlangText(source, position + 1, character);
+        }
+        else
+        {
+            if (character == QChar::LineSeparator)
+            {
+                repaired.append(source.sliced(retainedStart, position - retainedStart));
+                repaired.append(newline);
+                retainedStart = position + 1;
+            }
+            ++position;
+        }
+    }
+    if (retainedStart != 0)
+    {
+        repaired.append(source.sliced(retainedStart));
+    }
+    return repaired;
+}
+
+QByteArray RepairSlangLineSeparators(const QByteArray& source)
+{
+    constexpr char LINE_SEPARATOR_UTF8[] = "\xe2\x80\xa8";
+    if (source.contains(LINE_SEPARATOR_UTF8) == false)
+    {
+        return {};
+    }
+    QStringDecoder decoder(QStringDecoder::Utf8, QStringConverter::Flag::ConvertInitialBom);
+    const QString text = decoder.decode(source);
+    if (decoder.hasError() == true)
+    {
+        return {};
+    }
+    // A replacement LF immediately after a lone CR would merge two Qt lines.
+    const bool hasCrLf = source.contains("\r\n") == true || text.contains(u"\r\u2028") == true;
+    const QStringView newline = hasCrLf == true ? QStringView(u"\r\n") : QStringView(u"\n");
+    return RepairSlangLineSeparators(text, newline).toUtf8();
 }
 
 // UTF-8 is validated on bind/admission. This walk counts Qt UTF-16 units and

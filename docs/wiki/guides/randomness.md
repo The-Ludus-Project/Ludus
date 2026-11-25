@@ -155,9 +155,101 @@ change later choices.
 
 `RandomState` contains `Version`, `State` and `Increment`. `TryRestore` rejects
 an unsupported version or an even increment without modifying the stream.
-A checkpoint resumes RNG state, not the whole game. Disk persistence must encode
-fields explicitly with fixed widths and a specified byte order; never dump the
-struct's memory/padding. A public PCG wire codec is not implemented yet.
+A checkpoint resumes RNG state, not the whole game. Never dump the struct's
+memory or padding; use the codec in the next section.
+
+## Seed one stream per owner
+
+`TryMakeRandomStream` in `random.hpp` seeds a stream from the world's root seed
+and a `RandomOwner`: a persistent manifest domain and a stable scope, such as a
+saved creation ID. It applies the documented
+[setup convention](../../architecture/randomness.md#stable-keys-domains-and-identities),
+so every owner gets a reproducible stream without inventing its own seed scheme.
+Domain zero returns `InvalidArgument` and leaves the stream unchanged. Existing
+explicit `TryReseed` schemes keep working unchanged.
+
+## Write and restore a checkpoint
+
+`random_checkpoint.hpp` writes the explicit 20-byte little-endian PCG payload
+(`TryEncodeRandomState`/`TryDecodeRandomState`) and a whole random checkpoint:
+the root seed, the RNG contract versions, a content identity you choose, and
+one record per stream owner, addressed event counter and identity allocator.
+This function saves two loot streams, reloads them into a fresh world and
+checks that the next draw continues the saved sequence:
+
+```cpp
+#include <ludus/foundation/math/random.hpp>
+#include <ludus/foundation/math/random_checkpoint.hpp>
+
+#include <span>
+
+[[nodiscard]] bool VerifyCheckpointReload() noexcept
+{
+    using namespace ludus::foundation::math;
+    using ludus::foundation::core::uint64;
+    using ludus::foundation::core::uint8;
+    using ludus::foundation::core::usize;
+    constexpr uint64 WORLD_SEED = 1234;
+    constexpr uint64 CONTENT_IDENTITY = 0x10001; // your content and manifest revision
+    constexpr usize OWNER_COUNT = 2;
+    constexpr usize CHECKPOINT_BYTES =
+        RANDOM_CHECKPOINT_HEADER_BYTES + OWNER_COUNT * RANDOM_CHECKPOINT_STREAM_RECORD_BYTES;
+    const RandomOwner owners[OWNER_COUNT] = {{7, 1}, {7, 2}}; // domain 7, two chests
+
+    RandomStream live[OWNER_COUNT];
+    for (usize i = 0; i < OWNER_COUNT; ++i)
+    {
+        if (TryMakeRandomStream(WORLD_SEED, owners[i], live[i]) != MathStatus::Success)
+        {
+            return false;
+        }
+    }
+    static_cast<void>(live[0].NextUInt32()); // play advances the first chest
+    const RandomStreamRecord saved[OWNER_COUNT] = {{owners[0], live[0].GetState()},
+                                                   {owners[1], live[1].GetState()}};
+    uint8 bytes[CHECKPOINT_BYTES] = {};
+    usize written = 0;
+    const RandomCheckpoint checkpoint{
+        .RootSeed = WORLD_SEED,
+        .ContentIdentity = CONTENT_IDENTITY,
+        .Streams = saved,
+        .Events = {},
+        .Identities = {},
+    };
+    if (TryWriteRandomCheckpoint(checkpoint, bytes, written) != RandomCheckpointStatus::Success)
+    {
+        return false;
+    }
+
+    // Reload: decode, then restore every stream at once or none of them.
+    RandomStreamRecord decoded[OWNER_COUNT];
+    RandomCheckpointContents contents;
+    const RandomCheckpointStorage storage{.Streams = decoded, .Events = {}, .Identities = {}};
+    RandomStream reloaded[OWNER_COUNT];
+    if (TryReadRandomCheckpoint(std::span<const uint8>(bytes, written), CONTENT_IDENTITY, storage, contents) !=
+            RandomCheckpointStatus::Success ||
+        TryRestoreRandomStreams(std::span<const RandomStreamRecord>(decoded, contents.StreamCount), owners, reloaded) !=
+            RandomCheckpointStatus::Success)
+    {
+        return false;
+    }
+    return reloaded[0].NextUInt32() == live[0].NextUInt32();
+}
+```
+
+Reading validates the whole checkpoint before it writes anything. It returns
+`UnsupportedFormat` or `UnsupportedContract` for a layout or algorithm version
+this build does not implement, `IncompatibleContent` when the content identity
+differs from the world you are loading, and `InvalidRecord` or `DuplicateOwner`
+for a corrupt record. `TryRestoreRandomStreams` returns `OwnerMismatch` unless
+the records and live owners correspond one to one. Use a different content
+identity whenever a domain, dimension, generation revision or policy schema
+changes meaning, so an old save is rejected instead of reinterpreted. Event and
+identity records carry the owner-local counters that addressed sampling and
+identity allocation need after a reload. The checkpoint records RNG state
+only; saving the rest of the world is the game's responsibility. The
+[world demo's session checkpoint](../../examples/world-demo.md#session-checkpoints)
+embeds one next to its harvest records.
 
 ## Record enough to reproduce a result
 
@@ -172,14 +264,15 @@ its semantic assignment, scope/event/dimension, generator identity
 Also record the sampler and its parameters, such as the bound, plus your game
 build/content version and address-assignment version. For ordered streams,
 record the PCG algorithm/state version and checkpoints, or the original
-seed/selector with the exact logical draw sequence. Retain the matching
+seed/selector with the exact logical draw sequence. A random checkpoint records
+these versions for you (`GetRandomContract`). Retain the matching
 contracts when replaying old data; reseeding a changed algorithm is not a
 compatibility strategy.
 
 When debugging a mismatch, compare the recipe first, then raw bits, then the
 mapped result, then downstream gameplay. A seed alone cannot reproduce changed
 content, input order, occurrence counters or floating-point simulation behavior.
-There is no automatic world replay manifest or replay loader in these primitives.
+There is no automatic world replay loader in these primitives.
 
 Give gameplay, presentation and previews separate randomness ownership.
 A preview should sample independent logical addresses or a **copy** of a stream;

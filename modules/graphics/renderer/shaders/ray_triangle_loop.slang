@@ -13,7 +13,8 @@ Hit TraceTriangleLoop(float3 originWorld,
                       float3 directionWorld,
                       float nearDistanceWorld,
                       float farDistanceWorld,
-                      bool isVisibility)
+                      bool isVisibility,
+                      uint2 excludedTriangles = uint2(LUDUS_GPU_PREVIEW_INVALID_TRIANGLE))
 {
     Hit hit;
     hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
@@ -21,6 +22,8 @@ Hit TraceTriangleLoop(float3 originWorld,
     hit.Barycentric = 0;
     for (uint triangle = 0; triangle < Counts.x; ++triangle)
     {
+        if (any(triangle == excludedTriangles) == true)
+            continue;
         uint firstWord = triangle * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS;
         float3 positionWorld = SceneValue(firstWord).xyz;
         float3 edge1World = SceneValue(firstWord + 1).xyz - positionWorld;

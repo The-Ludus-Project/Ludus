@@ -81,9 +81,15 @@ ludus render-graph migrate-pipelines graphs/Main/rasterize.lurender.json \
 The command writes only stdout (`--json` returns a `document` object). It does
 not replace files or convert imported assets automatically.
 
-In **Properties → Shaders** or the canvas node editor, add a row, choose its stage
-and set its shader ID. Completed edits automatically create a `.slang` template and register a program in the root
-`.lushader.json` for each new program name. The initial `Program` value
+In **Properties → Shaders** or **Edit Node** on the canvas, choose the new shader
+language and click **Add**, then set the row's stage and shader ID. LUSL
+(`.lusl`) is the default. Choose Slang (`.slang`) to create a Slang source in
+the same package. The Editor registers each new program in the root
+`.lushader.json`. Renaming a program keeps its source language. Template
+instances copy the source languages used by the template. For a scene ray
+pipeline with a custom payload, declare its layout in LUSL as described in the
+[shader language guide](../modules/tooling/shader-language.md#render-graph-programs).
+The initial `Program` value
 receives a unique name from the node and shader IDs. Program IDs belong to the root
 shader manifest and are shared across all imported graphs and configurations;
 graph-local node names do not create separate program namespaces. Generated names
@@ -126,8 +132,8 @@ authored build roots even when no node currently selects them; their programs su
 Remove an unwanted technique explicitly in **Source** before running cleanup.
 
 Unused program registrations are removed in one undoable draft edit, with the
-`.slang` sources that no remaining program uses and the helpers that only those
-sources include (for example a template's `hit_record.slang`). A file survives when
+`.lusl` and `.slang` sources that no remaining program uses, along with helpers
+that only those sources include (for example a template's `hit_record.slang`). A file survives when
 a remaining program registers it, a remaining graph or manifest field names it (a
 traversal source or ray payload, for example), or a surviving source could include
 it, directly or through other survivors. Builds resolve literal includes relative to
@@ -568,7 +574,7 @@ Texture compatibility belongs to the operation using the texture. The current
 color/depth raster operation requires equal attachment extents and sample counts;
 GraphicsPipeline writable resources must match their declared format and pipeline
 samples. The triangle ray profile requires a single-sample offscreen RGBA8Unorm
-color target, with target-derived launch sizing or matching explicit dimensions.
+color target. Ray launch dimensions can follow the target or use fixed counts.
 The canvas and Properties connection controls reject newly provable mismatches,
 including ones resolved through nested subgraphs. The message names the operation,
 dimensions or format/samples, and the repair. A size alone does not imply that two
@@ -605,9 +611,10 @@ while the window changes. Independent graph instances supply independent referen
 The compiler normalizes scale fractions, propagates them through texture metadata
 and subgraph bindings, and retains them in generated plans/runtime packages.
 Attachment compatibility compares policies as well as nominal dimensions: a fixed
-320 × 240 image and a half-view image are not guaranteed to match. Relative ray
-outputs require **Match color target**, since an explicit launch cannot cover
-every reference size.
+320 × 240 image and a half-view image are not guaranteed to match. A ray pass
+that returns an image to a view-relative target uses **Match color target**.
+A [storage texture dispatch](#write-a-storage-texture-at-an-independent-launch-size)
+can use a fixed launch with a view-relative texture.
 
 For direct SDK use, pass the drawable width/height after the optional pool argument
 to `RenderGraph::Initialize`. For `RenderGraphActivation`, call `Resize(width, height)`
@@ -716,11 +723,11 @@ shader uses native traversal inside a compute invocation; dedicated ray stages o
 shader tables are not required for hardware acceleration. The default
 RayTracingPipeline traversal is native. The explicit triangle-loop and compute-BVH
 strategies described below use ordinary GPU compute and do not require ray hardware.
-WebGPU and WebGL2 do not execute this
-profile. Packages can retain browser raster targets alongside native targets;
-their `capability_profiles.ray_tracing` lists only `metal` and/or `spirv`, and no
-browser RT recipe or ray shader artifact is emitted. A browser-only RT manifest
-is rejected and needs an authored raster configuration. Metal cooking
+Native queries are available on Metal and Vulkan. Packages can also carry WGSL
+for eligible [ordered structured-buffer configurations](#access-an-ordered-buffer-by-port-name)
+that use software traversal. The package's `capability_profiles.ray_tracing`
+lists the targets for which it emitted scene compute or hardware ray recipes.
+Metal cooking
 requires the SDK-pinned SPIRV-Cross translator (`LUDUS_SPIRV_CROSS` in CMake or
 `--spirv-cross` for the package builder).
 
@@ -928,6 +935,19 @@ also re-evaluate selection against the new device's enabled capabilities. Pendin
 or failed replacements keep the last completed image until the new renderer
 presents. Automatic renderer selection never changes the authored traversal strategy or invokes CPU raytracing.
 
+When a renderer update fails, the viewport and render graph tab show what to do
+next. **Open shader** jumps to the reported source line, and **Show graph node**
+selects the node identified by the current build report. **Show diagnostics**
+explains the next step and lets you expand **Technical details** or use **Copy
+diagnostics** to share the report.
+
+If the graphics processor stops drawing, **Restore preview** starts a new
+graphics session and uses the standard raster renderer when available. The view
+may briefly go blank during this reset. If the graphics session still works,
+**Use raster preview** can switch renderers while keeping the last rendered
+image visible. If that switch fails, **Use project renderer** returns to the
+project renderer selection.
+
 When a project graph is too slow to navigate, the viewport offers the engine's
 default raster graph itself. After three consecutive frames that each take at least one second,
 from the camera update before submission to presentation, a **Slow viewport**
@@ -1075,10 +1095,13 @@ New ray nodes use **Invocation > Launch size > Match color target**
 (`"dimensions": "ColorTarget"`). The compiler derives `[width, height, 1]` from
 the connected writable color target separately for each graph instance; the
 Plan lists the resolved launch dimensions. Reusing the subgraph with a different
-target extent requires no edit to its ray node. Existing explicit dimensions
-remain supported and are preserved when opening or saving a graph. To keep an
-explicit launch size, select **Explicit size** and enter the color target's exact
-`[width, height, 1]`; a mismatch reports both sizes and the target's identity.
+target extent requires no edit to its ray node. **Explicit size** launches the
+entered `[width, height, 1]` even when the target resizes. The renderer clears the
+target and stores returned colors at the corresponding texels from the top-left
+origin, clipping writes to the target bounds. A larger target keeps its clear
+color beyond the launch rectangle. A visibility-driven pass requires one
+invocation per visibility texel, so use **Match color target** for a
+view-relative visibility input.
 The same launch-size controls are available from the canvas node editor with
 Properties hidden. Feed Scene and Camera into those inputs,
 the target into both Camera's designated target and the ray node, and the ray
@@ -1221,6 +1244,235 @@ buffer values. They establish the storage/ordering seam for an authored ReSTIR
 implementation; reservoir sampling, temporal reprojection and disocclusion logic
 remain shader policy.
 
+### Size an ordered Buffer from a shader struct
+
+On the canvas, open the Buffer's **Edit Node…** dialog or select it in
+Properties. Choose **From shader struct…**, select a package-relative `.luslh`
+or `.slang` file, and choose the struct it declares. **Edit Declaration…**
+opens the declaration in the main Code workspace. Edit the file, then choose
+**Return to Buffer Sizing**. The form restores your pending values and refreshes
+the struct choices from the current source draft. If the file declares one
+struct, the picker selects it automatically. Set **Element capacity** and click
+**Apply** to update the Buffer.
+
+To start a file, choose **New Shared Shader File…**, enter its path, and define
+the struct in the creation dialog. The dialog defaults to a LUSL header and also
+offers Slang. Source and sizing edits have separate undo steps. **Save Render
+Graph** publishes both, and Cancel in Buffer sizing dismisses the pending sizing
+values.
+
+For a shared declaration, **Storage size** in Buffer sizing and the Buffer's
+**Shader struct** summary show the reflected bytes per element and total bytes
+from the current draft. The preview multiplies the stride by the element
+capacity and rounds up to a 16-byte word. The total updates as you change
+**Element capacity**, even when an unrelated shader prevents the graph from
+building. Save the sizing and declaration changes and run **Build Graph** to
+apply the new allocation.
+
+An ordered Slang shader can declare the struct in its existing program file.
+Select that file and the type in **Buffer sizing**. Previewing an inline
+declaration requires its linked shader context. Ordered Slang callbacks
+linked in the same shader context can use that layout, including through named
+Buffer ports. Use a shared declaration across separate contexts or with a named
+LUSL Buffer port. Named LUSL shaders get the linked type through
+`graph_resources.luslh`. Positional Slang shaders sharing a separate `.slang`
+declaration include it with a quoted path relative to the shader source.
+
+For a UTD edge table, choose **one** element because the table already contains
+its own fixed-capacity array.
+
+```slang
+#pragma once
+
+static const uint MAX_EDGE_COUNT = 256;
+
+struct EdgeRecord
+{
+    float4 BeginWorldAndLength;
+    float4 EndWorldAndCumulativeLength;
+};
+
+struct EdgeTable
+{
+    uint4 Header;
+    EdgeRecord Edges[MAX_EDGE_COUNT];
+};
+
+static const uint EDGE_RECORD_WORDS = sizeof(EdgeRecord) / sizeof(uint4);
+
+EdgeRecord LoadEdgeRecord(RWStructuredBuffer<uint4> words, uint edgeIndex)
+{
+    uint firstWord = 1 + edgeIndex * EDGE_RECORD_WORDS;
+    EdgeRecord edge;
+    edge.BeginWorldAndLength = asfloat(words[firstWord]);
+    edge.EndWorldAndCumulativeLength = asfloat(words[firstWord + 1]);
+    return edge;
+}
+
+void StoreEdgeRecord(RWStructuredBuffer<uint4> words, uint edgeIndex, EdgeRecord edge)
+{
+    uint firstWord = 1 + edgeIndex * EDGE_RECORD_WORDS;
+    words[firstWord] = asuint(edge.BeginWorldAndLength);
+    words[firstWord + 1] = asuint(edge.EndWorldAndCumulativeLength);
+}
+```
+
+```json
+{
+  "id": "edges",
+  "kind": "Buffer",
+  "shader_struct": {
+    "source": "main_shaders/edge_table.slang",
+    "type": "EdgeTable",
+    "count": 1
+  }
+}
+```
+
+This layout allocates 8,208 bytes. The ordered buffer slots expose
+`RWStructuredBuffer<uint4>` on native Metal and Vulkan. Keep pack and unpack
+helpers beside the declaration so both passes share the same field order.
+For this layout, `GraphBufferN[0]` is the header. Check the populated count in
+the header before reading an edge, and bound all writes by `MAX_EDGE_COUNT`.
+Wire the Buffer into the
+producer and the producer's updated output into the consumer, with the same
+paired **Load**/**Store** resource as for a fixed-byte Buffer.
+
+### Access an ordered Buffer by port name
+
+Connect a Buffer to a scene compute or radiance ray-generation shader. New
+shaders created in the Editor include a final `<FunctionName>Resources resources`
+parameter. Its members follow the connected ports. Open **Shader API** to see
+their element types and access, or complete after `resources.` in either LUSL
+or Slang. The Editor supplies the generated LUSL resource include in the source
+template and links the selected layout for both languages.
+
+For a port named `edges` and a function named `BuildEdges`:
+
+```slang
+float3 BuildEdges(SceneContext scene, RayLaunch launch, inout RayQueryContext queries,
+                  BuildEdgesResources resources)
+{
+    uint index = launch.WorkItemIndex;
+    if (index < resources.Edges.GetCount() && index < GetSceneInfo(scene).TriangleCount)
+    {
+        TriangleData triangle = GetTriangle(scene, index);
+        Edge edge;
+        edge.BeginWorld = triangle.Position0World;
+        edge.EndWorld = triangle.Position1World;
+        resources.Edges.Store(index, edge);
+    }
+    return float3(0);
+}
+```
+
+This example writes the first side of each processed triangle. Put `Edge` in
+`edge.slang` with `float3 BeginWorld` and `float3 EndWorld`, then choose that
+file and type in **From shader struct…** and set the element capacity. Configure
+the producer with **Work items** and an `edges` **Writable Resource**. Connect
+its output to an `edges` **Read Input** on the consumer. The graph supplies
+the type to both programs. The consumer reads a record with
+`Edge edge = resources.Edges.Load(index);`. Check the populated count as well
+as the allocation capacity returned by `GetCount()`.
+
+For an existing scene callback, open its source and choose **Shader API → Add
+Buffer Access…**. Review the change and apply it to add the final Resources
+parameter and the generated include for LUSL as one undoable draft edit.
+Shader API lists compatible connected Buffer fields while the upgrade is
+pending. If a read-only Buffer needs this upgrade, activate the build error to
+open the affected callback with Shader API visible. **Save** publishes the edit.
+Existing positional writable bindings still work, so adopt the named interface
+when you need it and change the shader body to use `Load` or `Store` as needed.
+
+You can also add the final Resources parameter yourself. In a LUSL callback,
+add `#include "graph_resources.luslh"` alongside the scene include and declare
+the parameter as `in BuildEdgesResources resources`. The generated interface
+already exposes the selected Buffer layout to named callbacks.
+
+The member name capitalizes the port's first letter and preserves the remaining
+spelling. Named views load and store whole records using the reflected layout.
+Supported fields are 32-bit scalars and vectors, nested records and fixed arrays.
+
+Choose **Native structured buffer** in Buffer sizing for an ordered scene
+compute writer and a read-only consumer. The same graph allocation is bound
+as `RWStructuredBuffer<EdgesData>` in the writer and
+`StructuredBuffer<EdgesData>` in the reader. Use a shared declaration and
+named Buffer access in both shaders. One legacy positional Buffer can keep
+the first binding in the same configuration.
+
+Use **Compute** invocation for the ray-generation reader on Metal, Vulkan,
+and WebGPU. Include the shader profiles your project targets (`metal`, `spirv`,
+and `wgsl`, respectively). For WebGPU, set traversal on every scene pass in the
+configuration to **Compute BVH**. The WebGPU package binds the same structured
+allocation as read/write storage in the writer and read-only storage in the
+reader. Metal also supports a hardware ray reader.
+
+Direct3D 12 currently lacks this ordered scene shader profile. WebGL 2 has no
+compute or writable shader storage, so it needs an authored raster configuration.
+
+In the LUSL reader, include `graph_resources.luslh` and
+`scene_shader.luslh`. For an `EdgesData` table with capacity one, read the
+record at index zero and pass its fixed-size weights array to the scene sampler.
+
+```c
+EdgesData edges = resources.Edges[0];
+Edge first = edges.Edges[0];
+uint32 sampledIndex = SampleSceneWeightedIndex(inout inoutQueries, edges.Weights);
+```
+
+Keep unused weights zero and check the populated edge count before indexing.
+
+With **Packed words** access, a named LUSL buffer view for a shared record with
+a fixed array of structs exposes `Load<Field>(recordIndex, elementIndex)`. Writable views expose
+`Store<Field>(recordIndex, elementIndex, value)`. For an `EdgesData` buffer
+with capacity one and a member `Edge Edges[256]`, use
+`Edge edge = resources.Edges.LoadEdges(0, edgeIndex);` and
+`resources.Edges.StoreEdges(0, edgeIndex, edge);`. The first index selects a
+buffer record, and the second selects an element of its array. Shader API lists
+the methods and the declared array capacity. Check both indices against their
+capacities before accessing the buffer and use the populated count when reading
+a partially filled array. Each call accesses the selected element's fields
+using the reflected offsets and stride, so writing it preserves the table
+header and neighboring entries.
+
+Structured views also expose `GetByteSize()` and `LoadWord(byteOffset)` in Slang
+and LUSL. Writable views add `StoreWord(byteOffset, word)`. Use these methods in
+your own shader helpers to encode records or update individual 32-bit fields
+without loading and storing the whole struct. For example, a Slang helper for a
+Buffer sized from `EdgesData` can write a single float at an authored offset:
+
+```slang
+void StoreEdgeWeight(in GraphWritableEdgesDataView edges, uint byteOffset, float weight)
+{
+    uint byteSize = edges.GetByteSize();
+    uint wordBytes = sizeof(uint);
+    if (byteOffset % wordBytes == 0 && byteOffset < byteSize)
+    {
+        edges.StoreWord(byteOffset, asuint(weight));
+    }
+}
+```
+
+Offsets are relative to the start of the allocation, must be multiples of four,
+and must fit a full 32-bit word within `GetByteSize()`. This size is the reflected
+record stride times the declared record count. The calls leave alignment and
+bounds checks to the shader. If a shader also uses typed access, its custom
+offsets and encoding must agree with the reflected storage layout for those
+fields. Read-only views can use `LoadWord` with the same layout. The generated
+Slang editor context labels its layout-dependent placeholders. The package build
+emits the actual reflected accessors.
+
+Fixed-byte Buffer ports expose four unsigned integers per element. A reused
+function needs matching fields, types and access. The same callback variant
+also shares one slot and capacity mapping. Named Buffer ports work in scene
+compute kernels and in the ray-generation callback of either invocation type.
+**Hardware RT pipeline** requires a Metal package profile and a supported Metal
+device. When the package targets Vulkan, use **Compute pipeline** with **Native
+ray query** for hardware-accelerated intersections on supported devices. If
+a native ray pass reads a record defined in a separate compute shader, move
+the record declaration to a shared `.slang` or `.luslh` file and select that
+file under **From shader struct** in the Buffer's sizing settings.
+
 ### Author scene compute passes
 
 A **ComputePipeline** with a **Scene** input is a *scene compute pass*. It accepts
@@ -1244,8 +1496,9 @@ The node accepts the same ports as a Ray Tracing Pipeline node:
 
 - exactly one Scene input and one View input;
 - exactly one writable RGBA8Unorm ColorTexture with **Clear**/**Store**;
-- up to two writable **Buffer** resources with **Load**/**Store**, bound as `GraphBuffer0/1`;
-- optionally the read-only visibility color and depth input pair.
+- up to two **Buffer** ports, with **Load**/**Store** for writable ports. See
+  [named access](#access-an-ordered-buffer-by-port-name) for the shader interface;
+- up to three [sampled color inputs](#read-a-color-texture-from-an-earlier-pass) or the read-only visibility color and depth pair.
 
 `StructuredBuffer` inputs are rejected: connect a `Buffer` node instead. Set
 `invocation.dimensions` to `"ColorTarget"`, or to the exact `[width, height, 1]` of
@@ -1352,10 +1605,10 @@ queries)`) therefore see the same values at each pixel. Decorrelate them with on
 of two patterns:
 
 - **Explicit dimension ranges.** Give each pass a disjoint, documented range and
-  draw with the address overloads `SampleSceneRandom(launch, dimension)` and
+  draw with `SampleUniformFloat01(launch, dimension)` and
   `SelectLight(scene, launch, dimension)`. For example, a primary pass draws its
   subpixel jitter from `[0, 2)`, and a shading pass draws its light selection and
-  light sample from `[2, 6)`. These overloads do not advance or reset
+  light sample from `[2, 6)`. These calls do not advance or reset
   `RayQueryContext`. Use this pattern when each pass needs a fixed number of draws.
 - **Pass-scoped addresses.** Address draws with `(pixel, GetGraphPassIndex())`, as
   `SampleReuseRandom` in the ReSTIR DI template's
@@ -1383,8 +1636,8 @@ surfaces make the same undoable document edit, and **Save** publishes it.
    and up to two **Buffer** rows with **Load**/**Store**. Connect them as for a
    Ray Tracing Pipeline node.
 5. **Invocation → Launch size** offers **Match color target** or **Explicit
-   size**, as for ray nodes. An explicit `[width, height, 1]` must match the
-   connected color target. The canvas reports a mismatch when you connect it.
+   size**, as for ray nodes. An explicit `[width, height, 1]` remains fixed across
+   target resizes. Returned colors are stored in the overlap with the target.
 6. **Pipeline State → Overrides → Group size** offers **64 × 1 × 1**
    and **8 × 8 × 1**. The same form is available from the canvas with Properties
    hidden. All explicit overrides in the bundle must agree; automatic passes
@@ -1419,15 +1672,114 @@ has a scene compute primary pass that records per-pixel hits in a Buffer, follow
 by a ray pass that resolves them. `ludus_render_graph_ray_tests` renders both on
 native ray hardware.
 
+### Read a color texture from an earlier pass
+
+In a scene **ComputePipeline**, add up to three **ColorTexture** ports under
+**Read Inputs**. Connect each port to an earlier scene compute or ray pass's
+color output. For example, connect `utd.diffraction` to the `diffraction`
+input on `shade`. Each source must be an offscreen, single-sample RGBA8Unorm
+texture written earlier in the same ordered sequence. Keep a separate
+allocation for each texture this pass writes.
+
+Use **Shader API → Add Resource Access** or add a final
+`<FunctionName>Resources resources` parameter to the shader. **Build Graph**
+generates a read-only texture member from each connected port, with its first
+letter capitalized. For example, Slang exposes `diffraction` as
+`Texture2D<float4> Diffraction` in `resources`. The graph owns the binding.
+For matching source and dispatch extents, read the launch pixel:
+
+```slang
+float3 diffraction = resources.Diffraction.Load(int3(launch.PositionPixel, 0)).rgb;
+```
+
+In LuSL, include `graph_resources.luslh` and declare the final parameter as
+`in <FunctionName>Resources resources`. Read with
+`resources.Diffraction.Load(launch.PositionPixel)`. Existing Slang shaders
+can continue to read the first sampled input through `GraphColorInput`.
+
+The load returns the stored normalized color, including any color processing
+applied before the wire. Query `GetDimensions` and bound coordinates against
+the source extent if the targets differ. The renderer orders the producer's
+color write before the consumer's read on Metal and Vulkan.
+
+A RayTracingPipeline producer can use **Compute** invocation or native Metal ray
+stages. Scene visibility/depth inputs and tiled frame capture require a separate
+configuration or whole-frame capture, respectively.
+
+<a id="write-a-storage-texture-at-an-independent-launch-size"></a>
+
+### Write a texture by port name from a ray shader
+
+On a **RayTracingPipeline** or scene **ComputePipeline**, add a writable
+**ColorTexture** for each texture. In **Writable Resources**, set each row's
+**Texture access** to **Shader read/write**. Connect a separate offscreen,
+single-sample **RGBA8Unorm Target** to each paired input. Connect downstream
+passes to the corresponding outputs. Targets can have different fixed or
+view-relative extents. In **Writable Resources**, select **Load**/**Store**
+to retain the texture contents or **Clear**/**Store** to reset the entire
+texture to transparent black immediately before each dispatch. The GPU clear
+uses the target extent, including after a resize. In graph source, set
+`"access": "ShaderReadWrite"` and select `"load": "Load"` or `"load": "Clear"`
+on the output record. Both choices use `"store": "Store"`.
+
+For a pass with only shader-writable textures, choose **Launch size → Explicit
+size**. A grid of `[64, 1, 1]` gives 64 invocations. Each invocation can trace
+as many rays as the scene query budget allows. If the pass also has a **Store
+returned RGB** output, it can match that target's extent or use an explicit
+grid. **Work items** is also available for scene compute. The settings are
+available in Properties and in **Edit Node** on the canvas.
+
+Add the final `<FunctionName>Resources resources` parameter to your Slang
+callback. **Shader API → Add Resource Access** can add it for you. Each texture
+appears under its paired input port name, with the first letter capitalized.
+For example, after tracing, checking visibility, and projecting the visible hit:
+
+```slang
+uint width;
+uint height;
+resources.Diffraction.GetDimensions(width, height);
+if (all(positionPixel < uint2(width, height)) == true)
+{
+    resources.Diffraction[positionPixel] = float4(radiance, 1);
+}
+```
+
+With LuSL, include `graph_resources.luslh` and add an
+`in <FunctionName>Resources resources` parameter. Query the view for bounds,
+then load or store at an integer pixel:
+
+```c
+uint32x2 extentPixel = resources.Diffraction.GetDimensions();
+if (all(positionPixel < extentPixel) == true)
+{
+    resources.Diffraction.Store(positionPixel, float32x4(radiance, 1));
+}
+```
+
+Each pass can bind up to three named shader-writable textures. Dispatch indices
+describe the dispatch grid. Query each texture's own bounds before addressing
+it, and coordinate writes if multiple invocations can reach the same texel.
+New allocations start at zero. Texels retain their contents while the allocation
+lives. A later scene compute pass can sample a written texture through its
+named read-only input in `resources`. Connect the previous writer's output if the next pass also
+needs to read and write it.
+
+This mode uses the native Vulkan or Metal tier-2 read/write texture profile and
+requires a whole-frame dispatch. Use separate configurations for visibility/depth
+reconstruction, ray-path capture, or the legacy `GraphStorageTexture` binding.
+Accumulate, denoise, or tone-map the automatic image output, or sample a shader
+texture into a later image pass before applying image processing.
+
 <a id="select-emitters-per-screen-tile"></a>
 
 ### Trace rays in a buffer-only scene dispatch
 
 A scene `ComputePipeline` can launch a fixed number of work items independently
 of the viewport. In the pipeline editor, select **Invocation → Launch size →
-Work items**. Use one Scene input and one or two raw Buffer inputs with matching
-**Load**/**Store** writable outputs. Remove the View and texture ports. Assign a
-single Slang compute program with the usual `RayLaunch` / `Radiance` signature.
+Work items**. Use one Scene input and connect buffers or shader-writable
+textures as your kernel requires. Remove View, sampled textures and the
+automatic color output. Assign a Slang or LuSL compute program with the usual
+`RayLaunch` / `Radiance` signature.
 
 ```json
 {
@@ -4482,6 +4834,12 @@ triangle recipe state. Add this record to the manifest's
 }
 ```
 
+`surface_queries` admits 1 through 16,384 queries per invocation. Set it to
+the bound required by the technique's shaders, including iterations and
+backtracking. Every submitted closest-hit query counts, including misses.
+Exceeding the configured budget fails the invocation with the surface-budget
+diagnostic.
+
 Add `"line_queries": 1` (up to 8) only when a callback calls
 `FindVisibleLineIntervals`. An absent field means 0, and the generated wrapper is
 then byte-identical to one without the field.
@@ -4510,14 +4868,18 @@ Their contracts are on the
 [FoundationMath page](../modules/foundation/math.md#linearly-transformed-cosines-over-polygons),
 in [randomness](../architecture/randomness.md#sequential-weighted-reservoir) and in
 the [LTC table guide](ltc-table.md). The table itself is 3.4 MB, so it is not
-part of the source snapshot: the renderer uploads it once and binds it read-only
-at slot 13 when the linked kernel's reflection keeps that binding. A flag
-without a `LookupSpecularLtc` call binds nothing. Version 25 runtime packages
-record the binding in one scene resource word. Native ray stages
-(`"type": "RayTracing"` invocations) cannot bind the table, so read it from a
-compute-invoked pass. Omit the field when you do not need the helpers. It must
-be a Boolean, and older SDKs reject the unknown field instead of building
-without the helpers. The
+part of the source snapshot. The renderer uploads it once and binds it read-only
+at slot 13 when the linked kernel actually reads it. Version 25 runtime
+packages record that binding in one scene resource word.
+
+In a package that uses native ray stages, Build Graph links the callbacks
+reachable from each configuration separately when these helpers are enabled.
+The native Metal shader includes only callbacks selected for hardware RT.
+A configuration that never reads the table runs without allocating it, even
+when other configurations need it. A compute-invoked pass can read the table
+in a configuration that also has hardware RT passes. Build Graph rejects a
+hardware RT shader only if its compiled code reads the table. The shared flag
+is a Boolean that exposes the helpers. The
 [RIS and projected-solid-angle template](#resample-many-area-lights-with-projected-solid-angle-sampling)
 declares it.
 
@@ -4706,7 +5068,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |
 | IsSurfaceCovered | Fixed-mip sampled-endpoint alpha coverage, using the same inclusive cutoff as closest-hit traversal, with no ray query; keep uncovered area samples as zero events |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
-| SampleLight | Select a catalog source and sample it with the default incident proposal. Returns the selection PMF and conditional probability separately. |
+| SampleLight | Select a catalog source and sample its incident light at a world-space position or a `SurfaceHit`. Uses the invocation random stream or caller-provided addresses. Returns the selection PMF and conditional probability separately. |
 | EvaluateLightAlongRay | Return the radiance and matching continuous light proposal for a traced mesh hit or environment miss, using the same selection policy as SampleLight. |
 | SelectLight / EvaluateLightSelectionPmf | Default uniform source selection and its discrete probability. SelectLight(scene, queries) uses the invocation stream. |
 | SelectLightByMeshPower / EvaluateMeshPowerLightSelectionPmf | Addressed catalog selection and its matching PMF. Mesh lights split their uniform category share by power, with uniform fallback. |
@@ -4719,10 +5081,11 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | SelectEmissiveTriangle / EvaluateEmissiveTriangleSelectionPmf | [Power-weighted emissive triangle](#select-emissive-triangles-by-power) at an explicit dimension / that selection's probability for a triangle |
 | EvaluateEnvironment | Background radiance along a world direction: the Atmosphere's sky when the World has one that lights the scene, otherwise the World environment. See [World features](#world-features) |
 | ApplyAerialPerspective | Haze between a ray origin and a visible surface point: the surface radiance attenuated by the air plus the sky light it scatters. See [World features](#world-features) |
-| TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
+| TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status. `TestVisibility` accepts a `SurfaceHit` or a world-space ray origin. |
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
-| SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
+| SampleUniformFloat01 / SampleSceneRandom | Uniform draw at an explicit pixel sample dimension / next draw from the invocation stream |
+| MakeCameraRay | Camera ray through a chosen subpixel position |
 | RequireSceneBsdf | Check the assigned scene materials against a pass’s transport or fixed-dimension reflection requirements and report a repairable failure. The renderer decides from each material's declared capabilities, not its model name |
 | EvaluateStandardBsdf / SampleStandardBsdf | Optional existing scattering-model primitives; no integrator or MIS |
 | SampleStandardBsdfTransport / ComputeStandardBsdfCosine | Continuation with complete weight and specular/transmission flags / matching light cosine, zero for glass |
@@ -5228,14 +5591,32 @@ Stream exhaustion or bounded-mapping failure also latches `HasFailed` and return
 zero, which must not be used as a sample after failure. Float draws, integer draws
 and automatic light selection share the same invocation stream.
 
+Pass a fixed-size float array or a `float2`, `float3`, or `float4` to
+`SampleSceneWeightedIndex` to choose an index by weight.
+
+```slang
+const uint index = SampleSceneWeightedIndex(queries, float3(2, 0, 6));
+```
+
+Each index has probability proportional to its weight, so the example selects
+index 0 one quarter of the time and index 2 three quarters of the time. Weights
+may be normalized or unnormalized. Float precision limits how small a weight
+can be relative to the total and still occupy an interval. The helper uses a
+linear scan and spends one dimension from the same invocation stream. Negative
+or nonfinite weights and a zero total latch an invalid-argument failure. On
+failure the helper returns `SCENE_INVALID_INDEX`. LUSL provides the vector
+overloads through `scene_shader.luslh` using `float32x2`, `float32x3`, and
+`float32x4`.
+
 The stream admits dimensions zero through FoundationMath's
 `RANDOM_MAX_DIMENSION`, inclusive. Exhaustion latches `HasFailed` and returns
 zero/no sample; the renderer rejects that invocation's result. Scheduling other
 pixels does not change the stream. Changing the callback's draw order does.
-The existing `SampleSceneRandom(launch, dimension)` and
-`SelectLight(scene, launch, dimension)` overloads remain available for explicitly
-addressed algorithms. They do not advance the automatic stream and can address
-the same draws; use one addressing strategy or reserve disjoint dimensions when
+`SampleUniformFloat01(launch, dimension)` returns a uniform pseudorandom float in
+`[0, 1)` keyed by the launch seed, linear pixel index, progressive sample index
+and explicit dimension. Both it and `SelectLight(scene, launch, dimension)` leave
+the automatic stream at its current dimension. For image launches, explicit and
+automatic draws can use the same addresses, so reserve disjoint dimensions when
 combining them.
 
 The default distribution is uniform over analytic sources, emitting instance/slot
@@ -5245,29 +5626,44 @@ its source selection probability. Emission maps are sampled at the actual UV;
 black texels and back-side one-sided samples remain zero-contribution events.
 The initial environment proposal is uniform sphere, including HDR maps.
 
-The Compute ray tracing template uses `SampleLight` with independent addresses
-for source selection and the conditional incident proposal.
+`SampleLight(scene, pointWorld, policy, queries)` draws from the same invocation
+stream as `SampleSceneRandom`. Pass a position in world metres, such as a point
+on a diffraction edge, or pass a `SurfaceHit`. With eligible lights, the call
+reserves one slot for choosing the light and three for its incident sample.
+Empty eligible light sets leave the stream in place. If the remaining stream
+cannot fit the reservation, the call returns no sample and latches `HasFailed`.
 
 ```slang
-SceneLightSample light = SampleLight(
-    scene, receiver, launch, LIGHT_SELECTION_DIMENSION, INCIDENT_DIMENSION_FIRST,
-    LightSelectionPolicy::Uniform, queries);
+SceneLightSample light = SampleLight(scene, pointWorld, LightSelectionPolicy::Uniform, queries);
 if (light.Incident.HasSample == false)
     return float3(0);
 
+SceneQuery visibility = TestVisibility(scene, queries, pointWorld, light.Incident);
 float probability = light.Selection.SelectionPmf * light.Incident.ConditionalProbability;
 ```
 
-Reserve `SCENE_INCIDENT_LIGHT_DIMENSION_COUNT` slots for the default incident
-proposal. Mesh lights read all three slots and the environment reads the last
-two. Directional, point and spot lights read none. The addressed sampler never
-advances the invocation stream. If a needed address is exhausted, it latches the
-invocation failure. A source index outside the catalog returns no sample.
+The visibility ray starts at `pointWorld`. It connects to the sampled endpoint
+for a finite light, including the usual mesh endpoint offset, and uses the
+sampled direction for an infinite light. `SceneQuery::Miss` means the connection
+is clear. Both forms use the visibility query budget and are available in Slang
+and LUSL.
 
-Use the probability product after checking `incident.HasSample` and use
-`TestVisibility` with the incident result to trace its connection. The incident
-probability is a density per steradian for `IncidentLightMeasure::SolidAngle` and
-a mass for `IncidentLightMeasure::Discrete`. Analytic delta samples have
+Use `SampleLight(scene, pointWorld, launch, selectionDimension, incidentDimension,
+policy, queries)` when a shader needs fixed addresses across branches or passes.
+Keep the selection slot outside the `SCENE_INCIDENT_LIGHT_DIMENSION_COUNT` slots
+starting at `incidentDimension`. Mesh lights read all three slots and the
+environment reads the last two. Directional, point and spot lights read none.
+The addressed overload leaves the invocation stream in place. If a needed
+address is exhausted, it latches the invocation failure. A source index outside
+the catalog returns no sample.
+
+The Compute ray tracing template passes a `SurfaceHit` from `GetSurfaceHit` to
+both operations. A hit from `TraceClosest` works too. `SampleLight` uses the
+hit's position and `TestVisibility` applies the triangle's origin offset.
+
+The incident probability is a density per steradian for
+`IncidentLightMeasure::SolidAngle` and a mass for `IncidentLightMeasure::Discrete`.
+Analytic delta samples have
 conditional mass one and zero competing solid-angle density. For MIS after a
 BSDF sample, pass the trace result, original receiver position and same
 selection policy to `EvaluateLightAlongRay`. Multiply its source PMF by its
@@ -5420,15 +5816,15 @@ operation that can also reduce noise.
 ### World features
 
 A World can contain optional features, such as an **Atmosphere**, that a render
-graph may or may not draw. Each feature maps to one engine-owned scene function.
-When a ray kernel calls the function, the graph draws the feature. You do not
-declare support in the manifest. The builder records it from the functions the
-compiled kernel calls.
+graph may draw. The builder records ray support from the engine-owned scene
+functions called by the compiled kernel. The clustered deferred renderer also
+draws native raster features.
 
 | Feature | Scene function | Where to call it | Without it | Ray approximation |
 | --- | --- | --- | --- | --- |
 | Atmosphere sky | `EvaluateEnvironment(scene, directionWorld)` | Return it where a ray leaves the scene: in the miss callback, or where ray generation finds no surface. EvaluateLightAlongRay, SampleLight and FollowSpecularChain call it for you. | The background is the World environment, and the Atmosphere's Sun is not dimmed by the air. | A distant sky resolved at the camera's altitude when the scene is prepared, without the night sky, replaces the World environment; the linked Sun keeps the illuminance that reaches the camera. |
 | Aerial perspective | `ApplyAerialPerspective(scene, originWorld, hitWorld, radiance)` | Call it on the radiance a camera ray brings back from a surface, in the closest-hit callback or in ray generation after shading, with the ray origin and the hit position. | Distant surfaces are neither hazed nor dimmed by the air. | Every segment uses the haze seen from the camera's altitude, read from a table resolved when the scene is prepared, up to 32 km. |
+| Northern lights | — | Use the native clustered deferred raster graph with a perspective camera inside the clear-air shell. | The sky has no auroral curtains. | — |
 
 `graphics::renderer::DescribeWorldFeature` owns this text, and the editor shows
 the same table. A renderer test compares this page with it, so edit both
@@ -5550,7 +5946,7 @@ name every check this way.
 
 A build warns at each authored `HasFailed = true` with a
 `RenderGraphBuildReasonlessFailure` row in the Error List, located at its line,
-and marks the line in the Source view. The build still succeeds. Replace each
+and marks the line in Code. The build still succeeds. Replace each
 one with `FailSceneQuery` so its pixels name their check. The check is lexical,
 so a write hidden behind a macro or a differently named context is not found.
 
@@ -5698,9 +6094,10 @@ RasterizeGraph (ClusteredDeferred) → ToneMap → Export / Present
 {"id": "tonemap", "kind": "ToneMap", "exposure": 1, "curve": "PbrNeutral"}
 ```
 
-**Curve** selects the display curve. `Reinhard` applies `x / (1 + x)` to each
-channel independently, which can shift hue as bright channels compress by
-different amounts. Omit `curve` to use Reinhard. `PbrNeutral` subtracts a common
+**Curve** selects the display curve in Properties or the canvas's **Edit Node**
+action. Nodes that omit `curve` display **Reinhard** in both controls. `Reinhard`
+applies `x / (1 + x)` to each channel independently, which can shift hue as bright
+channels compress by different amounts. `PbrNeutral` subtracts a common
 offset from the channels, then compresses bright peaks and blends them toward
 white. The engine's default clustered deferred graph selects `PbrNeutral`
 explicitly.
@@ -6147,7 +6544,7 @@ the editor uses it for any project that has no graph of its own.
    shader compilation. Opening the project writes nothing. The **Render Preview** panel mirrors the same graph
    output and is optional. Camera navigation and scene edits feed that graph directly.
 3. **Edit it.** Change anything: move a node on the canvas, edit a selected node's
-   field in **Properties**, or apply shader text in the **Source** view. The first edit turns the
+   field in **Properties**, or edit shader text in **Code**. The first edit turns the
    default into a project draft:
    - The path label changes to `graphs/Main/main.lurender.json (new, unsaved)`, and the
      status line names the folder that Save will create.
@@ -7143,10 +7540,12 @@ unit disk) reaches height `z` above the disk's plane in the direction
 Every tap is such a direction, looked up on whichever cube face holds it, so the
 search and the filter cross face seams and widen with the light rather than stopping
 at the face gutter. The resolve offsets the receiver by 1.5 shadow texels along its
-normal and searches thirteen taps: the receiver's own direction, then four rings of
-three taps whose lateral widths lie an octave apart below that of the near plane, at
-most twice the receiver's distance. A receiver within half a ring's width of an
-occluder's hard shadow therefore always finds it. A found occluder counts only if it
+normal and starts the blocker search in the receiver's own direction. Four wide rings
+of three taps search lateral widths up to an octave apart, starting at the near
+plane's width capped at twice the receiver's distance. Two compact rings sample at
+half and a quarter of the disk radius when those widths span at least one texel
+and lie within the search range. They can find disjoint blockers on either side of
+a clear centre texel that the wide rings miss. A found occluder counts only if it
 lies between the disk's plane and the receiver and, seen from the receiver,
 backprojects onto the disk; the emitters behind the plane hide nothing. When it finds
 any, the resolve filters twelve light points at the blockers' mean inverse height.
@@ -7175,8 +7574,8 @@ unshadowed emitter. The grid lists a caster's records together, so one lookup se
 a run of them. Occluders nearer than a caster's near distance are ignored: half its
 offset in front of one-sided emitters, and its radius when it encloses its members.
 The penumbra remains an estimate from one point per caster: the disk is round, the
-blockers' heights come from thirteen taps, and occluders nearer the light's plane
-than about half its radius filter too narrowly. Under a 0.8 m square of 4.4 nits with
+blockers' heights come from at most nineteen taps of the nearest stored depths,
+and occluders nearer the light's plane than about half its radius filter too narrowly. Under a 0.8 m square of 4.4 nits with
 blockers 0.22 m and 0.47 m in front of its caster, the
 [RT2 area-light fixture](../architecture/renderer-systems.md#partial-area-light-shadows)
 measures visibility RMS error 0.063–0.088 against an exact backprojection oracle,
@@ -7217,8 +7616,9 @@ On an Apple M5, the SDK reported one caster, five drawn faces and zero pending
 faces for each World. Its sole caster takes 512-texel faces in the 2048² atlas with a
 four-texel gutter. Each emitter fits one planar polygon record with a 0.271 m disk
 radius. The square's enclosing radius is 0.339 m and the elongated rectangle's is
-0.495 m. All measurements below use five-row mean visibility unless a single probe
-is identified. Full light and full shadow controls require normalized visibility
+0.495 m. The original qualification measurements below predate the compact
+search rings. They use five-row mean visibility unless a single probe is identified.
+Full light and full shadow controls require normalized visibility
 above 0.95 and below 0.05. The gates allow two linear RGBA8 codes between routes,
 0.03 RMS visibility error against the per-tap disk model, and 0.06 absolute error
 in the mean adjacent-pixel step across the face boundary. The sampled geometric
@@ -7248,8 +7648,8 @@ a blocker beyond its point shadow and return fully lit inside the physical
 penumbra. That produces a visible step even within one cube face.
 
 At the central overlap probe (x = 1.984875), disjoint half-emitter footprints
-cover the entire source. The raster and disk model both return fully lit there.
-The matched clear radiance is 60/255 on each route. The three blocker pairs give the following results.
+cover the entire source. The original raster and disk model both returned fully lit there.
+The matched clear radiance was 60/255 on each route. The three blocker pairs gave the following results.
 
 | Projected overlap | Raw shadow code / 255 | Raster visibility | Geometric visibility | Weighted visibility |
 | --- | ---: | ---: | ---: | ---: |
@@ -7258,8 +7658,15 @@ The matched clear radiance is 60/255 on each route. The three blocker pairs give
 | Coincident | 42/255 | 0.700 | 0.500 | 0.559 |
 
 Alone, the first blocker gives 1.000 at that probe against a weighted 0.559.
-The three second-blocker controls give 1.000, 0.433 and 0.700 against 0.441,
-0.504 and 0.559. The largest overlap error here is a missed occluder.
+The three second-blocker controls gave 1.000, 0.433 and 0.700 against 0.441,
+0.504 and 0.559. The largest overlap error here was a missed occluder.
+
+The current qualification requires visibility below 0.05 at pixel (80, 80)
+in `overlap-0` on both Metal routes. At the same pixel, the partially overlapping
+and coincident pairs and the single-blocker controls must agree with their weighted
+references within 0.15 absolute visibility. This tolerance accounts for estimating
+a rectangular source with a finite set of disk samples and for the atlas storing
+only the nearest depth in each texel.
 
 For the depth sweep one plate stays at z = 0.80. The outer receiver bands
 measure each penumbra. The mixed band near y = −0.28 supplies the partial
@@ -7523,7 +7930,7 @@ Root execution configurations cannot contain unbound interface inputs.
 | Scene | None | Outputs `scene: Scene`; declares a future scene-snapshot binding |
 | Camera | `active`, `role` (`Presentation` or `Offscreen`), `target_type` | Input `target` of the specified texture type; output `view: View`. An inactive camera may leave target unbound and needs no route, but cannot drive a raster pass |
 | Target | `type`, `format`, `extent: [width, height]` or `"RenderSize"`, `samples`, `imported`, `initialized`, `presentation` | Optional `size: RenderSize` input; outputs `texture` of the specified texture type; names physical resource version 0 |
-| Buffer | Fixed `bytes`, or `bytes_per_pixel` and `extent: "RenderSize"` | Optional `size: RenderSize` input; outputs shared persistent `buffer: Buffer` for [ordered ray passes](#order-ray-passes-and-share-persistent-buffers) |
+| Buffer | Fixed `bytes`, `bytes_per_pixel` and `extent: "RenderSize"`, or [`shader_struct`](#size-an-ordered-buffer-from-a-shader-struct) | Optional `size: RenderSize` input for per-pixel sizing, plus a shared persistent `buffer: Buffer` output for [ordered ray passes](#order-ray-passes-and-share-persistent-buffers) |
 | StructuredBuffer (version 2) | `stride` in bytes, `count` as a positive integer or `"ColorTarget"` | Outputs zero-initialized `buffer: Buffer`; native ray storage follows the [reservoir workflow](#create-structured-reservoir-buffers) |
 | OutputSize (version 2) | `extent: "Viewport"` or fixed `[width,height]` | Outputs graph-only `size: RenderSize`; the viewport mode uses physical drawable pixels |
 | RenderSize (version 2) | `extent: "OutputSize"` with `scale: [numerator,denominator]`, fixed `extent`, `"Texture"`, or `{"reference":"View","scale":[numerator,denominator]}` | `output: RenderSize` for output-derived scaling, or optional color/depth `texture` metadata input; outputs graph-only `size: RenderSize` |
@@ -8502,7 +8909,7 @@ With `--json`, a failure's `error.location` names its authored owner:
 | --- | --- | --- |
 | Source/document error | `source`, optional `configuration` and `node` | Selects the configuration or node |
 | Expanded-plan error | `source`, `configuration`, `node`, `instance` (nested path such as `Main/raster/draw`) | Selects the node in its own library |
-| Shader compiler error | `source`, `line`, optional `column` and `length`; `diagnostics` lists up to 32 compiler messages | Opens the function file at that line and column; the Source pane marks each message |
+| Shader compiler error | `source`, `line`, optional `column` and `length`; `diagnostics` lists up to 32 compiler messages | Opens the function file at that line and column; the Code tab marks each message |
 | Generated wrapper error | `generated: wrapper.slang`, `program`, `line` | Opens the program record in the build manifest |
 
 `column` is a one-based Unicode scalar column and `length` counts Unicode scalars
@@ -8742,20 +9149,31 @@ the accepted rename with the graph.
 
 ### Edit shader sources inside Ludus
 
-The **Source** pane uses the shared code editor: line numbers, Slang lexical
-coloring, current-line and matching-bracket highlighting, and native text
-selection, clipboard and navigation. Strings and comments are excluded from
+Choose **Open Source** from the graph to work in **Code**. The selected node's
+shader opens when one is assigned. The package file picker opens other shaders,
+editable graph JSON and the shader manifest. All tabs edit the same package
+draft that the canvas uses. **Return to Graph** restores the node selection.
+**Validate**, **Build Graph** and **Live Preview** are available while a package
+tab is shown, including when reading generated source.
+
+The editor provides line numbers, Slang coloring, current-line and matching-bracket
+highlighting, and native text selection, clipboard and navigation. Strings and comments are excluded from
 bracket matching; matching is bounded for responsiveness. Shader formatting and
 unified source/canvas undo, native shader completion and signature help are
 available. Symbol hover remains a future increment, described in the
 [shared editor architecture](../architecture/editor-gui-systems.md#source-editing-direction).
 
-Use **Focus Source** or **Shift+Alt+Return** while Source is active to hide the
-surrounding tool windows, graph source tree and API reference. **Restore Layout**
+When you open or paste Slang code, the editor converts Unicode line separators
+(U+2028) to the file's usual newlines. Separators inside literals and comments
+are preserved. The repair is undoable, and **Save** publishes the repaired draft.
+
+Use **Focus Source** or **Shift+Alt+Return** while a package tab is active to
+hide the surrounding tool windows and Shader API reference. **Restore Layout**
 or the same shortcut restores the previous arrangement, selection and active
 source. The View menu's **Focus Viewport** command also supports Source.
-**Shader API** shows or hides the reference; it starts hidden, remembers the
-choice, and retains the reference split width across focus and source changes.
+**Shader API** shows or hides the reference for the shader in context, including
+when a definition opens generated source. It remembers its visibility and split
+width across focus and source changes.
 External editor and reload actions are grouped under the **Source** menu.
 
 The compact editor strip exposes **Edit**, text size in points, **Wrap** and
@@ -8786,6 +9204,8 @@ Ctrl is shown below (Qt's native shortcut mapping):
 | Quick Open source in this package | Ctrl+P |
 | Go to shader symbol in the current source | Ctrl+Shift+O |
 | Go to definition / find references | F12 or Ctrl+click / Shift+F12 |
+| Go to implementation | Ctrl+F12 |
+| Go to symbol in the shader context | Ctrl+T |
 | Navigate Back / Forward | Ctrl+Alt+Left / Ctrl+Alt+Right, or the mouse's side Back / Forward buttons over the editor |
 | Indent / outdent selected lines | Tab / Shift+Tab |
 | Toggle Slang line comments | Ctrl+/ |
@@ -8826,8 +9246,39 @@ cancel. Filtering never previews a jump or changes a draft.
 functions, types and members. Hold Ctrl (Command on macOS) to underline the name
 under the pointer, and click it to request **Go to Definition** for that name.
 Names in comments, strings and keywords are not links. **Go to Definition** jumps directly when the compiler
-returns one mapped location; multiple definitions and **Find References** open the
-same filterable chooser. References cover the selected captured compiler context,
+returns one mapped location; multiple definitions open a filterable chooser.
+**Find References** lists its results in the **References** tool window
+(**View → References**), grouped by file with each use's line, column and text.
+The list stays while you follow it: activate a row to open that location. After
+you edit the shader, the rows describe the earlier text, so activating one says
+so instead of jumping to a wrong place; **Find Again** searches from the same
+symbol in the current text.
+
+**Rename Symbol** (F2, also in the editor's context menu) renames a name and
+every use the language server finds. A box opens over the name with it
+selected: type the new name and press Enter. When the rename also changes other
+package files, or when you press **Shift+Enter**, a preview lists every file and
+each change first; choose **Apply** or **Cancel**. The rename is one edit to the
+package draft, so a single **Undo** reverts every file it changed, and nothing
+is saved until you save. Escape or clicking elsewhere leaves the name as it was.
+A rename that would change generated code, read-only shader context, a file
+outside the shader's context, or an older version of the text is refused with
+the reason, and nothing changes. The pinned `slangd` and `luslc` do not support
+rename yet, so the command is disabled with that reason for them.
+
+**Code actions** are fixes and refactorings the language server offers at the
+caret, such as declaring a missing name. When the caret rests on a line that
+has some, a light bulb appears in the gutter. Click it, or press **Ctrl+.**
+(Command+. on macOS, **Show Code Actions** in the context menu), to list them;
+the server's recommended fix is listed first in bold. Choosing one applies its
+change as one edit that a single **Undo** reverts, in every file it touched.
+Entries the server marks as unavailable, and actions that would run a server
+command, are listed but disabled, with the reason in their tooltip. An action
+that would change generated or read-only code is refused, and nothing changes.
+The pinned servers offer no code actions yet. **Go to Declaration**, **Go to Type Definition** and
+**Go to Implementation** (in the editor's context menu) behave the same way. **Go
+to Symbol in Workspace** asks the server for symbols named like the word at the
+caret across the captured context and lists those in authored sources. References cover the selected captured compiler context,
 including its declaration, rather than a project-wide text search. These commands
 share completion's native Slang process and selected program context, use the
 current unsaved draft and reject replies/selections after source, caret, binding,
@@ -8837,16 +9288,18 @@ Reference search is enabled only when the selected `slangd` advertises support;
 otherwise its menu entry explains the limitation. Use **Find** for text matches.
 An unsupported operation preserves the ready server, current source and selection.
 
-Exact unchanged package includes map back to editable drafts. Generated interfaces,
-rewritten compatibility dependencies and inlined surrounding context open in a
-separate **read-only captured context** window. You can inspect and copy there;
-closing it preserves the source view. Unknown server URIs and invalid UTF-16 ranges
+A definition in the current file opens in place. Definitions in other package
+files open in the main Code workspace, using an existing file tab or a reusable
+preview tab. Exact unchanged package includes map back to editable drafts.
+Generated interfaces, rewritten compatibility dependencies and inlined
+surrounding context open as read-only source previews where you can inspect and
+copy code. Unknown server URIs and invalid UTF-16 ranges
 are omitted, never opened as arbitrary files. The context owner supplies exact
 snapshot URI/file/hash records; navigation does not parse shader declarations or
 guess source paths. Go to Symbol excludes generated surroundings.
 
 **Navigate Back / Forward** returns through explicit source, symbol, line, Find and
-diagnostic jumps, including source-file changes within a package. It retains up to
+diagnostic jumps across the package's Code tabs. It retains up to
 64 locations in each direction and clears Forward on a new jump. Positions follow
 edits while their buffer is open; after a source rebind they use clamped line/column
 positions. Replacing a graph or project/epoch clears this view history. It does not
@@ -8861,13 +9314,36 @@ also work without Slang, including in the session-only browser editor.
 #### Shader completion and signature help
 
 In a native Source editor, press **Ctrl+Space** to complete a symbol, or type
-`.` for members. Type a prefix to narrow the suggestions. Up/Down selects an
+one of the language server's trigger characters (`.` for members with `slangd`
+and `luslc`). Type a prefix to narrow the suggestions. Up/Down selects an
 item; Enter or Tab accepts it; Escape dismisses assistance. Completion uses the
 current unsaved draft, including package includes, manifest-generated types and
 bindings, scene/material APIs and shader functions. An accepted completion and
 its additional source edits form one undo step; Save remains explicit.
 
+Suggestions come from the language server, from built-in snippets (`if`, `for`,
+`struct`, `func` and `compute` for Slang and LUSL) and from words in the shader
+files you have open. They are ranked together by how well they match what you
+typed, as in the command palette, so `acc` finds `accumulated`. After a `.`,
+only the server's members are offered. A multi-line snippet is indented to the
+line you insert it on.
+
+The highlighted suggestion's documentation appears beside the list. When the
+server supports it, the editor asks for a suggestion's details only once you
+highlight it, so the list opens quickly and fills in as you move through it.
+Some suggestions are **snippets** with placeholders, such as a call with its
+arguments: accepting one selects the first placeholder. Type to replace it,
+then press **Tab** for the next and **Shift+Tab** for the previous; a
+placeholder that appears more than once changes everywhere as you type. After
+the last placeholder, Tab moves the caret to the snippet's end. **Escape**, or
+moving the caret out of the snippet, leaves the placeholders as they are. A
+snippet with a transform (`${1/…/…/}`) is refused with a message, and the text
+is unchanged.
+
 Press **Ctrl+Shift+Space** inside a call, or type `(` or `,`, for signature help.
+A command the selected language server does not support (for example signature
+help with `luslc`, or Find References with an older `slangd`) is disabled, and
+its tooltip names the reason.
 The active parameter is emphasized. **Alt+PageUp/PageDown** selects another
 overload when available. These two Space shortcuts use the physical **Control**
 key on macOS, unlike the Command mapping of the ordinary editing shortcuts above.
@@ -8888,22 +9364,63 @@ temporary draft package and uses the same source-generation owner as shader
 compilation. It does not download tools or save project files. Missing tools,
 invalid graph/interface inputs and process failures appear directly below the
 selector with a repair message. After repairing them, use **Retry assistance**
-to refresh available contexts and start again. Ordinary editing stays available.
+to refresh available contexts and start again. If the server exits unexpectedly,
+assistance restarts it after one second, then two; after a third exit within a
+minute it stays stopped until **Retry assistance**. LUSL sources use `luslc lsp`
+from the project SDK the same way. The code status bar follows the active tab
+and shows when its server is starting, ready, restarting or failed. Ordinary
+editing stays available.
 
 The initial provider needs an executable program context. Unassigned source files,
 legacy compatibility rewrites of the editable file, repeated inclusion of that
 file in one linked unit and include cycles through that file report an explicit
 mapping limitation. Completion edits must stay inside the current authored file;
-generated-file edits and unsolicited snippets are rejected. Literal package
+generated-file edits are rejected. Literal package
 includes follow the build owner's existing rules; module imports are unsupported.
 The static browser editor has no native Slang process and reports that completion
 and signature help are unavailable. The searchable Shader API reference remains
 available independently.
 
+#### Hover and live analysis
+
+Rest the pointer on a name for a moment, or choose **Show Hover** from the
+editor's context menu, to see the language server's description of it together
+with any messages at that position. Hover uses the prepared shader context only:
+it never prepares one, so before the first completion or navigation request it
+shows local messages alone.
+
+Once a context is prepared, the server analyses the draft as you type and its
+messages appear with a dotted underline. They are labelled
+`Analysis (slangd)` (or `luslc`) in tooltips and hover, and listed in the
+**Error List** with that origin, apart from the build's squiggles and rows,
+which remain authoritative for build errors. Analysis rows never bring the
+Error List forward while you type; activating one opens that shader's tab and
+selects the message's range. Editing the draft clears its existing Analysis
+underlines and rows while the server checks the new text. Reports for generated
+surroundings or with a superseded document version are discarded. **Show Log**,
+beside **Retry assistance**, shows the server's diagnostic output since it last
+started.
+
+With a prepared context, names are also colored by what the server knows about
+them, over the editor's own syntax colors: `slangd` distinguishes, for example,
+functions, parameters, properties and user types. The colors follow your edits
+at once; a name you are changing keeps its syntax color until the server
+analyses the new text. When a server reports folding ranges, it adds only kinds
+the editor's grammar does not produce (such as `imports`), so folds you have
+collapsed never move while a server starts, restarts or stops.
+
+`slangd` also shows **inlay hints**: the parameter each argument binds (`value:`
+before it) and the type a `let` deduces (`: float` after its name), drawn in a
+muted box inside the line. Turn them off with **Show Inlay Hints** in the
+editor's context menu (the choice is remembered); while they are off, hold
+**Ctrl+Alt** (Command+Option on macOS) to show them until you release a key.
+A hint at the very start of a line is not shown. None of these layers changes
+the text, the clipboard, the undo history or the saved file.
+
 #### Compiler messages in the source
 
-After a Validate, Build or live preview build fails, the Source pane marks the
-compiler messages for the file it shows. Each message gets a gutter marker beside
+After a Validate, Build or live preview build fails, the Code tabs mark the
+compiler messages for each open source file. Each message gets a gutter marker beside
 its line number and a wavy underline under the reported token (red for errors,
 amber for warnings). A message without a column underlines the line's text.
 Hover over the underline or the gutter marker to read the message. Activating a
@@ -8953,9 +9470,32 @@ Extreme single-line files remain a known Qt layout performance limit; the
 ordinary-line and plain-Qt comparison probes are opt-in `[.benchmark]` tests in
 `ludus_code_editor_tests`.
 
+### Create a shared shader file
+
+1. Open a render graph, choose **Open Source**, then use **Source →
+   New shared shader file…** in Code. You can also select a pipeline on the canvas and
+   choose **Shaders → New shared shader file…** in its **Edit Node…** dialog
+   or Properties.
+2. Choose **LUSL include (.luslh)** or **Slang include (.slang)**. The dialog
+   uses the source in context for the starting folder and language. Without a
+   shader in context, it defaults to LUSL. Enter a package-relative path and
+   click **Create Shared File**.
+3. Keep **Include from …** selected to add a compatible include from the
+   current source when creating the shared file. Both edits undo together.
+   In a source that needs a file you already created, use **Source → Insert
+   Shared Include…**. Shader tabs in the Code workspace offer the same action
+   for dependencies such as a nested record declared in another header.
+4. Add your declarations or helpers in the shared file. You can edit the
+   quoted include manually using a path relative to the source. **Save**
+   publishes the draft. Run **Build Graph** to check the includes.
+
+For a layout that sets a Buffer's capacity, use the [struct sizing
+workflow](#size-an-ordered-buffer-from-a-shader-struct), which also accepts
+structs already declared in ordered Slang shader programs.
+
 ### Edit shader sources in a code editor
 
-On native desktop, select a file in the **Source** view and choose **Source >
+On native desktop, open a package file in **Code** and choose **Source →
 Open in Code Editor**. The first use opens a native application picker; **Source >
 Choose Code Editor…** changes that saved preference. On macOS, select the editor's `.app`
 from Applications. No command-line launcher or shell command is required.
@@ -9059,9 +9599,8 @@ stay in step.
 
 Use **Outline** in the document header to hide or restore the graph outline. It lists each
 file's configurations and shows the nodes of the displayed configuration; other
-configurations stay collapsed until you open them. The Source view hides the outline to give
-the code room, and the next view brings it back if it was open.
-Its visibility and splitter width are remembered between sessions. The status
+configurations stay collapsed until you open them. The outline's visibility
+and splitter width are remembered between sessions. The status
 strip reserves one line; longer reports remain scrollable. **View → Focus
 Viewport** (Shift+Alt+Enter; Shift+Option+Return on macOS), while the graph is
 active, hides the surrounding tool windows and graph navigation to give the
@@ -9163,7 +9702,7 @@ releasing on a port connects or rejects as usual.
 | Right-click Accumulate, Denoise or ToneMap → Disable Node | Toggle its `enabled` field as one undoable edit; the compiler [forwards its input](#disable-a-node) |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
 | Right-click a Subgraph node → Delete Subgraph and Library | `RemoveSubgraphLibrary`: also deletes its library graph and the shader files only that library uses ([details](#remove-a-template-or-library)) |
-| Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source view; not an edit |
+| Double-click a Subgraph node | Opens its asset’s configuration on the canvas and in the tree |
 | Double-click an ordinary node | Opens Details; pipeline parts share their controls with Properties |
 | Pinch apart/together on a supported trackpad | Zoom in/out around the gesture position; does not edit the draft |
 | Mouse wheel, or Ctrl/Command+scroll from any device | Zoom around the pointer, including smooth pixel scrolling |
@@ -9844,6 +10383,8 @@ beside the generation already shown. Live Preview rebuilds saved graph/shader so
 only; unsaved changes remain in the draft. A result for an older saved version never
 replaces the current request. Validation, compilation and activation failures preserve
 the last drawable view; successful replacements publish only after readiness.
+If the World preview's graphics session has failed, **Build & Preview** and a
+successful **Live Preview** rebuild open the cooked runtime on a fresh session.
 An activation failure appears in the **Error List** with its runtime status and
 candidate generation, independently of compiler results. When the renderer cannot
 attribute a scene-level cause, the message names the step that rejected the
@@ -10078,7 +10619,7 @@ Inspection is visibility-aware and uses independent snapshots:
   A pending refresh does not delay rendering during that interval.
 - Between frames, colour textures receive an exact-format GPU copy into an owned
   texture. RHI readback is RGBA8 only, so the editor's
-  `apps/editor/shaders/texture_depth_pack.slang` packs depth IEEE bits into an
+  `apps/editor/shaders/texture_depth_pack.lusl` packs depth IEEE bits into an
   owned RGBA8 attachment instead. Both preserve the captured frame's pixels.
 - Only GPU snapshot completion gates reuse of the source attachment. Subsequent
   band reads use the owned texture while the live graph renders newer frames or

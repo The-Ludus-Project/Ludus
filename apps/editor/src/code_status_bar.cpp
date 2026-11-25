@@ -19,9 +19,8 @@
 // active code view: position and selection from the editor's cursor, and the
 // indentation, encoding, line endings and language from the bound file host's
 // profile. Items whose change M1 supports (position -> Go to Line, line endings,
-// language) are clickable and emit a request; encoding and indentation are shown
-// for information, and the tool-state item is a placeholder until M4. The bar
-// owns no document and mutates nothing; it only reflects and requests.
+// language) are clickable and emit a request. Encoding, indentation and the
+// attached language server's state are shown for information.
 
 namespace ludus::editor
 {
@@ -109,13 +108,10 @@ CodeStatusBar::CodeStatusBar(QWidget* parentOrNull)
     // Language and line endings are changeable in M1 through a small menu.
     connect(mLanguage, &QToolButton::clicked, this, &CodeStatusBar::showLanguageMenu);
     connect(mLineEnding, &QToolButton::clicked, this, &CodeStatusBar::showLineEndingMenu);
-    // Encoding and indentation are information-only in M1; the tool state is a
-    // placeholder until M4 wires the language client. They take no click action.
+    // Encoding, indentation and server state take no click action.
     mEncoding->setEnabled(false);
     mIndent->setEnabled(false);
     mToolState->setEnabled(false);
-    mToolState->setText(QStringLiteral("No language server"));
-    mToolState->setToolTip(QStringLiteral("Language server status appears here once M4 adds the language client."));
 
     SetActiveTab(nullptr);
 }
@@ -155,6 +151,7 @@ void CodeStatusBar::SetActiveTab(CodeDocumentTab* tabOrNull)
         connect(editor, &QPlainTextEdit::selectionChanged, this, &CodeStatusBar::updateSelection);
         // The multiple-cursor count (CE06) also refreshes the selection item.
         connect(editor, &CodeEditor::CursorCountChanged, this, &CodeStatusBar::updateSelection);
+        connect(editor, &CodeEditor::LanguageServerStatusChanged, this, &CodeStatusBar::updateToolState);
         // A lifetime guard: if the editor is destroyed under us, drop the tab so
         // a later Refresh does not touch a dangling pointer.
         connect(editor, &QObject::destroyed, this, [this]() {
@@ -176,7 +173,19 @@ void CodeStatusBar::Refresh()
     }
     updatePosition();
     updateSelection();
+    updateToolState();
     updateFromHost();
+}
+
+void CodeStatusBar::updateToolState()
+{
+    const CodeEditor* editorOrNull = this->editorOrNull();
+    if (editorOrNull != nullptr)
+    {
+        const QString& status = editorOrNull->GetLanguageServerStatus();
+        mToolState->setText(status.isEmpty() == true ? QStringLiteral("No language server") : status);
+        mToolState->setToolTip(editorOrNull->GetLanguageServerDetail());
+    }
 }
 
 void CodeStatusBar::updatePosition()

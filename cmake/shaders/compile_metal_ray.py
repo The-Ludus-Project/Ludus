@@ -5,7 +5,7 @@ Two reserved structured-buffer token types stand for native function tables;
 this adapter replaces only those types, attaches native stage visibility and
 supplies Metal intersector operations. Unknown compiler shapes fail closed.
 
-Thanks to Apple, WWDC20 sessions 10012 (triangle intersection functions, 12:16)
+Thanks to Apple, WWDC20 sessions 10012 (triangle intersection functions, 12:16, and ray payloads, 16:48)
 and 10013 (visible function tables), and WWDC22 session 10105 (call stack depth):
 https://developer.apple.com/videos/play/wwdc2020/10012/
 https://developer.apple.com/videos/play/wwdc2020/10013/
@@ -14,6 +14,11 @@ https://developer.apple.com/videos/play/wwdc2022/10105/
 from copy import deepcopy
 from pathlib import Path
 import re
+
+from compile_raster import raster_interface_usage
+
+
+LTC_TABLE_RESOURCE = 'LudusLtcTable'
 
 
 def _require(condition, message):
@@ -68,8 +73,11 @@ def legalize(code, document, layout, storage_bindings=None):
     slots = {'Parameters': 0, 'sceneWords': 1, 'accumulation': 2, 'colors': 3, 'textureWords': 4,
              'rayScene': 5, 'GraphBuffer0': 6, 'GraphBuffer1': 7,
              'GraphVisibility': 8, 'GraphVisibilityDepth': 9, 'rayPathCapture': 10, 'graphFailures': 14,
+             'GraphColorInput': 12, 'GraphSampledTexture1': 16, 'GraphSampledTexture2': 17,
              'NativeRayFunctions': abi['LUDUS_METAL_RAY_FUNCTION_TABLE_BINDING'],
              'NativeRayIntersections': abi['LUDUS_METAL_RAY_INTERSECTION_TABLE_BINDING']}
+    slots['GraphStorageTexture'] = slots['rayPathCapture']
+    slots.update({f'GraphWritableTexture{index}': 8 + index for index in range(3)})
     storage_bindings = storage_bindings or {}
     _require(type(storage_bindings) is dict and len(storage_bindings) <= 2 and
              len(set(storage_bindings.values())) == len(storage_bindings), 'invalid private storage slots')
@@ -86,7 +94,13 @@ def legalize(code, document, layout, storage_bindings=None):
     entry_body = code[entry.end():body_end]
     assignments = dict((argument, member) for member, argument in re.findall(
         r'\(&\w+\)->(\w+)\s*=\s*(\w+)\s*;', entry_body))
-    resources = {item['name']: item for item in document['parameters']}
+    _require(LTC_TABLE_RESOURCE not in raster_interface_usage(document, 'compute'),
+             'a hardware ray shader reads the polygonal-lighting table, which the native Metal stages cannot bind. '
+             'Move the table lookup into a separate lighting pass that supports it.')
+    # Metal reflection lists unused global declarations, although the kernel has
+    # no argument for them. Preserve the strict ABI checks for all other resources.
+    excluded = private | {LTC_TABLE_RESOURCE}
+    resources = {item['name']: item for item in document['parameters'] if item['name'] != LTC_TABLE_RESOURCE}
     _require(set(resources) <= set(slots) and private <= set(resources), 'unrecognized resource interface')
     arguments, selected = [], {}
     for argument in _arguments(entry[2]):
@@ -144,7 +158,8 @@ void LudusDispatchNativeStage(LudusNativeStageTable functions, {packet} thread* 
                               {context} thread* context);
 uint4 LudusTraceNative(raytracing::acceleration_structure<raytracing::instancing> scene,
                       LudusNativeIntersectionTable intersections, float3 originWorld, float3 directionWorld,
-                      float nearDistanceWorld, float farDistanceWorld, bool isVisibility, {context} thread* context);
+                      float nearDistanceWorld, float farDistanceWorld, bool isVisibility,
+                      uint2 excludedTriangles, {context} thread* context);
 '''
     code = code.replace('using namespace metal;', 'using namespace metal;\n' + prelude, 1)
     resolve = _one(r'\buint\s+(LudusNativeResolveTriangle_\d+)\s*\(', code, 'triangle mapping')[1]
@@ -181,14 +196,15 @@ void LudusDispatchNativeStage(LudusNativeStageTable functions, {packet} thread* 
 }}
 uint4 LudusTraceNative(raytracing::acceleration_structure<raytracing::instancing> scene,
                       LudusNativeIntersectionTable intersections, float3 originWorld, float3 directionWorld,
-                      float nearDistanceWorld, float farDistanceWorld, bool isVisibility, {context} thread* context)
+                      float nearDistanceWorld, float farDistanceWorld, bool isVisibility,
+                      uint2 excludedTriangles, {context} thread* context)
 {{
     raytracing::intersector<raytracing::triangle_data, raytracing::instancing> intersector;
     intersector.assume_geometry_type(raytracing::geometry_type::triangle);
     intersector.force_opacity(raytracing::forced_opacity::non_opaque);
     intersector.accept_any_intersection(isVisibility);
     raytracing::ray ray(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld);
-    auto hit = intersector.intersect(ray, scene, 255, intersections);
+    auto hit = intersector.intersect(ray, scene, 255, intersections, excludedTriangles);
     if (hit.type == raytracing::intersection_type::none)
         return uint4(0xffffffffu, as_type<uint>(farDistanceWorld), 0, 0);
     return uint4({resolve}(hit.primitive_id, hit.geometry_id, context),
@@ -196,25 +212,26 @@ uint4 LudusTraceNative(raytracing::acceleration_structure<raytracing::instancing
 }}
 [[intersection(triangle, raytracing::triangle_data, raytracing::instancing)]]
 bool {abi['LUDUS_METAL_RAY_INTERSECTION']}(uint primitive [[primitive_id]], uint geometry [[geometry_id]],
-                                         float2 barycentric [[barycentric_coord]], {alpha_parameters})
+                                         float2 barycentric [[barycentric_coord]],
+                                         ray_data uint2& excludedTriangles [[payload]], {alpha_parameters})
 {{
     {context} context = {{}};
 {alpha_assignments}
-    return {accept}(primitive, geometry, barycentric, &context);
+    return {accept}(primitive, geometry, barycentric, excludedTriangles, &context);
 }}
 '''
     normalized = deepcopy(document)
-    normalized['parameters'] = [item for item in normalized['parameters'] if item['name'] not in private]
+    normalized['parameters'] = [item for item in normalized['parameters'] if item['name'] not in excluded]
     for value in [*normalized['parameters'], *normalized['entryPoints'][0].get('bindings', [])]:
         name = value['name']
-        if name not in private:
+        if name not in excluded:
             # A resource pinned to a native register reflects a list of bindings; any of them carries its usage.
             originals = value.pop('bindings', None) or [value.get('binding', {})]
             usage = [entry['used'] for entry in originals if 'used' in entry]
             value['binding'] = {'kind': 'descriptorTableSlot', 'index': slots[name],
                                 **({'used': int(any(usage))} if usage else {})}
     normalized['entryPoints'][0]['bindings'] = [item for item in normalized['entryPoints'][0].get('bindings', [])
-                                               if item['name'] not in private]
+                                               if item['name'] not in excluded]
     _require('intersection_query<' not in code and 'LUDUS_NATIVE_CONTEXT' not in code,
              'inline-query or unresolved intrinsic remains in native stage output')
     return code, normalized

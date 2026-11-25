@@ -35,6 +35,10 @@ void Reset() noexcept
     IsRayAvailable = false;
     RayBuildResult = RayBuildPoll = RasterStatus::Pending;
     RayResidentBytes = RayScratchBytes = 0;
+    RayGeometryUpdates = 0;
+    RaySceneUpdates = 0;
+    RayCompactions = 0;
+    RayCompactedBytes = 0;
     Dispatches = 0;
     ComputeResult = RasterStatus::Ready;
     Next = RasterStatus::Ready;
@@ -238,13 +242,13 @@ BindingCapabilities BindingLimits() noexcept
                                                         : static_cast<uint32>(internal::RASTER_BINDINGS),
         .HasUniformTextureIndexing = hasNativeArrays,
         .HasBindlessTextureIndexing = hasNativeArrays == true && internal::IsBindlessRequested() == true,
-        .MaxBindings = 16,
+        .MaxBindings = static_cast<uint32>(RASTER_COMPUTE_BINDING_COUNT),
         .MaxUniformBuffersPerStage = 12,
         .MaxSampledTexturesPerStage =
             hasNativeArrays == true ? internal::CurrentStorageLimits().DescriptorsPerSet : 16U,
         .MaxSamplersPerStage = 16,
-        .MaxUniformBuffersPerSet = static_cast<uint32>(internal::RASTER_BINDINGS),
-        .MaxSamplersPerSet = static_cast<uint32>(internal::RASTER_BINDINGS),
+        .MaxUniformBuffersPerSet = static_cast<uint32>(RASTER_BINDING_COUNT),
+        .MaxSamplersPerSet = static_cast<uint32>(RASTER_BINDING_COUNT),
         .HasBufferDescriptorArrays = Kind() == Backend::Vulkan,
         .HasSamplerDescriptorArrays = hasNativeArrays,
         .HasRuntimeTextureArrays = Kind() == Backend::Vulkan && internal::IsRuntimeTextureArrayRequested() == true,

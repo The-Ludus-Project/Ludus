@@ -213,7 +213,10 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
   that type a real key event through the M2 multi-cursor edit-set path; the
   numbers are recorded on a reference machine by the maintainer, as the M0
   baseline was — authored, not run here. See the
-  [M2 batch 7 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-7-typing-budgets-ce21-2026-11-05).)*
+  [M2 batch 7 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-7-typing-budgets-ce21-2026-11-05).
+  Recorded on an Apple M5 on 2026-11-22, both within budget after the in-place
+  projection and visible-caret paint fixes; see
+  [M2 typing budgets recorded](../../../docs/architecture/code-editor-decision-log.md#m2-typing-budgets-recorded-ce21-2026-11-22).)*
 
 Gate: the CE05-CE07 and CE17 tests pass; the typing budgets are recorded. The
 test cases are authored; the budgets are recorded on a reference machine by the
@@ -254,20 +257,66 @@ interactive qualification are recorded for review.
 
 Requirements: CE09-CE11, CE20. Prerequisite: M2, M3.
 
-- [ ] Move `SlangLanguageService` into `LanguageClient` with no behavior change;
-  all existing slangd tests must pass unchanged.
-- [ ] Add capability dispatch, the request table, priorities, cancellation,
+- [x] Move `SlangLanguageService` into `LanguageClient` with no behavior change;
+  all existing slangd tests must pass unchanged. *(Batch 1;
+  `internal/language_client.h/.cpp` and `internal/language_profiles.h/.cpp`;
+  see the [M4 batch 1 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-1-the-generic-client-move-ce09-2026-11-22).)*
+- [x] Add capability dispatch, the request table, priorities, cancellation,
   incremental synchronization, position-encoding negotiation and the restart
-  policy.
-- [ ] Add hover, Analysis diagnostics, semantic tokens, inlay hints, folding
+  policy. *(Batch 2; `internal/language_requests.h/.cpp`,
+  `internal/language_positions.h/.cpp`, the LUSL profile and
+  `tests/language_server_fixture.py`; the status-bar Show Log action lands with
+  the diagnostics batch. See the [M4 batch 2 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-2-capability-dispatch-and-the-request-table-ce09-ce20-2026-11-22).)*
+- [x] Add hover, Analysis diagnostics, semantic tokens, inlay hints, folding
   ranges (merged by kind per CE26), document and workspace symbols, the remaining Go to commands, references window,
-  completion resolve and snippets.
-- [ ] Add rename with preview, code actions with the light bulb, and workspace
-  edits with transaction undo.
-- [ ] Add the fake LSP fixture and its failure-path tests.
+  completion resolve and snippets. *(Batch 3a: hover and Analysis markers; see the
+  [M4 batch 3a decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3a-hover-and-analysis-diagnostics-ce10-ce20-2026-11-23).
+  Batch 3b: the Error List's Analysis rows, Go to Declaration, Type Definition and
+  Implementation, and Go to Symbol in Workspace; see the
+  [M4 batch 3b decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3b-analysis-rows-and-the-remaining-go-to-commands-ce10-2026-11-23).
+  Batch 3c: semantic tokens and server folding ranges merged by kind; see the
+  [M4 batch 3c decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3c-semantic-tokens-and-server-folding-ranges-ce10-ce26-2026-11-23).
+  Batch 3d: inlay hints; see the
+  [M4 batch 3d decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3d-inlay-hints-ce10-2026-11-23).
+  Batch 3e: the References tool window; see the
+  [M4 batch 3e decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3e-the-references-tool-window-ce10-2026-11-23).
+  Batch 3f: completion resolve, the documentation panel and server snippets
+  with tab stops; see the
+  [M4 batch 3f decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3f-completion-resolve-and-snippets-ce10-2026-11-23).
+  Batch 6: completion merges server items, built-in snippets and open-buffer
+  words, ranked by the palette's fuzzy matcher; see the
+  [M4 batch 6 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-6-completion-aggregation-ce10-2026-11-23).
+  Ludus project symbols in completion belong to the M7 engine context.)*
+- [x] Add rename with preview, code actions with the light bulb, and workspace
+  edits with transaction undo. *(Batch 4a: rename with preview and validated
+  workspace edits applied as one package transaction; see the
+  [M4 batch 4a decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-4a-rename-and-workspace-edits-ce10-ce11-2026-11-23).
+  Batch 4b: code actions with the light bulb and resolve; see the
+  [M4 batch 4b decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-4b-code-actions-and-the-light-bulb-ce10-ce11-2026-11-23).
+  Server commands and the hover's Quick Fix link are not run or shown.)*
+- [x] Add the fake LSP fixture and its failure-path tests. *(Batch 5:
+  oversized, over-long, doubly framed and invalid messages, a deadline from the
+  profile, replies to unknown requests and replies for a document the editor no
+  longer shows; see the
+  [M4 gate decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-5-failure-paths-and-the-gate-ce09-ce10-ce11-2026-11-23).)*
 
 Gate: the CE09-CE11 tests pass against the fake server, and the `[slangd]` tests
 pass against the pinned server.
+
+Gate evidence, 2026-11-23, macOS `macos-clang-development` with warnings as
+errors, offscreen. `ludus_code_editor_tests` passed all 226 cases with the
+pinned `slangd`; its `[assistance]` cases (CE09-CE11, against
+`language_server_fixture.py`) passed 56 of 57, the one skip being the pinned
+server case that needs `slangd`, and `[slang-native]` passed both cases.
+`ludus_editor_tests` passed the layout, diagnostics, navigation and code
+editor groups (83 cases, one skipped without a native display). An offscreen
+capture of the native case shows `slangd`'s semantic colors and the `amount:`
+inlay hint.
+
+Open for the issue: interactive acceptance in the running editor. Completion
+aggregation followed in batch 6; project symbols in completion belong to M7. The pinned `slangd` and `luslc lsp` offer
+no rename, code actions, folding ranges or (for `slangd`) references, so those
+features are verified against the fixture only.
 
 ## M5 - Luau provider
 

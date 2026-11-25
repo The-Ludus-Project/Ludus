@@ -45,6 +45,8 @@ enum class CodeSyntaxRole : foundation::uint8
     Count,
 };
 
+/// Where a fold range comes from (CE26). Saved fold state stores the numeric
+/// value, so new kinds are appended.
 enum class CodeFoldKind : foundation::uint8
 {
     Syntax,
@@ -52,6 +54,8 @@ enum class CodeFoldKind : foundation::uint8
     Region,
     Indentation,
     Manual,
+    /// A language server's `imports` folding range; no grammar produces it.
+    Imports,
 };
 
 struct CodeSyntaxRange final
@@ -107,6 +111,8 @@ struct CodeSyntaxFold final
     foundation::int32 LastLine = 0; ///< Inclusive, zero-based.
     CodeFoldKind Kind = CodeFoldKind::Syntax;
     QString Label;
+    /// True for a language server's folding range (CE26), merged by the view.
+    bool IsFromServer = false;
     [[nodiscard]] bool operator==(const CodeSyntaxFold& other) const = default;
 };
 
@@ -125,6 +131,11 @@ struct CodeSyntaxResult final
     [[nodiscard]] QString GetLabel(const CodeSyntaxNode& node) const;
     [[nodiscard]] foundation::int32 FindContainingNode(CodeSyntaxRange range) const noexcept;
 };
+
+/// True when `language` has a tree-sitter grammar, whose `folds` query and region
+/// markers produce Syntax, Comment and Region ranges. Without one, folds come
+/// from indentation.
+[[nodiscard]] bool HasCodeSyntaxGrammar(CodeLanguage language) noexcept;
 
 class CodeSyntaxParser;
 

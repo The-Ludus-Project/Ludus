@@ -229,8 +229,8 @@ enum LightSelectionPolicy : uint
 /// A selected source and its conditional incident sample. Keep the two probabilities separate for MIS.
 struct SceneLightSample
 {
-    SelectedLight Selection;
-    IncidentLightSample Incident;
+    SelectedLight Selection;      ///< Catalog source and its selection probability.
+    IncidentLightSample Incident; ///< Conditional proposal and its probability given the selected source.
 };
 /// Emitted radiance and the matching continuous light proposal for a traced ray.
 struct RayLightEvaluation
@@ -652,7 +652,18 @@ bool IsSceneRayValid(Ray ray)
            ray.MaxDistanceWorld >= ray.MinDistanceWorld &&
            abs(dot(ray.DirectionWorld, ray.DirectionWorld) - 1) <= SCENE_UNIT_TOLERANCE;
 }
-SceneQuery TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray ray, out SurfaceHit outHit)
+static bool AreSceneTriangleExclusionsValid(in uint2 excludedTriangles)
+{
+    return all((excludedTriangles < uint2(Counts.x)) | (excludedTriangles == uint2(SCENE_INVALID_INDEX)));
+}
+/// Trace a surface ray while skipping up to two packed triangle indices from GetTriangle.
+/// Use SCENE_INVALID_INDEX for an unused slot. A valid ray consumes one surface query.
+/// An out-of-range index fails the invocation and clears the hit.
+SceneQuery TraceClosestExcludingTriangles(in SceneContext scene,
+                                          inout RayQueryContext queries,
+                                          in Ray ray,
+                                          in uint2 excludedTriangles,
+                                          out SurfaceHit outHit)
 {
     outHit = (SurfaceHit)0;
     if (queries.HasFailed == true)
@@ -672,8 +683,18 @@ SceneQuery TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray r
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RAY);
         return SceneQuery::Failure;
     }
+    if (AreSceneTriangleExclusionsValid(excludedTriangles) == false)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
+        return SceneQuery::Failure;
+    }
     queries.SurfaceQueries += 1;
-    Hit hit = Trace(ray.OriginWorld, ray.DirectionWorld, ray.MinDistanceWorld, ray.MaxDistanceWorld);
+    Hit hit = Trace(ray.OriginWorld,
+                    ray.DirectionWorld,
+                    ray.MinDistanceWorld,
+                    ray.MaxDistanceWorld,
+                    false,
+                    excludedTriangles);
     if (hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_TRAVERSAL);
@@ -705,6 +726,10 @@ SceneQuery TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray r
     outHit.IsFrontFace = dot(outHit.GeometricNormalWorld, -ray.DirectionWorld) > 0;
     outHit.IsValid = true;
     return SceneQuery::Surface;
+}
+SceneQuery TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray ray, out SurfaceHit outHit)
+{
+    return TraceClosestExcludingTriangles(scene, queries, ray, uint2(SCENE_INVALID_INDEX), outHit);
 }
 Ray SpawnSurfaceRay(SurfaceHit hit, float3 directionWorld, float maximumDistanceWorld)
 {
@@ -758,21 +783,22 @@ SelectedLight SelectLight(SceneContext scene, inout RayQueryContext queries)
     result.SelectionPmf = result.HasSample == true ? 1.0 / float(count) : 0;
     return result;
 }
-/// Select a uniform scene source at an explicit random address, without advancing queries.
-/// Empty sets or invalid/exhausted bounded addresses return HasSample=false.
-SelectedLight SelectLight(SceneContext scene, RayLaunch launch, uint dimension)
+static SelectedLight SelectLightAtAddress(SceneContext scene, uint2 seed, RandomAddress address)
 {
     SelectedLight result = (SelectedLight)0;
     uint count = GetLightCount(scene);
     if (count == 0)
         return result;
-    uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
-    result.HasSample = TrySampleRandomBounded(launch.Seed,
-                                              PixelRandomAddress(pixel, launch.SampleIndex, dimension),
-                                              count,
-                                              result.LightIndex);
+    result.HasSample = TrySampleRandomBounded(seed, address, count, result.LightIndex);
     result.SelectionPmf = result.HasSample == true ? 1.0 / float(count) : 0;
     return result;
+}
+/// Select a uniform scene source at an explicit random address, without advancing queries.
+/// Empty sets or invalid/exhausted bounded addresses return HasSample=false.
+SelectedLight SelectLight(SceneContext scene, RayLaunch launch, uint dimension)
+{
+    uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
+    return SelectLightAtAddress(scene, launch.Seed, PixelRandomAddress(pixel, launch.SampleIndex, dimension));
 }
 static uint ReadMeshPowerCumulative(uint meshCount, uint meshIndex)
 {
@@ -796,23 +822,17 @@ float EvaluateMeshPowerLightSelectionPmf(SceneContext scene, uint lightIndex)
     const uint weight = ReadMeshPowerCumulative(meshCount, meshIndex) - previous;
     return float(weight) / float((meshTotal / meshCount) * lightCount);
 }
-/// Select one catalog source at the given dimension. Mesh lights split their original total
-/// probability by area times emitted luminance, with nonzero support for each light.
-/// Analytic and environment source probabilities match SelectLight. With no mesh table,
-/// selection is uniform. Empty catalogs or exhausted random addresses return no sample.
-SelectedLight SelectLightByMeshPower(SceneContext scene, RayLaunch launch, uint dimension)
+static SelectedLight SelectLightByMeshPowerAtAddress(SceneContext scene, uint2 seed, RandomAddress address)
 {
     const uint meshCount = GetEmitterCount(scene);
     const uint meshTotal = meshCount == 0 ? 0 : ReadMeshPowerCumulative(meshCount, meshCount - 1);
     if (meshTotal == 0)
-        return SelectLight(scene, launch, dimension);
+        return SelectLightAtAddress(scene, seed, address);
     const uint ticketsPerSource = meshTotal / meshCount;
     const uint total = ticketsPerSource * GetLightCount(scene);
-    const uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
     SelectedLight result = (SelectedLight)0;
     uint ticket;
-    if (TrySampleRandomBounded(launch.Seed, PixelRandomAddress(pixel, launch.SampleIndex, dimension), total, ticket) ==
-        false)
+    if (TrySampleRandomBounded(seed, address, total, ticket) == false)
         return result;
     if (ticket < meshTotal)
     {
@@ -836,6 +856,17 @@ SelectedLight SelectLightByMeshPower(SceneContext scene, RayLaunch launch, uint 
     result.SelectionPmf = EvaluateMeshPowerLightSelectionPmf(scene, result.LightIndex);
     result.HasSample = true;
     return result;
+}
+/// Select one catalog source at the given dimension. Mesh lights split their original total
+/// probability by area times emitted luminance, with nonzero support for each light.
+/// Analytic and environment source probabilities match SelectLight. With no mesh table,
+/// selection is uniform. Empty catalogs or exhausted random addresses return no sample.
+SelectedLight SelectLightByMeshPower(SceneContext scene, RayLaunch launch, uint dimension)
+{
+    const uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
+    return SelectLightByMeshPowerAtAddress(scene,
+                                           launch.Seed,
+                                           PixelRandomAddress(pixel, launch.SampleIndex, dimension));
 }
 /// One emissive triangle drawn from the renderer's power-weighted triangle CDF.
 struct EmissiveTriangleSelection
@@ -923,7 +954,7 @@ static const uint INCIDENT_LIGHT_SECOND_DIMENSION_OFFSET = 1;
 static const uint INCIDENT_LIGHT_LAST_DIMENSION_OFFSET = SCENE_INCIDENT_LIGHT_DIMENSION_COUNT - 1;
 
 static IncidentLightSample
-SampleIncidentLightAtCoordinates(SceneContext scene, LightInfo light, SurfaceHit receiver, float3 shapeSample)
+SampleIncidentLightAtCoordinates(SceneContext scene, LightInfo light, float3 positionWorld, float3 shapeSample)
 {
     IncidentLightSample result = (IncidentLightSample)0;
     result.TriangleIndex = SCENE_INVALID_INDEX;
@@ -947,7 +978,7 @@ SampleIncidentLightAtCoordinates(SceneContext scene, LightInfo light, SurfaceHit
         result.Barycentric = float2(root * (1 - shapeSample.z), root * shapeSample.z);
         result.TriangleIndex = triangle;
         result.PositionWorld = PositionWorld(triangle, result.Barycentric);
-        float3 offsetWorld = result.PositionWorld - receiver.PositionWorld;
+        float3 offsetWorld = result.PositionWorld - positionWorld;
         result.DistanceWorld = length(offsetWorld);
         if (result.DistanceWorld <= 0)
             return result;
@@ -981,7 +1012,7 @@ SampleIncidentLightAtCoordinates(SceneContext scene, LightInfo light, SurfaceHit
         if (light.Kind != SceneLightKind::Directional)
         {
             result.PositionWorld = light.PositionWorld;
-            float3 offsetWorld = light.PositionWorld - receiver.PositionWorld;
+            float3 offsetWorld = light.PositionWorld - positionWorld;
             float distanceSquared = dot(offsetWorld, offsetWorld);
             if (distanceSquared <= 0)
                 return result;
@@ -1010,8 +1041,10 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
     if (selected.HasSample == false || selected.LightIndex >= GetLightCount(scene) || any(shapeSample < 0) ||
         any(shapeSample >= 1) || any(isfinite(shapeSample) == false))
         return result;
-    IncidentLightSample incident =
-        SampleIncidentLightAtCoordinates(scene, GetLightInfo(scene, selected.LightIndex), receiver, shapeSample);
+    IncidentLightSample incident = SampleIncidentLightAtCoordinates(scene,
+                                                                    GetLightInfo(scene, selected.LightIndex),
+                                                                    receiver.PositionWorld,
+                                                                    shapeSample);
     result.LightIndex = selected.LightIndex;
     result.TriangleIndex = incident.TriangleIndex;
     result.Barycentric = incident.Barycentric;
@@ -1026,9 +1059,17 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
     result.HasSample = incident.HasSample;
     return result;
 }
-/// Trace visibility to a conditional incident sample using the invocation's query budget.
-SceneQuery
-TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, IncidentLightSample light)
+/// Trace visibility from the supplied world-space ray origin in metres to an incident light sample.
+/// The ray starts at originWorld. For a finite light, aim at the sampled endpoint and offset a mesh
+/// endpoint against the sample's direction, toward the position it was sampled from. For an infinite
+/// light, use the sampled direction and the scene's shadow range. Uses the invocation's visibility query
+/// budget. Returns Miss for a clear connection, Surface for an occluder, or Failure with queries.HasFailed latched.
+/// Skip up to two packed triangle indices from GetTriangle. Use SCENE_INVALID_INDEX for an unused slot.
+SceneQuery TestVisibilityExcludingTriangles(in SceneContext scene,
+                                            inout RayQueryContext queries,
+                                            in float3 originWorld,
+                                            in IncidentLightSample light,
+                                            in uint2 excludedTriangles)
 {
     if (queries.HasFailed == true)
         return SceneQuery::Failure;
@@ -1042,13 +1083,27 @@ TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit rec
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET);
         return SceneQuery::Failure;
     }
+    if (AreSceneTriangleExclusionsValid(excludedTriangles) == false)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
+        return SceneQuery::Failure;
+    }
     queries.VisibilityQueries += 1;
-    Ray shadow = SpawnSurfaceRay(receiver, light.DirectionWorld, 0);
+    Ray shadow;
+    shadow.OriginWorld = originWorld;
+    shadow.MinDistanceWorld = 0;
+    shadow.DirectionWorld = light.DirectionWorld;
+    shadow.MaxDistanceWorld = 0;
     if (light.HasFiniteEndpoint == true)
     {
         float3 endpointWorld = light.PositionWorld;
         if (light.TriangleIndex != SCENE_INVALID_INDEX)
+        {
+            // Offset against the sample's direction, toward the position it was sampled from. Offsetting
+            // toward the already offset origin moves both points to the same side when the endpoint lies
+            // on the origin's own surface, which leaves no unit shadow direction (an InvalidRay failure).
             endpointWorld = OffsetPositionWorld(endpointWorld, light.TriangleIndex, -light.DirectionWorld);
+        }
         float3 offsetWorld = endpointWorld - shadow.OriginWorld;
         shadow.DirectionWorld = NormalizeOrZero(offsetWorld);
         shadow.MaxDistanceWorld = length(offsetWorld);
@@ -1071,7 +1126,7 @@ TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit rec
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RAY);
         return SceneQuery::Failure;
     }
-    Hit hit = Trace(shadow.OriginWorld, shadow.DirectionWorld, 0, shadow.MaxDistanceWorld, true);
+    Hit hit = Trace(shadow.OriginWorld, shadow.DirectionWorld, 0, shadow.MaxDistanceWorld, true, excludedTriangles);
     if (hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_TRAVERSAL);
@@ -1079,8 +1134,21 @@ TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit rec
     }
     return hit.Triangle == SCENE_INVALID_INDEX ? SceneQuery::Miss : SceneQuery::Surface;
 }
-/// Trace visibility to a sample returned by the legacy explicit-coordinate overload.
-SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, LightSample light)
+/// Trace visibility from an explicit origin to an incident light sample.
+SceneQuery
+TestVisibility(SceneContext scene, inout RayQueryContext queries, float3 originWorld, IncidentLightSample light)
+{
+    return TestVisibilityExcludingTriangles(scene, queries, originWorld, light, uint2(SCENE_INVALID_INDEX));
+}
+/// Trace visibility from a surface hit, offsetting the ray origin using the hit's triangle.
+SceneQuery
+TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, IncidentLightSample light)
+{
+    return TestVisibility(scene, queries, SpawnSurfaceRay(receiver, light.DirectionWorld, 0).OriginWorld, light);
+}
+/// Trace visibility from a world-space ray origin in metres to a legacy explicit-coordinate light sample.
+/// Uses the same endpoint handling, query budget and result codes as the incident sample overload.
+SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, float3 originWorld, LightSample light)
 {
     IncidentLightSample incident = (IncidentLightSample)0;
     incident.TriangleIndex = light.TriangleIndex;
@@ -1088,7 +1156,12 @@ SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, Sur
     incident.PositionWorld = light.PositionWorld;
     incident.HasFiniteEndpoint = light.HasFiniteEndpoint;
     incident.HasSample = light.HasSample;
-    return TestVisibility(scene, queries, receiver, incident);
+    return TestVisibility(scene, queries, originWorld, incident);
+}
+/// Trace visibility to a legacy explicit-coordinate sample, offsetting the origin using the hit's triangle.
+SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, LightSample light)
+{
+    return TestVisibility(scene, queries, SpawnSurfaceRay(receiver, light.DirectionWorld, 0).OriginWorld, light);
 }
 /// A world-space segment whose visibility from a receiver is queried, usually a chord of an emitter
 /// triangle. TriangleIndex is the packed index of the triangle that carries the segment, which is
@@ -1352,22 +1425,21 @@ RayLightEvaluation EvaluateLightAlongRay(SceneContext scene,
     }
     return result;
 }
-/// Draw a pseudorandom float in [0,1) at an explicit address, without advancing queries.
+/// Draw a uniform pseudorandom float in [0,1) for an explicit pixel sample dimension.
+/// The draw uses the launch seed, linear pixel index and progressive sample index.
+/// The automatic invocation stream is unaffected.
 /// @pre dimension is no greater than FoundationMath's RANDOM_MAX_DIMENSION.
-float SampleSceneRandom(RayLaunch launch, uint dimension)
+float SampleUniformFloat01(RayLaunch launch, uint dimension)
 {
     uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
     return SampleRandomFloat01(launch.Seed, PixelRandomAddress(pixel, launch.SampleIndex, dimension));
 }
-/// Sample one catalog source using the kind's addressed incident proposal, without advancing the automatic stream.
-/// Mesh reads three dimensions starting at the address, environment reads only the last two, and analytic sources
-/// read no dimensions. An out-of-range source returns no sample. Exhausting a needed address fails the invocation.
-IncidentLightSample SampleIncidentLight(SceneContext scene,
-                                        uint lightIndex,
-                                        SurfaceHit receiver,
-                                        uint2 seed,
-                                        RandomAddress firstAddress,
-                                        inout RayQueryContext inoutQueries)
+static IncidentLightSample SampleIncidentLightAtAddress(SceneContext scene,
+                                                        uint lightIndex,
+                                                        float3 positionWorld,
+                                                        uint2 seed,
+                                                        RandomAddress firstAddress,
+                                                        inout RayQueryContext inoutQueries)
 {
     IncidentLightSample empty = (IncidentLightSample)0;
     empty.TriangleIndex = SCENE_INVALID_INDEX;
@@ -1392,7 +1464,19 @@ IncidentLightSample SampleIncidentLight(SceneContext scene,
         address.Dimension = firstAddress.Dimension + INCIDENT_LIGHT_LAST_DIMENSION_OFFSET;
         shapeSample.z = SampleRandomFloat01(seed, address);
     }
-    return SampleIncidentLightAtCoordinates(scene, light, receiver, shapeSample);
+    return SampleIncidentLightAtCoordinates(scene, light, positionWorld, shapeSample);
+}
+/// Sample one catalog source using the kind's addressed incident proposal, without advancing the automatic stream.
+/// Mesh reads three dimensions starting at the address, environment reads only the last two, and analytic sources
+/// read no dimensions. An out-of-range source returns no sample. Exhausting a needed address fails the invocation.
+IncidentLightSample SampleIncidentLight(SceneContext scene,
+                                        uint lightIndex,
+                                        SurfaceHit receiver,
+                                        uint2 seed,
+                                        RandomAddress firstAddress,
+                                        inout RayQueryContext inoutQueries)
+{
+    return SampleIncidentLightAtAddress(scene, lightIndex, receiver.PositionWorld, seed, firstAddress, inoutQueries);
 }
 /// Sample one source using the launch's pixel/sample address and the first reserved incident dimension.
 IncidentLightSample SampleIncidentLight(SceneContext scene,
@@ -1410,50 +1494,132 @@ IncidentLightSample SampleIncidentLight(SceneContext scene,
                                PixelRandomAddress(pixel, launch.SampleIndex, firstDimension),
                                inoutQueries);
 }
-/// Select and sample one scene light. Selection and incident addresses are independent.
-/// Uses the chosen kind's default incident proposal and does not trace visibility.
-SceneLightSample SampleLight(SceneContext scene,
-                             SurfaceHit receiver,
-                             RayLaunch launch,
-                             uint selectionDimension,
-                             uint incidentDimension,
-                             LightSelectionPolicy policy,
-                             inout RayQueryContext inoutQueries)
+static SceneLightSample SampleLightAtAddresses(SceneContext scene,
+                                               float3 positionWorld,
+                                               uint2 seed,
+                                               RandomAddress selectionAddress,
+                                               RandomAddress incidentAddress,
+                                               LightSelectionPolicy policy,
+                                               inout RayQueryContext inoutQueries)
 {
     SceneLightSample result = (SceneLightSample)0;
     if (inoutQueries.HasFailed == true)
         return result;
     if (policy == LightSelectionPolicy::MeshPower)
-        result.Selection = SelectLightByMeshPower(scene, launch, selectionDimension);
+        result.Selection = SelectLightByMeshPowerAtAddress(scene, seed, selectionAddress);
     else if (policy == LightSelectionPolicy::NonMesh)
     {
         const uint meshCount = GetEmitterCount(scene);
         const uint count = GetLightCount(scene) - meshCount;
         if (count == 0)
             return result;
-        const uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
         uint ordinal;
-        if (TrySampleRandomBounded(launch.Seed,
-                                   PixelRandomAddress(pixel, launch.SampleIndex, selectionDimension),
-                                   count,
-                                   ordinal) == false)
+        if (TrySampleRandomBounded(seed, selectionAddress, count, ordinal) == false)
             return result;
         result.Selection.LightIndex = ordinal < Counts.w ? ordinal : ordinal + meshCount;
         result.Selection.SelectionPmf = 1.0 / float(count);
         result.Selection.HasSample = true;
     }
     else
-        result.Selection = SelectLight(scene, launch, selectionDimension);
+        result.Selection = SelectLightAtAddress(scene, seed, selectionAddress);
     if (result.Selection.HasSample == true)
-        result.Incident =
-            SampleIncidentLight(scene, result.Selection.LightIndex, receiver, launch, incidentDimension, inoutQueries);
+        result.Incident = SampleIncidentLightAtAddress(scene,
+                                                       result.Selection.LightIndex,
+                                                       positionWorld,
+                                                       seed,
+                                                       incidentAddress,
+                                                       inoutQueries);
     return result;
+}
+/// Select and sample one scene light at a finite position in world metres. No scene hit is required.
+/// Use independent addresses for source selection and the conditional incident proposal. Reserve
+/// SCENE_INCIDENT_LIGHT_DIMENSION_COUNT dimensions starting at incidentDimension.
+/// Returns selection and incident probabilities separately. Check Incident.HasSample before use.
+/// An exhausted incident address latches failure when the selected proposal needs it.
+/// Leaves the invocation random stream and ray query budgets untouched.
+SceneLightSample SampleLight(SceneContext scene,
+                             float3 positionWorld,
+                             RayLaunch launch,
+                             uint selectionDimension,
+                             uint incidentDimension,
+                             LightSelectionPolicy policy,
+                             inout RayQueryContext inoutQueries)
+{
+    const uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
+    return SampleLightAtAddresses(scene,
+                                  positionWorld,
+                                  launch.Seed,
+                                  PixelRandomAddress(pixel, launch.SampleIndex, selectionDimension),
+                                  PixelRandomAddress(pixel, launch.SampleIndex, incidentDimension),
+                                  policy,
+                                  inoutQueries);
+}
+/// Select and sample one scene light at shadingHit.PositionWorld, with the same addressed sampling
+/// and query-state contract as the world-position overload.
+SceneLightSample SampleLight(SceneContext scene,
+                             SurfaceHit shadingHit,
+                             RayLaunch launch,
+                             uint selectionDimension,
+                             uint incidentDimension,
+                             LightSelectionPolicy policy,
+                             inout RayQueryContext inoutQueries)
+{
+    return SampleLight(scene,
+                       shadingHit.PositionWorld,
+                       launch,
+                       selectionDimension,
+                       incidentDimension,
+                       policy,
+                       inoutQueries);
+}
+/// Select and sample a light at a finite position in world metres using the invocation random stream.
+/// With eligible lights, reserves one selection slot and SCENE_INCIDENT_LIGHT_DIMENSION_COUNT incident slots.
+/// An empty eligible light set consumes no slots. Exhaustion or bounded-mapping failure latches HasFailed.
+/// Check Incident.HasSample before use. Leaves ray query budgets untouched.
+SceneLightSample
+SampleLight(SceneContext scene, float3 positionWorld, LightSelectionPolicy policy, inout RayQueryContext inoutQueries)
+{
+    SceneLightSample empty = (SceneLightSample)0;
+    if (inoutQueries.HasFailed == true)
+        return empty;
+    const uint lightCount = GetLightCount(scene);
+    if (lightCount == 0 || (policy == LightSelectionPolicy::NonMesh && lightCount == GetEmitterCount(scene)))
+        return empty;
+
+    const uint selectionDimension = inoutQueries.NextRandomDimension;
+    if (selectionDimension > RANDOM_MAX_DIMENSION - SCENE_INCIDENT_LIGHT_DIMENSION_COUNT)
+    {
+        FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_RANDOM_EXHAUSTED);
+        return empty;
+    }
+    inoutQueries.NextRandomDimension += 1 + SCENE_INCIDENT_LIGHT_DIMENSION_COUNT;
+    RandomAddress selectionAddress =
+        PixelRandomAddress(inoutQueries.RandomPixel, inoutQueries.RandomSampleIndex, selectionDimension);
+    RandomAddress incidentAddress = selectionAddress;
+    incidentAddress.Dimension += 1;
+    SceneLightSample result = SampleLightAtAddresses(scene,
+                                                     positionWorld,
+                                                     inoutQueries.RandomSeed,
+                                                     selectionAddress,
+                                                     incidentAddress,
+                                                     policy,
+                                                     inoutQueries);
+    if (result.Selection.HasSample == false)
+        FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
+    return result;
+}
+/// Select and sample a light at shadingHit.PositionWorld using the invocation random stream.
+/// Has the same draw, failure, and probability contract as the world-position overload.
+SceneLightSample
+SampleLight(SceneContext scene, SurfaceHit shadingHit, LightSelectionPolicy policy, inout RayQueryContext inoutQueries)
+{
+    return SampleLight(scene, shadingHit.PositionWorld, policy, inoutQueries);
 }
 /// Draw a pseudorandom float in [0,1), advancing the renderer-owned invocation stream.
 /// Available in ray generation, closest-hit and miss with no ScenePayload fields.
 /// Forward the same queries through callbacks; do not reset or copy its state.
 /// Exhaustion latches HasFailed and returns zero, preventing sample publication.
-/// Explicit launch/dimension overloads address their own draws and do not advance this stream.
+/// Use SampleUniformFloat01 to draw at an explicit pixel sample dimension.
 float SampleSceneRandom(inout RayQueryContext queries)
 {
     uint dimension;
@@ -1487,6 +1653,40 @@ uint SampleSceneRandom(inout RayQueryContext queries, uint minimumInclusive, uin
         return 0;
     }
     return minimumInclusive + offset;
+}
+/// Draw a zero-based index with probability proportional to its finite, nonnegative weight.
+/// Weights can be normalized or unnormalized. Zero weights have no interval.
+/// The helper draws once from the invocation stream, then validates the weights.
+/// Invalid weights or a zero total latch an invalid-argument failure. Any failure
+/// returns SCENE_INVALID_INDEX. Stream exhaustion preserves the random failure reason.
+uint SampleSceneWeightedIndex<let WeightCount : int>(inout RayQueryContext queries, in float weights[WeightCount])
+{
+    const float randomValue = SampleSceneRandom(queries);
+    if (queries.HasFailed == true)
+        return SCENE_INVALID_INDEX;
+
+    uint index;
+    if (TrySampleWeightedIndex(weights, randomValue, index) == false)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
+        return SCENE_INVALID_INDEX;
+    }
+    return index;
+}
+/// Draw a weighted index from two vector components using the array overload's stream and failure contract.
+uint SampleSceneWeightedIndex(inout RayQueryContext queries, in float2 weights)
+{
+    return SampleSceneWeightedIndex(queries, float[2](weights.x, weights.y));
+}
+/// Draw a weighted index from three vector components using the array overload's stream and failure contract.
+uint SampleSceneWeightedIndex(inout RayQueryContext queries, in float3 weights)
+{
+    return SampleSceneWeightedIndex(queries, float[3](weights.x, weights.y, weights.z));
+}
+/// Draw a weighted index from four vector components using the array overload's stream and failure contract.
+uint SampleSceneWeightedIndex(inout RayQueryContext queries, in float4 weights)
+{
+    return SampleSceneWeightedIndex(queries, float[4](weights.x, weights.y, weights.z, weights.w));
 }
 /// True for dielectric (glass) materials, solid or thin. Both are smooth, delta interfaces that scatter on either side
 /// of their surface. SampleStandardBsdfTransport returns IsSpecular samples for them and ComputeStandardBsdfCosine
@@ -1749,7 +1949,7 @@ struct SpecularChain
 /// tracer handles delta bounces this way: emission found after one takes the full MIS weight. Thanks to Matt Pharr,
 /// Wenzel Jakob and Greg Humphreys, Physically Based Rendering, 4th edition, section 13.4 (A Better Path Tracer),
 /// https://pbr-book.org/4ed/Light_Transport_I_Surface_Reflection/A_Better_Path_Tracer.
-/// Draws event k at SampleSceneRandom(launch, firstDimension + k); reserve SCENE_SPECULAR_CHAIN_DIMENSIONS of them
+/// Draws event k at SampleUniformFloat01(launch, firstDimension + k); reserve SCENE_SPECULAR_CHAIN_DIMENSIONS of them
 /// and SCENE_SPECULAR_CHAIN_EVENTS surface queries. Emission of the final Hit is left to the caller. A hit that is
 /// not glass returns itself with unit throughput and no queries.
 SpecularChain FollowSpecularChain(SceneContext scene,
@@ -1781,7 +1981,7 @@ SpecularChain FollowSpecularChain(SceneContext scene,
         StandardBsdfTransportSample sampled =
             SampleDielectricTransport(material,
                                       chain.ViewDirectionWorld,
-                                      float3(SampleSceneRandom(launch, firstDimension + chain.Events), 0, 0),
+                                      float3(SampleUniformFloat01(launch, firstDimension + chain.Events), 0, 0),
                                       isViewerInside);
         bool isOnViewerSide = (dot(geometricNormalWorld, sampled.DirectionWorld) > 0) == (isViewerInside == false);
         if (sampled.HasSample == false || isOnViewerSide == sampled.IsTransmission)
@@ -1855,13 +2055,12 @@ SceneInfo GetSceneInfo(SceneContext scene)
     result.EmitterCount = GetEmitterCount(scene);
     return result;
 }
-Ray MakeCameraRay(RayLaunch launch, float2 samplePixel)
+Ray MakeCameraRayAtClipPosition(RayLaunch launch, float2 positionClip)
 {
-    float2 positionUv = (float2(launch.PositionPixel) + samplePixel) / float2(launch.ExtentPixel);
     CameraRaySegment camera = MakeCameraRaySegment(launch.CameraClipToEye,
                                                    launch.CameraPositionWorld,
                                                    launch.IsOrthographic,
-                                                   float2(positionUv.x * 2 - 1, 1 - positionUv.y * 2),
+                                                   positionClip,
                                                    0);
     Ray ray;
     ray.OriginWorld = camera.OriginWorld;
@@ -1869,6 +2068,57 @@ Ray MakeCameraRay(RayLaunch launch, float2 samplePixel)
     ray.MinDistanceWorld = camera.MinDistanceWorld;
     ray.MaxDistanceWorld = camera.MaxDistanceWorld;
     return ray;
+}
+
+Ray MakeCameraRay(RayLaunch launch, float2 samplePixel)
+{
+    float2 positionUv = (float2(launch.PositionPixel) + samplePixel) / float2(launch.ExtentPixel);
+    return MakeCameraRayAtClipPosition(launch, float2(positionUv.x * 2 - 1, 1 - positionUv.y * 2));
+}
+
+/// Build the camera ray through positionWorld (in metres) using the launch's camera and clip distances.
+/// Returns the projected x/w and y/w in outPositionClip, with positive y pointing up.
+/// Accepts positions outside the image. Returns false and clears both outputs if the projection
+/// or camera ray is invalid, or if the position is at or behind a perspective camera.
+bool TryMakeCameraRayFromWorldPosition(RayLaunch launch,
+                                       float3 positionWorld,
+                                       out Ray outRay,
+                                       out float2 outPositionClip)
+{
+    outRay = (Ray)0;
+    outPositionClip = float2(0);
+    float3 positionEye = positionWorld - launch.CameraPositionWorld;
+    float4x4 columnsClipToEye = transpose(launch.CameraClipToEye);
+    // Eliminate the homogeneous eye-space scale using positionEye, then solve for clip x/w and y/w.
+    float3 horizontalEye = columnsClipToEye[0].xyz - positionEye * columnsClipToEye[0].w;
+    float3 verticalEye = columnsClipToEye[1].xyz - positionEye * columnsClipToEye[1].w;
+    float3 depthEye = columnsClipToEye[2].xyz - positionEye * columnsClipToEye[2].w;
+    float3 offsetEye = positionEye * columnsClipToEye[3].w - columnsClipToEye[3].xyz;
+    float3 horizontalNormalEye = cross(verticalEye, depthEye);
+    float determinant = dot(horizontalEye, horizontalNormalEye);
+    if (determinant == 0 || isfinite(determinant) == false)
+        return false;
+
+    float2 positionClip =
+        float2(dot(offsetEye, horizontalNormalEye), dot(horizontalEye, cross(offsetEye, depthEye))) / determinant;
+    if (all(isfinite(positionClip)) == false)
+        return false;
+
+    Ray ray = MakeCameraRayAtClipPosition(launch, positionClip);
+    if (IsSceneRayValid(ray) == false || (launch.IsOrthographic == false && dot(positionEye, ray.DirectionWorld) <= 0))
+        return false;
+    outRay = ray;
+    outPositionClip = positionClip;
+    return true;
+}
+
+/// Build the camera ray through positionWorld (in metres) using the launch's camera and clip distances.
+/// Accepts positions outside the image. Returns false and clears outRay if the projection
+/// or camera ray is invalid, or if the position is at or behind a perspective camera.
+bool TryMakeCameraRayFromWorldPosition(RayLaunch launch, float3 positionWorld, out Ray outRay)
+{
+    float2 positionClip;
+    return TryMakeCameraRayFromWorldPosition(launch, positionWorld, outRay, positionClip);
 }
 
 float4 SampleMaterialTexture(SceneContext scene, SurfaceHit hit, float2 texcoordUv, uint mapIndex)

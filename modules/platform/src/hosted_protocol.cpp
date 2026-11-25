@@ -1,10 +1,10 @@
 #include "internal/hosted_protocol.hpp"
 
+#include <ludus/foundation/base/borrowed_view.hpp>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/strings/utf8.hpp>
 
 #include <cstring>
-#include <span>
 
 namespace ludus::platform::hosted
 {
@@ -30,7 +30,7 @@ public:
             mHasFailed = true;
             return;
         }
-        const std::span<uint8> destination(mBytes.GetDataOrNull() + mSize, sizeof(ValueType));
+        const foundation::BorrowedView<uint8> destination(mBytes.GetDataOrNull() + mSize, sizeof(ValueType));
         mHasFailed = foundation::TryWriteLittleEndian<ValueType>(value, destination) == false;
         mSize += sizeof(ValueType);
     }
@@ -76,7 +76,7 @@ public:
             mHasFailed = true;
             return value;
         }
-        const std::span<const uint8> source(mBytes + mOffset, sizeof(ValueType));
+        const foundation::BorrowedView<const uint8> source(mBytes + mOffset, sizeof(ValueType));
         mHasFailed = foundation::TryReadLittleEndian<ValueType>(source, value) == false;
         mOffset += sizeof(ValueType);
         return value;
@@ -368,7 +368,7 @@ void ReadCoverage(MessageReader& inoutReader, HostedRecordingCoverage& outCovera
         inoutWriter.Write<uint8>(static_cast<uint8>(acknowledgement.Kind));
         inoutWriter.Write<uint8>(static_cast<uint8>(acknowledgement.Result));
         inoutWriter.Write<uint8>(static_cast<uint8>(nameLength));
-        inoutWriter.Write<uint8>(0);
+        inoutWriter.Write<uint8>(acknowledgement.IsPassTimingSupported == true ? ACKNOWLEDGEMENT_FLAG_PASS_TIMING : 0);
         inoutWriter.Write<uint64>(acknowledgement.Recording);
         inoutWriter.Write<uint64>(acknowledgement.Request);
         inoutWriter.Write<uint64>(acknowledgement.Frame);
@@ -393,7 +393,8 @@ void ReadCoverage(MessageReader& inoutReader, HostedRecordingCoverage& outCovera
     inoutWriter.Write<uint32>(sample.ScopePassIndex);
     inoutWriter.Write<uint32>(sample.LogicalPassCount);
     inoutWriter.Write<uint8>(static_cast<uint8>(sample.Kind));
-    inoutWriter.Write<uint8>(sample.HasCpuInterval == true ? SAMPLE_FLAG_CPU_INTERVAL : 0);
+    inoutWriter.Write<uint8>(static_cast<uint8>((sample.HasCpuInterval == true ? SAMPLE_FLAG_CPU_INTERVAL : 0) |
+                                                (sample.IsFrame == true ? SAMPLE_FLAG_FRAME : 0)));
     inoutWriter.Write<uint8>(static_cast<uint8>(nameLength));
     inoutWriter.Write<uint8>(0);
     inoutWriter.Write<uint64>(sample.StartTicks);
@@ -420,15 +421,17 @@ void ReadCoverage(MessageReader& inoutReader, HostedRecordingCoverage& outCovera
         const uint8 kind = inoutReader.Read<uint8>();
         const uint8 result = inoutReader.Read<uint8>();
         const uint8 nameLength = inoutReader.Read<uint8>();
-        const bool hasZeroReserved = inoutReader.Read<uint8>() == 0;
+        const uint8 flags = inoutReader.Read<uint8>();
         acknowledgement.Kind = static_cast<HostedRecordingRequestKind>(kind);
         acknowledgement.Result = static_cast<HostedRecordingResult>(result);
+        acknowledgement.IsPassTimingSupported = (flags & ACKNOWLEDGEMENT_FLAG_PASS_TIMING) != 0;
         acknowledgement.Recording = inoutReader.Read<uint64>();
         acknowledgement.Request = inoutReader.Read<uint64>();
         acknowledgement.Frame = inoutReader.Read<uint64>();
         acknowledgement.Ticks = inoutReader.Read<uint64>();
         ReadCoverage(inoutReader, acknowledgement.Coverage);
-        return IsValidRequestKind(kind) == true && IsValidRecordingResult(result) == true && hasZeroReserved == true &&
+        return IsValidRequestKind(kind) == true && IsValidRecordingResult(result) == true &&
+               (flags & ~ACKNOWLEDGEMENT_FLAG_PASS_TIMING) == 0 &&
                TryReadName<HOSTED_RECORDING_PRODUCER_NAME_BYTES>(inoutReader,
                                                                  nameLength,
                                                                  acknowledgement.ProducerName) == true &&
@@ -449,10 +452,12 @@ void ReadCoverage(MessageReader& inoutReader, HostedRecordingCoverage& outCovera
     const bool hasZeroReserved = inoutReader.Read<uint8>() == 0;
     sample.Kind = static_cast<HostedPassKind>(kind);
     sample.HasCpuInterval = (flags & SAMPLE_FLAG_CPU_INTERVAL) != 0;
+    sample.IsFrame = (flags & SAMPLE_FLAG_FRAME) != 0;
     sample.StartTicks = inoutReader.Read<uint64>();
     sample.EndTicks = inoutReader.Read<uint64>();
     sample.ClockUncertaintyNanoseconds = inoutReader.Read<uint64>();
-    return IsValidPassKind(kind) == true && (flags & ~SAMPLE_FLAG_CPU_INTERVAL) == 0 && hasZeroReserved == true &&
+    return IsValidPassKind(kind) == true && (flags & ~(SAMPLE_FLAG_CPU_INTERVAL | SAMPLE_FLAG_FRAME)) == 0 &&
+           hasZeroReserved == true &&
            TryReadName<HOSTED_RECORDING_PASS_NAME_BYTES>(inoutReader, nameLength, sample.Name) == true &&
            IsValidRecordingSample(sample) == true;
 }
@@ -840,17 +845,30 @@ bool IsValidRecordingAcknowledgement(const HostedRecordingAcknowledgement& ackno
     return IsValidRequestKind(static_cast<uint8>(acknowledgement.Kind)) == true &&
            IsValidRecordingResult(static_cast<uint8>(acknowledgement.Result)) == true &&
            acknowledgement.Recording != 0 && acknowledgement.Request != 0 &&
+           (acknowledgement.IsPassTimingSupported == false ||
+            (acknowledgement.Kind == HostedRecordingRequestKind::Start &&
+             acknowledgement.Result == HostedRecordingResult::Ok)) &&
            TryGetNameLength<HOSTED_RECORDING_PRODUCER_NAME_BYTES>(acknowledgement.ProducerName, nameLength) == true;
 }
 
 bool IsValidRecordingSample(const HostedRecordingSample& sample) noexcept
 {
     usize nameLength = 0;
-    return sample.Recording != 0 && sample.Frame != 0 && sample.ScopeIdentity != 0 && sample.LogicalPassCount != 0 &&
-           IsValidPassKind(static_cast<uint8>(sample.Kind)) == true &&
-           sample.CollectionTicks >= sample.SubmissionTicks &&
-           (sample.HasCpuInterval == false || sample.EndTicks >= sample.StartTicks) &&
-           TryGetNameLength<HOSTED_RECORDING_PASS_NAME_BYTES>(sample.Name, nameLength) == true && nameLength != 0;
+    if (sample.Recording == 0 || sample.Frame == 0 || sample.LogicalPassCount == 0 ||
+        IsValidPassKind(static_cast<uint8>(sample.Kind)) == false || sample.CollectionTicks < sample.SubmissionTicks ||
+        (sample.HasCpuInterval == true && sample.EndTicks < sample.StartTicks) ||
+        TryGetNameLength<HOSTED_RECORDING_PASS_NAME_BYTES>(sample.Name, nameLength) == false)
+    {
+        return false;
+    }
+    if (sample.IsFrame == true)
+    {
+        // A whole frame names no pass: every pass field keeps its neutral value.
+        return sample.ScopeIdentity == 0 && sample.ScopePassIndex == 0 && sample.LogicalPassCount == 1 &&
+               sample.Kind == HostedPassKind::Raster && sample.HasCpuInterval == false && sample.StartTicks == 0 &&
+               sample.EndTicks == 0 && sample.ClockUncertaintyNanoseconds == 0 && nameLength == 0;
+    }
+    return sample.ScopeIdentity != 0 && nameLength != 0;
 }
 
 bool AreTokensEqual(const Token& left, const Token& right) noexcept

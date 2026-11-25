@@ -8,6 +8,7 @@
 #include "internal/native_interop.h"
 #include "internal/owner.h"
 
+#include <ludus/graphics/rhi/frame_producer.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/pipeline_preparation.h>
 
@@ -160,6 +161,17 @@ struct RayRecordInfo final
     uint32 OpaqueTriangleCount = 0;
     usize Scene = 0, Program = 0, Count = 0;
     RayAllocation Allocation;
+    /// R16b refit topology of update-enabled geometry: vertex count and index values.
+    usize VertexCount = 0;
+    StorageArray<uint32> Indices;
+    /// R16b refit topology of an update-enabled scene: per-instance native opacity flags.
+    StorageArray<bool> IsInstanceOpaque;
+    /// R16b build options; compacted geometry clears both.
+    bool IsUpdatable = false;
+    bool IsCompactable = false;
+    /// R16b refit/compaction source of the same kind, retained only while this build is Pending.
+    usize Source = 0;
+    bool HasSource = false;
 };
 /// Owner-thread wall-clock history of one native raster pipeline creation (issue #1253). Diagnostic only;
 /// it never enters the field-wise pipeline key, and other record kinds leave it zero.
@@ -437,6 +449,11 @@ void Dependencies(Record& record, RasterKind kind, bool retain) noexcept
             reference(RasterKind::RayGeometry, slot);
         }
     }
+    if ((kind == RasterKind::RayGeometry || kind == RasterKind::RayScene) && record.Ray.Get() != nullptr &&
+        record.Ray->HasSource == true)
+    {
+        reference(kind, record.Ray->Source);
+    }
     else if (kind == RasterKind::RayBatch)
     {
         reference(RasterKind::RayProgram, record.Ray->Program);
@@ -469,6 +486,13 @@ void Collect() noexcept
             if (record.Owner != 0 && record.Status == RasterStatus::Pending)
             {
                 record.Status = backend::RayPoll(static_cast<RasterKind>(kind), slot);
+            }
+            // R16b: a refit or compacted copy reads its source only until the native work completes.
+            if (record.Owner != 0 && record.Status != RasterStatus::Pending && record.Ray.Get() != nullptr &&
+                record.Ray->HasSource == true)
+            {
+                Release(static_cast<RasterKind>(kind), record.Ray->Source);
+                record.Ray->HasSource = false;
             }
         }
     }
@@ -622,7 +646,10 @@ RasterStatus Publish(RasterKind kind, T& output, Create create, uint64 storageBy
 bool ValidBinding(const RasterBinding& binding) noexcept
 {
     const auto visibility = static_cast<uint8>(binding.Visibility);
-    if (binding.Binding >= RASTER_BINDINGS || visibility < 1 || visibility > 4 ||
+    const usize slotCount = binding.Visibility == RasterVisibility::Compute ? RASTER_BINDINGS : RASTER_BINDING_COUNT;
+    if (binding.Binding >= slotCount || visibility < static_cast<uint8>(RasterVisibility::Vertex) ||
+        visibility > static_cast<uint8>(RasterVisibility::Compute) ||
+        (binding.Binding >= RASTER_BINDING_COUNT && binding.Kind != RasterBindingKind::Texture2D) ||
         (binding.HasDynamicOffset == true && BufferBinding(binding.Kind) == false) || binding.Count == 0 ||
         (binding.Count != 1 && binding.HasDynamicOffset == true) ||
         (binding.Count > 1 &&
@@ -658,9 +685,14 @@ bool ValidBinding(const RasterBinding& binding) noexcept
     }
     if (StorageTextureBinding(binding.Kind) == true)
     {
-        return (binding.Visibility == RasterVisibility::Compute || binding.Visibility == RasterVisibility::Fragment) &&
-               binding.Count == 1 && binding.MinSize == 0 && binding.HasPartialBinding == false &&
-               binding.IsRuntimeSized == false && IsStorageTextureFormat(binding.StorageFormat) == true;
+        const bool hasSupportedAccess =
+            binding.Kind == RasterBindingKind::StorageTexture2D
+                ? (binding.Visibility == RasterVisibility::Compute || binding.Visibility == RasterVisibility::Fragment)
+                : (binding.Visibility == RasterVisibility::Compute &&
+                   binding.StorageFormat == RasterFormat::Rgba8Unorm);
+        return hasSupportedAccess == true && binding.Count == 1 && binding.MinSize == 0 &&
+               binding.HasPartialBinding == false && binding.IsRuntimeSized == false &&
+               IsStorageTextureFormat(binding.StorageFormat) == true;
     }
     return (binding.Visibility != RasterVisibility::Compute ||
             (binding.Count == 1 &&
@@ -763,6 +795,11 @@ RasterStatus ValidateLayoutCapabilities(const RasterLayout& layout) noexcept
     bool hasRayScene = false;
     for (usize entry = 0; entry < layout.Count; ++entry)
     {
+        if (layout.Entries[entry].Kind == RasterBindingKind::StorageTexture2DReadWrite &&
+            backend::Kind() != Backend::Vulkan && backend::Kind() != Backend::Metal)
+        {
+            return RasterStatus::Unsupported;
+        }
         if (layout.Entries[entry].Kind == RasterBindingKind::RayScene)
         {
             if (hasRayScene == true)
@@ -931,7 +968,7 @@ RasterStatus ValidateBindingOffsets(const RasterSet& set, const RasterBindingOff
     const RasterLayout& layout = set.Description;
     const RasterCapabilities raster = backend::RasterLimits();
     const ComputeCapabilities compute = backend::ComputeLimits();
-    for (usize bindingNumber = 0; bindingNumber < RASTER_BINDINGS; ++bindingNumber)
+    for (usize bindingNumber = 0; bindingNumber < RASTER_BINDING_COUNT; ++bindingNumber)
     {
         const uint32 offset = offsets.Bytes[bindingNumber];
         bool hasDynamicBinding = false;
@@ -1251,9 +1288,12 @@ RasterStatus CreateTexture(DeviceHandle device,
         (description.RetainCpuContent &&
          (description.Attachment || description.Dimension != TextureDimension::D2 ||
           description.Format == RasterFormat::Rgba16Float || CompressedTexture(description.Format))) ||
-        (description.IsStorage && (description.Attachment || description.DeferredInitialization ||
-                                   description.RetainCpuContent || description.Dimension != TextureDimension::D2 ||
-                                   description.MipLevels != 1 || IsStorageTextureFormat(description.Format) == false)))
+        (description.IsStorage == true &&
+         (description.DeferredInitialization == true || description.RetainCpuContent == true ||
+          description.Dimension != TextureDimension::D2 || description.SampleCount != 1 || description.MipLevels != 1 ||
+          IsStorageTextureFormat(description.Format) == false ||
+          (description.Attachment == true &&
+           (description.Format != RasterFormat::Rgba8Unorm || description.Stencil == true)))))
     {
         return RasterStatus::InvalidDescription;
     }
@@ -1698,7 +1738,7 @@ CreateRasterShader(DeviceHandle device, const RasterShaderDescription& descripti
             }
         }
     }
-    for (usize i = 0; i < RASTER_BINDINGS; ++i)
+    for (usize i = 0; i < RASTER_BINDING_COUNT; ++i)
     {
         bool loadOnly = false;
         for (usize b = 0; b < info.Layout.Count; ++b)
@@ -1709,7 +1749,7 @@ CreateRasterShader(DeviceHandle device, const RasterShaderDescription& descripti
         }
         if (CopyName(description.UniformBlocks[i], info.UniformBlocks[i]) == false ||
             CopyName(description.TextureNames[i], info.TextureNames[i]) == false ||
-            (description.TextureSamplers[i] >= RASTER_BINDINGS &&
+            (description.TextureSamplers[i] >= RASTER_BINDING_COUNT &&
              (loadOnly == false || description.TextureSamplers[i] != ~uint32{0})))
         {
             return RasterStatus::InvalidDescription;

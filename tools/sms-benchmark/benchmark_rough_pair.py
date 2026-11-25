@@ -38,7 +38,7 @@ METHODS = (*DIRECT_METHODS, 'cached-neighbors')
 
 
 class Compute:
-    def __init__(self, output, compiler):
+    def __init__(self, output, compiler, luslc):
         adapter = wgpu.gpu.request_adapter_sync(power_preference='high-performance')
         self.adapter = dict(adapter.info)
         if self.adapter['adapter_type'] == 'CPU':
@@ -49,9 +49,11 @@ class Compute:
                                                     wgpu.BufferUsage.COPY_DST)
         self.pipelines = {}
         self.hashes = {}
+        self.slots = {}
         for method, entry in ENTRIES.items():
-            source = 'rough_pair_cache.slang' if method in ('cached-neighbors', 'probe-cache') else 'rough_pair.slang'
-            code = compile_entry(output / method, compiler, source, entry, includes=(TRANSPORT_SOURCE,))
+            source = 'rough_pair_cache.lusl' if method in ('cached-neighbors', 'probe-cache') else 'rough_pair.lusl'
+            code, self.slots[method] = compile_entry(output / method, compiler, luslc, source, entry,
+                                                     includes=(TRANSPORT_SOURCE,))
             self.hashes[method] = hashlib.sha256(code.encode()).hexdigest()
             module = self.device.create_shader_module(code=code)
             self.pipelines[method] = self.device.create_compute_pipeline(
@@ -65,8 +67,10 @@ class Compute:
             usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST)
 
     def bind(self, method, buffers):
-        entries = [dict(binding=index, resource=dict(buffer=buffer))
-                   for index, buffer in {1: self.parameters, **buffers}.items()]
+        """Bind `buffers`, keyed by the slot constants of rough_pair.luslh, and the parameters."""
+        slots = self.slots[method]
+        entries = [dict(binding=slots[name], resource=dict(buffer=buffer))
+                   for name, buffer in {'PARAMETERS': self.parameters, **buffers}.items()]
         return self.device.create_bind_group(layout=self.pipelines[method].get_bind_group_layout(0),
                                              entries=entries)
 
@@ -93,7 +97,8 @@ class Compute:
         draws = np.clip(draws, 2**-23, 1-2**-23)
         records = np.zeros((count, 2 * len(DIRECT_METHODS) + 1, 4), dtype=np.float32)
         gpu = self.storage(records)
-        bindings = self.bind('probe', {0: self.storage(receivers), 3: self.storage(draws), 4: gpu})
+        bindings = self.bind('probe', {'RECEIVERS': self.storage(receivers), 'PROBE_DRAWS': self.storage(draws),
+                                       'PROBES': gpu})
         self.dispatch('probe', bindings, count, 1, 0, seed)
         raw = np.frombuffer(self.queue.read_buffer(gpu), dtype=np.float32).reshape(records.shape)
         actual = raw[:, :-1].reshape(count, len(DIRECT_METHODS), 8)
@@ -160,7 +165,8 @@ class Compute:
         shape = (len(receivers), probe_rounds * REPLICAS_PER_RECEIVER)
         draws = np.clip(rng.random((*shape, 4), dtype=np.float32), 2**-23, 1-2**-23)
         gpu = self.storage(np.zeros((*shape, 5, 4), dtype=np.float32))
-        bindings = self.bind('probe-cache', {0: self.storage(receivers), 3: self.storage(draws), 4: gpu})
+        bindings = self.bind('probe-cache', {'RECEIVERS': self.storage(receivers), 'PROBE_DRAWS': self.storage(draws),
+                                             'PROBES': gpu})
         self.dispatch('probe-cache', bindings, cache_lane_count(grid_width), probe_rounds, 0, seed, grid_width)
         raw = np.frombuffer(self.queue.read_buffer(gpu), dtype=np.float32).reshape(*shape, 5, 4)
         if not np.isfinite(raw).all() or np.any(raw[..., 4, 2]):
@@ -201,7 +207,7 @@ class Compute:
         dispatch_count = cache_lane_count(grid_width) if is_cached else lane_count
         zeros = np.zeros((lane_count, 4), dtype=np.float32)
         accumulation = self.storage(zeros)
-        bindings = self.bind(method, {0: self.storage(receivers), 2: accumulation})
+        bindings = self.bind(method, {'RECEIVERS': self.storage(receivers), 'ACCUMULATION': accumulation})
         # Warm the pipeline before taking timestamps and discard the warm-up.
         self.dispatch(method, bindings, dispatch_count, batch, 0, seed, grid_width)
         self.queue.write_buffer(accumulation, 0, zeros)
@@ -245,6 +251,7 @@ def make_receivers(grid_width):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compiler', type=Path, required=True)
+    parser.add_argument('--luslc', type=Path, help='luslc that lowers the shaders (default: ./scripts/bootstrap-luslc)')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--seconds', type=float, default=0.25, help='Seconds per estimator per seed.')
     parser.add_argument('--budget', choices=('gpu', 'wall'), default='gpu')
@@ -258,7 +265,7 @@ def main():
             or not 2 <= arguments.batch <= MAX_SAMPLES_PER_LANE):
         parser.error('Use positive benchmark parameters and a batch of at least two samples.')
     arguments.output.mkdir(parents=True, exist_ok=False)
-    compute = Compute(arguments.output, arguments.compiler)
+    compute = Compute(arguments.output, arguments.compiler, arguments.luslc)
     report = dict(adapter=compute.adapter, shader_sha256=compute.hashes, probe=compute.probe(9137))
     report['probe']['cached-neighbors'] = compute.probe_cache(9137)
     print(json.dumps(report), flush=True)

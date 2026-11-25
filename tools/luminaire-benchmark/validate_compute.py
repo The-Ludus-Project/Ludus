@@ -3,12 +3,12 @@
 
 wgpu is a verification driver only. The identical Slang implementation is also
 linked into the Ludus render graph; this check does not time the editor renderer.
+The LUSL kernel shaders/validate_flow.lusl calls that Slang through extern slang.
 """
 import argparse
 import hashlib
 import json
 from pathlib import Path
-import subprocess
 import shutil
 import sys
 import time
@@ -18,11 +18,17 @@ import numpy as np
 from benchmark import CENTER, Panel, PROBES, ROOT
 from portable_flow import PortableFlow, RADIUS, cap_directions
 
+sys.path.insert(0, str(ROOT / 'scripts/python'))
+import lusl_compute  # noqa: E402
+
+SHADERS = Path(__file__).parent / 'shaders'
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--graph', type=Path, required=True)
     parser.add_argument('--compiler', type=Path, required=True)
+    parser.add_argument('--luslc', type=Path, help='luslc that lowers the shaders (default: ./scripts/bootstrap-luslc)')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--samples-per-receiver', type=int, default=32)
     args = parser.parse_args()
@@ -31,19 +37,11 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     source_root = args.output / 'source'
     shutil.copytree(args.graph / 'main_shaders', source_root)
-    shutil.copyfile(ROOT / 'modules/foundation/math/shaders/math.slang', source_root / 'math.slang')
-    shutil.copyfile(ROOT / 'modules/graphics/rhi/shaders/raster_bindings.slang', source_root / 'raster_bindings.slang')
-    shader = source_root / 'validate_flow.slang'
-    shutil.copyfile(Path(__file__).parent / 'shaders/validate_flow.slang', shader)
-    command = [sys.executable, str(ROOT / 'cmake/shaders/compile_shader.py'),
-               '--source', str(shader), '--output', str(args.output), '--name', 'ValidatePortableFlow',
-               '--compiler', str(args.compiler), '--lock', str(ROOT / 'config/shader_toolchain.json'),
-               '--graph-stage', 'compute', '--graph-target', 'wgsl']
-    subprocess.run(command, check=True)
-    sources = list(args.output.glob('*.wgsl'))
-    if len(sources) != 1:
-        raise ValueError('Expected exactly one compiled WGSL validation artifact.')
-    source = sources[0].read_text()
+    for path in (ROOT / 'modules/foundation/math/shaders/math.luslh', ROOT / 'modules/foundation/math/shaders/math.slang',
+                 SHADERS / 'luminaire_flow.luslh', SHADERS / 'validate_flow.lusl'):
+        shutil.copyfile(path, source_root / path.name)
+    source, slots = lusl_compute.compile_compute(lusl_compute.resolve_luslc(args.luslc), args.compiler, source_root,
+                                                 'validate_flow.lusl', 'ValidatePortableFlow', args.output)
     # compute_with_buffers requires the entry named main; Slang's generated entry
     # may keep the source name. Rename only its declaration, preserving the body.
     source = source.replace('fn ValidatePortableFlow(', 'fn main(')
@@ -80,9 +78,10 @@ def main():
         expected[begin:end, 3, 3] = valid
         expected[begin:end, 4, :3] = np.where(valid[:, None], directions, 0)
     start = time.perf_counter()
-    output = compute_with_buffers({0: inputs}, {1: expected.nbytes}, source, n=((len(inputs)+31)//32, 1, 1))
+    output = compute_with_buffers({slots['INPUTS']: inputs}, {slots['RESULTS']: expected.nbytes}, source,
+                                  n=((len(inputs)+31)//32, 1, 1))
     seconds = time.perf_counter()-start
-    observed = np.frombuffer(output[1], dtype=np.float32).reshape(expected.shape)
+    observed = np.frombuffer(output[slots['RESULTS']], dtype=np.float32).reshape(expected.shape)
     np.savez(args.output / 'parity.npz', inputs=inputs, expected=expected, observed=observed)
     if not np.all(np.isfinite(observed)):
         raise ValueError('GPU produced nonfinite results; raw parity arrays preserved.')

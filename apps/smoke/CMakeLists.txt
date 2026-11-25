@@ -22,8 +22,8 @@ if(EMSCRIPTEN)
         -sMAXIMUM_MEMORY=268435456 -sSTACK_SIZE=65536 -sASSERTIONS=1)
     set_target_properties(ludus_smoke PROPERTIES OUTPUT_NAME index SUFFIX ".js")
     configure_file(shell.html index.html COPYONLY)
-    ludus_compile_shader(TARGET ludus_smoke NAME smoke SOURCE shaders/smoke.slang
-        VERTEX vertexMain FRAGMENT fragmentMain INCLUDES shaders)
+    ludus_compile_shader(TARGET ludus_smoke NAME smoke SOURCE shaders/smoke.lusl
+        VERTEX VertexMain FRAGMENT FragmentMain)
 
     # Controlled providers are linked into a separate node test executable only.
     add_executable(ludus_web_smoke_test application.cpp main_web.cpp renderer_web.cpp)
@@ -32,8 +32,8 @@ if(EMSCRIPTEN)
     target_link_options(ludus_web_smoke_test PRIVATE -fno-exceptions -g0 -g2 -sENVIRONMENT=node -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1 "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/tests/node_gpu_fixture.js")
     set_target_properties(ludus_web_smoke_test PROPERTIES OUTPUT_NAME smoke-test SUFFIX ".js")
     set_property(TARGET ludus_web_smoke_test APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/node_gpu_fixture.js")
-    ludus_compile_shader(TARGET ludus_web_smoke_test NAME smoke SOURCE shaders/smoke.slang
-        VERTEX vertexMain FRAGMENT fragmentMain INCLUDES shaders)
+    ludus_compile_shader(TARGET ludus_web_smoke_test NAME smoke SOURCE shaders/smoke.lusl
+        VERTEX VertexMain FRAGMENT FragmentMain)
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     add_test(NAME ludus_web_smoke_semantics COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_semantics.py" "${CMAKE_CROSSCOMPILING_EMULATOR}" "$<TARGET_FILE:ludus_web_smoke_test>")
     set_tests_properties(ludus_web_smoke_semantics PROPERTIES LABELS "web;smoke" TIMEOUT 120)

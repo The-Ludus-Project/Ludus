@@ -1,7 +1,112 @@
 #pragma once
 
 // GPU counterparts of FoundationMath operations; Slang owns shader scalar spellings.
+/// Ratio of a circle's circumference to its diameter.
 static const float PI = 3.14159265358979323846;
+/// Full turn in radians.
+static const float TAU = 2 * PI;
+/// Quarter turn in radians.
+static const float HALF_PI = 0.5 * PI;
+/// Eighth turn in radians.
+static const float QUARTER_PI = 0.5 * HALF_PI;
+/// Reciprocal of pi.
+static const float INV_PI = 0.31830988618379067154;
+/// Reciprocal of tau.
+static const float INV_TAU = 0.5 * INV_PI;
+/// Multiply an angle in degrees by this factor to obtain radians.
+static const float DEGREES_TO_RADIANS = 0.01745329251994329577;
+/// Multiply an angle in radians by this factor to obtain degrees.
+static const float RADIANS_TO_DEGREES = 57.29577951308232087680;
+/// Base of the natural logarithm.
+static const float E = 2.71828182845904523536;
+/// Natural logarithm of two.
+static const float LN_2 = 0.69314718055994530942;
+/// Natural logarithm of ten.
+static const float LN_10 = 2.30258509299404568402;
+/// Base-two logarithm of e.
+static const float LOG2_E = 1.44269504088896340736;
+/// Base-ten logarithm of e.
+static const float LOG10_E = 0.43429448190325182765;
+/// Positive square root of two.
+static const float SQRT_2 = 1.41421356237309504880;
+/// Reciprocal of the positive square root of two.
+static const float INV_SQRT_2 = 0.70710678118654752440;
+
+/// Ratio of a circle's circumference to its diameter in binary64.
+static const double PI_F64 = 3.141592653589793238462643383279502884l;
+/// Full turn in radians in binary64.
+static const double TAU_F64 = 2 * PI_F64;
+/// Quarter turn in radians in binary64.
+static const double HALF_PI_F64 = 0.5l * PI_F64;
+/// Eighth turn in radians in binary64.
+static const double QUARTER_PI_F64 = 0.5l * HALF_PI_F64;
+/// Reciprocal of pi in binary64.
+static const double INV_PI_F64 = 0.318309886183790671537767526745028724l;
+/// Reciprocal of tau in binary64.
+static const double INV_TAU_F64 = 0.5l * INV_PI_F64;
+/// Multiply an angle in degrees by this binary64 factor to obtain radians.
+static const double DEGREES_TO_RADIANS_F64 = 0.017453292519943295769236907684886127l;
+/// Multiply an angle in radians by this binary64 factor to obtain degrees.
+static const double RADIANS_TO_DEGREES_F64 = 57.29577951308232087679815481410517033l;
+/// Base of the natural logarithm in binary64.
+static const double E_F64 = 2.718281828459045235360287471352662498l;
+/// Natural logarithm of two in binary64.
+static const double LN_2_F64 = 0.693147180559945309417232121458176568l;
+/// Natural logarithm of ten in binary64.
+static const double LN_10_F64 = 2.302585092994045684017991454684364208l;
+/// Base-two logarithm of e in binary64.
+static const double LOG2_E_F64 = 1.442695040888963407359924681001892137l;
+/// Base-ten logarithm of e in binary64.
+static const double LOG10_E_F64 = 0.434294481903251827651128918916605082l;
+/// Positive square root of two in binary64.
+static const double SQRT_2_F64 = 1.414213562373095048801688724209698079l;
+/// Reciprocal of the positive square root of two in binary64.
+static const double INV_SQRT_2_F64 = 0.707106781186547524400844362104849039l;
+
+/// Gap between one and the next larger binary16 value.
+static const half FLOAT16_EPSILON = 0x1p-10h;
+/// Smallest positive normal binary16 value.
+static const half FLOAT16_MIN_NORMAL = 0x1p-14h;
+/// Largest finite binary16 value.
+static const half FLOAT16_MAX = 0x1.ffcp15h;
+/// Gap between one and the next larger binary32 value.
+static const float FLOAT32_EPSILON = 0x1p-23f;
+/// Smallest positive normal binary32 value.
+static const float FLOAT32_MIN_NORMAL = 0x1p-126f;
+/// Largest finite binary32 value.
+static const float FLOAT32_MAX = 0x1.fffffep127f;
+/// Gap between one and the next larger binary64 value.
+static const double FLOAT64_EPSILON = 0x1p-52l;
+/// Smallest positive normal binary64 value.
+static const double FLOAT64_MIN_NORMAL = 0x1p-1022l;
+/// Largest finite binary64 value.
+static const double FLOAT64_MAX = 0x1.fffffffffffffp1023l;
+
+/// Least signed 8-bit integer. Available in Slang.
+static const int8_t INT8_MIN = -128;
+/// Greatest signed 8-bit integer. Available in Slang.
+static const int8_t INT8_MAX = 127;
+/// Greatest unsigned 8-bit integer. Available in Slang.
+static const uint8_t UINT8_MAX = 255;
+/// Least signed 16-bit integer.
+static const int16_t INT16_MIN = -32768;
+/// Greatest signed 16-bit integer.
+static const int16_t INT16_MAX = 32767;
+/// Greatest unsigned 16-bit integer.
+static const uint16_t UINT16_MAX = 65535;
+/// Least signed 32-bit integer.
+static const int INT32_MIN = -INT32_MAX - 1;
+/// Greatest signed 32-bit integer.
+static const int INT32_MAX = 2147483647;
+/// Greatest unsigned 32-bit integer.
+static const uint UINT32_MAX = 0xffffffffu;
+/// Least signed 64-bit integer.
+static const int64_t INT64_MIN = -INT64_MAX - 1;
+/// Greatest signed 64-bit integer.
+static const int64_t INT64_MAX = 9223372036854775807ll;
+/// Greatest unsigned 64-bit integer.
+static const uint64_t UINT64_MAX = 0xffffffffffffffffull;
+
 // The golden angle pi * (3 - sqrt(5)), which spreads successive azimuths of a sunflower (Vogel) disk evenly.
 static const float GOLDEN_ANGLE_RADIANS = 2.39996322972865332;
 // Thanks to Milton Abramowitz and Irene A. Stegun (eds.), Handbook of Mathematical
@@ -38,6 +143,69 @@ bool IsFiniteBits(float3 value)
 {
     return IsFiniteBits(value.x) == true && IsFiniteBits(value.y) == true && IsFiniteBits(value.z) == true;
 }
+// Strip the sign bit before comparing the IEEE binary32 infinity and NaN encodings.
+static const uint FLOAT_MAGNITUDE_BITS = 0x7fffffffu;
+bool IsNanBits(float value)
+{
+    return (asuint(value) & FLOAT_MAGNITUDE_BITS) > FLOAT_EXPONENT_BITS;
+}
+bool IsInfBits(float value)
+{
+    return (asuint(value) & FLOAT_MAGNITUDE_BITS) == FLOAT_EXPONENT_BITS;
+}
+
+/// Compare finite scalars using the larger of the absolute tolerance and the relative tolerance times the
+/// larger operand magnitude. Both tolerances must be finite and nonnegative. Arithmetic uses binary32.
+bool NearlyEqual(float first, float second, float absoluteTolerance, float relativeTolerance)
+{
+    if (IsFiniteBits(first) == false || IsFiniteBits(second) == false || IsFiniteBits(absoluteTolerance) == false ||
+        IsFiniteBits(relativeTolerance) == false || absoluteTolerance < 0 || relativeTolerance < 0)
+    {
+        return false;
+    }
+
+    float difference = abs(first - second);
+    float scale = max(abs(first), abs(second));
+    if (IsFiniteBits(difference) == false)
+    {
+        // A finite absolute tolerance cannot cover an overflowing difference.
+        // Halve the operands before subtraction so both sides can be compared in range.
+        if (relativeTolerance >= 2)
+        {
+            return true;
+        }
+        float halfDifference = abs(ldexp(first, -1) - ldexp(second, -1));
+        float halfScale = ldexp(scale, -1);
+        return halfDifference <= relativeTolerance * halfScale;
+    }
+    return difference <= max(absoluteTolerance, relativeTolerance * scale);
+}
+
+/// Compare finite positions by Euclidean distance. The nonnegative, finite tolerance uses world units.
+/// A zero tolerance requires coincident positions.
+bool NearlyEqual(float3 firstWorld, float3 secondWorld, float toleranceWorld)
+{
+    if (IsFiniteBits(firstWorld) == false || IsFiniteBits(secondWorld) == false ||
+        IsFiniteBits(toleranceWorld) == false || toleranceWorld < 0)
+    {
+        return false;
+    }
+
+    float3 differenceWorld = abs(firstWorld - secondWorld);
+    if (any(differenceWorld > toleranceWorld))
+    {
+        return false;
+    }
+    if (toleranceWorld == 0)
+    {
+        return true;
+    }
+
+    // Scale before squaring to keep the distance test in range for large and small tolerances.
+    float3 normalizedDifference = differenceWorld / toleranceWorld;
+    return dot(normalizedDifference, normalizedDifference) <= 1;
+}
+
 float3 NormalizeOrZero(float3 v)
 {
     float s = dot(v, v);
@@ -193,24 +361,29 @@ float ComputeStandardNormalQuantile(float probability)
     }
     return q < 0 ? -magnitude : magnitude;
 }
-// Matches DecodeSrgb's bounded CPU contract. Thanks to W3C, "CSS Color Module
+// Decode a channel known to be in [0, 1]. Thanks to W3C, "CSS Color Module
 // Level 4", section 10.2, https://www.w3.org/TR/css-color-4/#predefined-sRGB,
 // for the piecewise transfer. GPU pow/division can round encoded white above one;
 // preserve exact endpoints and bound only normalized color, never radiance.
-float DecodeSrgb(float value)
+float DecodeNormalizedSrgb(float value)
 {
-    static const uint INVALID_COLOR_BITS = 0x7fc00000;
     static const float LINEAR_THRESHOLD = .04045;
     static const float LINEAR_SCALE = 12.92;
     static const float POWER_OFFSET = .055;
     static const float POWER_SCALE = 1.055;
     static const float GAMMA = 2.4;
-    if (isfinite(value) == false || value < 0 || value > 1)
-        return asfloat(INVALID_COLOR_BITS);
     if (value == 0 || value == 1)
         return value;
     float linear = value <= LINEAR_THRESHOLD ? value / LINEAR_SCALE : pow((value + POWER_OFFSET) / POWER_SCALE, GAMMA);
     return clamp(linear, 0, 1);
+}
+// Match the bounded CPU contract for callers with unvalidated input.
+float DecodeSrgb(float value)
+{
+    static const uint INVALID_COLOR_BITS = 0x7fc00000;
+    if (isfinite(value) == false || value < 0 || value > 1)
+        return asfloat(INVALID_COLOR_BITS);
+    return DecodeNormalizedSrgb(value);
 }
 // Exact 32x32->64-bit product from 16-bit limbs, because WGSL has no 64-bit
 // integers. Every partial sum stays below 2^32: a limb product is at most
@@ -373,6 +546,65 @@ bool TrySampleRandomBounded(uint2 key, RandomAddress address, uint bound, out ui
     source.Key = key;
     source.Address = address;
     return TrySampleRandomBoundedFrom(source, bound, outValue);
+}
+
+static const uint FLOAT_MINIMUM_NORMAL_BITS = 0x00800000u;
+static float ScaleNonnegativeWeight(float weight, int exponentOffset, float subnormalScale)
+{
+    const uint magnitudeBits = asuint(weight) & FLOAT_MAGNITUDE_BITS;
+    if (magnitudeBits < FLOAT_MINIMUM_NORMAL_BITS)
+        return (float(magnitudeBits) / float(FLOAT_MINIMUM_NORMAL_BITS)) * subnormalScale;
+    const int scaledBits = int(magnitudeBits) + exponentOffset;
+    return scaledBits >= int(FLOAT_MINIMUM_NORMAL_BITS) ? asfloat(uint(scaledBits)) : 0;
+}
+/// Sample a zero-based index from finite, nonnegative weights and a uniform draw in [0, 1).
+/// Returns false and sets outIndex to zero if the draw or weights are invalid or the total is zero.
+bool TrySampleWeightedIndex<let WeightCount : int>(in float weights[WeightCount], float randomValue, out uint outIndex)
+{
+    outIndex = 0;
+    const uint randomBits = asuint(randomValue);
+    if (randomBits >= asuint(1.0f) && (randomBits & FLOAT_MAGNITUDE_BITS) != 0)
+        return false;
+
+    uint largestWeightBits = 0;
+    for (int index = 0; index < WeightCount; ++index)
+    {
+        const uint weightBits = asuint(weights[index]);
+        const uint magnitudeBits = weightBits & FLOAT_MAGNITUDE_BITS;
+        if (IsFiniteBits(weights[index]) == false || (weightBits != magnitudeBits && magnitudeBits != 0))
+            return false;
+        largestWeightBits = max(largestWeightBits, magnitudeBits);
+    }
+    if (largestWeightBits == 0)
+        return false;
+
+    // Shift the binary32 exponents before adding the weights so fast math cannot sum the unscaled values.
+    const uint unitExponent = asuint(1.0f);
+    const uint largestExponent = largestWeightBits & FLOAT_EXPONENT_BITS;
+    const uint scaleExponent = max(unitExponent + unitExponent - largestExponent, FLOAT_MINIMUM_NORMAL_BITS);
+    const int exponentOffset = int(scaleExponent) - int(unitExponent);
+    // Shift the smallest normal's exponent to decode subnormal inputs without subnormal arithmetic.
+    const float subnormalScale = exponentOffset >= 0 ? asfloat(uint(exponentOffset) + FLOAT_MINIMUM_NORMAL_BITS) : 0;
+    float totalWeight = 0;
+    for (int index = 0; index < WeightCount; ++index)
+        totalWeight += ScaleNonnegativeWeight(weights[index], exponentOffset, subnormalScale);
+
+    // As in SelectTileEmitter, the first inclusive prefix strictly above the draw owns the sample.
+    const float target = randomValue * totalWeight;
+    float cumulativeWeight = 0;
+    for (int index = 0; index < WeightCount; ++index)
+    {
+        const float previousWeight = cumulativeWeight;
+        cumulativeWeight += ScaleNonnegativeWeight(weights[index], exponentOffset, subnormalScale);
+        if (cumulativeWeight > previousWeight)
+        {
+            // Keep the last nonempty interval if the target rounds up to the total.
+            outIndex = uint(index);
+            if (cumulativeWeight > target)
+                break;
+        }
+    }
+    return true;
 }
 
 // UV-derived frame used by renderer raster and ray profiles; see

@@ -69,6 +69,10 @@ on:
       - 'tools/web-fluid-probe/**'
       - 'modules/physics/collision/**'
       - 'tools/web-collision-probe/**'
+      - 'modules/content/weather_format/**'
+      - 'modules/content/weather/**'
+      - 'modules/gameplay/weather/**'
+      - 'tools/web-weather-probe/**'
       - 'modules/foundation/identity/**'
       - 'modules/foundation/containers/**'
       - 'modules/foundation/time/**'
@@ -504,10 +508,13 @@ jobs:
           if-no-files-found: error
 
   browser-software-gpu:
+    # One job runs every browser test against the packaged artifacts: the packaged
+    # tests and each renderer suite took 2-7 minutes but held their own runner and
+    # setup, while develop pull requests waited for runners behind the batch.
     name: Packaged browser tests (software GPU)
     needs: compile-and-package
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -541,58 +548,6 @@ jobs:
         with:
           name: world-camera-web-release
           path: out/world-camera-web-release
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.16.0'
-          cache: npm
-          cache-dependency-path: tools/web-browser-tests/package-lock.json
-      - name: Install pinned test runner and Chromium
-        working-directory: tools/web-browser-tests
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
-      - name: Test exact extracted Release ZIP
-        run: |
-          python3 -m zipfile -e out/packages/ludus-web-smoke-release.zip out/browser-qa/extracted
-          cd tools/web-browser-tests
-          xvfb-run -a npm test
-      # The candidate names its browser tests (tests/sdk_consumer/browser-suites.json):
-      # batches run main's definition of this workflow against candidate sources.
-      - name: Test installed raster and random-parity SDK consumers in Chromium
-        run: node tests/sdk_consumer/run-browser-suite.mjs raster out/raster-web-sdk-consumer out/browser-qa/results
-      - name: Check fixed and follow camera pixels on WebGPU and WebGL
-        run: |
-          node apps/world_demo/tests/browser-test.mjs out/world-camera-web-release out/browser-qa/results/world-camera-webgpu
-          LUDUS_WORLD_WEBGL=1 node apps/world_demo/tests/browser-test.mjs out/world-camera-web-release out/browser-qa/results/world-camera-webgl
-      - name: Test S0 wasm recovery and debugger in Chromium
-        run: node tools/luau-probe/browser.mjs out/luau-s0-wasm/web-emscripten-release/tools/luau-probe
-      - name: Test S2 debugger heartbeat and replacement in Chromium
-        run: node tools/script-session/browser.mjs out/luau-s2-wasm
-      - name: Qualify production Behavior safety and allocation recovery in Chromium
-        run: node tools/script-provider/browser.mjs out/behavior-s6-wasm
-      - name: Test S1 state and effect publication in Chromium
-        run: node tools/script-interaction/browser.mjs out/luau-s1-wasm
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: browser-software-gpu-evidence
-          path: out/browser-qa/results
-          if-no-files-found: warn
-
-  renderer-browser:
-    name: Renderer browser tests (${{ matrix.suite }})
-    needs: compile-and-package
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: [baseline, scaling, pooling]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.batch_sha || github.sha }}
-          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: renderer-web-sdk-consumer
@@ -603,15 +558,46 @@ jobs:
           cache: npm
           cache-dependency-path: tools/web-browser-tests/package-lock.json
       - name: Install pinned test runner and Chromium
+        id: runner
         working-directory: tools/web-browser-tests
         run: |
           npm ci
           npx playwright install --with-deps chromium
-      - name: Test installed renderer SDK consumers (${{ matrix.suite }}) in Chromium
-        run: node tests/sdk_consumer/run-browser-suite.mjs "renderer-${{ matrix.suite }}" out/renderer-web-sdk-consumer out/browser-qa/results
+      - name: Test exact extracted Release ZIP
+        if: ${{ !cancelled() && steps.runner.outcome == 'success' }}
+        run: |
+          python3 -m zipfile -e out/packages/ludus-web-smoke-release.zip out/browser-qa/extracted
+          cd tools/web-browser-tests
+          xvfb-run -a npm test
+      # The candidate names its browser tests (tests/sdk_consumer/browser-suites.json):
+      # batches run main's definition of this workflow against candidate sources.
+      - name: Test installed raster and random-parity SDK consumers in Chromium
+        if: ${{ !cancelled() && steps.runner.outcome == 'success' }}
+        run: node tests/sdk_consumer/run-browser-suite.mjs raster out/raster-web-sdk-consumer out/browser-qa/results
+      # Every renderer-* suite in browser-suites.json; a new suite needs no workflow change.
+      - name: Test installed renderer SDK consumers in Chromium
+        if: ${{ !cancelled() && steps.runner.outcome == 'success' }}
+        run: node tests/sdk_consumer/run-browser-suite.mjs 'renderer-*' out/renderer-web-sdk-consumer out/browser-qa/results
+      - name: Check fixed and follow camera pixels on WebGPU and WebGL
+        if: ${{ !cancelled() && steps.runner.outcome == 'success' }}
+        run: |
+          node apps/world_demo/tests/browser-test.mjs out/world-camera-web-release out/browser-qa/results/world-camera-webgpu
+          LUDUS_WORLD_WEBGL=1 node apps/world_demo/tests/browser-test.mjs out/world-camera-web-release out/browser-qa/results/world-camera-webgl
+      - name: Test S0 wasm recovery and debugger in Chromium
+        if: ${{ !cancelled() && steps.runner.outcome == 'success' }}
+        run: node tools/luau-probe/browser.mjs out/luau-s0-wasm/web-emscripten-release/tools/luau-probe
+      - name: Test S2 debugger heartbeat and replacement in Chromium
+        if: ${{ !cancelled() && steps.runner.outcome == 'success' }}
+        run: node tools/script-session/browser.mjs out/luau-s2-wasm
+      - name: Qualify production Behavior safety and allocation recovery in Chromium
+        if: ${{ !cancelled() && steps.runner.outcome == 'success' }}
+        run: node tools/script-provider/browser.mjs out/behavior-s6-wasm
+      - name: Test S1 state and effect publication in Chromium
+        if: ${{ !cancelled() && steps.runner.outcome == 'success' }}
+        run: node tools/script-interaction/browser.mjs out/luau-s1-wasm
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: renderer-browser-${{ matrix.suite }}-evidence
+          name: browser-software-gpu-evidence
           path: out/browser-qa/results
           if-no-files-found: warn

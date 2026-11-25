@@ -22,7 +22,9 @@
 #include "rg2_restir_di.h"
 #include "rg2_ris_projected_solid_angle_template.h"
 #include "rg2_salesin_jarosz_lines_template.h"
+#include "rg2_scene_color_input.h"
 #include "rg2_scene_compute.h"
+#include "rg2_scene_named_color_inputs.h"
 #include "rg2_scene_ray.h"
 #include "rg2_scene_work_items.h"
 #include "rg2_shared_ray_computebvh.h"
@@ -366,10 +368,14 @@ constexpr usize COMPARED_RAY_FRAMES = 3;
 /// How far the second frame moves the triangle; the center pixel then sees the miss color.
 constexpr float32 COMPARED_RAY_TRANSLATION = 0.75F;
 
+renderer::RenderGraphRayFailures ReadRayFailures(renderer::RenderGraph& inoutGraph, uint32 pass);
+
 /// Render COMPARED_RAY_FRAMES frames of the first ray test's scene with one cooked package and
 /// append their readbacks to outPixels. Each call owns its device and graph, so packages never
 /// share prepared state.
-void RenderRayFrames(const PackageLocation& location, Array<uint8>& outPixels)
+void RenderRayFrames(const PackageLocation& location,
+                     Array<uint8>& outPixels,
+                     renderer::RenderGraphRayFailures* failuresOrNull = nullptr)
 {
     GraphGpuFixture fixture;
     const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
@@ -413,6 +419,10 @@ void RenderRayFrames(const PackageLocation& location, Array<uint8>& outPixels)
         {
             REQUIRE(outPixels.TryAdd(value) == true);
         }
+    }
+    if (failuresOrNull != nullptr)
+    {
+        *failuresOrNull = ReadRayFailures(fixture.Graph, 0);
     }
 }
 } // namespace
@@ -503,6 +513,20 @@ TEST_CASE("LUSL's defined behavior holds on the GPU", "[render-graph][gpu][ray-p
     CHECK(pixels[corner + 1] == 255);
     CHECK(pixels[corner + 2] == 255);
 }
+
+#if defined(LUDUS_RG3_LUSL_BOUNDS_DIRECTORY)
+TEST_CASE("Development LUSL ray bounds failures name the authored line", "[render-graph][gpu][ray-pipeline]")
+{
+    Array<uint8> pixels;
+    renderer::RenderGraphRayFailures failures;
+    RenderRayFrames({LUDUS_RG3_LUSL_BOUNDS_DIRECTORY, "rg2_lusl_bounds.lurgrt"}, pixels, &failures);
+    constexpr uint32 BOUNDS_REASON = static_cast<uint32>(renderer::RenderGraphFailureReason::LuslBounds);
+    constexpr uint32 EXPECTED_LINE = 12;
+    CHECK(failures.TotalPixels > 0);
+    CHECK(failures.Pixels[BOUNDS_REASON] == failures.TotalPixels);
+    CHECK(failures.LuslBoundsLine == EXPECTED_LINE);
+}
+#endif
 
 TEST_CASE("Shared alpha masks agree between CPU queries and GPU graph traversal", "[render-graph][gpu][scene-mask]")
 {
@@ -988,7 +1012,8 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
         usize end = stage + format::STAGE_FIELD_COUNT * WORD_BYTES;
         if (role == static_cast<uint32>(format::StageRole::RayCompute) ||
             role == static_cast<uint32>(format::StageRole::SceneRayCompute) ||
-            role == static_cast<uint32>(format::StageRole::PersistentRayCompute))
+            role == static_cast<uint32>(format::StageRole::PersistentRayCompute) ||
+            role == format::NATIVE_RAY_STAGE_ROLE)
         {
             bytes.RemoveRange(end, end + format::RAY_WORKGROUP_DIMENSIONS * WORD_BYTES);
         }
@@ -1666,6 +1691,159 @@ TEST_CASE("A buffer-only scene dispatch can trace more rays than there are pixel
         REQUIRE(fixture.Pixels[pixel + 1] == GREEN);
         REQUIRE(fixture.Pixels[pixel + 2] == 0);
     }
+}
+
+TEST_CASE("Scene compute clears one named shader texture per dispatch and preserves Load on the others",
+          "[render-graph][gpu][compute-ray-tracing][sampled-color]")
+{
+    GraphGpuFixture fixture{false, false};
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_SCENE_NAMED_COLOR_INPUTS_DIRECTORY, "rg2_scene_named_color_inputs.lurgrt"});
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        packages::rg2_scene_named_color_inputs::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                             shaders::renderer_composite::Fragment());
+    CheckSameStage(decoded.RayCompute, compiled.RayCompute);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPlan compiledPlan = packages::rg2_scene_named_color_inputs::MakePlan();
+    REQUIRE(plan.Passes.GetSize() == 2);
+    REQUIRE(plan.Passes[0].ShaderTextureClearMask == 1);
+    CHECK(compiledPlan.Passes[0].ShaderTextureClearMask == plan.Passes[0].ShaderTextureClearMask);
+    CHECK(plan.Passes[1].ShaderTextureClearMask == 0);
+    REQUIRE(format::GetSampledTextureCount(plan.Passes[1]) == format::MAX_SAMPLED_TEXTURES);
+    for (uint32 slot = 0; slot < format::MAX_SAMPLED_TEXTURES; ++slot)
+    {
+        CHECK(format::GetSampledTexture(plan.Passes[1], slot) ==
+              format::GetSampledTexture(compiledPlan.Passes[1], slot));
+    }
+
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < FIRST_SAMPLE_TIMEOUT_NANOSECONDS)
+        {
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
+            status = fixture.Graph.Poll();
+        }
+        CAPTURE(fixture.Graph.GetLastFailureStage());
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, decoded, nullptr, WIDTH, HEIGHT));
+    fixture.Cameras[0].OrthographicCamera = true;
+    renderer::RenderGraphReport report;
+    finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                1,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                1));
+    constexpr usize CHANNEL_COUNT = 4;
+    constexpr uint8 FULL_CHANNEL = 255;
+    for (uint32 frame = 0; frame < 2; ++frame)
+    {
+        ReadGraphFrame(fixture, plan.Passes[1].Color);
+        REQUIRE(fixture.Pixels.GetSize() == WIDTH * HEIGHT * CHANNEL_COUNT);
+        for (usize y = 0; y < HEIGHT; ++y)
+        {
+            for (usize x = 0; x < WIDTH; ++x)
+            {
+                const bool isInLaunch = x < plan.Passes[0].ImageLaunchWidth && y < plan.Passes[0].ImageLaunchHeight;
+                const bool isFirstScatter = frame == 0 && x == WIDTH - 1 && y == HEIGHT - 1;
+                const usize pixel = (y * WIDTH + x) * CHANNEL_COUNT;
+                REQUIRE(fixture.Pixels[pixel] == (isInLaunch == true || isFirstScatter == true ? FULL_CHANNEL : 0));
+                REQUIRE(fixture.Pixels[pixel + 1] == (isInLaunch == true ? FULL_CHANNEL : 0));
+                REQUIRE(fixture.Pixels[pixel + 2] == (isInLaunch == true ? FULL_CHANNEL : 0));
+            }
+        }
+    }
+}
+
+TEST_CASE("Both ray launch modes read and write a view-sized texture before scene compute samples it",
+          "[render-graph][gpu][compute-ray-tracing][sampled-color]")
+{
+    GraphGpuFixture fixture{false, false};
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_SCENE_COLOR_INPUT_DIRECTORY, "rg2_scene_color_input.lurgrt"});
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        packages::rg2_scene_color_input::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                      shaders::renderer_composite::Fragment());
+    CheckSameStage(decoded.RayCompute, compiled.RayCompute);
+    renderer::RenderGraphPlan plan = package->GetPlan();
+    REQUIRE(plan.Passes.GetSize() == 2);
+    REQUIRE(plan.Passes[0].Color == plan.Passes[1].SourceColor);
+    REQUIRE(plan.Passes[1].SourceColor != plan.Passes[1].Color);
+    REQUIRE(plan.Passes[1].VisibilityDepth == format::ABSENT);
+    constexpr uint32 DISPATCH_SIDE = 8;
+    REQUIRE(plan.Passes[0].HasStorageTexture == true);
+    REQUIRE(plan.Passes[0].StorageLaunchWidth == DISPATCH_SIDE);
+    REQUIRE(plan.Passes[0].StorageLaunchHeight == DISPATCH_SIDE);
+
+    constexpr usize PASS_COUNT = 2;
+    StaticArray<format::Pass, PASS_COUNT> passes{{plan.Passes[0], plan.Passes[1]}};
+    SECTION("explicit launch size") {}
+    SECTION("match the color target")
+    {
+        passes[0].StorageLaunchWidth = 0;
+        passes[0].StorageLaunchHeight = 0;
+    }
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < FIRST_SAMPLE_TIMEOUT_NANOSECONDS)
+        {
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
+            status = fixture.Graph.Poll();
+        }
+        CAPTURE(fixture.Graph.GetLastFailureStage());
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, decoded, nullptr, WIDTH, HEIGHT));
+    REQUIRE(fixture.Graph.SetRayTileCount(2) == rhi::RasterStatus::Unsupported);
+    fixture.Cameras[0].OrthographicCamera = true;
+    renderer::RenderGraphReport report;
+    finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                1,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                1));
+
+    ReadGraphFrame(fixture, plan.Passes[1].Color);
+    constexpr usize CHANNEL_COUNT = 4;
+    constexpr uint8 FULL_CHANNEL = 255;
+    REQUIRE(fixture.Pixels.GetSize() == WIDTH * HEIGHT * CHANNEL_COUNT);
+    for (usize pixel = 0; pixel < WIDTH * HEIGHT; ++pixel)
+    {
+        const bool isEvenColumn = pixel % WIDTH % 2 == 0;
+        const usize offset = pixel * CHANNEL_COUNT;
+        REQUIRE(fixture.Pixels[offset] == 0);
+        REQUIRE(fixture.Pixels[offset + 1] == (isEvenColumn == true ? 0 : FULL_CHANNEL));
+        REQUIRE(fixture.Pixels[offset + 2] == (isEvenColumn == true ? FULL_CHANNEL : 0));
+    }
+    constexpr uint32 RESIZED_TEXTURE_WIDTH = WIDTH + 5;
+    constexpr uint32 RESIZED_TEXTURE_HEIGHT = HEIGHT + 3;
+    REQUIRE(fixture.Graph.Resize(RESIZED_TEXTURE_WIDTH, RESIZED_TEXTURE_HEIGHT) == rhi::RasterStatus::Pending);
+    finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                2,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                2));
+    format::Resource texture;
+    REQUIRE(fixture.Graph.GetResourceDescription(plan.Passes[0].Color, texture) == true);
+    CHECK(texture.Width == RESIZED_TEXTURE_WIDTH);
+    CHECK(texture.Height == RESIZED_TEXTURE_HEIGHT);
+    ReadGraphFrame(fixture, plan.Passes[1].Color);
+    CHECK(fixture.Pixels[(WIDTH * HEIGHT - 1) * CHANNEL_COUNT + 1] == FULL_CHANNEL);
 }
 
 TEST_CASE("A scene compute pass traces the World and feeds Accumulate and ToneMap",
@@ -3016,6 +3194,72 @@ math::Vector3 ComputeMeanRadiance(const Array<uint8>& pixels)
 }
 } // namespace
 
+TEST_CASE("An explicit image launch writes only the overlap with a resized target",
+          "[render-graph][gpu][compute-ray-tracing][explicit-launch]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_SCENE_COMPUTE_DIRECTORY, "rg2_scene_compute.lurgrt"});
+    renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(plan.Passes.GetSize() == 1);
+    REQUIRE(plan.Resources.GetSize() == 1);
+    REQUIRE(plan.Passes[0].Color == 0);
+    constexpr uint32 LAUNCH_SIDE = 8;
+    StaticArray<format::Pass, 1> passes{{plan.Passes[0]}};
+    passes[0].ImageLaunchWidth = LAUNCH_SIDE;
+    passes[0].ImageLaunchHeight = LAUNCH_SIDE;
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    StaticArray<format::Resource, 1> resources{{plan.Resources[0]}};
+    resources[0].ViewNumerator = 1;
+    resources[0].ViewDenominator = 1;
+    plan.Resources = {resources.GetData(), resources.GetSize()};
+
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < FIRST_SAMPLE_TIMEOUT_NANOSECONDS)
+        {
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
+            status = fixture.Graph.Poll();
+        }
+        CAPTURE(fixture.Graph.GetLastFailureStage());
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT));
+    fixture.Cameras[0].OrthographicCamera = true;
+    const auto update = [&fixture, &finish](uint64 revision) {
+        renderer::RenderGraphReport report;
+        finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                    {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                    {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                    revision,
+                                    renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                    report,
+                                    nullptr,
+                                    revision));
+        renderer::RenderGraphRayWorkload workload;
+        REQUIRE(fixture.Graph.GetRayWorkload(workload) == rhi::RasterStatus::Ready);
+        CHECK(workload.Pixels == LAUNCH_SIDE * LAUNCH_SIDE);
+    };
+
+    Array<uint8> pixels;
+    constexpr usize CHANNEL_COUNT = 4;
+    constexpr uint32 SMALL_TARGET_SIDE = LAUNCH_SIDE / 2;
+    update(1);
+    RenderExport(fixture.Graph, fixture, 0, {WIDTH, HEIGHT}, pixels);
+    const uint8 sampleOne = GetDisplayedOne(passes[0].ToneMappingExposure);
+    CHECK(pixels[GetPixel(LAUNCH_SIDE - 1, LAUNCH_SIDE - 1)] == sampleOne);
+    CHECK(pixels[GetPixel(LAUNCH_SIDE, LAUNCH_SIDE - 1)] == 0);
+    CHECK(pixels[GetPixel(LAUNCH_SIDE - 1, LAUNCH_SIDE)] == 0);
+
+    REQUIRE(fixture.Graph.Resize(SMALL_TARGET_SIDE, SMALL_TARGET_SIDE) == rhi::RasterStatus::Pending);
+    update(2);
+    RenderExport(fixture.Graph, fixture, 0, {SMALL_TARGET_SIDE, SMALL_TARGET_SIDE}, pixels);
+    constexpr usize LAST_SMALL_PIXEL = SMALL_TARGET_SIDE * SMALL_TARGET_SIDE - 1;
+    CHECK(pixels[LAST_SMALL_PIXEL * CHANNEL_COUNT] == sampleOne);
+}
+
 TEST_CASE("The simple triangle-loop template keeps the nearest instance in either input order",
           "[render-graph][gpu][simple-compute-template]")
 {
@@ -3670,6 +3914,40 @@ TEST_CASE("LUSL scene-interface callbacks report the same query outcomes as thei
     CHECK(primaryHits > lusl.GetSize() / 8);
     CHECK(secondaryHits > 0);
 }
+
+#if defined(LUDUS_RG3_TRAVERSAL_PARITY_LUSL_NATIVE_DIRECTORY)
+TEST_CASE("LUSL keeps a native Metal ray-query helper out of line", "[render-graph][gpu][ray-traversal]")
+{
+    GraphGpuFixture fixture(false, true);
+    const core::UniquePtr<renderer::RenderGraphPackage> luslPackage =
+        LoadPackage({LUDUS_RG3_TRAVERSAL_PARITY_LUSL_NATIVE_DIRECTORY, "rg2_traversal_parity_lusl_native.lurgrt"});
+    const core::UniquePtr<renderer::RenderGraphPackage> slangPackage =
+        LoadPackage({LUDUS_RG3_TRAVERSAL_PARITY_NATIVE_DIRECTORY, "rg2_traversal_parity_native.lurgrt"});
+    REQUIRE(luslPackage->GetPlan().Passes[0].Traversal == format::RayTraversal::NativeQuery);
+    const renderer::RenderGraphPrograms programs =
+        luslPackage->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const std::string_view msl = programs.RayCompute.Artifact.Msl;
+    const usize helper = msl.find("TraceSecondary");
+    REQUIRE(helper != std::string_view::npos);
+    const usize signature = msl.rfind('\n', helper);
+    REQUIRE(signature != std::string_view::npos);
+    CHECK(msl.substr(0, signature).ends_with("__attribute__((noinline))"));
+    REQUIRE(msl.find("raytracing::intersection_query<") != std::string_view::npos);
+
+    const CornellBox room;
+    const StaticArray<renderer::RenderGraphItem, TRAVERSAL_ITEM_COUNT> items = MakeTraversalItems(room);
+    renderer::RenderGraph slangGraph;
+    const uint32 luslOutput = PrepareRoomGraph(fixture.Graph, fixture, *luslPackage, room, items, TRAVERSAL_ITEM_COUNT);
+    const uint32 slangOutput = PrepareRoomGraph(slangGraph, fixture, *slangPackage, room, items, TRAVERSAL_ITEM_COUNT);
+    Array<uint8> lusl;
+    Array<uint8> slang;
+    RenderExport(fixture.Graph, fixture, luslOutput, {}, lusl);
+    RenderExport(slangGraph, fixture, slangOutput, {}, slang);
+    REQUIRE(lusl.GetSize() == slang.GetSize());
+    CHECK(CountFailurePixels(lusl) == 0);
+    CHECK(CountDifferentPixels(lusl, slang, 0) == 0);
+}
+#endif
 
 TEST_CASE("Compute BVH hits on the edge opposite a triangle's first corner reload as valid surface points",
           "[render-graph][gpu][ray-traversal]")
@@ -9383,7 +9661,7 @@ void ReadAccumulation(const renderer::RenderGraph& graph,
 uint32 ReadFileUint32(const Array<uint8>& bytes, usize offset)
 {
     uint32 value = 0;
-    REQUIRE(TryReadLittleEndian(std::span<const uint8>{bytes.GetData() + offset, sizeof(uint32)}, value) == true);
+    REQUIRE(TryReadLittleEndian({bytes.GetData() + offset, sizeof(uint32)}, value) == true);
     return value;
 }
 } // namespace

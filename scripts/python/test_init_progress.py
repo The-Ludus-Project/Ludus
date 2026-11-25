@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 import io
 import os
 import subprocess
@@ -27,6 +28,15 @@ def resolved(*options):
 
 
 class ParserTests(unittest.TestCase):
+    def test_user_action_survives_output_and_clears_explicitly(self):
+        progress = init_progress.SetupProgress()
+        self.assertFalse(progress.feed("LUDUS_PROGRESS_ACTION Approve in macOS", 0.0))
+        self.assertTrue(progress.feed("+ osascript", 1.0))
+        self.assertTrue(progress.feed("Command output while approval is active", 2.0))
+        self.assertEqual(progress.user_action, "Approve in macOS")
+        self.assertFalse(progress.feed("LUDUS_PROGRESS_ACTION", 3.0))
+        self.assertEqual(progress.user_action, "")
+
     def test_steps_details_notes_and_ninja_status(self):
         progress = init_progress.SetupProgress.from_plan([init_progress.Step(str(i), f"Step {i}") for i in range(4)])
         self.assertFalse(progress.has_started_step)
@@ -161,10 +171,17 @@ class ReporterTests(unittest.TestCase):
         init_progress.start([], environment={"LUDUS_INIT_PROGRESS": "1"})
         for argv, cached, expected in ((["/usr/bin/sudo", "apt-get"], False, True),
                                        (["/usr/bin/sudo", "apt-get"], True, False),
+                                       (["/usr/bin/sudo", "-n", "apt-get"], False, False),
                                        (["apt-get"], False, False)):
             with self.subTest(argv=argv, cached=cached), contextlib.redirect_stdout(io.StringIO()) as output:
-                init_progress.announce_privileged_command(argv, probe=lambda: cached)
-            self.assertEqual("LUDUS_PROGRESS_NOTE Waiting for your sudo password" in output.getvalue(), expected)
+                with init_progress.sudo_password_notice(argv, probe=lambda: cached):
+                    print("command output")
+            lines = output.getvalue().splitlines()
+            if expected:
+                self.assertIn("in the terminal that launched setup", lines[0])
+                self.assertEqual(lines[1:], ["command output", init_progress.ACTION_MARKER])
+            else:
+                self.assertEqual(lines, ["command output"])
 
 
 class PlanTests(unittest.TestCase):
@@ -228,7 +245,8 @@ class SelectionTests(unittest.TestCase):
         init = next(action for action in parser._subparsers._group_actions[0].choices.values()
                     if action.prog.endswith(" init"))
         covered = {name for name, _ in init_ui.STORE_TRUE_OPTIONS} | {item[0] for item in init_ui.PAIRED_OPTIONS}
-        interface = {"help", "cli", "gui", "preset", "persona", "func"}
+        # Android-only is a terminal entry point with no selector or GUI worker.
+        interface = {"help", "cli", "gui", "preset", "persona", "func", "android_only"}
         for action in init._actions:
             if action.dest not in interface:
                 self.assertIn(action.dest, covered, f"{action.dest} is not forwarded by selection_to_argv")
@@ -247,12 +265,20 @@ class SelectionTests(unittest.TestCase):
         selection = resolved("--no-system-install")
         with patch.object(init_ui, "wants_gui", return_value=True), \
                 patch.object(init_ui, "select_options", return_value=selection), \
+                patch("init_options.save_gui_selection"), \
                 patch("init_window.run_setup", return_value=0) as window, \
                 patch.object(engine, "command_init") as install:
             self.assertEqual(engine.main(["init"]), 0)
         install.assert_not_called()
         window.assert_called_once()
         self.assertTrue(window.call_args.args[0].no_system_install)
+
+    def test_gui_can_deselect_validation_before_starting_the_child(self):
+        selection = resolved("--persona", "validation")
+        selection.validate = False
+        selection.with_tests = False
+        child = init_ui.apply_defaults(engine.make_parser().parse_args(["init", *init_ui.selection_to_argv(selection)]))
+        self.assertFalse(child.validate or child.with_tests)
 
 
 class SetupLogTests(unittest.TestCase):
@@ -283,6 +309,23 @@ class SetupLogTests(unittest.TestCase):
         self.assertEqual(init_theme._diagnostic_sink, [])
         lines = log_path.read_text(encoding="utf-8").splitlines()
         self.assertEqual(lines, [window_line, "Ludus Setup window (progress): test", "child output"])
+
+
+class EditorCommandTests(unittest.TestCase):
+    class FakeEngine:
+        @staticmethod
+        def venv_python(root):
+            return root / "out/host-tools/venv/bin/python"
+
+    def test_only_setup_that_builds_the_editor_offers_to_run_it(self):
+        root = Path("/checkout")
+        built = resolved("--with-editor", "--no-system-install")
+        command = init_window.editor_command(built, root, self.FakeEngine)
+        self.assertEqual(command, [str(root / "out/host-tools/venv/bin/python"),
+                                   str(root / "scripts/python/editor_launch.py"), "--preset", built.preset])
+        configured = resolved("--with-editor", "--configure-editor-only", "--no-system-install")
+        self.assertIsNone(init_window.editor_command(configured, root, self.FakeEngine))
+        self.assertIsNone(init_window.editor_command(resolved("--no-system-install"), root, self.FakeEngine))
 
 
 @unittest.skipIf(os.name == "nt", "POSIX process tree")
@@ -319,6 +362,11 @@ FAKE_RUNNER = textwrap.dedent("""
     outcome = sys.argv[1]
     print("Ludus one-command onboarding", flush=True)
     print("LUDUS_PROGRESS 1 3 Installing system prerequisites", flush=True)
+    if outcome == "authorization":
+        print("LUDUS_PROGRESS_ACTION Approve the macOS administrator prompt to select Xcode.", flush=True)
+        print("+ osascript", flush=True)
+        time.sleep(1.0)
+        print("LUDUS_PROGRESS_ACTION", flush=True)
     print("LUDUS_PROGRESS_NOTE Waiting for your sudo password in the terminal that launched setup", flush=True)
     time.sleep(0.2)
     print("+ sudo apt-get update", flush=True)
@@ -415,6 +463,21 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(observed["durations"][1], init_progress.UP_TO_DATE_LABEL)
         self.assertNotEqual(observed["durations"][0], init_progress.UP_TO_DATE_LABEL)
 
+    def test_administrator_action_stays_visible_after_command_echo(self):
+        running = {}
+
+        def observe(window):
+            running["action"] = window.note.get()
+            running["visible"] = window.note_label.winfo_ismapped()
+            running["activity"] = window.activity.get()
+
+        code, window, _ = self.run_window("authorization", action=observe)
+        self.assertEqual(code, 0)
+        self.assertTrue(running["visible"])
+        self.assertIn("Approve the macOS administrator prompt", running["action"])
+        self.assertIn("+ osascript", running["activity"])
+        self.assertEqual(window.progress.user_action, "")
+
     def test_short_screen_keeps_the_footer_and_outcome_visible(self):
         # Shorter than the finished window, as on a MacBook Air with the Dock shown.
         usable = 420
@@ -487,6 +550,98 @@ class WindowTests(unittest.TestCase):
             if window.process is not None and window.process.stdout is not None:
                 window.process.stdout.close()
             window.window.destroy()
+
+    def drive_editor_window(self, editor_script, *arguments):
+        """Finish a passing setup, take Enter's action to run a fake editor and wait for setup to close or report."""
+        import tkinter as tk
+        from tkinter import ttk
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        editor_log = Path(directory.name) / "editor.log"
+        steps = [init_progress.Step("system", "Installing system prerequisites"),
+                 init_progress.Step("conan", "Conan install (all native presets)"),
+                 init_progress.Step("editor_build", "Building the editor")]
+        window = init_window.SetupWindow(
+            tk, ttk, steps=steps, command=[sys.executable, "-c", FAKE_RUNNER, "pass"], title="test", log_path=None,
+            cwd=engine.repo_root(), environment=init_window.child_environment(),
+            editor_command=[sys.executable, "-c", editor_script, *arguments], editor_log_path=editor_log)
+        observed = {}
+        try:
+            window.start()
+            deadline = time.monotonic() + 20
+            while window.finished_at is None and time.monotonic() < deadline:
+                window.window.update()
+                time.sleep(0.02)
+            window.window.update()
+            observed["editor_button"] = (window.editor_button.winfo_ismapped(),
+                                         str(window.editor_button.cget("text")))
+            observed["hint"] = str(window.footer.hint.cget("text"))
+            # Enter's handler, called directly: a key event needs keyboard focus, which a test window may lack.
+            # A shorter wait for the launcher keeps the test quick; the fake editor outlives it.
+            with patch.object(init_window, "EDITOR_START_CHECK_MILLISECONDS", 300):
+                window.activate_default()
+            window.window.update()
+            observed["starting"] = (window.status.get(), str(window.editor_button.cget("state")))
+            deadline = time.monotonic() + 10
+            while (window.is_editor_started is False and window.editor_process is not None
+                   and time.monotonic() < deadline):
+                window.window.update()
+                time.sleep(0.02)
+            window.window.update()
+            observed["note"] = window.note.get()
+            observed["note_visible"] = window.note_label.winfo_ismapped()
+            observed["editor_state"] = str(window.editor_button.cget("state"))
+            observed["is_editor_started"] = window.is_editor_started
+            observed["is_editor_running"] = window.editor_process is not None
+        finally:
+            if window.editor_process is not None and window.editor_process.poll() is None:
+                window.editor_process.kill()
+                window.editor_process.wait()
+            for timer in window.timers.values():
+                try:
+                    window.window.after_cancel(timer)
+                except tk.TclError:
+                    pass
+            if window.process is not None and window.process.stdout is not None:
+                window.process.stdout.close()
+            # Release, never destroy, the shared root as SetupWindow.run does, and finalize this
+            # window's Tk variables here on the Tk thread: Tk objects collected later, on another
+            # thread or after their interpreter was deleted, crash the following window tests.
+            init_window.init_theme.release_root(window.window)
+            del window
+            gc.collect()
+        return observed, editor_log
+
+    def test_run_editor_starts_the_built_editor_and_closes_setup(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        marker = Path(directory.name) / "ran"
+        script = ("import os, pathlib, sys, time; "
+                  "pathlib.Path(sys.argv[1]).write_text(os.environ.get('LUDUS_INIT_PROGRESS', 'unset')); "
+                  "print('+ ludus_editor', flush=True); time.sleep(10)")
+        observed, editor_log = self.drive_editor_window(script, str(marker))
+        self.assertEqual(observed["editor_button"], (True, init_window.RUN_EDITOR_LABEL))
+        self.assertEqual(observed["hint"], init_window.SUCCESS_EDITOR_HINT)
+        self.assertEqual(observed["starting"], (init_window.STARTING_EDITOR_STATUS, "disabled"))
+        self.assertTrue(observed["is_editor_started"])
+        # The editor never sees setup's progress protocol, and its output lands in the editor log.
+        self.assertEqual(marker.read_text(encoding="utf-8"), "unset")
+        self.assertIn("+ ludus_editor", editor_log.read_text(encoding="utf-8"))
+        self.assertFalse(observed["note_visible"])
+
+    def test_run_editor_failure_stays_open_with_the_launcher_fix(self):
+        script = ("import sys; "
+                  "print('The editor is not built for this preset. Prepare it explicitly, then retry:'); "
+                  "print('  ./init.sh --cli --with-editor linux-clang-development'); sys.exit(1)")
+        observed, editor_log = self.drive_editor_window(script)
+        self.assertFalse(observed["is_editor_started"])
+        self.assertFalse(observed["is_editor_running"])
+        self.assertTrue(observed["note_visible"])
+        self.assertIn("exit code 1", observed["note"])
+        self.assertIn("./init.sh --cli --with-editor linux-clang-development", observed["note"])
+        self.assertIn(str(editor_log), observed["note"])
+        # The button is ready again once the fix is applied.
+        self.assertEqual(observed["editor_state"], "normal")
 
     def test_cancel_stops_the_runner(self):
         code, window, observed = self.run_window("hang", action=lambda window: window.cancel())

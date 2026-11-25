@@ -17,7 +17,8 @@ namespace ludus::graphics::rhi
 /// LUID or Metal registry ID zero padded to this width.
 inline constexpr ludus::foundation::usize ADAPTER_IDENTITY_BYTES = 16;
 /// Maximum UTF-8 bytes kept from an adapter's reported name; longer names are
-/// shortened at a code point boundary.
+/// shortened at a code point boundary, and a name with ill-formed UTF-8 keeps only
+/// the well-formed bytes before the first ill-formed sequence.
 inline constexpr ludus::foundation::usize MAX_ADAPTER_NAME_BYTES = 255;
 /// Maximum adapters one catalog holds; AdapterCatalog::ReportedCount shows truncation.
 inline constexpr ludus::foundation::usize MAX_CATALOG_ADAPTERS = 16;

@@ -35,6 +35,10 @@ namespace
 // messages are truncated with a flag rather than allocating (requirements R25).
 // Prototype starting value; final size is a measurement-dependent budget.
 constexpr ludus::foundation::usize kMaxMessageBytes = 2048;
+// Bounded joins for the asynchronous worker: an explicit or process-exit
+// shutdown waits longer than a reconfiguring Initialize (requirements R40).
+constexpr ludus::foundation::uint32 ASYNC_SHUTDOWN_JOIN_TIMEOUT_MILLISECONDS = 5000;
+constexpr ludus::foundation::uint32 ASYNC_RECONFIGURE_JOIN_TIMEOUT_MILLISECONDS = 2000;
 } // namespace
 
 namespace ludus::foundation::logging
@@ -116,6 +120,18 @@ struct LoggerState
     // Sinks holds them and DispatchMutex serializes access. Retained across a
     // timed-out shutdown so a still-running worker never references freed storage.
     foundation::UniquePtr<internal::AsyncBackend> Async;
+
+    // Process exit can destroy this state without LogSystem::Shutdown(): exit()
+    // from QCommandLineParser::process (an unknown option or --help), or from any
+    // other caller. Destroying a joinable worker thread would call std::terminate,
+    // so the destructor runs the same shutdown and leaks a backend whose worker
+    // cannot be joined instead of destroying it.
+    LoggerState() = default;
+    LoggerState(const LoggerState&) = delete;
+    LoggerState& operator=(const LoggerState&) = delete;
+    LoggerState(LoggerState&&) = delete;
+    LoggerState& operator=(LoggerState&&) = delete;
+    ~LoggerState() noexcept;
 };
 
 LoggerState& state() noexcept
@@ -320,6 +336,76 @@ void stopFlushThread(LoggerState& s)
     }
 }
 
+// Stops the asynchronous backend, if any, and destroys it once its worker has
+// joined. A worker that does not stop within `joinTimeoutMilliseconds` keeps
+// running, so its backend is retained (requirements R40) and false is returned.
+bool StopAsyncBackend(LoggerState& inoutState, uint32 joinTimeoutMilliseconds) noexcept
+{
+    if (inoutState.Async.Get() == nullptr)
+    {
+        return true;
+    }
+    if (inoutState.Async->Stop(joinTimeoutMilliseconds) == false)
+    {
+        return false;
+    }
+    inoutState.Async.Reset();
+    return true;
+}
+
+// Leaks a retained backend whose worker is still running. Destroying it would
+// destroy a joinable std::thread (std::terminate) and free storage the worker
+// still uses; the operating system reclaims it when the process ends.
+void AbandonAsyncBackend(LoggerState& inoutState) noexcept
+{
+    internal::AsyncBackend* const abandonedOrNull = inoutState.Async.Release();
+    (void)abandonedOrNull;
+}
+
+LogStatus ShutdownState(LoggerState& inoutState) noexcept
+{
+    // Close admission first so racing late producers are rejected (fixes F4),
+    // then stop the flush worker (outside the dispatch lock to avoid a deadlock),
+    // then flush/close sinks under the lock and join.
+    State expected = State::Accepting;
+    if (inoutState.Lifecycle.compare_exchange_strong(expected, State::Draining, std::memory_order_acq_rel) == false)
+    {
+        return LogStatus::NotInitialized;
+    }
+
+    stopFlushThread(inoutState);
+
+    LogStatus status = LogStatus::Ok;
+
+    // Stop the worker: it drains published records, flushes, and exits. If it
+    // cannot be joined within the deadline, RETAIN the backend (and thus its
+    // queue/sinks) rather than freeing storage a running worker may touch
+    // (requirements R40). Report Incomplete in that case.
+    if (StopAsyncBackend(inoutState, ASYNC_SHUTDOWN_JOIN_TIMEOUT_MILLISECONDS) == false)
+    {
+        status = LogStatus::Incomplete;
+        internal::EmergencyNote("async logging worker did not stop within timeout; storage retained");
+    }
+
+    {
+        std::unique_lock lock(inoutState.DispatchMutex);
+        flushSinksLocked(inoutState); // no-op set in async mode (sinks moved to worker)
+        inoutState.Sinks.Clear();
+        inoutState.Categories.Clear();
+        inoutState.Lifecycle.store(State::Stopped, std::memory_order_release);
+    }
+    return status;
+}
+
+LoggerState::~LoggerState() noexcept
+{
+    // A session still Accepting here was never shut down (process exit). Its
+    // records are drained and flushed like an explicit Shutdown.
+    (void)ShutdownState(*this);
+    // Also covers a backend retained by an earlier timed-out Shutdown.
+    AbandonAsyncBackend(*this);
+}
+
 } // namespace
 
 bool ShouldLog(LogLevel level, LogCategory category) noexcept
@@ -363,10 +449,12 @@ LogInitResult LogSystem::Initialize(const LogConfig& config)
         // Tear down the previous session cleanly before reconfiguring.
         lock.unlock();
         stopFlushThread(s);
-        if (s.Async)
+        if (StopAsyncBackend(s, ASYNC_RECONFIGURE_JOIN_TIMEOUT_MILLISECONDS) == false)
         {
-            (void)s.Async->Stop(2000);
-            s.Async.Reset();
+            // Replacing a backend whose worker still runs would destroy a
+            // joinable thread; leave it running and start a new session.
+            internal::EmergencyNote("async logging worker did not stop within timeout; abandoning it");
+            AbandonAsyncBackend(s);
         }
         lock.lock();
         flushSinksLocked(s);
@@ -465,47 +553,7 @@ LogInitResult LogSystem::Initialize(const LogConfig& config)
 
 LogStatus LogSystem::Shutdown()
 {
-    LoggerState& s = state();
-
-    // Close admission first so racing late producers are rejected (fixes F4),
-    // then stop the flush worker (outside the dispatch lock to avoid a deadlock),
-    // then flush/close sinks under the lock and join.
-    State expected = State::Accepting;
-    if (s.Lifecycle.compare_exchange_strong(expected, State::Draining, std::memory_order_acq_rel) == false)
-    {
-        return LogStatus::NotInitialized;
-    }
-
-    stopFlushThread(s);
-
-    LogStatus status = LogStatus::Ok;
-
-    if (s.Async)
-    {
-        // Stop the worker: it drains published records, flushes, and exits. If it
-        // cannot be joined within the deadline, RETAIN the backend (and thus its
-        // queue/sinks) rather than freeing storage a running worker may touch
-        // (requirements R40). Report Incomplete in that case.
-        const bool stopped = s.Async->Stop(5000);
-        if (stopped)
-        {
-            s.Async.Reset();
-        }
-        else
-        {
-            status = LogStatus::Incomplete;
-            internal::EmergencyNote("async logging worker did not stop within timeout; storage retained");
-        }
-    }
-
-    {
-        std::unique_lock lock(s.DispatchMutex);
-        flushSinksLocked(s); // no-op set in async mode (sinks moved to worker)
-        s.Sinks.Clear();
-        s.Categories.Clear();
-        s.Lifecycle.store(State::Stopped, std::memory_order_release);
-    }
-    return status;
+    return ShutdownState(state());
 }
 
 FlushResult LogSystem::Flush(FlushKind kind, uint32 timeoutMilliseconds)

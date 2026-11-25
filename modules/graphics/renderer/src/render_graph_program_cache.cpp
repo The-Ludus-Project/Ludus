@@ -8,7 +8,6 @@
 #include <ludus/graphics/rhi/device.h>
 
 #include <new>
-#include <span>
 #include <string_view>
 
 // Shares immutable program dependencies by their complete canonical description and leaves native
@@ -61,8 +60,7 @@ public:
             mHasFailed = true;
             return;
         }
-        const bool isWritten =
-            core::TryWriteLittleEndian(value, std::span<uint8>{mBytes.GetData() + offset, sizeof(ValueType)});
+        const bool isWritten = core::TryWriteLittleEndian(value, {mBytes.GetData() + offset, sizeof(ValueType)});
         mHasFailed = isWritten == false;
     }
     void WriteFlag(bool isSet) noexcept

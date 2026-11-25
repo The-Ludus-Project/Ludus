@@ -48,6 +48,9 @@ constexpr QLatin1StringView SCULPT_STROKES_FIELD("sculptStrokes");
 constexpr QLatin1StringView RAISE_LOWER_KIND("RaiseLower");
 constexpr QLatin1StringView SMOOTH_KIND("Smooth");
 constexpr QLatin1StringView HEIGHTMAP_SHAPE("Heightmap");
+/// Stored content::terrain::TerrainNoiseLayout version. Recipes saved before the field existed omit it and keep
+/// layout 1, the cubic fade they were generated with.
+constexpr QLatin1StringView NOISE_LAYOUT_FIELD("noiseLayout");
 constexpr uint32 TERRAIN_RANDOM_DOMAIN = 1;
 /// Random domain of the baked surface's brightness variation; independent of the elevation noise.
 constexpr uint32 TERRAIN_SURFACE_RANDOM_DOMAIN = 2;
@@ -205,6 +208,26 @@ bool ReadTerrainStroke(const QJsonValue& value,
     return true;
 }
 
+bool ReadTerrainNoiseLayout(const QJsonObject& recipe,
+                            content::terrain::TerrainNoiseLayout& outLayout,
+                            QString& outError)
+{
+    const QJsonValue stored = recipe.value(NOISE_LAYOUT_FIELD);
+    if (stored.isUndefined() == true)
+    {
+        outLayout = content::terrain::TerrainNoiseLayout::CubicFade;
+        return true;
+    }
+    // toInt reads only an integral JSON number; anything else becomes the invalid layout 0.
+    const int32 version = stored.toInt(0);
+    if (version <= 0 || content::terrain::TryGetTerrainNoiseLayout(static_cast<uint32>(version), outLayout) == false)
+    {
+        outError = QStringLiteral("This terrain noise layout is unavailable. Open it in a compatible editor.");
+        return false;
+    }
+    return true;
+}
+
 bool ReadTerrainPayload(const QJsonObject& recipe, TerrainPayload& inoutPayload, QString& outError)
 {
     const bool hasHeightmap = recipe.contains(HEIGHTMAP_FIELD);
@@ -358,6 +381,16 @@ QString GetTerrainComponentId()
     return QStringLiteral("terrain");
 }
 
+QString GetTerrainNoiseLayoutKey()
+{
+    return NOISE_LAYOUT_FIELD;
+}
+
+void SetLatestTerrainNoiseLayout(QJsonObject& inoutRecipe)
+{
+    inoutRecipe.insert(NOISE_LAYOUT_FIELD, static_cast<int32>(content::terrain::TERRAIN_NOISE_LAYOUT_VERSION));
+}
+
 qsizetype CountTerrainPayloadFields(const QJsonObject& recipe)
 {
     return static_cast<qsizetype>(recipe.contains(HEIGHTMAP_FIELD)) +
@@ -442,8 +475,9 @@ bool ValidateTerrainRecipe(const QJsonObject& recipe, QString& outError)
         outError = QStringLiteral("Set the maximum elevation at or above the minimum elevation.");
         return false;
     }
+    content::terrain::TerrainNoiseLayout layout = content::terrain::TerrainNoiseLayout::CubicFade;
     TerrainPayload payload;
-    return ReadTerrainPayload(recipe, payload, outError);
+    return ReadTerrainNoiseLayout(recipe, layout, outError) == true && ReadTerrainPayload(recipe, payload, outError);
 }
 
 qsizetype RemoveClippedTerrainStrokes(const QJsonObject& previous, QJsonObject& inoutRecipe)
@@ -574,8 +608,10 @@ bool BuildTerrainParts(const QJsonObject& recipe,
                        TerrainBuild& outBuild,
                        QString& outError)
 {
+    content::terrain::TerrainNoiseLayout layout = content::terrain::TerrainNoiseLayout::CubicFade;
     TerrainPayload payload;
-    if (ReadTerrainPayload(recipe, payload, outError) == false)
+    if (ReadTerrainNoiseLayout(recipe, layout, outError) == false ||
+        ReadTerrainPayload(recipe, payload, outError) == false)
     {
         return false;
     }
@@ -593,6 +629,7 @@ bool BuildTerrainParts(const QJsonObject& recipe,
         .Profile = preset == QStringLiteral("Flat")     ? content::terrain::TerrainNoiseProfile::Flat
                    : preset == QStringLiteral("Ridges") ? content::terrain::TerrainNoiseProfile::Ridges
                                                         : content::terrain::TerrainNoiseProfile::Hills,
+        .Layout = layout,
     };
     if (IsGridAxisAdmitted(samples) == false)
     {
@@ -692,6 +729,7 @@ bool BuildTerrainParts(const QJsonObject& recipe,
                                hasRivers == true ? &water : nullptr,
                                static_cast<float32>(recipe.value(SNOW_LINE_FIELD).toDouble(DEFAULT_SNOW_LINE_METRES)),
                                variationKey,
+                               layout,
                                build.BaseColor,
                                build.BaseColorMean,
                                outError) == false)

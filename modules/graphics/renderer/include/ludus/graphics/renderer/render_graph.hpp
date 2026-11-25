@@ -123,6 +123,10 @@ struct RenderGraphPrograms final
     rhi::RasterShaderDescription MaskedDepthFragment{}; ///< Separately authored void masked coverage entry.
     /// Native Metal ray stages; borrowed through graph preparation like RayCompute. Empty when unused.
     rhi::RasterShaderDescription NativeRayStages{};
+    /// Ordered compute callbacks that read the shared structured Buffer. Empty when unused.
+    rhi::RasterShaderDescription RecordReadCompute{};
+    /// Bits indexed by Pass::RayProgram that select RecordReadCompute for compute invocations.
+    foundation::uint32 RecordReaderMask = 0;
     rhi::RasterShaderDescription RayCompute{};       ///< Linked authored triangle ray functions and BVH traversal.
     rhi::RasterShaderDescription RayImageVertex{};   ///< Renderer-owned GPU-produced pixel presentation.
     rhi::RasterShaderDescription RayImageFragment{}; ///< Renderer-owned color copy; no host pixel transfer.
@@ -179,7 +183,7 @@ struct RenderGraphPrograms final
     rhi::RasterShaderDescription DeferredDepthCopyFragment{};
     /// Enable the opaque three-target deferred profile; requires the complete clustered material ABI.
     bool HasClusteredDeferred = false;
-    bool HasPersistentRayBuffers = false; ///< Extended ordered ray ABI with two persistent uint4 storage slots.
+    bool HasPersistentRayBuffers = false; ///< Extended ordered ray ABI with two persistent storage slots.
     bool HasSceneShaderInterface = false; ///< Opt-in material/light/query callback ABI, encoded in cooked stage roles.
     /// RayCompute is the diagnostic ray path capture variant (`LUDUS_RAY_PATH_CAPTURE`) of the same
     /// source snapshot: it also binds one read-write capture buffer at slot 10. RenderGraph appends
@@ -256,6 +260,7 @@ enum class RenderGraphFailureReason : foundation::uint8
     WaveConnection,             ///< The optical wavelength or finite connection is outside the paraxial profile.
     WavePropagationCapacity,    ///< An optical connection exceeds the admitted number of successive regions.
     FixedDimensionMaterial,     ///< An assigned surface lacks continuous reflection with a fixed sample dimension.
+    LuslBounds,                 ///< A development LUSL callback indexed outside its declared bounds.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;
@@ -275,6 +280,8 @@ struct RenderGraphRayFailures final
     foundation::uint64 TotalPixels = 0;
     /// The reason with the most pixels; meaningful when TotalPixels is nonzero.
     foundation::uint32 MainReason = 0;
+    /// Highest authored line reported by a checked LUSL invocation in this history, or zero if none.
+    foundation::uint32 LuslBoundsLine = 0;
 };
 /// Ray work of one sample of a RenderGraph's current scene, from which a frame capture sizes its tiles.
 struct RenderGraphRayWorkload final
@@ -1189,7 +1196,8 @@ public:
     /// @param pass Plan pass index of a ray pass.
     /// @param outBuffer Receives the borrowed buffer; unchanged on failure.
     /// @return Ready after the current scene and camera produce a completed frame; NotReady while they have none.
-    /// InvalidDescription for a pass that is not a ray pass. Outputs are preserved on failure.
+    /// InvalidDescription for a pass that is not a ray pass, or Unsupported for an independent buffer or
+    /// storage texture dispatch. Outputs are preserved on failure.
     [[nodiscard]] rhi::RasterStatus GetAccumulation(foundation::uint32 pass,
                                                     rhi::BufferHandle& outBuffer) const noexcept;
     /// Split every ray sample into tileCount row bands, rendering one band per Render, for a graph instance
@@ -1199,8 +1207,10 @@ public:
     /// between frames at a sample boundary; the count applies to later scenes of this instance too.
     /// @param tileCount Bands per sample, from one (whole-image dispatches) to MAX_RENDER_GRAPH_RAY_TILES.
     /// @return Ready when set; InvalidDescription for a count out of range; Unsupported for more than one band
-    /// when RenderGraphPrograms::HasRayTiles is false; InvalidState when uninitialized, not Ready, in a frame or
-    /// between the bands of a sample. Failure leaves the graph unchanged.
+    /// when RenderGraphPrograms::HasRayTiles is false or the plan contains an independent buffer or storage texture
+    /// dispatch or a sampled scene color input; InvalidState when uninitialized, not Ready, in a frame or between
+    /// the bands of a sample.
+    /// Failure leaves the graph unchanged.
     [[nodiscard]] rhi::RasterStatus SetRayTileCount(foundation::uint32 tileCount) noexcept;
     /// Select how later frames record the drawable scene. Direct is always admitted. OrderedGraph checks the
     /// cooked plan against the pilot profile here; its scene-dependent admission (packets, draw and resource

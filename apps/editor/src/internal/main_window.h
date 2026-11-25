@@ -54,6 +54,7 @@ class CodeAreaSearchScope;
 class CodeEditorArea;
 class CodeStatusBar;
 class SearchToolWindow;
+class CodeReferencesWindow;
 class ConfigurationWorkspace;
 class EditHistoryPanel;
 struct EditHistoryState;
@@ -83,6 +84,9 @@ public:
                         QWidget* parent = nullptr,
                         const QString& workspaceSettingsFile = {});
     ~MainWindow() override;
+
+    /// Whether the accepted window close should relaunch the Editor.
+    [[nodiscard]] bool ShouldRestart() const noexcept;
 
     /// Central document well; documents open, close and regroup through it.
     [[nodiscard]] DocumentWell& GetDocumentWell() noexcept
@@ -120,12 +124,14 @@ private:
     {
         Run,
         Play,
-        Debug
+        Debug,
+        BuiltInWorld,
     };
     void launchAfterPreview(LaunchAction action,
                             const QString& debugger = {},
                             bool shouldSetUpDebugger = false,
-                            const QString& hostedWindowAddress = {});
+                            const QString& hostedWindowAddress = {},
+                            const ToolLaunch& worldLaunch = {});
     /// Stop: a game playing in the viewport first gets a window close, then the supervisor's stop.
     void stopRun();
     void BuildUi();
@@ -234,6 +240,7 @@ private:
     void showUndoFeedback(const QString& text);
     void CommitProjectFields();
     [[nodiscard]] bool SaveProjectSettings();
+    void reloadProject(bool hasConfirmedProjectDiscard);
 #if defined(Q_OS_WASM)
     [[nodiscard]] bool downloadBrowserProject();
 #endif
@@ -259,6 +266,7 @@ private:
     EditorController* Controller_ = nullptr;
     bool Rendering_ = false;
     bool CloseConfirmed_ = false;
+    bool mShouldRestart = false;
     QObject* LastEditedField_ = nullptr;
     QMetaObject::Connection FocusUndoConnection_;
     QMetaObject::Connection FocusRedoConnection_;
@@ -308,6 +316,9 @@ private:
     // members, and are owned by their dock / this window.
     QDockWidget* mSearchDockOrNull = nullptr;
     SearchToolWindow* mSearchOrNull = nullptr;
+    /// The References tool window (code editor M4): Find References results from package shaders.
+    QDockWidget* mReferencesDockOrNull = nullptr;
+    CodeReferencesWindow* mReferencesOrNull = nullptr;
     CodeAreaSearchScope* mSearchScopeOrNull = nullptr;
     // The editor keymap (CE07/CE17 shortcut resolution): the active profile, the
     // user overrides and the resolved bindings applied to the shell's actions.

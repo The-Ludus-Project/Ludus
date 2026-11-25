@@ -48,6 +48,125 @@ struct CelestialBackgroundDescription final
     foundation::math::Vector3 DirectionToSunAtMoonWorld{};
 };
 
+/// One homogeneous region of a CloudLayerTestField.
+struct CloudLayerTestRegion final
+{
+    /// Extinction at unit layer density in inverse metres, finite and nonnegative. It replaces
+    /// CloudLayerDescription::ExtinctionPerMetre inside the region; Density and the edge fade still multiply it.
+    foundation::float32 ExtinctionPerMetre = 0;
+    /// Finite nonnegative scene-linear RGB source radiance in nits. The region emits ExtinctionPerMetre times this
+    /// per metre, so a homogeneous region of transmittance T alone contributes SourceRadiance * (1 - T). The source
+    /// adds to the Sun's single scattering and is independent of the Atmosphere's illuminance.
+    foundation::math::Vector3 SourceRadiance{};
+};
+
+/// @brief Renderer validation fixture: two homogeneous regions of a cloud layer on either side of one plane.
+///
+/// World extraction and the Editor never author it; the `[cloud-layer]` tests use it to check transmittance through
+/// a nonuniform layer and the front-to-back order of two emitting, attenuating regions. A layer point p in the
+/// CloudLayerDescription frame (metres) lies in Regions[0] when dot(p, SplitNormalLocal) < SplitOffsetMetres and in
+/// Regions[1] otherwise. The view march splits its steps at the plane, so each region is integrated as homogeneous
+/// and its transmittance and source are exact. The Sun path toward a step is split at the plane too.
+struct CloudLayerTestField final
+{
+    /// Number of regions, one on each side of the plane.
+    static constexpr foundation::usize REGION_COUNT = 2;
+    /// False keeps the layer homogeneous. Other fields are ignored when false.
+    bool IsEnabled = false;
+    /// Finite nonzero plane normal in the layer frame (+X, +Y up, +Z), normalized when packed.
+    foundation::math::Vector3 SplitNormalLocal{0, 0, 1};
+    /// Finite signed distance in metres of the plane from the layer origin along the normalized normal.
+    foundation::float32 SplitOffsetMetres = 0;
+    /// Regions[0] lies on the negative side of the plane, Regions[1] on the positive side.
+    foundation::StaticArray<CloudLayerTestRegion, REGION_COUNT> Regions{};
+};
+
+/// @brief One bounded, horizontal slab of homogeneous cloud in the Atmosphere's surface frame.
+///
+/// The slab is flat in the plane tangent to the ground at AtmosphereDescription::SurfaceAnchorWorld: its frame has
+/// the anchor as origin, SurfaceUpWorld as +Y and AxisXWorld (made perpendicular to up) as +X; +Z is X cross Y. It
+/// occupies |x| <= SizeXMetres / 2, |z| <= SizeZMetres / 2 and BaseHeightMetres <= y <= BaseHeightMetres +
+/// ThicknessMetres. Within EdgeFadeMetres of a side the density falls smoothly to zero; the base and top are sharp.
+/// The medium is grey: extinction Density * ExtinctionPerMetre in inverse metres, a fraction SingleScatteringAlbedo
+/// of it scattering through a normalized Henyey-Greenstein phase function in inverse steradians. The renderer lights
+/// it by single scattering of the Atmosphere's Sun, attenuated by the air and by the slab towards the Sun, and
+/// composes it with the clear sky along each view ray. See docs/architecture/world-environment.md for the transport
+/// contract and its current limits.
+struct CloudLayerDescription final
+{
+    /// Default base height in metres, a low stratocumulus deck.
+    static constexpr foundation::float32 DEFAULT_BASE_HEIGHT_METRES = 1500;
+    /// Default thickness in metres.
+    static constexpr foundation::float32 DEFAULT_THICKNESS_METRES = 1000;
+    /// Default full size along X and Z in metres.
+    static constexpr foundation::float32 DEFAULT_SIZE_METRES = 40000;
+    /// Default edge fade in metres.
+    static constexpr foundation::float32 DEFAULT_EDGE_FADE_METRES = 2000;
+    /// Default extinction at unit density in inverse metres: an optical depth of four through the default thickness.
+    static constexpr foundation::float32 DEFAULT_EXTINCTION_PER_METRE = 0.004F;
+    /// Default single-scattering albedo of water droplets with a small absorbing fraction.
+    static constexpr foundation::float32 DEFAULT_SINGLE_SCATTERING_ALBEDO = 0.99F;
+    /// Default Henyey-Greenstein asymmetry, a moderate forward peak.
+    static constexpr foundation::float32 DEFAULT_PHASE_ASYMMETRY = 0.6F;
+    /// Largest admitted SizeXMetres and SizeZMetres. The flat slab departs from the ground sphere by about
+    /// 0.8 km at 100 km from the anchor, so larger layers need curved geometry.
+    static constexpr foundation::float32 MAX_SIZE_METRES = 200000;
+    /// Largest admitted magnitude of PhaseAsymmetry, which keeps the phase function's peak finite.
+    static constexpr foundation::float32 MAX_PHASE_ASYMMETRY = 0.99F;
+
+    /// False draws the clear sky. Other fields are ignored when false.
+    bool IsEnabled = false;
+    /// Height of the slab's base above the anchor's tangent plane, in metres. Finite and nonnegative.
+    foundation::float32 BaseHeightMetres = DEFAULT_BASE_HEIGHT_METRES;
+    /// Vertical extent in metres, finite and positive. The top must stay below the Atmosphere's top altitude.
+    foundation::float32 ThicknessMetres = DEFAULT_THICKNESS_METRES;
+    /// Full extent along the frame's X axis in metres, finite, positive and at most MAX_SIZE_METRES.
+    foundation::float32 SizeXMetres = DEFAULT_SIZE_METRES;
+    /// Full extent along the frame's Z axis in metres, finite, positive and at most MAX_SIZE_METRES.
+    foundation::float32 SizeZMetres = DEFAULT_SIZE_METRES;
+    /// Horizontal distance in metres over which density falls to zero at each side. Finite and nonnegative; zero
+    /// draws sharp sides. Values above half a size are limited to it.
+    foundation::float32 EdgeFadeMetres = DEFAULT_EDGE_FADE_METRES;
+    /// Dimensionless multiplier of ExtinctionPerMetre, finite and nonnegative. Zero is an empty layer that
+    /// reproduces the clear sky.
+    foundation::float32 Density = 1;
+    /// Extinction coefficient at unit density in inverse metres, finite and nonnegative.
+    foundation::float32 ExtinctionPerMetre = DEFAULT_EXTINCTION_PER_METRE;
+    /// Fraction of extinction that scatters, in [0, 1]. Zero is a pure absorber.
+    foundation::float32 SingleScatteringAlbedo = DEFAULT_SINGLE_SCATTERING_ALBEDO;
+    /// Henyey-Greenstein mean scattering cosine, at most MAX_PHASE_ASYMMETRY in magnitude. Zero is isotropic;
+    /// positive values scatter forward, toward a view direction that looks at the Sun.
+    foundation::float32 PhaseAsymmetry = DEFAULT_PHASE_ASYMMETRY;
+    /// Nonzero finite world direction of the frame's +X axis. Only its part perpendicular to SurfaceUpWorld is
+    /// used, which must be nonzero.
+    foundation::math::Vector3 AxisXWorld{1, 0, 0};
+    /// Optional two-region validation density and source. Disabled by default; see CloudLayerTestField.
+    // Explicit default preserves designated-initializer callers under -Wmissing-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    CloudLayerTestField TestField{};
+};
+
+/// Procedural auroral curtains anchored to the Earth atmosphere's surface frame.
+struct AuroraLayerDescription final
+{
+    /// Peak emission scale in scene-linear nits per metre for an ordinary display of northern lights.
+    static constexpr foundation::float32 DEFAULT_EMISSION_PER_METRE = 0.0000005F;
+    /// Largest admitted emission scale in nits per metre.
+    static constexpr foundation::float32 MAXIMUM_EMISSION_PER_METRE = 0.001F;
+    /// Duration of one seamless animation loop in seconds.
+    static constexpr foundation::float32 LOOP_SECONDS = 120;
+
+    /// False skips the layer and ignores its other settings.
+    bool IsEnabled = false;
+    /// Finite peak emission scale between zero and MAXIMUM_EMISSION_PER_METRE. Zero skips the layer.
+    foundation::float32 EmissionPerMetre = DEFAULT_EMISSION_PER_METRE;
+    /// Frozen animation time in seconds, in [0, LOOP_SECONDS]. Supply times from the app's simulation clock.
+    foundation::float32 TimeSeconds = 0;
+    /// Finite nonzero tangent X direction. The curtains run along X, toward the side X cross SurfaceUpWorld.
+    /// Its part perpendicular to SurfaceUpWorld must be nonzero.
+    foundation::math::Vector3 AxisXWorld{1, 0, 0};
+};
+
 /// Spherical Earth atmosphere resolved from one World entity and directional light.
 struct AtmosphereDescription final
 {
@@ -72,6 +191,14 @@ struct AtmosphereDescription final
     bool ShouldLightScene = false;
     /// Optional boundary provider. Its fallback lunar phase uses DirectionToSunWorld even in darkness.
     CelestialBackgroundDescription Celestial{};
+    /// Optional cloud slab. The clustered deferred graph draws it for perspective cameras inside the shell, in the
+    /// sky and in front of opaque surfaces. Orthographic and orbital views, ray kernels and reference captures omit
+    /// it, and it casts no shadow on surfaces yet.
+    CloudLayerDescription Clouds{};
+    /// Optional view-ray emission between 100 and 300 km above the sphere. Applies to perspective cameras
+    /// inside the clear-air shell on the native atmospheric deferred renderer. ShouldLightScene enables depth
+    /// clipping at opaque surfaces beyond the emission base. Surface lighting and reference captures omit it.
+    AuroraLayerDescription Aurora{};
 };
 /// Compute the signed altitude in metres above an Earth clear-sky surface.
 /// Invalid anchor, up or eye coordinates preserve outAltitudeMetres.

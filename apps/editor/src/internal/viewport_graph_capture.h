@@ -89,11 +89,13 @@ public:
     /// Linear means and committed counts of the last read-back, top-left rows; empty before one finished.
     [[nodiscard]] foundation::BorrowedView<const graphics::renderer::RenderGraphCapturePixel>
     GetPixels() const noexcept;
-    /// Display image of the last read-back, encoded like the viewport (EncodeReferenceDisplayColor with display).
-    /// Save writes it with the default transform. Empty before a read-back finished.
+    /// The captured ray pass's authored ToneMap, or the default display transform if it has none.
+    [[nodiscard]] ViewportDisplayTransform GetDisplayTransform() const noexcept;
+    /// Display image of the last read-back using the supplied transform. Empty before a read-back finished.
     [[nodiscard]] QImage MakeDisplayImage(const ViewportDisplayTransform& display = {}) const;
     /// Write the `.lurgcap` capture and, beside it, its display PNG (GetDisplayImagePath).
-    [[nodiscard]] bool Save(const QString& capturePath, QString& outError) const;
+    [[nodiscard]] bool
+    Save(const QString& capturePath, QString& outError, const ViewportDisplayTransform& display = {}) const;
     /// PNG path written beside a `.lurgcap` path by Save.
     [[nodiscard]] static QString GetDisplayImagePath(const QString& capturePath);
     /// Read the generation identity of the runtime package a capture of source would decode.

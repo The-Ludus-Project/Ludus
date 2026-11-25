@@ -3,6 +3,7 @@
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
 #include <ludus/runtime/configuration/host_options.hpp>
+#include <ludus/runtime/configuration/schema_catalog.hpp>
 
 #include <cerrno>
 #include <string_view>
@@ -87,15 +88,40 @@ int main(int argc, char** argv)
             (void)logging::LogSystem::Shutdown();
         }
     } shutdown;
-    if (argc < 2 || argc > 3)
+    // An explicit leading --schema-id selects an engine schema; GameHost's schema stays the default.
+    constexpr int32 SCHEMA_SELECTION_ARGUMENTS = 2;
+    std::string_view identity = ludus::runtime::configuration::HOST_SCHEMA;
+    const bool hasSchemaSelection = argc > 1 && std::string_view(argv[1]) == "--schema-id";
+    const bool hasIdentity = argc > SCHEMA_SELECTION_ARGUMENTS;
+    if (hasSchemaSelection == true && hasIdentity == true)
     {
-        LUDUS_LOG_ERROR(kConfigurationLog, "Usage: ludus-config --schema | --validate [project|preference]");
+        identity = argv[2];
+        argv += SCHEMA_SELECTION_ARGUMENTS;
+        argc -= SCHEMA_SELECTION_ARGUMENTS;
+    }
+    if ((hasSchemaSelection == true && hasIdentity == false) || argc < 2 || argc > 3)
+    {
+        LUDUS_LOG_ERROR(kConfigurationLog,
+                        "Usage: ludus-config [--schema-id IDENTITY] --schema | --validate "
+                        "[engine|project|profile|device|quality|preference]");
+        return 2;
+    }
+    const ludus::runtime::configuration::SchemaEntry* schemaOrNull =
+        ludus::runtime::configuration::FindSchemaOrNull(identity);
+    if (schemaOrNull == nullptr)
+    {
+        for (const ludus::runtime::configuration::SchemaEntry& entry :
+             ludus::runtime::configuration::GetSchemaCatalog())
+        {
+            LUDUS_LOG_ERROR(kConfigurationLog, "Available schema: {} ({})", entry.Identity, entry.Title);
+        }
+        LUDUS_LOG_ERROR(kConfigurationLog, "Unknown configuration schema '{}'; pass one listed above", identity);
         return 2;
     }
     Context context;
     Diagnostic error;
     const auto& domain = GetSystemAllocationDomain();
-    if (context.Initialize(ludus::runtime::configuration::HostSchema(), domain, error) != Status::Ok)
+    if (context.Initialize(schemaOrNull->Settings, domain, error) != Status::Ok)
     {
         return 1;
     }
@@ -105,21 +131,28 @@ int main(int argc, char** argv)
     Status status = Status::InvalidState;
     if (action == "--schema" && argc == 2)
     {
-        status = WriteSchema(context, ludus::runtime::configuration::HOST_SCHEMA, bytes, output);
+        status = WriteSchema(context, schemaOrNull->Identity, bytes, output);
     }
     else if (action == "--validate")
     {
         Layer layer = Layer::Project;
         if (argc == 3)
         {
-            if (std::string_view(argv[2]) == "preference")
+            const std::string_view name = argv[2];
+            constexpr usize LAST_FILE_LAYER = static_cast<usize>(Layer::Preference);
+            usize index = 0;
+            while (index <= LAST_FILE_LAYER && LayerName(static_cast<Layer>(index)) != name)
             {
-                layer = Layer::Preference;
+                ++index;
             }
-            else if (std::string_view(argv[2]) != "project")
+            if (index > LAST_FILE_LAYER)
             {
+                LUDUS_LOG_ERROR(kConfigurationLog,
+                                "Unknown file layer '{}'; use engine, project, profile, device, quality or preference",
+                                name);
                 return 2;
             }
+            layer = static_cast<Layer>(index);
         }
         usize size = 0;
         while (size < sizeof(bytes))
@@ -146,7 +179,7 @@ int main(int argc, char** argv)
         status = PrepareJson(context,
                              {reinterpret_cast<const char*>(bytes), size},
                              layer,
-                             ludus::runtime::configuration::HOST_SCHEMA,
+                             schemaOrNull->Identity,
                              context.Revision(),
                              domain,
                              error);
@@ -156,7 +189,7 @@ int main(int argc, char** argv)
         }
         if (status == Status::Ok)
         {
-            status = WriteLayer(context, layer, ludus::runtime::configuration::HOST_SCHEMA, bytes, output);
+            status = WriteLayer(context, layer, schemaOrNull->Identity, bytes, output);
         }
     }
     if (status != Status::Ok)

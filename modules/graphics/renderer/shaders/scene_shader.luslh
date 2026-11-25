@@ -217,6 +217,11 @@ extern slang
         uint32 LightCount;
         uint32 EmitterCount;
     };
+    struct SceneLightSample
+    {
+        SelectedLight Selection;
+        IncidentLightSample Incident;
+    };
 
     void FailSceneQuery(inout RayQueryContext queries, in uint32 reason);
     Ray MakeCameraRay(in RayLaunch launch, in float32x2 samplePixel);
@@ -224,12 +229,37 @@ extern slang
     SceneQuery TraceClosest(in SceneContext scene, inout RayQueryContext queries, in Ray ray, out SurfaceHit outHit);
     SceneQuery TestVisibility(in SceneContext scene,
                               inout RayQueryContext queries,
-                              in SurfaceHit receiver,
+                              in float32x3 originWorld,
                               in IncidentLightSample light);
     SceneQuery TestVisibility(in SceneContext scene,
                               inout RayQueryContext queries,
                               in SurfaceHit receiver,
+                              in IncidentLightSample light);
+    SceneQuery TestVisibility(in SceneContext scene,
+                              inout RayQueryContext queries,
+                              in float32x3 originWorld,
                               in LightSample light);
+    SceneQuery TestVisibility(in SceneContext scene,
+                              inout RayQueryContext queries,
+                              in SurfaceHit receiver,
+                              in LightSample light);
+    /// Trace one surface query, ignoring two packed GetTriangle indices. Use SCENE_INVALID_INDEX for an empty slot.
+    SceneQuery TraceClosestExcludingTriangles(in SceneContext scene,
+                                              inout RayQueryContext queries,
+                                              in Ray ray,
+                                              in uint32x2 excludedTriangles,
+                                              out SurfaceHit outHit);
+    /// Trace light visibility while ignoring packed indices, with the ordinary visibility budget and endpoint handling.
+    SceneQuery TestVisibilityExcludingTriangles(in SceneContext scene,
+                                                inout RayQueryContext queries,
+                                                in float32x3 originWorld,
+                                                in IncidentLightSample light,
+                                                in uint32x2 excludedTriangles);
+    bool TryMakeCameraRayFromWorldPosition(in RayLaunch launch,
+                                           in float32x3 positionWorld,
+                                           out Ray outRay,
+                                           out float32x2 outPositionClip);
+    bool TryMakeCameraRayFromWorldPosition(in RayLaunch launch, in float32x3 positionWorld, out Ray outRay);
     MaterialSample EvaluateMaterial(in SceneContext scene, in SurfaceHit hit);
     float32x3 EvaluateEmission(in SceneContext scene, in SurfaceHit hit, in float32x3 directionAwayWorld);
     float32x3 EvaluateEnvironment(in SceneContext scene, in float32x3 directionWorld);
@@ -259,6 +289,32 @@ extern slang
                                             in uint32 firstDimension,
                                             inout RayQueryContext inoutQueries);
     SurfaceHit GetSurfaceHit(in SceneContext scene, in uint32 triangleIndex, in float32x2 barycentric);
+    /// Sample a scene light at a position in world metres or at a SurfaceHit.
+    /// Pass launch and dimensions for addressed sampling, or omit them to draw from the invocation stream.
+    /// Check Incident.HasSample before using the proposal.
+    SceneLightSample SampleLight(in SceneContext scene,
+                                 in float32x3 positionWorld,
+                                 in RayLaunch launch,
+                                 in uint32 selectionDimension,
+                                 in uint32 incidentDimension,
+                                 in LightSelectionPolicy policy,
+                                 inout RayQueryContext inoutQueries);
+    SceneLightSample SampleLight(in SceneContext scene,
+                                 in SurfaceHit shadingHit,
+                                 in RayLaunch launch,
+                                 in uint32 selectionDimension,
+                                 in uint32 incidentDimension,
+                                 in LightSelectionPolicy policy,
+                                 inout RayQueryContext inoutQueries);
+    SceneLightSample SampleLight(in SceneContext scene,
+                                 in float32x3 positionWorld,
+                                 in LightSelectionPolicy policy,
+                                 inout RayQueryContext inoutQueries);
+    SceneLightSample SampleLight(in SceneContext scene,
+                                 in SurfaceHit shadingHit,
+                                 in LightSelectionPolicy policy,
+                                 inout RayQueryContext inoutQueries);
+    static const uint32 SCENE_INCIDENT_LIGHT_DIMENSION_COUNT;
     float32 EvaluateLightPdfSolidAngle(in SceneContext scene,
                                        in float32x3 receiverPositionWorld,
                                        in SurfaceHit endpoint);
@@ -271,8 +327,15 @@ extern slang
                                                in float32x3 receiverPositionWorld,
                                                in SurfaceHit endpoint);
     float32 EvaluateIncidentEnvironmentPdfSolidAngle(in SceneContext scene);
-    float32 SampleSceneRandom(in RayLaunch launch, in uint32 dimension);
+    float32 SampleUniformFloat01(in RayLaunch launch, in uint32 dimension);
     float32 SampleSceneRandom(inout RayQueryContext queries);
     uint32 SampleSceneRandom(inout RayQueryContext queries, in uint32 minimumInclusive, in uint32 maximumExclusive);
     RandomAddress PixelRandomAddress(in uint32 pixel, in uint32 sample, in uint32 dimension);
+    /// Draw a weighted component index from finite, nonnegative weights.
+    /// Returns SCENE_INVALID_INDEX and latches a failure if the draw or weights are invalid.
+    uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32x2 weights);
+    uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32x3 weights);
+    uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32x4 weights);
+    /// Pass a fixed float32 array. Slang deduces its length from the argument.
+    uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32 weights[]);
 };

@@ -162,6 +162,7 @@ void CodeStructureView::acceptResult()
             mAvailable.insert(fold.FirstLine, fold);
         }
     }
+    addServerFolds();
     mCollapsed.removeIf([this](const CollapsedFold& fold) {
         const int32 line = fold.First.blockNumber();
         if (fold.Kind == CodeFoldKind::Manual)
@@ -211,6 +212,70 @@ void CodeStructureView::acceptResult()
                              : tr("Show document outline"));
     UpdateHeader();
     mEditor->updateFoldPresentation();
+}
+
+void CodeStructureView::SetServerFolds(const QList<CodeSyntaxFold>& folds)
+{
+    QList<ServerFold> anchored;
+    anchored.reserve(qMin(folds.size(), static_cast<qsizetype>(MAX_SERVER_FOLDS)));
+    for (const CodeSyntaxFold& fold : folds)
+    {
+        if (anchored.size() == MAX_SERVER_FOLDS)
+        {
+            break;
+        }
+        const QTextBlock first = mEditor->document()->findBlockByNumber(fold.FirstLine);
+        const QTextBlock last = mEditor->document()->findBlockByNumber(fold.LastLine);
+        if (first.isValid() == true && last.isValid() == true && first.blockNumber() < last.blockNumber())
+        {
+            anchored.append({QTextCursor(first), QTextCursor(last), fold.Kind, fold.Label});
+        }
+    }
+    mServerFolds = Move(anchored);
+    if (mSyntax.GetCurrentResultOrNull() != nullptr)
+    {
+        acceptResult();
+    }
+}
+
+QList<CodeSyntaxFold> CodeStructureView::GetServerFolds() const
+{
+    QList<CodeSyntaxFold> folds;
+    for (const CodeSyntaxFold& fold : mAvailable)
+    {
+        if (fold.IsFromServer == true)
+        {
+            folds.append(fold);
+        }
+    }
+    return folds;
+}
+
+void CodeStructureView::addServerFolds()
+{
+    // CE26: a server adds only kinds the grammar lacks, and never replaces a syntax
+    // range, so folds do not move while a server starts, restarts or stops.
+    const bool hasGrammar = HasCodeSyntaxGrammar(mEditor->GetLanguage());
+    for (const ServerFold& server : mServerFolds)
+    {
+        const bool isGrammarKind = hasGrammar == true
+                                       ? server.Kind == CodeFoldKind::Syntax || server.Kind == CodeFoldKind::Comment ||
+                                             server.Kind == CodeFoldKind::Region
+                                       : server.Kind == CodeFoldKind::Indentation;
+        const int32 first = server.First.blockNumber();
+        const int32 last = server.Last.blockNumber();
+        if (isGrammarKind == false && last > first && mAvailable.contains(first) == false)
+        {
+            mAvailable.insert(first,
+                              {
+                                  .FirstLine = first,
+                                  .LastLine = last,
+                                  .Kind = server.Kind,
+                                  .Label = server.Label,
+                                  .IsFromServer = true,
+                              });
+        }
+    }
 }
 
 void CodeStructureView::addCollapsed(const CodeSyntaxFold& fold)

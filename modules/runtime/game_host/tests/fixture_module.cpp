@@ -344,9 +344,16 @@ Status FixtureCreate(const CreateInfo* info, GameInstance** outInstance) noexcep
 
 void FixtureDestroy(GameInstance* instance) noexcept
 {
-    if (kVariantName[0] == 'D' || (ShouldFail("work_pending") && AsState(instance)->WorkerLive))
+    // Failure-variant probes use `if constexpr`: other variants' builds emit no code for them,
+    // so they raise no unreachable-code or constant-condition warnings, and a debugger's
+    // FixtureUpdate breakpoint stops on the first simulation statement.
+    if constexpr (kVariantName[0] == 'D')
     {
-        std::abort(); // Native destructor failure / unsafe worker destruction probe.
+        std::abort(); // Native destructor failure probe.
+    }
+    if (ShouldFail("work_pending") && AsState(instance)->WorkerLive)
+    {
+        std::abort(); // Unsafe worker destruction probe.
     }
     HostLog(AsState(instance), LogSeverity::Debug, "fixture destroy");
     if (ShouldFail("retire") == false)
@@ -357,11 +364,11 @@ void FixtureDestroy(GameInstance* instance) noexcept
 
 Status FixtureUpdate(GameInstance* instance, const FrameInput* input, RenderParams* outRender) noexcept
 {
-    if (kVariantName[0] == 'C')
+    if constexpr (kVariantName[0] == 'C')
     {
         std::abort();
     }
-    if (kVariantName[0] == 'H')
+    if constexpr (kVariantName[0] == 'H')
     {
         for (;;)
         {

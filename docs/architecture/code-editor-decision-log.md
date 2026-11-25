@@ -674,7 +674,8 @@ the editor build and tests), exactly as the M0 baseline did (recorded on an
 Apple M5). The two new workloads print one WARN summary each; the maintainer runs
 `ludus_code_editor_tests "[.benchmark][code-editor]"` on a quiet reference
 machine and records the summaries against the 1-cursor (4 ms) and 100-cursor
-(8 ms) budgets. Until then the typing budgets for M2 are pending that run.
+(8 ms) budgets. The run is recorded in
+[M2 typing budgets recorded](#m2-typing-budgets-recorded-ce21-2026-11-22).
 
 ### M2 gate report (2026-11-05)
 
@@ -753,3 +754,459 @@ offscreen. The merged M2 stack did not compile, and five tests failed once it di
 Kiro's sandbox cannot compile, so the "authored, not run" label covered
 compiling as well as running. `AGENTS.md` and `.kiro/steering` now require a
 warnings-as-errors build before a pull request, or a draft titled `[unbuilt]`.
+
+### M2 typing budgets recorded (CE21, 2026-11-22)
+
+The batch 7 workloads were first run on an Apple M5 (10 cores, 16 GiB), macOS
+26.6, Homebrew Clang 23.1.3 and Qt 6.12.0, with preset `macos-clang-development`
+(RelWithDebInfo), `LUDUS_WARNINGS_AS_ERRORS=ON` and `QT_QPA_PLATFORM=offscreen`
+([issue 1261](https://github.com/The-Ludus-Project/Ludus/issues/1261)).
+Concurrent agent builds kept the load average high, so this is not the quiet
+reference machine that M9 qualifies with the native probe.
+
+```bash
+./init.sh --cli --with-tests --with-editor --preset-only --skip-checks --skip-sanitizers --skip-sdk macos-clang-development
+cmake --preset macos-clang-development -DLUDUS_WARNINGS_AS_ERRORS=ON
+cmake --build out/build/macos-clang-development --target ludus_code_editor_tests
+QT_QPA_PLATFORM=offscreen out/build/macos-clang-development/apps/editor/ludus_code_editor_tests \
+  "corpus: 1-cursor typing through the edit-set path","corpus: 100-cursor typing through the edit-set path" -r compact
+```
+
+At a load average of 16-21 the 100-cursor case missed its budget: handling p95
+was 17-55 ms and key-to-paint p95 16-52 ms. A `sample` profile found two costs
+that grow with the distance between the cursors, not with the edit:
+
+- **Span replacement.** After the host applied the edit set,
+  `CodeDocumentController::Synchronize` diffed the view against the host text
+  by common prefix and suffix and replaced everything between them in one
+  `insertText`. With carets spread over 400 lines, every keystroke deleted and
+  recreated every line between the first and last caret, with a layout per
+  recreated line. `ApplyMultiCursorEdit` now applies each accepted region to
+  the view in place, last region first, in one Qt edit block, so each line
+  keeps its `QTextBlock`, layout cache, syntax state and fold data. The
+  following `Synchronize` still compares the view with the host text and
+  repairs any difference.
+- **Off-screen carets.** `CodeMultiCursor::Paint` located every secondary
+  caret with `cursorRect`, which lays out the caret's line, even outside the
+  viewport. Paint now receives the visible position range and skips carets
+  outside it.
+
+Two regression tests cover these: `Multi-cursor typing edits each line in place`
+keeps a marked line between two carets, and `Painting secondary carets lays out
+only visible lines` repaints synchronously and checks that an off-screen caret's
+line stays unlaid out. Each fails without its fix.
+
+Results with both fixes, alternating the builds before and after the change in
+one session (load average about 9). Each run has 100 samples with a nearest-rank
+p95; figures are the range over four runs, in microseconds:
+
+| Workload | Build | Handling p50 | Handling p95 | Key-to-paint p50 | Key-to-paint p95 | Budget | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 cursor (72 chars, 5 lines) | Before | 63-70 | 74-81 | 51-55 | 60-67 | ≤ 4 ms handling p95; ≤ 16 ms key-to-paint p95 | Within |
+| 1 cursor | After | 63-70 | 71-108 | 50-55 | 57-87 | ≤ 4 ms handling p95; ≤ 16 ms key-to-paint p95 | Within |
+| 100 cursors (7,200 chars, 401 lines) | Before | 2,219-2,246 | 2,306-3,627 | 2,132-2,150 | 2,214-3,495 | ≤ 8 ms handling p95; ≤ 16 ms key-to-paint p95 | Within |
+| 100 cursors | After | 861-929 | 936-1,001 | 776-839 | 843-897 | ≤ 8 ms handling p95; ≤ 16 ms key-to-paint p95 | Within |
+
+The earlier failure was mostly load: at a load average of about 9 the build
+before the change met its budget too. The change still makes the 100-cursor
+keystroke about 2.4 times cheaper. At a load average of about 7, alternating
+runs gave a 100-cursor handling p95 of 7.4-11.7 ms before the change and
+3.4-5.0 ms after it, so it also restores headroom on a busy machine. Both M2
+typing budgets are now recorded and met offscreen. The native keypress-to-paint
+qualification on quiet reference machines remains M9 work.
+
+## M4 - Generic language client
+
+### M4 batch 1: the generic client move (CE09, 2026-11-22)
+
+`SlangLanguageService` is now `LanguageClient`
+(`apps/editor/src/internal/language_client.h`), and its Slang specifics moved
+into a `LanguageServerProfile` (`internal/language_profiles.h`), as the first
+M4 task requires ([issue 1263](https://github.com/The-Ludus-Project/Ludus/issues/1263)).
+This is a structural move with no behavior change:
+
+- The client keeps the framing, bounds, off-thread decoding, deadline,
+  incremental synchronization and stale-generation rules unchanged.
+- The profile carries what was hard-coded for Slang: the `languageId`, the
+  capabilities that initialization requires (completion and signature help),
+  the `workspace/configuration` answers, and the vocabulary of the failure
+  messages. The Slang profile reproduces every earlier message exactly.
+- A profile never names an executable or adds arguments. Program resolution
+  stays with the context provider (`RenderGraphShaderAssistance`), so a project
+  file still cannot replace a server program.
+- LUSL sources keep using the Slang profile, as they did before. `luslc lsp`
+  advertises no signature help, so it fails the required-capability check; the
+  capability dispatch in the next batch makes signature help optional and adds
+  a LUSL profile.
+
+`language_client_tests.cpp` pins the Slang profile's configuration answers and
+the exact missing-server and unsupported-server messages, and drives a
+completion through the client against `slang_server_fixture.py`. The existing
+assistance and navigation cases run unchanged.
+
+### M4 batch 2: capability dispatch and the request table (CE09, CE20, 2026-11-22)
+
+The second M4 task adds the client's protocol machinery
+([issue 1263](https://github.com/The-Ludus-Project/Ludus/issues/1263)). Behavior
+changes, each with a test against the new scripted fixture
+`apps/editor/tests/language_server_fixture.py`:
+
+- **Request table** (`internal/language_requests.h`). One row per request
+  kind: method, the server capability (and option, such as
+  `completionProvider.resolveProvider`) that enables it, its priority and
+  whether the client adds `textDocument`. Later batches add features by using
+  their rows; no feature names a method string.
+- **Capability dispatch.** The profile no longer lists required capabilities.
+  A kind the ready server does not advertise is never sent: `CanRequest` and
+  `GetUnavailableReason` disable its command with the reason in its tooltip
+  (completion and signature help in the view; Go to Symbol, Go to Definition
+  and Find References in navigation). Typing triggers completion and signature
+  help only from the server's `triggerCharacters` (and signature
+  `retriggerCharacters`); the earlier `.`, `(` and `,` remain the defaults until
+  a server reports its options. This fixes LUSL assistance: `luslc lsp`
+  advertises no signature help, which the batch 1 Slang requirements rejected.
+  LUSL sources now use their own `GetLuslServerProfile`.
+- **Cancellation and priority.** At most one request per kind is in flight; a
+  newer one sends `$/cancelRequest` for the older, whose late reply is
+  discarded. Each sent request has its own ten-second deadline. Interactive
+  requests flush pending text and go at once; background requests (document
+  symbols, semantic tokens, inlay hints, folding ranges) wait for the 30 ms
+  synchronization debounce, then go before workspace symbols.
+- **Synchronization.** `didChange` is coalesced to the debounce, sent at once
+  before an interactive request, and uses full text when the server asks for
+  `TextDocumentSyncKind.Full`. A server with no synchronization is rejected.
+- **Positions.** The client offers `utf-8` then `utf-16` and accepts either;
+  `internal/language_positions.h` maps UTF-16 editor offsets both ways, and
+  completion edits, navigation results and `didChange` ranges use the
+  negotiated encoding. The pinned `slangd` and `luslc` choose UTF-16.
+- **Errors and crashes.** An error reply is `RequestFailed`: the status names
+  the request's repair and the server keeps running (it used to be stopped and
+  restarted on the next request). An unexpected exit restarts the same server
+  after 1 s, then 2 s, with a status saying editing is unaffected and the
+  pending intent re-sent when it is still current. A third exit within 60 s
+  stops it with Retry assistance as the fix. The retained standard error
+  (bounded by the existing 8 KiB budget) is available as `GetServerLog` for the
+  status-bar Show Log action, which lands with the status-bar language-server
+  item in the diagnostics batch.
+
+The fixture replaces neither `slang_server_fixture.py` nor the `[slang-native]`
+case: they keep covering the shader context. The remaining fixture failure paths
+(oversize messages, stale replies across documents, workspace-edit rejections)
+belong to the batches that add those features.
+
+### M4 batch 3a: hover and Analysis diagnostics (CE10, CE20, 2026-11-23)
+
+The first part of the third M4 task
+([issue 1263](https://github.com/The-Ludus-Project/Ludus/issues/1263)):
+
+- **Analysis diagnostics.** The client emits `textDocument/publishDiagnostics`
+  (bounded to 1,024 per report) and advertises version support. Once a context
+  is prepared, `CodeAssistance` re-synchronizes the draft 100 ms after an edit.
+  A report is applied only when it names the context's document, carries the
+  version the server last received (or none), and that text is still the
+  current draft; otherwise the next report replaces it. Positions use the
+  negotiated encoding, and ranges in the generated prefix or suffix are
+  dropped. Hints are dropped; information shows as a warning.
+- **Separate layer.** `CodeEditor::SetAnalysisDiagnostics` keeps its own
+  markers, drawn with a dotted underline beneath the build's wave squiggles
+  and described as `Analysis (<server>) error/warning`. Build markers, F8 and
+  the gutter keep their current meaning. The Error List's Analysis and Build
+  groups follow in a later batch.
+- **Hover.** After 300 ms of pointer rest (VS Code's default), or **Show
+  Hover** in the context menu, the editor asks for a hover. Hover never
+  prepares a context, so a resting pointer cannot start tools: before a context
+  exists it shows local diagnostics only. A reply applies only to the document
+  revision and context it was asked for. Contents are shown as plain text, with
+  code fences and Slang's generated `Defined in` provenance removed, followed by
+  that position's build and analysis messages. Show Hover has no default
+  shortcut: VS Code's Ctrl+K Ctrl+I needs the Ctrl+K prefix that the Ludus
+  profile keeps for the command palette.
+- **Show Log** in the Source pane's shader-assistance row shows the server's
+  retained standard error (CE20).
+
+Tests drive `language_server_fixture.py`, which can now publish a diagnostic
+for every occurrence of a word, optionally with a stale version. The context
+prefix contains the word too, so generated text must not produce a marker.
+
+### M4 batch 3b: Analysis rows and the remaining Go to commands (CE10, 2026-11-23)
+
+- **Error List.** A new `ErrorListProducer::Analysis` holds one row per analysis
+  marker in every open package-shader Code tab (since
+  [PR 2208](https://github.com/The-Ludus-Project/Ludus/pull/2208) shaders open
+  there; the Source pane serves when a workspace has no Code area), with the
+  origin `Analysis (<server>)`, the package file and the marker's current line
+  and column. A closed tab's rows leave with it. The producer replaces only its own
+  rows like the others, but never emits `ProblemsReported`: analysis changes as
+  the author types, and raising the list on each report would take focus from
+  the text. Activating a row brings that file's tab forward and selects the
+  marker's range, expanding folds, or reports that the row was replaced. The architecture's "Analysis" and "Build"
+  groups are these origins; the list is not split into two tables.
+- **Go to commands.** Go to Declaration, Go to Type Definition and Go to
+  Implementation (Ctrl+F12, VS Code's binding) use the request table's rows and
+  the same result reader as Go to Definition, jumping straight to a single
+  location. Declaration and Type Definition have no default binding, as in VS
+  Code. Each is disabled with its reason when the server lacks the provider.
+- **Go to Symbol in Workspace** (Ctrl+T) sends `workspace/symbol` with the word
+  at the caret and lists the results in authored sources of the captured
+  context; generated text is excluded, as for Go to Symbol. Re-querying as the
+  filter changes is not implemented: the chooser filters the returned list.
+
+The references tool window moves to the next batch with semantic tokens: it
+needs its own dock, and the existing chooser keeps serving Find References.
+
+### M4 batch 3c: semantic tokens and server folding ranges (CE10, CE26, 2026-11-23)
+
+Two background layers, owned by a new `CodeSemanticLayers`
+(`apps/editor/src/internal/code_semantic_layers.h`) rather than added to
+`CodeAssistance`, which only forwards replies and says when to refresh:
+
+- **Requests.** After each analysis synchronization (100 ms after an edit), and
+  when a context is set or the server becomes ready, the layers ask for
+  `textDocument/semanticTokens/full` and `textDocument/foldingRange` when the
+  ready server advertises them. They never ask for an unadvertised kind, which
+  would report the command unavailable. A reply applies only to the document
+  revision and context it was asked for; the request table's per-kind
+  cancellation drops older replies. The client now advertises every standard
+  token type and modifier, the `relative` format without overlapping or
+  multi-line tokens, and line-only folding ranges with `collapsedText`.
+- **Semantic tokens** are decoded through the server's legend into the same
+  `CodeSyntaxToken` records as tree-sitter, mapped to the design-token syntax
+  roles by one table (`ReadSemanticTokenRole`; a `readonly` variable is a
+  constant), and drawn by `CodeSyntaxHighlighter` over the syntax tokens. Tokens
+  in the generated prefix or suffix, spanning lines, overlapping an earlier
+  token or of a type with no role are dropped; a malformed entry ends the
+  decode, since later tokens are relative to it. At most 131,072 tokens are
+  kept. Between replies, edits move later tokens and drop the ones they touch,
+  so colors do not flicker while typing. The table lives beside the decoder,
+  not in the language registry, because the capture-to-role mapping it mirrors
+  is in the syntax service.
+- **Folding ranges** follow CE26: a server range is offered only for a kind the
+  language's grammar does not produce (a grammar produces Syntax, Comment and
+  Region ranges; without one, indentation), and never where a syntax range
+  already starts. With the current grammars that admits `imports`, a new
+  `CodeFoldKind` appended so saved fold state keeps its values; a range with no
+  or an unknown kind is a Syntax range. Ranges are anchored to text cursors, so
+  a collapsed server range moves with edits and stays collapsed through the
+  next syntax result. At most 4,096 are kept.
+
+The pinned `slangd` advertises semantic tokens (`type`, `enumMember`,
+`variable`, `parameter`, `function`, `property`, `namespace`, `keyword`, `macro`
+and `string`) and inlay hints, but no folding ranges; `luslc lsp` advertises
+neither layer. The folding path is therefore exercised by
+`language_server_fixture.py`, which can now answer semantic tokens for every
+occurrence of a word (`--tokens`) and return given folding ranges
+(`--folding-ranges`). Inlay hints and the references tool window follow in the
+next batch.
+
+### M4 batch 3d: inlay hints (CE10, 2026-11-23)
+
+- **Requests.** `CodeSemanticLayers` adds `textDocument/inlayHint` to its
+  refresh, for the whole authored source rather than the visible lines: hints
+  are few, and edits move them without a request when the view scrolls. The
+  client advertises `inlayHint` without resolve. The Slang profile now answers
+  `slang.inlayHints.deducedTypes` and `slang.inlayHints.parameterNames` with
+  `true`; the pinned `slangd` sends no hints otherwise. Whether hints are drawn
+  is the view's setting, so changing it never restarts or reconfigures the server.
+- **Refresh.** `slangd` answers the first request with no hints, reads its
+  configuration, then sends `workspace/inlayHint/refresh`. The client now
+  advertises `refreshSupport` for inlay hints and semantic tokens, answers both
+  refresh requests and emits `RefreshRequested`; the layers ask again after the
+  same 100 ms pause as an edit. Before this, the shader editor never showed a
+  hint from the real server.
+- **Decoding.** A label is a string or its joined parts, shortened with an
+  ellipsis past 64 UTF-16 units. Hints outside the authored source, with an
+  empty label or spanning lines are dropped; at most 4,096 are kept, ordered by
+  position with Foundation's `StableSort`.
+- **Drawing.** The architecture requires inline text that never enters the
+  projection. `QPlainTextEdit` has no inline objects, so the highlighter reserves
+  each hint's measured width as absolute letter spacing on the character before
+  it, and the view paints the label into that gap. The document, its revision,
+  the clipboard and the history are untouched, and the caret, selection and hit
+  testing stay on real characters. A consequence is that a hint at a line start,
+  with no character before it, is not shown; `slangd`'s hints follow a name or an
+  opening parenthesis, so none is lost in practice. Edits move later hints and
+  drop the ones at the edit until the next reply.
+- **Setting.** **Show Inlay Hints** is a checkable editor command, persisted as
+  `codeEditor/inlayHints` (default on). Holding Ctrl+Alt shows hidden hints until
+  either key is released or the editor loses focus, as the architecture asks.
+
+The references tool window follows in its own batch.
+
+### M4 batch 3e: the References tool window (CE10, 2026-11-23)
+
+- **Routing.** `CodeNavigationViewHost` gains `ShowReferences`, which returns
+  false by default. `CodeAssistance` hands Find References results, with the
+  symbol at the caret, to `CodeNavigation::ShowReferences`; a host that has a
+  References window takes them, and any other host (plain Code tabs, tests)
+  keeps the chooser beside the editor. `RendererWorkspace` takes them for
+  package shaders once the main window attaches its window.
+- **Window.** `CodeReferencesWindow` (`internal/code_references_window.h`) is a
+  bottom tool window tabbed with the Error List and Search, closed until a
+  result arrives, and listed in **View** and **Window**. It groups rows by file
+  (the current source, other package files, and read-only shader context) and
+  shows each use's line, column and line text from the captured snapshot.
+- **Staleness.** Rows hold copied targets, not anchors, so they stay correct
+  only while the finding editor's text is unchanged. The window records that
+  document's revision: after an edit, activating a row reports that the list
+  describes earlier text and offers **Find Again** rather than jumping to a
+  shifted position. Find Again restores the request caret, which is anchored in
+  the document and so moved with the edits, and runs Find References there. A
+  closed editor disables Find Again and says how to start over. Activating a
+  row first brings the finding editor's tab forward through its host, so a row
+  works after the author has switched tabs.
+
+### M4 batch 3f: completion resolve and snippets (CE10, 2026-11-23)
+
+- **Resolve.** When the server advertises `completionProvider.resolveProvider`,
+  highlighting a suggestion sends `completionItem/resolve` with the item as the
+  server sent it, once per suggestion. The reply's fields are merged into the
+  item, so its documentation, detail and additional edits apply, while the edit
+  range taken from the list defaults stays unless the reply replaces it. A reply
+  applies only while the same request is current. The client now advertises
+  `resolveSupport` for `documentation`, `detail` and `additionalTextEdits`.
+- **Documentation.** The completion list shows the highlighted suggestion's
+  documentation in a panel beside it (plain text; the earlier tooltip remains),
+  on the side with room.
+- **Snippets.** The client advertises `snippetSupport`. `ParseCodeSnippet`
+  (`internal/code_snippet.h`) expands the LSP 3.17 grammar: tab stops, nested
+  placeholders, choices (the first is inserted), variables and escapes. A
+  construct that does not parse is literal text, as in VS Code. A transform is
+  refused with a message rather than inserted wrongly, as is a snippet beyond
+  128 stops or 16 nesting levels. A bare `$N` after `${N:text}` repeats that
+  text. The editor resolves no variables: the `TM_` ones are empty and keep
+  their default, and others insert their name, as the protocol asks.
+- **Tab stops.** The expanded text is applied as one undoable edit like any
+  completion, then `CodeSnippetSession` selects the first stop. Tab and
+  Shift+Tab move between stops; a stop's other occurrences become secondary
+  cursors, so the existing multi-cursor editing keeps mirrors in step. Stops are
+  anchored in the document and drawn with a faint background. `$0`, or the end
+  of the snippet without one, ends the session, as do Escape and moving the
+  caret outside the inserted text. Choices are inserted without a picker.
+
+Snippets as a separate completion source (the architecture's merged snippet
+list), rename, code actions and workspace edits follow.
+
+### M4 batch 4a: rename and workspace edits (CE10, CE11, 2026-11-23)
+
+The first part of the fourth M4 task
+([issue 1263](https://github.com/The-Ludus-Project/Ludus/issues/1263)). Code
+actions with the light bulb follow, and reuse these workspace edits.
+
+- **Rename Symbol** (F2, VS Code's binding) prepares the shader context, asks
+  `textDocument/prepareRename` when the server offers it (otherwise the word at
+  the caret is renamed), and opens an inline box over the symbol, the one
+  overlay besides Find that takes focus. Enter sends `textDocument/rename`;
+  Shift+Enter, or a rename that reaches other files, shows a preview dialog
+  listing every file and change with Apply and Cancel. A rename applies only to
+  the draft revision and context it was asked for. The command is disabled with
+  its reason for a server without `renameProvider`.
+- **Workspace edits.** `ReadCodeWorkspaceEdit` (`internal/code_workspace_edit.h`)
+  reads `changes` and `documentChanges` and validates the whole edit before
+  anything applies, as the design asks. It refuses: edits in the generated
+  prefix or suffix; read-only captured sources; URIs outside the context's
+  inventory; other files when the host cannot edit them; a versioned edit for an
+  older document; resource operations (create, rename, delete); invalid or
+  overlapping ranges; and more than 256 files (`CODE_MAX_WORKSPACE_EDIT_FILES`)
+  or 65,536 edits. Each refusal names its repair and says nothing changed.
+- **One transaction.** Shader sources live in the render-graph package, whose
+  history already snapshots every package file. `RenderGraphShaderAssistance`
+  implements `CodeWorkspaceEditHost`: it checks that every change's text is
+  still its file's draft, rebuilds each file's bytes (keeping CRLF endings), and
+  commits them through `RenderGraphDocument::ReplaceTexts` as a single undo step.
+  This is stronger than CE11's "Undo offers to undo in all files": one Undo in
+  any of the files reverts them all, because they share one history. The files
+  stay unsaved drafts until Save, and every open view refreshes as after Undo.
+  Without a host (a plain buffer), a rename is limited to the edited source and
+  applies through its controller as one edit.
+
+Neither pinned server advertises `renameProvider` (nor `codeActionProvider`),
+so the path is exercised by `language_server_fixture.py`'s new `--rename` and
+`--stale-rename` options and by a package test that applies a two-file edit.
+
+### M4 batch 4b: code actions and the light bulb (CE10, CE11, 2026-11-23)
+
+- **Requests.** A new `CodeActions` component (`internal/code_actions.h`), kept
+  out of `CodeAssistance`, asks `textDocument/codeAction` 250 ms after the caret
+  rests in a prepared context, and at once for **Show Code Actions** (Ctrl+.,
+  VS Code's binding). The range is the selection or caret; the context carries
+  the analysis diagnostics there exactly as the server published them, while
+  they still describe the draft, and the trigger kind (automatic or invoked).
+  An automatic request never replaces a pending invoked one. Replies apply only
+  to the draft they were asked for, and an edit clears the light bulb until the
+  next reply.
+- **Light bulb and list.** While actions exist on the caret's line, the gutter's
+  marker column shows a light bulb, a shape distinct from the diagnostic dot it
+  can share the column with; clicking it or Ctrl+. opens the list. Preferred
+  actions come first, in bold. Disabled actions (LSP `disabled`) and actions
+  that only run a server command are listed disabled with their reason: the
+  client does not implement `workspace/executeCommand` or the server-initiated
+  `workspace/applyEdit` it implies. At most 64 actions are kept.
+- **Apply.** An action's `edit` goes through `ReadCodeWorkspaceEdit` and the new
+  shared `ApplyCodeWorkspaceChanges`, which rename now uses too, so it is
+  validated whole and applied as one package undo step. An action without an
+  edit is resolved with `codeAction/resolve` (a new request-table row) when the
+  server advertises `resolveProvider`. The client now advertises code action
+  literals with `isPreferred`, `disabled`, `data` and edit resolution, workspace
+  edit `documentChanges` with no resource operations and abort-on-failure, and
+  rename's `prepareSupport`, which batch 4a omitted.
+
+Not done: the hover's Quick Fix link, and running server commands. With this
+batch the fourth M4 task is complete; the fixture failure paths and the M4 gate
+remain.
+
+### M4 batch 5: failure paths and the gate (CE09, CE10, CE11, 2026-11-23)
+
+The last M4 task adds the fixture failure paths the earlier batches deferred:
+
+- **Framing and bodies.** `language_server_fixture.py --corrupt METHOD:KIND`
+  answers with a length past the 4 MiB message budget, a header past 8 KiB, two
+  `Content-Length` headers, or a body that is not JSON. Each stops the
+  connection with the server's name and the repair, delivers no reply, and a
+  new start (Retry assistance) serves requests again.
+- **Deadline.** The ten-second initialize and request deadline is now the
+  profile's `RequestTimeoutMilliseconds`, defaulting to
+  `LANGUAGE_SERVER_REQUEST_TIMEOUT_MILLISECONDS`, as the architecture lists the
+  bounds as profile defaults. The built-in profiles keep ten seconds; a test
+  profile with a short deadline exercises `--silent METHOD` quickly.
+- **Unknown replies.** A response to an id the client never sent
+  (`--stray-reply`) is ignored and the connection stays ready.
+- **Stale replies across documents.** A held code action or hover reply for one
+  document, released after the editor is bound to another, changes neither
+  document and shows no light bulb, list or hover. The workspace edit refusals
+  (generated text, read-only and unknown files, older versions) came with
+  rename in batch 4a.
+
+The gate results are recorded with the task list. Interactive acceptance in the
+running editor and the design's completion aggregation remain open on the
+issue.
+
+### M4 batch 6: completion aggregation (CE10, 2026-11-23)
+
+The design merges completion sources and ranks them with the command palette's
+matcher. This batch does that for three of the four sources the architecture
+names:
+
+- **Server items** are now kept when the typed word fuzzily matches their
+  `filterText` (or label), not only when it is a case-insensitive prefix.
+- **Snippets** come from a built-in table per language
+  (`internal/code_completion_sources.h`): `if`, `for`, `struct`, `func` and a
+  compute entry point, in each language's own syntax (Slang's
+  `[shader("compute")]` and `SV_DispatchThreadID`, LUSL's
+  `[stage(compute), threads(...)]` and `DispatchThreadId`). Continuation lines
+  are indented to the insertion line. They are ordinary snippet items, so they
+  reuse the batch 3f expansion, tab stops and single undo step.
+- **Words** come from every open editor of the same language, the edited buffer
+  first: distinct identifiers of 3 to 128 UTF-16 units matching the typed word,
+  at most 4,096, reading at most 1 Mi UTF-16 units in all; a server label is
+  not repeated as a word.
+- **Ranking.** `ScoreFuzzyMatch` moved from the command palette into the code
+  library (`internal/fuzzy_match.h`, a separate structural commit). Higher
+  scores come first; ties list server items, then snippets, then words, each in
+  its own order. The best 256 are shown. After `.`, only server items are
+  offered, since only the server knows the members.
+
+**Ludus project symbols** are the remaining source. The architecture defines
+them through the engine context (asset and entity references from the content
+catalog in Luau and JSON), which is the M7 milestone, so they are left to M7.
+User-defined snippets are not part of this batch either.
+

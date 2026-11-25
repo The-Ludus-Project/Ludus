@@ -90,18 +90,25 @@ lock, script, or browser harness changes. Exact expanded CLI commands, tool pins
 source/artifact hashes, reflection, disassembly, and `contract.json` accompany
 each build in the output directory. These are compiler evidence, not runtime results.
 
-The exact compilation recipe, with `S=tools/shader-probe/probe.slang`,
-`C=out/shader-tools/slang/bin/slangc`, and `O=out/shader-probe`:
+The probe source is LUSL (`tools/shader-probe/probe.lusl`). The wrapper first
+lowers it to Slang with the SDK helper's lowering step and `luslc` (the native
+build's target, or `./scripts/bootstrap-luslc` for a standalone `compile`). It
+then compiles the lowered module. The exact recipe, with
+`S=out/shader-probe/probe.lusl.slang`, `C=out/shader-tools/slang/bin/slangc`, and
+`O=out/shader-probe`:
 
 ```bash
-S=tools/shader-probe/probe.slang
-C=out/shader-tools/slang/bin/slangc
 O=out/shader-probe
-$C $S -target spirv -profile spirv_1_3 -entry vertexMain -stage vertex \
+python3 cmake/shaders/lower_lusl.py --luslc "$(./scripts/bootstrap-luslc)" \
+  --root tools/shader-probe --source probe.lusl --name probe \
+  --output $O/probe.lusl.slang --slots $O/probe_slots.h --depfile $O/lusl.d
+S=$O/probe.lusl.slang
+C=out/shader-tools/slang/bin/slangc
+$C $S -target spirv -profile spirv_1_3 -entry VertexMain -stage vertex \
   -o $O/probe.vertex.spv -reflection-json $O/vertex.reflection.json
-$C $S -target spirv -profile spirv_1_3 -entry fragmentMain -stage fragment \
+$C $S -target spirv -profile spirv_1_3 -entry FragmentMain -stage fragment \
   -o $O/probe.fragment.spv -reflection-json $O/fragment.reflection.json
-$C $S -target wgsl -profile sm_6_0 -entry vertexMain -entry fragmentMain \
+$C $S -target wgsl -profile sm_6_0 -entry VertexMain -entry FragmentMain \
   -o $O/probe.wgsl -reflection-json $O/wgsl.reflection.json
 out/shader-tools/spirv-tools/usr/bin/spirv-val --target-env vulkan1.1 $O/probe.vertex.spv
 out/shader-tools/spirv-tools/usr/bin/spirv-val --target-env vulkan1.1 $O/probe.fragment.spv
@@ -109,7 +116,7 @@ out/shader-tools/spirv-tools/usr/bin/spirv-dis $O/probe.fragment.spv
 ```
 
 The wrapper supplies these paths automatically. WGSL's entries
-have `[shader]` stage annotations in the source. `sm_6_0` is the Slang frontend
+have `[stage]` annotations in the LUSL source, which lowering writes as Slang `[shader]` attributes. `sm_6_0` is the Slang frontend
 profile, not a claim that WebGPU supports every Shader Model 6 feature.
 
 Browser real software-GPU test:

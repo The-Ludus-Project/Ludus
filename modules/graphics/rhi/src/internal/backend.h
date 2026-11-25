@@ -15,13 +15,7 @@ Backend Kind() noexcept;
 bool Supports(BackendSelection selection) noexcept;
 StartupError
 Start(const ApplicationInfo&, const WindowInfo&, ludus::foundation::uint32 token, BackendSelection selection) noexcept;
-bool Initialize(const ApplicationInfo&) noexcept;
-bool ConnectWindow(const WindowInfo&) noexcept;
-bool InitializeRendering() noexcept;
-void ShutdownRendering() noexcept;
 void Shutdown() noexcept;
-bool BeginFrame() noexcept;
-bool EndFrame() noexcept;
 FrameStatus SetTarget(const FrameTarget&) noexcept;
 FrameStatus Begin() noexcept;
 FrameStatus End() noexcept;

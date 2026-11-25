@@ -118,6 +118,60 @@
       "input": "RayLaunch",
       "output": "Radiance",
       "bindings": []
+    },
+    {
+      "id": "ProduceDiffraction",
+      "stage": "ray_generation",
+      "source": "main_shaders/produce_diffraction.slang",
+      "function": "ProduceDiffraction",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "DiffractionMiss",
+      "stage": "miss",
+      "source": "main_shaders/produce_diffraction.slang",
+      "function": "DiffractionMiss",
+      "input": "Ray",
+      "output": "ScenePayload",
+      "bindings": []
+    },
+    {
+      "id": "DiffractionClosest",
+      "stage": "closest_hit",
+      "source": "main_shaders/produce_diffraction.slang",
+      "function": "DiffractionClosest",
+      "input": "SurfaceHit",
+      "output": "ScenePayload",
+      "bindings": []
+    },
+    {
+      "id": "WriteSampledColors",
+      "stage": "compute",
+      "source": "main_shaders/named_sampled_colors.slang",
+      "function": "WriteSampledColors",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ReadSampledColors",
+      "stage": "compute",
+      "source": "main_shaders/named_sampled_colors.slang",
+      "function": "ReadSampledColors",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ReadDiffraction",
+      "stage": "compute",
+      "source": "main_shaders/read_diffraction.slang",
+      "function": "ReadDiffraction",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
     }
   ],
   "techniques": [

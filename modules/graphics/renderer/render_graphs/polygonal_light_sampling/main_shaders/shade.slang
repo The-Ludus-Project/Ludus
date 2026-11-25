@@ -256,8 +256,8 @@ float3 SampleNonMeshLight(SceneContext scene,
                 uint sampleDimension = dimension + (technique == PROJECTED_SOLID_ANGLE_TECHNIQUE
                                                         ? PROJECTED_SOLID_ANGLE_SAMPLE_DIMENSION_OFFSET
                                                         : LTC_SAMPLE_DIMENSION_OFFSET);
-                float2 randomSample =
-                    float2(SampleSceneRandom(launch, sampleDimension), SampleSceneRandom(launch, sampleDimension + 1));
+                float2 randomSample = float2(SampleUniformFloat01(launch, sampleDimension),
+                                             SampleUniformFloat01(launch, sampleDimension + 1));
                 radiance += SamplePolygonalLightTechnique(scene,
                                                           shadingPoint,
                                                           triangle,

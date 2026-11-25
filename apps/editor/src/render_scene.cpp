@@ -1,5 +1,6 @@
 #include "internal/render_scene.h"
 #include "internal/builtin_world.h"
+#include "internal/editor_camera_controller.h"
 #include "internal/qt_numeric_stream.h"
 #include "internal/render_scene_limits.h"
 #include "internal/world_aperture.h"
@@ -32,7 +33,6 @@
 
 #include <bit>
 #include <limits>
-#include <span>
 #include <string_view>
 
 #include <QBuffer>
@@ -201,6 +201,7 @@ void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
     inoutScene.AtmosphereMoonSourceId = authored.AtmosphereMoonSourceId;
     inoutScene.IsAtmosphereMoonSwitchedOff = authored.IsAtmosphereMoonSwitchedOff;
     inoutScene.AtmosphereStatus = authored.AtmosphereStatus;
+    inoutScene.EarthLights = authored.EarthLights;
     if (authored.Cameras.isEmpty() == false)
     {
         inoutScene.Cameras = authored.Cameras;
@@ -251,7 +252,7 @@ public:
             return;
         }
         uint8* const destination = reinterpret_cast<uint8*>(mBlock.data()) + mWritten;
-        static_cast<void>(foundation::TryWriteLittleEndian(value, std::span<uint8>(destination, sizeof(uint32))));
+        static_cast<void>(foundation::TryWriteLittleEndian(value, {destination, sizeof(uint32)}));
         mWritten += sizeof(uint32);
     }
     /// Encode one IEEE binary32 word.
@@ -696,13 +697,10 @@ QJsonObject GetAtmosphereLightValues(const QJsonObject& entity, const WorldDocum
         world.Draft());
 }
 
-bool TrySetEarthNightSky(const QJsonObject& entity,
-                         const WorldDocument& world,
-                         rr::CelestialBackgroundDescription& inoutCelestial)
+bool TrySetEarthNightSky(const QJsonObject& light, rr::CelestialBackgroundDescription& inoutCelestial)
 {
     gameplay::world::EarthNightSkySample sky;
-    if (inoutCelestial.StarRadiance == 0 ||
-        TrySampleWorldEarthNightSky(GetAtmosphereLightValues(entity, world), sky) == false)
+    if (inoutCelestial.StarRadiance == 0 || TrySampleWorldEarthNightSky(light, sky) == false)
     {
         return false;
     }
@@ -765,6 +763,85 @@ bool ReadAtmosphereLight(const QJsonObject& entity,
     return true;
 }
 
+bool TryApplyCelestialDirection(const QJsonObject& properties,
+                                math::Quaternion rotation,
+                                rr::DirectLight& inoutLight,
+                                gameplay::world::EarthCelestialLighting& outEarth)
+{
+    bool isAboveHorizon = true;
+    if (TryResolveWorldCelestialRotation(properties, rotation, isAboveHorizon, outEarth) == false)
+    {
+        return false;
+    }
+    inoutLight.AngularRadiusRadians =
+        math::Min(outEarth.AngularRadiusRadians, rr::MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS);
+    if (outEarth.AngularRadiusRadians > 0 && properties.value(WORLD_CELESTIAL_MANUAL_PHOTOMETRY).toBool() == false)
+    {
+        const math::Vector3 illuminance = outEarth.GroundIlluminance;
+        inoutLight.Intensity = math::Max(illuminance.X, math::Max(illuminance.Y, illuminance.Z));
+        inoutLight.Color = inoutLight.Intensity > 0 ? illuminance / inoutLight.Intensity : math::Vector3{1, 1, 1};
+    }
+    inoutLight.Direction = math::Rotate(rotation, {0, 0, -1});
+    if (isAboveHorizon == false)
+    {
+        inoutLight.Intensity = 0;
+    }
+    return true;
+}
+
+void SetAtmosphereMoon(const AtmosphereLight& moon, rr::CelestialBackgroundDescription& inoutCelestial)
+{
+    inoutCelestial.DirectionToMoonWorld = moon.DirectionWorld;
+    if (moon.IsEnabled == false)
+    {
+        return;
+    }
+    if (moon.IsAutomatic == true && moon.Earth.DirectionToSunAtMoonWorld != math::Vector3{})
+    {
+        inoutCelestial.LunarAngularRadiusRadians = moon.Earth.AngularRadiusRadians;
+        inoutCelestial.LunarPeakRadiance = moon.Earth.LunarPeakRadiance;
+        inoutCelestial.DirectionToSunAtMoonWorld = moon.Earth.DirectionToSunAtMoonWorld;
+    }
+    else if (math::LengthSquared(moon.Illuminance) > 0)
+    {
+        constexpr float32 LAMBERTIAN_FULL_PHASE_SCALE = 1.5F; // The mean cosine over the projected disk is two thirds.
+        const float32 radius = moon.Earth.AngularRadiusRadians > 0
+                                   ? moon.Earth.AngularRadiusRadians
+                                   : rr::CelestialBackgroundDescription::DEFAULT_LUNAR_RADIUS_RADIANS;
+        const float32 sine = math::Sin(radius);
+        inoutCelestial.LunarAngularRadiusRadians = radius;
+        inoutCelestial.LunarPeakRadiance =
+            moon.Illuminance * (LAMBERTIAN_FULL_PHASE_SCALE / (math::kPiF * sine * sine));
+        inoutCelestial.DirectionToSunAtMoonWorld = moon.Earth.DirectionToSunAtMoonWorld;
+    }
+}
+
+/// Read the Atmosphere component's cloud layer fields. A World saved before they existed keeps the schema defaults,
+/// with the layer off. The layer's frame follows the Atmosphere entity's rotation.
+void ExtractWorldCloudLayer(const QJsonObject& properties,
+                            const math::TransformTRS& placement,
+                            rr::CloudLayerDescription& outClouds)
+{
+    using Clouds = rr::CloudLayerDescription;
+    const auto read = [&properties](const char* key, float32 fallback) {
+        return static_cast<float32>(properties.value(QLatin1StringView(key)).toDouble(static_cast<float64>(fallback)));
+    };
+    outClouds =
+    {
+        .IsEnabled = properties.value(QStringLiteral("clouds")).toBool(false),
+        .BaseHeightMetres = read("cloudBase", Clouds::DEFAULT_BASE_HEIGHT_METRES),
+        .ThicknessMetres = read("cloudThickness", Clouds::DEFAULT_THICKNESS_METRES),
+        .SizeXMetres = read("cloudSizeX", Clouds::DEFAULT_SIZE_METRES),
+        .SizeZMetres = read("cloudSizeZ", Clouds::DEFAULT_SIZE_METRES),
+        .EdgeFadeMetres = read("cloudEdgeFade", Clouds::DEFAULT_EDGE_FADE_METRES),
+        .Density = read("cloudDensity", 1),
+        .ExtinctionPerMetre = read("cloudExtinction", Clouds::DEFAULT_EXTINCTION_PER_METRE),
+        .SingleScatteringAlbedo = read("cloudAlbedo", Clouds::DEFAULT_SINGLE_SCATTERING_ALBEDO),
+        .PhaseAsymmetry = read("cloudForwardScattering", Clouds::DEFAULT_PHASE_ASYMMETRY),
+        .AxisXWorld = math::Rotate(placement.Rotation, {1, 0, 0}),
+    };
+}
+
 void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& transformBinding, RenderScene& inoutScene)
 {
     if (world.HasBuiltInSchema() == false)
@@ -824,10 +901,20 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
         .SunSourceId = sunSourceId,
         .ShouldLightScene = true,
     };
+    ExtractWorldCloudLayer(properties, placement, inoutScene.Atmosphere.Clouds);
+    inoutScene.Atmosphere.Aurora =
+    {
+        .IsEnabled = properties.value(QStringLiteral("aurora")).toBool(false),
+        .EmissionPerMetre = static_cast<float32>(
+            properties.value(QStringLiteral("auroraEmission"))
+                .toDouble(static_cast<float64>(rr::AuroraLayerDescription::DEFAULT_EMISSION_PER_METRE))),
+        .TimeSeconds = static_cast<float32>(properties.value(QStringLiteral("auroraTime")).toDouble()),
+        .AxisXWorld = math::Rotate(placement.Rotation, {1, 0, 0}),
+    };
     rr::CelestialBackgroundDescription& celestial = inoutScene.Atmosphere.Celestial;
     celestial.IsEnabled = true;
     celestial.StarRadiance = properties.value(QStringLiteral("stars")).toBool(true) == true ? 1.0F : 0.0F;
-    const bool hasEarthSky = TrySetEarthNightSky(sunEntity, world, celestial);
+    const bool hasEarthSky = TrySetEarthNightSky(GetAtmosphereLightValues(sunEntity, world), celestial);
     const QString moonId = properties.value(QStringLiteral("moon")).toString();
     if (moonId.isEmpty() == true)
     {
@@ -847,31 +934,13 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
     }
     if (hasEarthSky == false)
     {
-        static_cast<void>(TrySetEarthNightSky(moonEntity, world, celestial));
+        static_cast<void>(TrySetEarthNightSky(GetAtmosphereLightValues(moonEntity, world), celestial));
     }
-    celestial.DirectionToMoonWorld = moon.DirectionWorld;
-    if (moon.IsEnabled == false)
+    SetAtmosphereMoon(moon, celestial);
+    if (moon.IsEnabled == true)
     {
-        return;
+        inoutScene.AtmosphereMoonSourceId = ComputeSourceId(moonId);
     }
-    if (moon.IsAutomatic == true && moon.Earth.DirectionToSunAtMoonWorld != math::Vector3{})
-    {
-        celestial.LunarAngularRadiusRadians = moon.Earth.AngularRadiusRadians;
-        celestial.LunarPeakRadiance = moon.Earth.LunarPeakRadiance;
-        celestial.DirectionToSunAtMoonWorld = moon.Earth.DirectionToSunAtMoonWorld;
-    }
-    else if (math::LengthSquared(moon.Illuminance) > 0)
-    {
-        constexpr float32 LAMBERTIAN_FULL_PHASE_SCALE = 1.5F; // The mean cosine over the projected disk is two thirds.
-        const float32 radius = moon.Earth.AngularRadiusRadians > 0
-                                   ? moon.Earth.AngularRadiusRadians
-                                   : rr::CelestialBackgroundDescription::DEFAULT_LUNAR_RADIUS_RADIANS;
-        const float32 sine = math::Sin(radius);
-        celestial.LunarAngularRadiusRadians = radius;
-        celestial.LunarPeakRadiance = moon.Illuminance * (LAMBERTIAN_FULL_PHASE_SCALE / (math::kPiF * sine * sine));
-        celestial.DirectionToSunAtMoonWorld = moon.Earth.DirectionToSunAtMoonWorld;
-    }
-    inoutScene.AtmosphereMoonSourceId = ComputeSourceId(moonId);
 }
 } // namespace
 RenderSceneSource RenderScene::GetSource(const QString& root, const WorldDocument& world)
@@ -1182,42 +1251,28 @@ bool RenderScene::Load(const QString& root,
                 {
                     return Fail(outError, name + QStringLiteral(": invalid light terms, cone or non-unit scale."));
                 }
-                math::Quaternion lightRotation = trs.Rotation;
-                bool isAboveHorizon = true;
                 const QJsonObject lightProperties = MakeWorldLightValues(
                     entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject(),
                     world.Draft());
+                light.Position = trs.Translation;
+                light.Direction = math::Rotate(trs.Rotation, {0, 0, -1});
+                light.InnerCos = math::Cos(math::DegreesToRadians(innerDegrees));
+                light.OuterCos = math::Cos(math::DegreesToRadians(outerDegrees));
+                light.SourceId = ComputeSourceId(id);
                 if (world.HasBuiltInSchema() == true && light.Kind == rr::LightKind::Directional)
                 {
+                    if (IsWorldEarthLight(lightProperties) == true)
+                    {
+                        candidate.EarthLights.append({lightProperties, light});
+                    }
                     gameplay::world::EarthCelestialLighting earth;
-                    if (TryResolveWorldCelestialRotation(lightProperties, lightRotation, isAboveHorizon, earth) ==
-                        false)
+                    if (TryApplyCelestialDirection(lightProperties, trs.Rotation, light, earth) == false)
                     {
                         return Fail(outError,
                                     name + QStringLiteral(
                                                ": set the active celestial preset fields within their shown ranges."));
                     }
-                    // The Earth Sun and Earth Moon disks soften direct shadows with the same angular size as the sky
-                    // disk; a manual photometry override replaces only colour and intensity.
-                    light.AngularRadiusRadians =
-                        math::Min(earth.AngularRadiusRadians, rr::MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS);
-                    if (earth.AngularRadiusRadians > 0 &&
-                        lightProperties.value(WORLD_CELESTIAL_MANUAL_PHOTOMETRY).toBool() == false)
-                    {
-                        const math::Vector3 illuminance = earth.GroundIlluminance;
-                        light.Intensity = math::Max(illuminance.X, math::Max(illuminance.Y, illuminance.Z));
-                        light.Color = light.Intensity > 0 ? illuminance / light.Intensity : math::Vector3{1, 1, 1};
-                    }
                 }
-                light.Position = trs.Translation;
-                light.Direction = math::Rotate(lightRotation, {0, 0, -1});
-                if (isAboveHorizon == false)
-                {
-                    light.Intensity = 0;
-                }
-                light.InnerCos = math::Cos(math::DegreesToRadians(innerDegrees));
-                light.OuterCos = math::Cos(math::DegreesToRadians(outerDegrees));
-                light.SourceId = ComputeSourceId(id);
                 if (candidate.AuthoredLights.Count >= sizeof(candidate.AuthoredLights.Lights) / sizeof(rr::DirectLight))
                 {
                     return Fail(outError, QStringLiteral("World exceeds the authored-light capacity."));
@@ -1675,6 +1730,97 @@ rr::AtmosphereDescription RenderScene::GetAtmosphereForView() const noexcept
         atmosphere.Celestial.LunarAngularRadiusRadians = 0;
     }
     return atmosphere;
+}
+
+bool RenderScene::TrySampleEarthTime(float64 utcDays, QString& outError)
+{
+    if (EarthLights.isEmpty() == true)
+    {
+        return Fail(outError,
+                    QStringLiteral("Set an enabled directional light to Dynamic Celestial → Earth Sun "
+                                   "or Earth Moon in the World, then reopen Time-lapse."));
+    }
+    rr::LightSelection lights = AuthoredLights;
+    rr::AtmosphereDescription atmosphere = Atmosphere;
+    bool hasNightSky = false;
+    bool hasActiveLight = false;
+    for (const PreviewEarthLight& binding : EarthLights)
+    {
+        QJsonObject properties = binding.Properties;
+        properties.insert(WORLD_CELESTIAL_TIME, utcDays);
+        rr::DirectLight light = binding.Authored;
+        gameplay::world::EarthCelestialLighting earth;
+        if (TryApplyCelestialDirection(properties, {}, light, earth) == false)
+        {
+            return Fail(outError, QStringLiteral("Set the time range and Earth observer inside the celestial limits."));
+        }
+        for (uint32 index = 0; index < lights.Count; ++index)
+        {
+            if (lights.Lights[index].SourceId == light.SourceId)
+            {
+                lights.Lights[index] = light;
+                hasActiveLight = true;
+                break;
+            }
+        }
+        const bool isAutomatic = properties.value(WORLD_CELESTIAL_MANUAL_PHOTOMETRY).toBool() == false;
+        const math::Vector3 authoredIlluminance = binding.Authored.Color * binding.Authored.Intensity;
+        if (atmosphere.IsEnabled == true && light.SourceId == atmosphere.SunSourceId)
+        {
+            atmosphere.DirectionToSunWorld = -light.Direction;
+            atmosphere.SolarIlluminance = isAutomatic == true ? earth.BoundaryIlluminance : authoredIlluminance;
+            atmosphere.SolarAngularRadiusRadians = earth.AngularRadiusRadians;
+            hasNightSky = TrySetEarthNightSky(properties, atmosphere.Celestial);
+        }
+        if (atmosphere.IsEnabled == true && light.SourceId == AtmosphereMoonSourceId)
+        {
+            const AtmosphereLight moon
+            {
+                .DirectionWorld = -light.Direction,
+                .Illuminance = authoredIlluminance,
+                .Earth = earth,
+                .IsAutomatic = isAutomatic,
+                .IsEnabled = true,
+            };
+            SetAtmosphereMoon(moon, atmosphere.Celestial);
+            if (hasNightSky == false)
+            {
+                hasNightSky = TrySetEarthNightSky(properties, atmosphere.Celestial);
+            }
+        }
+    }
+    if (hasActiveLight == false)
+    {
+        return Fail(outError, QStringLiteral("Enable an Earth Sun or Earth Moon in the viewport Lights list."));
+    }
+    AuthoredLights = lights;
+    Atmosphere = atmosphere;
+    return true;
+}
+
+bool RenderScene::DescribeSavedView(uint32 width,
+                                    uint32 height,
+                                    bool shouldUseConventionalDepth,
+                                    rr::ViewDescription& outView,
+                                    QString& outError) const
+{
+    EditorCameraController camera;
+    if (HasStartView == false ||
+        camera.TrySetLookAt(StartView.EyeWorld, StartView.TargetWorld, StartView.UpWorld, StartView.VerticalFov) ==
+            false)
+    {
+        return Fail(
+            outError,
+            QStringLiteral("Use View → Set start view from this view to save the camera before opening Time-lapse."));
+    }
+    const PreviewViewOptions options
+    {
+        .Width = width,
+        .Height = height,
+        .EditorCameraOrNull = &camera.GetSample(),
+        .ShouldUseConventionalDepth = shouldUseConventionalDepth,
+    };
+    return View(options, outView, outError);
 }
 
 float64 RenderScene::MeterDirectionalIlluminance(math::Vector3 upWorld) const noexcept

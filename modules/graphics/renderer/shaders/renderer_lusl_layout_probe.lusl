@@ -1,0 +1,23 @@
+// Build qualification for a standalone renderer recipe using the shared FoundationMath
+// library and the generated layouts owned by the host.
+#include "math.luslh"
+#include "point_search_layout.luslh"
+#include "renderer_reference_layout.luslh"
+
+RWStructuredBuffer<uint32x4> layoutValues;
+
+[stage(compute), threads(LUDUS_POINT_SEARCH_GROUP_SIZE, 1, 1)]
+void ComputeMain(in uint32x3 dispatchThreadId : DispatchThreadId)
+{
+    const uint32 referenceDirectionDimension = LUDUS_REFERENCE_DIRECTIONAL_FIRST_DIMENSION;
+    const uint32 previewKernelVersion = LUDUS_GPU_PREVIEW_KERNEL_VERSION;
+    const uint32 sceneInterfaceVersion = LUDUS_SCENE_SHADER_INTERFACE_VERSION;
+    if (dispatchThreadId.x == 0)
+    {
+        layoutValues[0] = uint32x4(
+            IsFiniteBits(PI) == true ? previewKernelVersion : LUDUS_ABSENT_POINT_NODE,
+            referenceDirectionDimension,
+            sceneInterfaceVersion,
+            LUDUS_MAX_POINT_NEIGHBORS);
+    }
+}

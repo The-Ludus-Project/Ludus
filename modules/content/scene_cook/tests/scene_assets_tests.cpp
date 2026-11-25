@@ -836,6 +836,29 @@ TEST_CASE("Level created materials replace every slot of their imported material
     }
     CHECK(createdRecords == 1);
 
+    // A coated-diffuse definition is an ordered dielectric coat over a diffuse substrate: its base colour is the
+    // substrate, and the coat controls seed the typed coat parameters a coating instance later overrides.
+    decode(withDefinition(R"({"model":"coated_diffuse","base_color":[0.25,0.5,0.75],"coating_alpha":0.2,)"
+                          R"("coating_eta":1.4,"coating_thickness":0.05})"),
+           scene);
+    createdRecords = 0;
+    for (const resources::SceneMaterial& record : scene.Materials)
+    {
+        if (record.Reflectance == created)
+        {
+            ++createdRecords;
+            CHECK(record.Scattering.Model == format::MaterialModel::CoatedDiffuse);
+            CHECK(record.Scattering.AlphaU == 0.2F);
+            CHECK(record.Scattering.AlphaV == 0.2F);
+            CHECK(record.Scattering.CoatingEta == 1.4F);
+            CHECK(record.Scattering.CoatingThickness == 0.05F);
+            CHECK(format::IsMaterialScatteringValid(record.Scattering) == true);
+            // The coat runs an internal walk, so a fixed-dimension profile cannot consume it.
+            CHECK(format::SupportsFixedDimensionReflection(record.Scattering) == false);
+        }
+    }
+    CHECK(createdRecords == 1);
+
     // Entries need an imported material ID, a known model with exactly its members, and values in range.
     AssetError error;
     for (const std::string_view invalid :
@@ -845,7 +868,14 @@ TEST_CASE("Level created materials replace every slot of their imported material
           R"({"model":"diffuse","base_color":[0.5,0.5,0.5],"roughness":0.5})",
           R"({"model":"metallic_roughness","base_color":[0.5,0.5,0.5],"metallic":0.5})",
           R"({"model":"metallic_roughness","base_color":[0.5,0.5,0.5],"metallic":1.5,"roughness":0.5})",
-          R"({"model":"metallic_roughness","base_color":[0.5,0.5,0.5],"metallic":0.5,"roughness":0.01})"})
+          R"({"model":"metallic_roughness","base_color":[0.5,0.5,0.5],"metallic":0.5,"roughness":0.01})",
+          R"({"model":"coated_diffuse","base_color":[0.5,0.5,0.5],"coating_eta":1.4,"coating_thickness":0.05})",
+          R"({"model":"coated_diffuse","base_color":[0.5,0.5,0.5],"coating_alpha":0,"coating_eta":1.4,)"
+          R"("coating_thickness":0.05})",
+          R"({"model":"coated_diffuse","base_color":[0.5,0.5,0.5],"coating_alpha":0.2,"coating_eta":0.5,)"
+          R"("coating_thickness":0.05})",
+          R"({"model":"coated_diffuse","base_color":[0.5,0.5,0.5],"coating_alpha":0.2,"coating_eta":1.4,)"
+          R"("coating_thickness":-0.1})"})
     {
         INFO(invalid);
         CHECK_FALSE(ValidateLevel(ToSpan(withDefinition(invalid)), error));

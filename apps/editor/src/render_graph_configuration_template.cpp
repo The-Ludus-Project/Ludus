@@ -199,7 +199,7 @@ GetUnusedSettings(const RenderGraphSnapshot& snapshot, const QJsonArray& setting
          file != snapshot.Files.constEnd();
          ++file)
     {
-        if (file.key().endsWith(QStringLiteral(".slang")) == true)
+        if (IsRenderGraphShaderSource(file.key()) == true)
         {
             sources.append(QString::fromUtf8(file.value()));
         }

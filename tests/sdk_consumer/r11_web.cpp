@@ -1,5 +1,7 @@
 #include "r11compute.h"
+#include "r11compute_slots.h"
 #include "r11scalar.h"
+#include "r11scalar_slots.h"
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/platform/base/window.h>
@@ -13,6 +15,10 @@ namespace
 {
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
+// Slots and the vertex input location that the LUSL compiler assigned to r11.lusl and
+// r11compute.lusl.
+namespace scalar_slots = ludus::shaders::r11scalar::slots;
+namespace compute_slots = ludus::shaders::r11compute::slots;
 constexpr uint32 WIDTH = 16;
 constexpr uint32 HEIGHT = 4;
 constexpr usize ALIGNMENT = 256;
@@ -247,6 +253,7 @@ void Tick() noexcept
         }
         const rhi::RasterBinding binding
         {
+            .Binding = scalar_slots::SETTINGS_BUFFER,
             .Kind = rhi::RasterBindingKind::UniformBuffer,
             .Visibility = rhi::RasterVisibility::Fragment,
             .MinSize = 16,
@@ -265,9 +272,18 @@ void Tick() noexcept
         {
             return;
         }
-        const rhi::RasterBindingResource resource{ .Buffer = gUniform, .Size = 16 };
+        const rhi::RasterBindingResource resource
+        {
+            .Binding = scalar_slots::SETTINGS_BUFFER,
+            .Buffer = gUniform,
+            .Size = 16,
+        };
         const rhi::RasterVertexStream stream{ .Stride = 8 };
-        const rhi::RasterVertexAttribute attribute{ .Format = rhi::RasterVertexFormat::Float2 };
+        const rhi::RasterVertexAttribute attribute
+        {
+            .Location = ludus::shaders::r11scalar::locations::INPUT_POSITION_CLIP,
+            .Format = rhi::RasterVertexFormat::Float2,
+        };
         const rhi::RasterPipelineDescription description
         {
             .Vertex = gVertex,
@@ -352,6 +368,7 @@ void Tick() noexcept
         const uint8 bytes[COMPUTE_BYTES]{};
         const rhi::RasterBinding binding
         {
+            .Binding = compute_slots::VALUES,
             .Kind = rhi::RasterBindingKind::StorageReadWrite,
             .Visibility = rhi::RasterVisibility::Compute,
             .MinSize = 4,
@@ -378,7 +395,12 @@ void Tick() noexcept
         {
             return;
         }
-        const rhi::RasterBindingResource resource{ .Buffer = gComputeBuffer, .Size = 16 };
+        const rhi::RasterBindingResource resource
+        {
+            .Binding = compute_slots::VALUES,
+            .Buffer = gComputeBuffer,
+            .Size = 16,
+        };
         if (IsAccepted(rhi::CreateBindingSet(gDevice, gComputeLayout, {&resource, 1}, gComputeSet)) == false ||
             IsAccepted(rhi::CreateComputePipeline(gDevice,
                                                   { .Shader = gComputeShader, .Layout = gComputeLayout },

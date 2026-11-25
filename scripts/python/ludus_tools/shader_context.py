@@ -1,4 +1,4 @@
-"""Compiler-owned Slang editing contexts; never parse shader symbols.
+"""Compiler-owned LUSL and Slang editing contexts.
 
 Thanks to the Slang contributors, The Slang Shading Language VSCode Extension,
 Features and Additional Search Path, for the semantic-service integration model:
@@ -13,6 +13,7 @@ import re
 import shutil
 
 from . import render_graph_build as build
+from . import render_graph_buffers as buffers
 from . import render_graph_language as language
 
 INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]+"([^"\n]+)"[^\n]*(?:\n|$)', re.M)
@@ -88,36 +89,82 @@ def _own_directory(directory, output):
             shutil.rmtree(previous, ignore_errors=True)
 
 
-def export_language_context(manifest, output, source, *, helper, context=None, root=None):
+def _resource_api(snapshot, value, source):
+    """Describe active bindings and compatible connections awaiting a source upgrade."""
+    result = []
+    for program in value['programs']:
+        identity = program['id']
+        if program['source'] != source:
+            continue
+        fields = snapshot.named_resource_programs.get(identity)
+        entry = {'program': identity, 'function': program['function']}
+        if fields is None:
+            fields = snapshot.pending_resource_programs.get(identity)
+            if not fields:
+                continue
+            entry['needs_upgrade'] = True
+        entry['fields'] = [
+            ({'name': field['field'], 'type': buffers.record_view_name(field), 'writable': field['writable'], 'texture': True}
+             if field.get('texture') else
+             {'name': field['field'],
+              'type': buffers.record_view_name(field) if buffers.is_native_record(field['record'])
+              else field['record']['type'] if field['record'] else 'uint4',
+              'writable': field['writable'],
+              **({'native_structured': True} if buffers.is_native_record(field['record'])
+                 else {'byte_access': True} if field['record'] else {}),
+              **({'legacy_raw': True} if not field['record'] and not field['word_view'] else {})})
+            for field in fields]
+        if language.is_language_source(source):
+            for field, description in zip(fields, entry['fields']):
+                record = field['record']
+                if record is None or buffers.is_native_record(record):
+                    continue
+                layout = snapshot.buffer_record_layouts.get((record['source'], record['type']))
+                if layout is None:
+                    continue
+                arrays = buffers.record_array_fields(layout[1])
+                if arrays:
+                    description['record_arrays'] = [
+                        {'name': member['name'], 'element_type': member['type']['elementType']['name'],
+                         'capacity': member['type']['elementCount']}
+                        for member in arrays]
+        result.append(entry)
+    return result
+
+
+def export_language_context(manifest, output, source, *, helper, context=None, root=None, compiler=None):
     """Stage the files a LUSL program source reads, for `luslc lsp`.
 
     LUSL has no generated wrapper around the editable text: the language server checks the
     source itself, with the files lowering reads beside it (its headers, the SDK headers below
-    `_ludus_ray` and the generated `_ludus_graph/graph_schemas.luslh`). The context's URI is the
-    staged source; prefix and suffix are empty.
+    `_ludus_ray` and generated graph headers). The context URI points to the staged source.
     """
-    snapshot, value, schemas, *_ = build.prepare_sources(manifest, helper, root=root)
-    programs = snapshot.executable_language_programs
+    snapshot, value, schemas, programs, techniques, _, plans, *_ = build.capture_graph_shader_inputs(
+        manifest, helper=helper, root=root, compiler=compiler, allow_resource_upgrades=True)
+    selected_programs = {technique[stage] for technique in techniques.values()
+                         for stage in (*language.RAY_STAGES, *language.RASTER_STAGES) if stage in technique}
+    selected_programs.update(shader['program'] for plan in plans for operation in plan['passes']
+                             for shader in operation.get('pipeline', {}).get('shaders', []))
     snapshot.path(source)
     output = Path(output).resolve()
     build.require(not snapshot.root.is_relative_to(output) and not output.is_relative_to(snapshot.root),
                   'Source', str(output), 'language output must be separate from source snapshot')
     candidates = [{'id': identity, 'stage': program['stage'],
                    'programs': [p['id'] for p in value['programs'] if p.get('language_source', p['source']) == source]}
-                  for identity, program in sorted(programs.items()) if program.get('language_source') == source]
+                  for identity, program in sorted(programs.items()) if identity in selected_programs and program['source'] == source]
     build.require(candidates, 'Source', source, 'no executable program context includes this source; assign it to a graph pipeline')
     selected = context or candidates[0]['id']
     build.require(any(item['id'] == selected for item in candidates), 'Source', selected, 'context no longer includes this source')
     files = language._collect(snapshot, Path(helper).resolve(), build, source)
     include_directories = [language.SDK_DIRECTORY]
-    header = language.schema_header(source, {p['id']: p for p in value['programs']}, schemas, build)
-    if header is not None:
-        files[language.GRAPH_DIRECTORY + '/' + language.SCHEMA_HEADER] = header
-        include_directories.append(language.GRAPH_DIRECTORY)
+    language.stage_generated_headers(snapshot, files, include_directories, source,
+                                     {p['id']: p for p in value['programs']}, schemas, build)
     build.require(sum(len(data) for data in files.values()) <= MAX_CONTEXT_BYTES, 'Capacity', source,
                   'language translation unit exceeds limit')
     snapshot.verify()
+    configuration = language.configuration_values(programs[selected], build)
     directory = output / (CONTEXT_DIRECTORY_PREFIX + build.identity({'program': programs[selected],
+                                                                     'configuration': configuration,
                                                                      'files': {p: build.digest(d) for p, d in files.items() if p != source}}))
     _own_directory(directory, output)
     destination = build.Snapshot(directory)
@@ -125,30 +172,31 @@ def export_language_context(manifest, output, source, *, helper, context=None, r
         path = destination.path(relative)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    arguments = ['lsp', '--root', str(directory)]
+    arguments = ['lsp', '--root', str(directory),
+                 *language.configuration_arguments(configuration)]
     for include in include_directories:
         arguments += ['--include-directory', include]
     return {'version': 1, 'language': 'lusl', 'contexts': candidates, 'context': selected,
             'profiles': value['profiles'], 'manifest': Path(manifest).resolve().relative_to(snapshot.root).as_posix(),
-            'uri': destination.path(source).as_uri(), 'prefix': '', 'suffix': '', 'server_arguments': arguments,
+            'resources': _resource_api(snapshot, value, source), 'uri': destination.path(source).as_uri(), 'prefix': '', 'suffix': '', 'server_arguments': arguments,
             'navigation_sources': [{'uri': destination.path(relative).as_uri(),
                                     'file': relative if snapshot.files.get(relative) == data else '',
                                     'sha256': build.digest(data)}
                                    for relative, data in sorted(files.items())]}
 
 
-def export_context(manifest, output, source, *, helper, context=None, root=None):
+def export_context(manifest, output, source, *, helper, context=None, root=None, compiler=None):
     """Stage one exact compiler context and expose a single editable source span.
 
     Inputs must be an immutable draft snapshot, output a separate owned temporary
     directory. All dependencies are captured before any output write. The selected
     UTF-8 source is verbatim, including BOM/CRLF; surrounding includes become
-    absolute paths inside this snapshot. No compiler/tool process or project write.
+    absolute paths inside this snapshot. Project files are only read.
     Unmappable compatibility rewrites/repeated source occurrences fail explicitly.
     """
     if language.is_language_source(source):
-        return export_language_context(manifest, output, source, helper=helper, context=context, root=root)
-    snapshot, value, schemas, programs, _, _, closures, _, _, _, _ = build.prepare_sources(manifest, helper, root=root)
+        return export_language_context(manifest, output, source, helper=helper, context=context, root=root, compiler=compiler)
+    snapshot, value, schemas, programs, _, _, closures, _, _, _, _ = build.prepare_sources(manifest, helper, root=root, compiler=compiler, allow_resource_upgrades=True)
     snapshot.path(source)
     build.require(source in snapshot.files, 'Source', source, 'source is outside the selected build closure')
     output = Path(output).resolve()
@@ -239,6 +287,7 @@ def export_context(manifest, output, source, *, helper, context=None, root=None)
     return {'version': 1, 'contexts': candidates, 'context': selected, 'profiles': value['profiles'],
             'manifest': Path(manifest).resolve().relative_to(snapshot.root).as_posix(),
             'uri': unit_path.as_uri(), 'prefix': prefix, 'suffix': '\n' + suffix,
+            'resources': _resource_api(snapshot, value, source),
             # Exact compiler snapshot locations, never symbol parsing or path guessing.
             # Rewritten compatibility sources can be inspected but never map to editable bytes.
             'navigation_sources': [{'uri': (directory / relative).as_uri(),

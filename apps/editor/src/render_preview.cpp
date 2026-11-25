@@ -984,12 +984,12 @@ void RenderPreview::PrepareGpuProfileFrame() noexcept
     mPassTimingCandidateTicks = mIsPassTimingArmed == true ? foundation::time::NowTicks() : 0;
     mTimingCandidateTicks = mIsTimingArmed == true ? foundation::time::NowTicks() : 0;
 }
-void RenderPreview::NotifyGpuProfileSubmission() noexcept
+void RenderPreview::NotifyGpuProfileSubmission(const QByteArray& runtimeIdentity) noexcept
 {
     ++mSubmittedFrameSequence;
     if (mIsGpuProfilingEnabled == true)
     {
-        Q_EMIT GpuProfileSubmission();
+        Q_EMIT GpuProfileSubmission(mSubmittedFrameSequence, mDeviceSerial, runtimeIdentity);
     }
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
     rhi::GpuPassTimings passes;

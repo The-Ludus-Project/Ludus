@@ -4,6 +4,7 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 #include <cstring>
 
@@ -40,9 +41,9 @@ usize GetRecordsWord(usize summaryCount) noexcept
 uint32 ReadWord(std::span<const uint8> bytes, usize word) noexcept
 {
     uint32 value = 0;
-    static_cast<void>(
-        foundation::TryReadLittleEndian(bytes.subspan(word * LUDUS_RAY_PATH_CAPTURE_WORD_BYTES, sizeof(uint32)),
-                                        value));
+    static_cast<void>(foundation::TryReadLittleEndian(
+        ludus::foundation::MakeBorrowedView(bytes.subspan(word * LUDUS_RAY_PATH_CAPTURE_WORD_BYTES, sizeof(uint32))),
+        value));
     return value;
 }
 foundation::float32 ReadFloat(std::span<const uint8> bytes, usize word) noexcept
@@ -129,7 +130,8 @@ bool WriteRayPathCaptureHeader(const RayPathCaptureDescription& description, std
     {
         static_cast<void>(foundation::TryWriteLittleEndian(
             header[word],
-            outBytes.subspan(word * LUDUS_RAY_PATH_CAPTURE_WORD_BYTES, sizeof(uint32))));
+            ludus::foundation::MakeBorrowedView(
+                outBytes.subspan(word * LUDUS_RAY_PATH_CAPTURE_WORD_BYTES, sizeof(uint32)))));
     }
     return true;
 }

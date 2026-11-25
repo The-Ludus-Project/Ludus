@@ -72,16 +72,24 @@ public:
 
 Q_SIGNALS:
     void TextAccepted();
+    /// The bound draft's text changed through an edit or a host refresh.
+    void DraftTextChanged();
     void BindingChanged();
     void Failed(const QString& message);
 
 private:
+    void queueSlangLineSeparatorRepair();
     void captureSelectionChange();
     void beginOperation(CodeEditKind kind);
     void endOperation();
     void captureChange(foundation::int32 position, foundation::int32 removed, foundation::int32 added);
     void commitPending();
     void updateHistoryAvailability();
+    /// Apply regions the host has accepted to the view's QTextDocument in place
+    /// (UTF-16 positions in the pre-edit text, document order), without recording
+    /// them as input. The following Synchronize repairs any difference from the
+    /// host text.
+    void projectRegionEdits(const QList<CodeRegionEdit>& regionsInDocumentOrder);
     [[nodiscard]] bool canMerge(const CodeTextEdit& edit) const;
     CodeEditor& mEditor;
     CodeDocumentHost* mHostOrNull = nullptr;

@@ -1,11 +1,17 @@
 #include "r11compute.h"
+#include "r11compute_slots.h"
 #include "r11scalar.h"
+#include "r11scalar_slots.h"
 #if defined(LUDUS_R11_NATIVE_ARRAYS)
 #    include "r11arrays.h"
 #    include "r11constant.h"
+#    include "r11constant_slots.h"
 #    include "r11cube.h"
+#    include "r11cube_slots.h"
 #    include "r11volume.h"
+#    include "r11volume_slots.h"
 #    include "r11wider.h"
+#    include "r11wider_slots.h"
 #    if defined(LUDUS_R11C_RUNTIME)
 #        include "r11buffers.h"
 #        include "r11runtime.h"
@@ -28,6 +34,16 @@ namespace
 {
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
+// The slot and vertex input location that the LUSL compiler assigned to r11.lusl. The LUSL
+// binding-array programs bind through their own slot tables; the retained Slang programs
+// (r11.slang, r11buffers.slang, r11storage.slang) declare the slots named below.
+namespace scalar_slots = ludus::shaders::r11scalar::slots;
+namespace r11_locations = ludus::shaders::r11scalar::locations;
+#if defined(LUDUS_R11_NATIVE_ARRAYS)
+constexpr uint32 SLANG_SETTINGS_SLOT = 0;
+constexpr uint32 SLANG_IMAGE_SLOT = 1;
+constexpr uint32 SLANG_SAMPLER_SLOT = 2;
+#endif
 constexpr logging::LogCategory LOG_R11{"R11-Fixture"};
 constexpr usize COLOR_COUNT = 4;
 constexpr usize STATIC_SET_COUNT = 32;
@@ -79,7 +95,11 @@ bool CreatePipeline(rhi::BindingLayoutHandle layout,
                     rhi::RasterPipelineHandle& outPipeline) noexcept
 {
     const rhi::RasterVertexStream stream{ .Stride = 8 };
-    const rhi::RasterVertexAttribute attribute{ .Format = rhi::RasterVertexFormat::Float2 };
+    const rhi::RasterVertexAttribute attribute
+    {
+        .Location = r11_locations::INPUT_POSITION_CLIP,
+        .Format = rhi::RasterVertexFormat::Float2,
+    };
     const rhi::RasterPipelineDescription description
     {
         .Vertex = vertex,
@@ -121,6 +141,7 @@ bool Prepare() noexcept
     }
     const rhi::RasterBinding staticBinding
     {
+        .Binding = scalar_slots::SETTINGS_BUFFER,
         .Kind = rhi::RasterBindingKind::UniformBuffer,
         .Visibility = rhi::RasterVisibility::Fragment,
         .MinSize = 16,
@@ -145,6 +166,7 @@ bool Prepare() noexcept
     {
         const rhi::RasterBindingResource resource
         {
+            .Binding = scalar_slots::SETTINGS_BUFFER,
             .Buffer = gUniform,
             .Offset = (index % COLOR_COUNT) * UNIFORM_ALIGNMENT,
             .Size = 16,
@@ -160,7 +182,12 @@ bool Prepare() noexcept
     {
         return false;
     }
-    const rhi::RasterBindingResource resource{ .Buffer = gUniform, .Size = 16 };
+    const rhi::RasterBindingResource resource
+    {
+        .Binding = scalar_slots::SETTINGS_BUFFER,
+        .Buffer = gUniform,
+        .Size = 16,
+    };
     const uint64 dynamicStarted = time::NowTicks();
     if (IsReady(rhi::CreateBindingSet(gDevice, gDynamicLayout, {&resource, 1}, gDynamicSet)) == false)
     {
@@ -434,7 +461,16 @@ bool RenderRuntimeGraph(const rhi::RasterDraw& draw,
            IsReady(rhi::CompileOrderedGraph(gDevice, graph, report)) == true &&
            IsReady(rhi::ExecuteOrderedGraph(gDevice, gSurface, graph, submission)) == true;
 }
-bool RenderArrays(const rhi::RasterShaderDescription& fragment,
+/// One binding-array program and the slots of its settings, image array and first sampler.
+struct ArrayProgram
+{
+    rhi::RasterShaderDescription Vertex;
+    rhi::RasterShaderDescription Fragment;
+    uint32 SettingsSlot = 0;
+    uint32 ImageSlot = 0;
+    uint32 SamplerSlot = 0;
+};
+bool RenderArrays(const ArrayProgram& program,
                   bool isNonUniform,
                   bool isSparse = false,
                   bool isRuntime = false,
@@ -457,21 +493,21 @@ bool RenderArrays(const rhi::RasterShaderDescription& fragment,
                                   GetBytes(white),
                                   selection)) == false ||
         IsReady(rhi::CreateSampler(gDevice, {}, sampler)) == false ||
-        IsReady(rhi::CreateRasterShader(gDevice, ludus::shaders::r11constant::Vertex(), vertex)) == false ||
-        IsReady(rhi::CreateRasterShader(gDevice, fragment, shader)) == false)
+        IsReady(rhi::CreateRasterShader(gDevice, program.Vertex, vertex)) == false ||
+        IsReady(rhi::CreateRasterShader(gDevice, program.Fragment, shader)) == false)
     {
         return false;
     }
     constexpr usize LAYOUT_ENTRIES = rhi::RASTER_BINDING_COUNT;
     StaticArray<rhi::RasterBinding, LAYOUT_ENTRIES> bindings;
-    const uint32 imageBinding = isRuntime == true ? rhi::RUNTIME_BINDING_ARRAY_SLOT : 1U;
-    if (fragment.Bindings.GetSize() > LAYOUT_ENTRIES)
+    const uint32 imageBinding = program.ImageSlot;
+    if (program.Fragment.Bindings.GetSize() > LAYOUT_ENTRIES)
     {
         return false;
     }
-    for (usize entry = 0; entry < fragment.Bindings.GetSize(); ++entry)
+    for (usize entry = 0; entry < program.Fragment.Bindings.GetSize(); ++entry)
     {
-        bindings[entry] = fragment.Bindings[entry];
+        bindings[entry] = program.Fragment.Bindings[entry];
         if (bindings[entry].Binding == imageBinding)
         {
             bindings[entry].HasPartialBinding = isSparse == true || isRuntime == true;
@@ -481,7 +517,7 @@ bool RenderArrays(const rhi::RasterShaderDescription& fragment,
             }
         }
     }
-    if (IsReady(rhi::CreateBindingLayout(gDevice, {bindings.GetData(), fragment.Bindings.GetSize()}, layout)) ==
+    if (IsReady(rhi::CreateBindingLayout(gDevice, {bindings.GetData(), program.Fragment.Bindings.GetSize()}, layout)) ==
             false ||
         CreatePipeline(layout, vertex, shader, pipeline) == false)
     {
@@ -490,11 +526,11 @@ bool RenderArrays(const rhi::RasterShaderDescription& fragment,
     constexpr usize RESOURCE_ENTRIES = COLOR_COUNT + 3;
     StaticArray<rhi::RasterBindingResource, RESOURCE_ENTRIES> resources;
     usize resourceCount = 0;
-    resources[resourceCount++] = { .Buffer = selection, .Size = sizeof(white) };
-    resources[resourceCount++] = { .Binding = hasWiderKinds == true ? 6U : 2U, .Sampler = sampler };
+    resources[resourceCount++] = { .Binding = program.SettingsSlot, .Buffer = selection, .Size = sizeof(white) };
+    resources[resourceCount++] = { .Binding = program.SamplerSlot, .Sampler = sampler };
     if (hasWiderKinds == true)
     {
-        resources[resourceCount++] = { .Binding = 6, .Sampler = sampler, .ArrayElement = 1 };
+        resources[resourceCount++] = { .Binding = program.SamplerSlot, .Sampler = sampler, .ArrayElement = 1 };
     }
     for (usize color = 0; color < COLOR_COUNT; ++color)
     {
@@ -682,8 +718,10 @@ bool CheckComputeOffsets(bool hasArrays = false) noexcept
     rhi::BindingLayoutHandle layout;
     rhi::BindingSetHandle set;
     rhi::ComputePipelineHandle pipeline;
+    // r11storage.slang declares its Outputs array at r11compute.lusl's single slot.
     const rhi::RasterBinding binding
     {
+        .Binding = ludus::shaders::r11compute::slots::VALUES,
         .Kind = rhi::RasterBindingKind::StorageReadWrite,
         .Visibility = rhi::RasterVisibility::Compute,
         .MinSize = 4,
@@ -710,8 +748,8 @@ bool CheckComputeOffsets(bool hasArrays = false) noexcept
         return false;
     }
     const rhi::RasterBindingResource resources[]{
-        { .Buffer = buffer, .Size = 16 },
-        { .Buffer = buffer, .Offset = UNIFORM_ALIGNMENT, .Size = 16, .ArrayElement = 1 },
+        { .Binding = binding.Binding, .Buffer = buffer, .Size = 16 },
+        { .Binding = binding.Binding, .Buffer = buffer, .Offset = UNIFORM_ALIGNMENT, .Size = 16, .ArrayElement = 1 },
     };
     if (IsReady(rhi::CreateBindingSet(gDevice, layout, {resources, hasArrays == true ? 2U : 1U}, set)) == false ||
         IsReady(rhi::CreateComputePipeline(gDevice, { .Shader = shader, .Layout = layout }, pipeline)) == false)
@@ -791,13 +829,15 @@ bool CheckComputeOffsets(bool hasArrays = false) noexcept
 bool RenderBufferArrays() noexcept
 {
     const rhi::RasterShaderDescription description = ludus::shaders::r11buffers::Fragment();
+    rhi::RasterShaderHandle vertex;
     rhi::RasterShaderHandle shader;
     rhi::BindingLayoutHandle layout;
     rhi::BindingSetHandle set;
     rhi::RasterPipelineHandle pipeline;
-    if (IsReady(rhi::CreateRasterShader(gDevice, description, shader)) == false ||
+    if (IsReady(rhi::CreateRasterShader(gDevice, ludus::shaders::r11buffers::Vertex(), vertex)) == false ||
+        IsReady(rhi::CreateRasterShader(gDevice, description, shader)) == false ||
         IsReady(rhi::CreateBindingLayout(gDevice, description.Bindings, layout)) == false ||
-        CreatePipeline(layout, gVertex, shader, pipeline) == false)
+        CreatePipeline(layout, vertex, shader, pipeline) == false)
     {
         return false;
     }
@@ -806,6 +846,7 @@ bool RenderBufferArrays() noexcept
     {
         resources[color] =
         {
+            .Binding = SLANG_SETTINGS_SLOT,
             .Buffer = gUniform,
             .Offset = color * UNIFORM_ALIGNMENT,
             .Size = 16,
@@ -836,7 +877,8 @@ bool RenderBufferArrays() noexcept
     uint8 pixels[PIXEL_BYTES]{};
     return ReadPixels(pixels) == true && CheckPixels(pixels) == true &&
            IsReady(rhi::Destroy(gDevice, pipeline)) == true && IsReady(rhi::Destroy(gDevice, set)) == true &&
-           IsReady(rhi::Destroy(gDevice, layout)) == true && IsReady(rhi::Destroy(gDevice, shader)) == true;
+           IsReady(rhi::Destroy(gDevice, layout)) == true && IsReady(rhi::Destroy(gDevice, shader)) == true &&
+           IsReady(rhi::Destroy(gDevice, vertex)) == true;
 }
 #endif
 bool Run() noexcept
@@ -865,15 +907,32 @@ bool Run() noexcept
         return false;
     }
 #if defined(LUDUS_R11_NATIVE_ARRAYS)
+    namespace shaders = ludus::shaders;
+    const ArrayProgram constant{shaders::r11constant::Vertex(),
+                                shaders::r11constant::Fragment(),
+                                shaders::r11constant::slots::SETTINGS_BUFFER,
+                                shaders::r11constant::slots::IMAGES,
+                                shaders::r11constant::slots::IMAGE_SAMPLER};
+    const ArrayProgram wider{shaders::r11wider::Vertex(),
+                             shaders::r11wider::Fragment(),
+                             shaders::r11wider::slots::SETTINGS_BUFFER,
+                             shaders::r11wider::slots::IMAGES,
+                             shaders::r11wider::slots::IMAGE_SAMPLERS};
+    const ArrayProgram cube{shaders::r11cube::Vertex(),
+                            shaders::r11cube::Fragment(),
+                            shaders::r11cube::slots::SETTINGS_BUFFER,
+                            shaders::r11cube::slots::IMAGES,
+                            shaders::r11cube::slots::IMAGE_SAMPLERS};
+    const ArrayProgram volume{shaders::r11volume::Vertex(),
+                              shaders::r11volume::Fragment(),
+                              shaders::r11volume::slots::SETTINGS_BUFFER,
+                              shaders::r11volume::slots::IMAGES,
+                              shaders::r11volume::slots::IMAGE_SAMPLERS};
     rhi::DeviceInfo info;
-    if (rhi::GetDeviceInfo(gDevice, info) != rhi::DeviceStatus::Ready ||
-        RenderArrays(ludus::shaders::r11constant::Fragment(), false) == false ||
-        RenderArrays(ludus::shaders::r11constant::Fragment(), false, true) == false ||
-        RenderArrays(ludus::shaders::r11wider::Fragment(), false, false, false, true) == false ||
-        RenderArrays(ludus::shaders::r11cube::Fragment(), false, false, false, true, rhi::TextureDimension::Cube) ==
-            false ||
-        RenderArrays(ludus::shaders::r11volume::Fragment(), false, false, false, true, rhi::TextureDimension::D3) ==
-            false)
+    if (rhi::GetDeviceInfo(gDevice, info) != rhi::DeviceStatus::Ready || RenderArrays(constant, false) == false ||
+        RenderArrays(constant, false, true) == false || RenderArrays(wider, false, false, false, true) == false ||
+        RenderArrays(cube, false, false, false, true, rhi::TextureDimension::Cube) == false ||
+        RenderArrays(volume, false, false, false, true, rhi::TextureDimension::D3) == false)
     {
         return false;
     }
@@ -884,7 +943,12 @@ bool Run() noexcept
     }
     if (info.Enabled.HasRuntimeTextureArrays == true && info.Profile.Binding.HasUniformTextureIndexing == true)
     {
-        if (RenderArrays(ludus::shaders::r11runtime::Fragment(), false, false, true) == false)
+        const ArrayProgram runtime{shaders::r11runtime::Vertex(),
+                                   shaders::r11runtime::Fragment(),
+                                   SLANG_SETTINGS_SLOT,
+                                   rhi::RUNTIME_BINDING_ARRAY_SLOT,
+                                   SLANG_SAMPLER_SLOT};
+        if (RenderArrays(runtime, false, false, true) == false)
         {
             return false;
         }
@@ -898,7 +962,12 @@ bool Run() noexcept
 #    endif
     if (info.Enabled.BindlessTextureIndexing == true)
     {
-        if (RenderArrays(ludus::shaders::r11arrays::Fragment(), true) == false)
+        const ArrayProgram arrays{shaders::r11arrays::Vertex(),
+                                  shaders::r11arrays::Fragment(),
+                                  SLANG_SETTINGS_SLOT,
+                                  SLANG_IMAGE_SLOT,
+                                  SLANG_SAMPLER_SLOT};
+        if (RenderArrays(arrays, true) == false)
         {
             return false;
         }

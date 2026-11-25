@@ -1,5 +1,8 @@
 #pragma once
 
+// Float4 rows for the aurora layer in both atmosphere view uniforms.
+#define LUDUS_AURORA_LAYER_UNIFORM_ROWS 2
+
 // A0 Earth shell dimensions in kilometres, from Hillaire's SetupEarthAtmosphere.
 #define LUDUS_ATMOSPHERE_GROUND_KILOMETRES 6360.0
 #define LUDUS_ATMOSPHERE_HEIGHT_KILOMETRES 100.0
@@ -38,6 +41,15 @@
 #define LUDUS_ATMOSPHERE_MULTIPLE_MINIMUM_ESCAPE 0.01
 // Step optical depth below which (1 - exp(-d)) / d uses its first-order expansion.
 #define LUDUS_ATMOSPHERE_OPTICAL_DEPTH_LINEAR_THRESHOLD 0.001
+
+// Bounded cloud layer (CloudLayerDescription): uniform midpoint steps through the slab along a view ray, and the
+// quadrature of the clear air between the camera and the slab's entry.
+#define LUDUS_CLOUD_LAYER_STEPS 32
+#define LUDUS_CLOUD_LAYER_AIR_STEPS 16
+// float4 rows of the packed layer in the sky and deferred uniforms (CloudLayerUniform).
+#define LUDUS_CLOUD_LAYER_UNIFORM_ROWS 9
+// Upper bound in metres of any path through an admitted slab, used to clip rays toward the Sun.
+#define LUDUS_CLOUD_LAYER_MAXIMUM_PATH_METRES 1000000.0
 
 #define LUDUS_ATMOSPHERE_METRES_PER_KILOMETRE 1000
 #define LUDUS_ATMOSPHERE_DEFERRED_MULTIPLE_SLOT 7

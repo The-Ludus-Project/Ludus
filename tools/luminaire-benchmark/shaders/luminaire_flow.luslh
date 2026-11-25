@@ -1,0 +1,62 @@
+// LUSL declarations of the exported comparison graph's Slang sampling code, for the headless
+// luminaire kernels (docs/development/benchmark-scenes.md). The drivers copy the graph's
+// main_shaders beside these sources, so both paths resolve there. slice_sampling.slang belongs to
+// the slice_sampling_luminaire render-graph template, and portable_flow.slang is spliced into that
+// template's Slang; both stay Slang until the template migrates (LUSL L5d wave 3). Each
+// declaration mirrors the Slang one.
+#pragma once
+
+#include "math.luslh"
+
+extern slang "slice_sampling.slang"
+{
+    /// The template's panel luminaire; only the fields these kernels read are declared.
+    struct Luminaire
+    {
+        float32x3 CenterWorld;
+    };
+
+    /// A receiver point prepared for the luminaire's samplers.
+    struct LuminaireReceiver;
+
+    /// One light sample; every field is 0 when HasSample is false.
+    struct LuminaireLightSample
+    {
+        bool HasSample;
+        uint32 Tile;
+        float32x2 SlopePanel;
+        float32x2 PositionPanelTangent;
+        float32x3 PositionWorld;
+        float32x3 DirectionWorld;
+        float32x3 RadianceOverDensity;
+    };
+
+    LuminaireReceiver MakeLuminaireReceiver(in Luminaire luminaire, in float32x3 positionWorld);
+    LuminaireLightSample SampleLuminaireDefensive(in Luminaire luminaire,
+                                                  in LuminaireReceiver receiver,
+                                                  in float32 defensiveFraction,
+                                                  in float32 componentSample,
+                                                  in float32x2 seedSample,
+                                                  in float32 branchSample,
+                                                  in float32x2 areaSample);
+};
+
+extern slang "portable_flow.slang"
+{
+    static const float32 PURELIGHT_RADIUS_WORLD;
+
+    Luminaire MakeRoomLuminaire();
+    float32x2 TransformPureLightFlow(in Luminaire luminaire,
+                                     in float32x3 positionWorld,
+                                     in float32 thetaCap,
+                                     in float32x2 value,
+                                     in bool isInverse,
+                                     out float32 outLogDensity);
+    float32x3 SamplePureLightCap(in Luminaire luminaire,
+                                 in float32x3 positionWorld,
+                                 in float32x2 seed,
+                                 out float32 outDensitySolidAngle);
+    LuminaireLightSample SamplePortablePureLight(in Luminaire luminaire,
+                                                 in LuminaireReceiver receiver,
+                                                 in float32x2 seed);
+};

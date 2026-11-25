@@ -106,6 +106,20 @@ TEST_CASE("Saving a code tab writes the file and clears its dirty state", "[code
     CHECK(tab.GetBanner().IsShowingConflict() == false);
 }
 
+TEST_CASE("Opening a Slang file repairs its draft before Save publishes the change", "[code-editor][save]")
+{
+    OpenedFile opened;
+    const QByteArray original = QStringLiteral("void Main()\u2028{}\n").toUtf8();
+    CodeDocumentTab& tab = OpenOne(opened, original);
+    QCoreApplication::processEvents();
+    REQUIRE(tab.IsDirty() == true);
+    CHECK(ReadBytes(opened.Path) == original);
+
+    REQUIRE(opened.Area.SaveTab(&tab) == true);
+    CHECK(ReadBytes(opened.Path) == QByteArrayLiteral("void Main()\n{}\n"));
+    CHECK(tab.IsDirty() == false);
+}
+
 TEST_CASE("A clean buffer follows the file when it changes on disk", "[code-editor][conflict]")
 {
     OpenedFile opened;

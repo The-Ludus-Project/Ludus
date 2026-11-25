@@ -5,6 +5,7 @@
 // field-by-field ByteWriter packing and source-digest discipline. See
 // docs/architecture/curves-surfaces.md and ADR 0024.
 
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/geometry/content/geometry_content.h>
 
 #include <ludus/content/content.h>
@@ -131,7 +132,9 @@ void PatchSectionOffset(ByteWriter& inoutWriter, uint32 sectionIndex, uint32 off
     const usize directoryStart = fg::HEADER_FIXED_BYTES;
     const usize entryStart = directoryStart + static_cast<usize>(sectionIndex) * fg::SECTION_ENTRY_BYTES;
     const usize offsetField = entryStart + sizeof(uint32); // after Id
-    (void)core::TryWriteLittleEndian<uint32>(offset, inoutWriter.GetMutableBytes().subspan(offsetField));
+    (void)core::TryWriteLittleEndian<uint32>(
+        offset,
+        ludus::foundation::MakeBorrowedView(inoutWriter.GetMutableBytes().subspan(offsetField)));
 }
 
 /// Patch a 32-byte digest at a known offset.

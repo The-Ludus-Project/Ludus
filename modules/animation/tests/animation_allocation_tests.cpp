@@ -4,8 +4,11 @@
 // container domain reaches through the aligned nothrow operator new; sanitizer
 // builds use the ordinary suite because sanitizer runtimes replace the same functions.
 
+#include "clip_fixtures.hpp"
 #include "skeleton_fixtures.hpp"
 
+#include <ludus/animation/clip.hpp>
+#include <ludus/animation/clip_player.hpp>
 #include <ludus/animation/inspection.hpp>
 #include <ludus/animation/pose.hpp>
 #include <ludus/animation/skeleton.hpp>
@@ -241,4 +244,59 @@ TEST_CASE("Pose edits, evaluation, skinning and inspection never allocate", "[an
     REQUIRE(paletteStatus == AnimationStatus::Success);
     REQUIRE(inspectStatus == AnimationStatus::Success);
     REQUIRE(resetStatus == AnimationStatus::Success);
+}
+
+TEST_CASE("Every clip preparation allocation failure preserves the published clip", "[animation][alloc]")
+{
+    const Skeleton skeleton = PrepareSkeleton(MakeChainJoints(), CHAIN_AUTHORING_ID);
+    const ClipSource source = MakeClipSource();
+    Clip clip = PrepareClip(MakeClipPackage(source, ClipWrapMode::Clamp), skeleton);
+    const ludus::foundation::Fingerprint128 published = clip.GetFingerprint();
+    RequireEveryAllocationFailureIsRecoverable(
+        [&]() { return TryPrepareClip(MakeClipPackage(source, ClipWrapMode::Loop), skeleton, {}, clip); },
+        [&]() {
+            REQUIRE(clip.GetFingerprint() == published);
+            REQUIRE(clip.GetWrapMode() == ClipWrapMode::Clamp);
+        });
+    REQUIRE(clip.GetWrapMode() == ClipWrapMode::Loop);
+}
+
+TEST_CASE("Clip sampling, activation, advances and seeks never allocate", "[animation][alloc]")
+{
+    const Skeleton skeleton = PrepareSkeleton(MakeChainJoints(), CHAIN_AUTHORING_ID);
+    const ClipSource source = MakeClipSource();
+    const Clip clip = PrepareClip(MakeClipPackage(source, ClipWrapMode::Loop), skeleton);
+    LocalPose local;
+    REQUIRE(TryPrepareLocalPose(skeleton, local) == AnimationStatus::Success);
+    foundation::StaticArray<ClipEvent, CLIP_EVENT_COUNT * 4> events{};
+    const foundation::BorrowedView<ClipEvent> eventView{events.GetData(), events.GetSize()};
+
+    AnimationStatus activateStatus = AnimationStatus::InvalidArgument;
+    AnimationStatus advanceStatus = AnimationStatus::InvalidArgument;
+    AnimationStatus seekStatus = AnimationStatus::InvalidArgument;
+    AnimationStatus sampleStatus = AnimationStatus::InvalidArgument;
+    AnimationStatus rootStatus = AnimationStatus::InvalidArgument;
+    ClipPlayer player;
+    ClipAdvanceResult result{};
+    RootTransform root{};
+    const ludus::foundation::int64 allocations = CountAllocations([&]() {
+        activateStatus = TryActivateClipPlayer(clip,
+                                               {
+                                                   .InstanceId = 1,
+                                                   .ActivationId = 1,
+                                                   .StartTimeSeconds = 0.1,
+                                                   .Rate = 1,
+                                               },
+                                               player);
+        advanceStatus = TryAdvanceClipPlayer(clip, 2.3, eventView, player, result);
+        seekStatus = TrySeekClipPlayer(clip, 0.2, ClipSeekPolicy::Traverse, eventView, player, result);
+        sampleStatus = TrySampleClip(clip, player.GetTimeSeconds(), local);
+        rootStatus = TrySampleClipRoot(clip, player.GetTimeSeconds(), root);
+    });
+    REQUIRE(allocations == 0);
+    REQUIRE(activateStatus == AnimationStatus::Success);
+    REQUIRE(advanceStatus == AnimationStatus::Success);
+    REQUIRE(seekStatus == AnimationStatus::Success);
+    REQUIRE(sampleStatus == AnimationStatus::Success);
+    REQUIRE(rootStatus == AnimationStatus::Success);
 }

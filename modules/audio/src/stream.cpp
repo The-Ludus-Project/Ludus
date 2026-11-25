@@ -13,6 +13,7 @@ namespace ludus::audio::internal
 {
 namespace
 {
+constexpr float32 MILLISECONDS_PER_SECOND = 1000.0F;
 /// Chunks decoded before a stream starts playing: half of its ring.
 constexpr uint32 PRIMED_CHUNK_COUNT = static_cast<uint32>(STREAM_CHUNK_COUNT / 2);
 } // namespace
@@ -106,6 +107,8 @@ Status StreamData::Configure(const StreamDescriptor& descriptor, uint32 rate) no
     {
         return Status::InvalidArgument;
     }
+    SourceFrames = sourceLength;
+    SourceRate = sourceRate;
     Looping = descriptor.Looping;
     End = length;
     if (descriptor.SourceLoopEnd != 0 || descriptor.SourceLoopBegin != 0)
@@ -213,6 +216,82 @@ void StreamData::Refill() noexcept
         }
     }
     Written.store(written + 1, std::memory_order_release);
+}
+StreamResult StreamData::RenderGroup(float32* output, const StreamRequest& request, uint64 firstFrame) noexcept
+{
+    StreamResult result;
+    const float32 step = 1.0F / (1.0F + static_cast<float32>(Rate) * DEFAULT_RAMP_MS / MILLISECONDS_PER_SECOND);
+    for (uint32 frame = 0; frame < request.Frames; ++frame)
+    {
+        bool canAdvance = request.Stop == false;
+        for (usize i = 0; i < MemberCount; ++i)
+        {
+            const StreamData& member = *Members[i];
+            const uint32 read = member.Read.load(std::memory_order_relaxed);
+            if (read == member.Written.load(std::memory_order_acquire))
+            {
+                canAdvance = false;
+            }
+            else if (member.Chunks[read % STREAM_CHUNK_COUNT].Error == true)
+            {
+                result.Error = true;
+                result.Terminal = true;
+                return result;
+            }
+        }
+        if (canAdvance == true)
+        {
+            if (HasGainEdit == true && firstFrame + frame >= GainFrame)
+            {
+                HasGainEdit = false;
+                TargetGains = PendingGains;
+                RemainingRamp = PendingRamp;
+                if (RemainingRamp == 0)
+                {
+                    Gains = TargetGains;
+                }
+            }
+            if (RemainingRamp > 0)
+            {
+                for (usize i = 0; i < MemberCount; ++i)
+                {
+                    Gains[i] += (TargetGains[i] - Gains[i]) / static_cast<float32>(RemainingRamp);
+                }
+                --RemainingRamp;
+            }
+            GroupLeft = 0;
+            GroupRight = 0;
+            for (usize i = 0; i < MemberCount; ++i)
+            {
+                StreamData& member = *Members[i];
+                const uint32 read = member.Read.load(std::memory_order_relaxed);
+                const StreamChunk& chunk = member.Chunks[read % STREAM_CHUNK_COUNT];
+                GroupLeft += chunk.Samples[usize{member.Offset} * 2] * Gains[i];
+                GroupRight += chunk.Samples[usize{member.Offset} * 2 + 1] * Gains[i];
+                ++member.Offset;
+                if (member.Offset == chunk.Frames)
+                {
+                    member.Offset = 0;
+                    member.Read.store(read + 1, std::memory_order_release);
+                }
+            }
+            AvailabilityGain = ludus::foundation::math::Min(1.0F, AvailabilityGain + step);
+            ++result.Frames;
+        }
+        else
+        {
+            AvailabilityGain = ludus::foundation::math::Max(0.0F, AvailabilityGain - step);
+        }
+        Fade = request.Gain * AvailabilityGain;
+        output[usize{frame} * 2] = GroupLeft * Fade;
+        output[usize{frame} * 2 + 1] = GroupRight * Fade;
+        if (request.Stop == true && AvailabilityGain == 0)
+        {
+            result.Terminal = true;
+            break;
+        }
+    }
+    return result;
 }
 StreamResult StreamData::Render(float32* output, const StreamRequest& request) noexcept
 {

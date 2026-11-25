@@ -126,7 +126,7 @@ def rebuild_library_capture(generation, output, destination, *, library, library
     when the saved build declares a larger capture budget, the capture profile is written beside it
     with the `.lurgcp` suffix. A failure preserves both previous files.
     """
-    generation, sources, manifest = reload.ray_path_capture_sources(generation)
+    generation, sources, manifest, saved_buffer_layouts = reload.ray_path_capture_sources(generation)
     library_path = (sources / library).resolve()
     build.require(library_path.is_relative_to(sources.resolve()) and library_path.is_file(), 'Capture', library,
                   f'generation {generation.name} carries no {library}. Only libraries the root graph imports are '
@@ -155,13 +155,14 @@ def rebuild_library_capture(generation, output, destination, *, library, library
     capture_manifest = write_capture_sources(capture_sources, manifest.relative_to(sources), library,
                                              library_configuration, library_output)
     options = {key: value for key, value in options.items() if key != 'root'}
-    report = build.build_package(capture_manifest, output / 'build', root=capture_sources, **options)
+    report = build.build_package(capture_manifest, output / 'build', root=capture_sources,
+                                 saved_buffer_layouts=saved_buffer_layouts, **options)
     build.checkpoint(options.get('cancel'))
     destination.parent.mkdir(parents=True, exist_ok=True)
     profile = None
     if reload.declares_capture_budget(capture_manifest, capture_sources):
         profiled = build.build_package(capture_manifest, output / 'profile', root=capture_sources,
-                                       capture_profile=True, **options)
+                                       capture_profile=True, saved_buffer_layouts=saved_buffer_layouts, **options)
         build.checkpoint(options.get('cancel'))
         profile = execution.cook_capture_profile(profiled['package'], destination.with_suffix('.lurgcp'))
     build.checkpoint(options.get('cancel'))

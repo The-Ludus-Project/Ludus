@@ -368,3 +368,28 @@ TEST_CASE("Skin stores scattering distances in LUSCN v14 and reflects like metal
     scattering.CoatingThickness = 0;
     CHECK(format::IsMaterialScatteringValid(scattering) == false);
 }
+
+TEST_CASE("Material program decode rejects invalid extents without replacing the output", "[scene_format][materials]")
+{
+    const format::MaterialProgram original = MakeMixProgram();
+    format::MaterialProgramBytes bytes{};
+    format::EncodeMaterialProgram(original, bytes);
+
+    format::MaterialProgram decoded{};
+    REQUIRE(format::DecodeMaterialProgram(bytes, decoded) == true);
+    REQUIRE(decoded.LobeCount == original.LobeCount);
+    REQUIRE(decoded.InstructionCount == original.InstructionCount);
+
+    format::MaterialProgram preserved = original;
+    preserved.LobeCount = 1;
+    REQUIRE_FALSE(format::DecodeMaterialProgram({nullptr, bytes.GetSize()}, preserved));
+    REQUIRE_FALSE(format::DecodeMaterialProgram({bytes.GetData(), bytes.GetSize() - 1}, preserved));
+    REQUIRE_FALSE(format::DecodeMaterialProgram({}, preserved));
+    format::MaterialProgramBytes preservedBytes{};
+    format::EncodeMaterialProgram(preserved, preservedBytes);
+    format::MaterialProgram expected = original;
+    expected.LobeCount = 1;
+    format::MaterialProgramBytes expectedBytes{};
+    format::EncodeMaterialProgram(expected, expectedBytes);
+    CHECK(preservedBytes == expectedBytes);
+}

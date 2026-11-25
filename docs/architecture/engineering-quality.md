@@ -446,6 +446,34 @@ stack walking in the emergency path. Existing
 [diagnostics guide](../development/diagnostics.md) remain authoritative; see the
 [review](engineering-quality-gems-review.md#a-more-informative-error-log-generator).
 
+### Crash and incident reporting roadmap
+
+The first milestone outcome is a real macOS Editor crash that a maintainer can
+open in the team's private Sentry project and trace to first-party source lines.
+The [macOS capture implementation](https://github.com/The-Ludus-Project/Ludus/pull/541)
+already saves minidumps locally and supports destination-bound consent. The
+[native diagnostics guide](../development/diagnostics.md#macos-editor-crash-reporting)
+owns setup and symbol handling.
+
+Track progress and acceptance evidence in the
+[Crash and incident reporting milestone](https://github.com/The-Ludus-Project/Ludus/milestone/36)
+and [Ludus Kanban](https://github.com/orgs/The-Ludus-Project/projects/1).
+
+| Stage | Acceptance | Prerequisites |
+| --- | --- | --- |
+| [R1 · Verify live Sentry ingestion](https://github.com/The-Ludus-Project/Ludus/issues/2101) | A controlled crash in the Editor reaches the private project after consent. Its original executable and matching dSYM produce a source-level stack. A fresh consent-off profile keeps the report local. | — |
+| [R2 · Qualify the distributed Editor](https://github.com/The-Ludus-Project/Ludus/issues/2102) | The packaged app captures on a second Mac. An offline report uploads after relaunch, and pause and destination changes preserve consent and report ownership. | R1 |
+| [R3 · Attach crash context](https://github.com/The-Ludus-Project/Ludus/issues/2103) | Add the committed assertion record and bounded log breadcrumbs where available. Define shared metadata and artifact limits. Verify missing, interrupted, and oversized context leaves a usable dump. | R1 |
+| [R4 · Report a non-crashing problem](https://github.com/The-Ludus-Project/Ludus/issues/2104) | From a healthy Editor, describe a problem, review included diagnostics, and explicitly submit to a private intake or save a local bundle. Preserve the draft if submission fails. | R3 |
+| [R5 · Qualify a standalone app](https://github.com/The-Ludus-Project/Ludus/issues/2105) | An installed-SDK macOS World demo player verifies app-owned capture, consent, and source-level symbolization. A consumer with reporting disabled remains independent of the reporter. | R2, R3 |
+| [R6 · Decide the next coverage targets](https://github.com/The-Ludus-Project/Ludus/issues/2106) | Record the Linux, Windows, browser, and hang support gaps and file the next qualified scope against a named user workflow and acceptance fixture. | R5 |
+
+The [assertion plan](assertions-implementation-plan.md#m5-richer-diagnostics-only-after-their-prerequisites-exist)
+owns collector hooks. The [logging plan](logging-review.md#12-staged-migration-and-acceptance-gates)
+owns the breadcrumb and log transport contracts. Continuous remote log export
+remains a separate logging follow-up. Windows GPU crash analysis is tracked in
+[#2004](https://github.com/The-Ludus-Project/Ludus/issues/2004).
+
 ## 9. Editor and contributor experience
 
 Retain clangd and CMake Tools. Select a prepared preset, expose its compile

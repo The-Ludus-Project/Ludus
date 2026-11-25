@@ -70,8 +70,17 @@ constexpr std::string_view URI_SAFE = "/-._~";
 /// Scalar spellings offered by completion, with their vector and matrix forms.
 constexpr std::string_view SCALAR_NAMES[] =
     {"bool", "int16", "uint16", "int32", "uint32", "int64", "uint64", "float16", "float32", "float64"};
-constexpr std::string_view RESOURCE_NAMES[] =
-    {"Texture2D", "RWTexture2D", "SamplerState", "ConstantBuffer", "StructuredBuffer", "RWStructuredBuffer"};
+constexpr std::string_view RESOURCE_NAMES[] = {"Texture2D",
+                                               "Texture3D",
+                                               "TextureCube",
+                                               "Texture2DArray",
+                                               "DepthTexture2D",
+                                               "RWTexture2D",
+                                               "SamplerState",
+                                               "SamplerComparisonState",
+                                               "ConstantBuffer",
+                                               "StructuredBuffer",
+                                               "RWStructuredBuffer"};
 constexpr uint32 MIN_COMPONENTS = 2;
 constexpr uint32 MAX_COMPONENTS = 4;
 
@@ -694,7 +703,7 @@ private:
     // ----- Analysis -------------------------------------------------------------------------------
 
     /// Check document `index` with the other open documents in place of their files on disk.
-    [[nodiscard]] bool analyze(usize index) noexcept
+    [[nodiscard]] bool analyze(usize index, std::string_view sourceOverride = {}) noexcept
     {
         Analysis& analysis = mAnalysis;
         analysis.Document = MAX_DOCUMENTS;
@@ -702,7 +711,8 @@ private:
         analysis.HasModel = false;
         analysis.Files.Clear();
         const Document& document = mDocuments[index];
-        if (analysis.Files.TryAddText(GetView(document.Path), GetView(document.Text)) == false)
+        const std::string_view source = sourceOverride.empty() == true ? GetView(document.Text) : sourceOverride;
+        if (analysis.Files.TryAddText(GetView(document.Path), source) == false)
         {
             return false;
         }
@@ -723,6 +733,7 @@ private:
         analysis.Request.Files = analysis.Files.GetFiles();
         analysis.Request.Source = MakeView(GetView(document.Path));
         analysis.Request.IncludeDirectories = mOptions.IncludeDirectories;
+        analysis.Request.Configuration = mOptions.Configuration;
         analysis.Document = index;
         if (language::Preprocess(analysis.Request, analysis.Preprocessed) != language::Status::Ready)
         {
@@ -1012,13 +1023,31 @@ private:
             }
             default: {
                 const language::TypeNameText type = typeName(declared.Type);
-                inoutLine.Append(declared.IsConstant == true ? "static const " : "");
+                inoutLine.Append(getConstantQualifier(declared));
                 inoutLine.Append(type.GetView());
                 inoutLine.Append(" ");
                 inoutLine.Append(name);
                 return;
             }
         }
+    }
+
+    /// True for a `static const` variable; a function-local `const` belongs to its function.
+    [[nodiscard]] bool isStaticConstant(const language::Symbol& declared) const noexcept
+    {
+        return declared.Kind == language::SymbolKind::Variable && declared.IsConstant == true &&
+               declared.Declaration < mAnalysis.Tree.Nodes.GetSize() &&
+               mAnalysis.Tree.Nodes[declared.Declaration].IsStatic == true;
+    }
+
+    /// The qualifier a hover shows before the type of `declared`, as its declaration spells it.
+    [[nodiscard]] std::string_view getConstantQualifier(const language::Symbol& declared) const noexcept
+    {
+        if (declared.Kind != language::SymbolKind::Variable || declared.IsConstant == false)
+        {
+            return {};
+        }
+        return isStaticConstant(declared) == true ? "static const " : "const ";
     }
 
     void respondHover(const Message& message) noexcept
@@ -1229,21 +1258,45 @@ private:
         }
     }
 
-    /// Fields and methods of the struct before a `.` at `offset`, or false when there is none.
-    [[nodiscard]] bool
-    writeMemberCompletions(parsing::JsonWriter& inoutWriter, usize offset, bool& inoutIsFirst) noexcept
+    [[nodiscard]] static usize getMemberStart(std::string_view text, usize offset) noexcept
     {
-        const std::string_view text = GetView(mDocuments[mAnalysis.Document].Text);
-        usize dot = offset;
-        while (dot > 0 && IsIdentifierByte(text[dot - 1]) == true)
+        while (offset > 0 && IsIdentifierByte(text[offset - 1]) == true)
         {
-            --dot;
+            --offset;
         }
-        if (dot == 0 || text[dot - 1] != '.' || dot < 2)
+        return offset >= 2 && text[offset - 1] == '.' ? offset : std::string_view::npos;
+    }
+
+    /// Analyze a private copy with the unfinished member removed. Byte offsets
+    /// up to the receiver stay stable, and ordinary diagnostics keep the real text.
+    [[nodiscard]] bool analyzeCompletionReceiver(usize document, std::string_view text, usize memberStart) noexcept
+    {
+        usize memberEnd = memberStart;
+        while (memberEnd < text.size() && IsIdentifierByte(text[memberEnd]) == true)
+        {
+            ++memberEnd;
+        }
+        const std::string_view rest = text.substr(memberEnd);
+        const usize next = rest.find_first_not_of(" \t\r");
+        const bool shouldAddTerminator = next == std::string_view::npos || rest[next] == '\n' || rest[next] == '}';
+        Array<char> repaired;
+        if (AppendText(text.substr(0, memberStart - 1), repaired) == false ||
+            (shouldAddTerminator == true && repaired.TryAdd(';') == false) || AppendText(rest, repaired) == false)
         {
             return false;
         }
-        const uint32 token = findToken(dot - 2);
+        return analyze(document, GetView(repaired));
+    }
+
+    /// Fields and methods of the receiver, or false when the caret follows no dot.
+    [[nodiscard]] bool
+    writeMemberCompletions(parsing::JsonWriter& inoutWriter, usize memberStart, bool& inoutIsFirst) noexcept
+    {
+        if (memberStart == std::string_view::npos)
+        {
+            return false;
+        }
+        const uint32 token = findToken(memberStart - 2);
         const uint32 node = token == language::NO_TOKEN ? language::NO_NODE : findNode(token);
         if (node == language::NO_NODE || mAnalysis.HasModel == false)
         {
@@ -1277,10 +1330,20 @@ private:
         if (document != MAX_DOCUMENTS && readPosition(parameters.Get("position"), position) == true &&
             ensureAnalysis(document) == true)
         {
-            const usize offset = GetOffset(GetView(mDocuments[document].Text), position);
-            if (writeMemberCompletions(writer, offset, isFirst) == false)
+            const std::string_view text = GetView(mDocuments[document].Text);
+            const usize memberStart = getMemberStart(text, GetOffset(text, position));
+            const bool shouldRecover = memberStart != std::string_view::npos && mAnalysis.HasTree == false;
+            if (shouldRecover == true)
+            {
+                static_cast<void>(analyzeCompletionReceiver(document, text, memberStart));
+            }
+            if (writeMemberCompletions(writer, memberStart, isFirst) == false)
             {
                 writeNameCompletions(writer, isFirst);
+            }
+            if (shouldRecover == true)
+            {
+                mAnalysis.Document = MAX_DOCUMENTS;
             }
         }
         writer.Raw("]}");
@@ -1323,7 +1386,7 @@ private:
                  declared.Kind == language::SymbolKind::Struct || declared.Kind == language::SymbolKind::Enum ||
                  declared.Kind == language::SymbolKind::Interface || declared.Kind == language::SymbolKind::Concept ||
                  (declared.Kind == language::SymbolKind::Variable &&
-                  (declared.IsConstant == true || declared.IsGroupshared == true ||
+                  (isStaticConstant(declared) == true || declared.IsGroupshared == true ||
                    declared.Slot != language::NO_LOCATION || declared.IsExtern == true)));
             if (isModuleLevel == true)
             {

@@ -29,7 +29,7 @@ if(LUDUS_BUILD_WEB_CORNELL)
     target_include_directories(ludus_web_cornell PRIVATE "${PROJECT_SOURCE_DIR}/examples/cornell-box/src")
     target_link_libraries(ludus_web_cornell PRIVATE Ludus::GameplayCamera)
     ludus_compile_shader(TARGET ludus_web_cornell NAME cornell
-        SOURCE "${PROJECT_SOURCE_DIR}/examples/cornell-box/shaders/cornell.slang" VERTEX vertexMain FRAGMENT fragmentMain)
+        SOURCE "${PROJECT_SOURCE_DIR}/examples/cornell-box/shaders/cornell.lusl" VERTEX VertexMain FRAGMENT FragmentMain)
     target_link_options(ludus_web_cornell PRIVATE -sASYNCIFY=1)
 endif()
 

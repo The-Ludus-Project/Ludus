@@ -1,5 +1,8 @@
 #include "internal/browser_player.h"
+#include "internal/code_document_tab.h"
 #include "internal/code_editor.h"
+#include "internal/code_editor_area.h"
+#include "internal/code_references_window.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/error_list.h"
@@ -521,6 +524,34 @@ TEST_CASE("Focus Viewport hides chrome around the World viewport and restores th
     CHECK(world->IsChromeVisible() == true);
 }
 
+TEST_CASE("A Find References result opens the References tool window", "[editor][layout][code-navigation]")
+{
+    QTemporaryDir directory;
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    window.resize(1470, 920);
+    window.show();
+    QApplication::processEvents();
+    Reset(window);
+    QDockWidget* references = Dock(window, QStringLiteral("referencesDock"));
+    CHECK(references->isHidden() == true);
+    CHECK(window.findChild<QAction*>(QStringLiteral("viewReferencesToolWindow")) != nullptr);
+    CodeReferencesWindow* listOrNull = window.findChild<CodeReferencesWindow*>();
+    REQUIRE(listOrNull != nullptr);
+    CodeEditor editor;
+    editor.setPlainText(QStringLiteral("float Value();\n"));
+    listOrNull->Show(editor.GetNavigation(),
+                     {
+                         .Symbol = QStringLiteral("Value"),
+                         .Targets = {{QStringLiteral("Value"), {}, editor.toPlainText(), 6, 11, false}},
+                         .Message = {},
+                     });
+    QApplication::processEvents();
+    CHECK(references->isHidden() == false);
+    CHECK(window.dockWidgetArea(references) == Qt::BottomDockWidgetArea);
+    CHECK(listOrNull->GetSummary() == QStringLiteral("1 reference to 'Value'"));
+}
+
 TEST_CASE("The bottom tool windows start closed until a problem is reported", "[editor][layout][error-list]")
 {
     QTemporaryDir directory;
@@ -533,6 +564,7 @@ TEST_CASE("The bottom tool windows start closed until a problem is reported", "[
     QDockWidget* errors = Dock(window, QStringLiteral("errorListDock"));
     for (const QString& name : {QStringLiteral("errorListDock"),
                                 QStringLiteral("searchDock"),
+                                QStringLiteral("referencesDock"),
                                 QStringLiteral("outputDock"),
                                 QStringLiteral("timingDock"),
                                 QStringLiteral("profilingDock")})
@@ -639,23 +671,14 @@ TEST_CASE("Source focus uses shell layout restoration without switching to the g
     REQUIRE(renderer != nullptr);
     renderer->SetLivePreview(false);
     REQUIRE(window.GetDocumentWell().OpenDocument(renderer) == true);
-    QTabWidget* views = renderer->findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
-    CodeEditor* source = renderer->findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
-    QPushButton* button = renderer->findChild<QPushButton*>(QStringLiteral("renderGraphFocusSource"));
-    REQUIRE(views != nullptr);
-    REQUIRE(source != nullptr);
+    REQUIRE(renderer->ShowSourceView() == true);
+    CodeEditorArea* code = window.findChild<CodeEditorArea*>();
+    REQUIRE(code != nullptr);
+    CodeDocumentTab* tab = code->GetActiveTabOrNull();
+    REQUIRE(tab != nullptr);
+    CodeEditor* source = &tab->GetEditor();
+    QPushButton* button = code->findChild<QPushButton*>(QStringLiteral("renderGraphFocusSource"));
     REQUIRE(button != nullptr);
-    QComboBox* files = renderer->findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
-    REQUIRE(files != nullptr);
-    for (const QString& file : renderer->GetDocument().GetFiles())
-    {
-        if (file.endsWith(QStringLiteral(".slang")) == true)
-        {
-            files->setCurrentText(file);
-            break;
-        }
-    }
-    views->setCurrentIndex(1);
     window.resize(1470, 920);
     window.show();
     QApplication::processEvents();
@@ -670,7 +693,7 @@ TEST_CASE("Source focus uses shell layout restoration without switching to the g
     button->click();
     QApplication::processEvents();
     CHECK(focus->isChecked() == true);
-    CHECK(views->currentIndex() == 1);
+    CHECK(window.GetDocumentWell().GetActiveDocumentOrNull() == code);
     CHECK(source->isVisible() == true);
     CHECK(Dock(window, QStringLiteral("projectExplorerDock"))->isHidden() == true);
     if (captures.isEmpty() == false)
@@ -680,7 +703,7 @@ TEST_CASE("Source focus uses shell layout restoration without switching to the g
     button->click();
     QApplication::processEvents();
     CHECK(focus->isChecked() == false);
-    CHECK(views->currentIndex() == 1);
+    CHECK(window.GetDocumentWell().GetActiveDocumentOrNull() == code);
     CHECK(window.saveState() == before);
 }
 
@@ -718,33 +741,30 @@ TEST_CASE("Code and Viewport reuses the World and keeps both surfaces stable whi
     QApplication::processEvents();
     DocumentWell& well = window.GetDocumentWell();
     CHECK(well.GetGroupCount() == 2);
-    CHECK(well.IsDocumentCurrent(rendererOrNull) == true);
+    CodeEditorArea* code = window.findChild<CodeEditorArea*>();
+    REQUIRE(code != nullptr);
+    CHECK(well.IsDocumentCurrent(code) == true);
     CHECK(well.IsDocumentCurrent(worldOrNull) == true);
     CHECK(worldOrNull->parentWidget() == worldParent);
     CHECK(worldOrNull->IsChromeVisible() == false);
     CHECK(&worldOrNull->GetRenderPreview() == preview);
-    QTabWidget* viewsOrNull = rendererOrNull->findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
-    CodeEditor* sourceOrNull = rendererOrNull->findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
-    REQUIRE(viewsOrNull != nullptr);
-    REQUIRE(sourceOrNull != nullptr);
-    CHECK(viewsOrNull->currentIndex() == 1);
-    REQUIRE(sourceOrNull->isVisible() == true);
+    CodeDocumentTab* tab = code->GetActiveTabOrNull();
+    REQUIRE(tab != nullptr);
+    CodeEditor* source = &tab->GetEditor();
+    REQUIRE(source->isVisible() == true);
     REQUIRE(worldOrNull->isVisible() == true);
     CHECK(window.statusBar()->isVisible() == true);
     QToolBar* stripOrNull = window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"));
-    QTreeWidget* treeOrNull = rendererOrNull->findChild<QTreeWidget*>(QStringLiteral("renderGraphTree"));
     REQUIRE(stripOrNull != nullptr);
-    REQUIRE(treeOrNull != nullptr);
     CHECK(stripOrNull->isHidden() == false);
-    CHECK(treeOrNull->isHidden() == true);
     const QRect bounds = well.geometry();
-    const QSize sourceSize = sourceOrNull->size();
+    const QSize sourceSize = source->size();
     REQUIRE(well.OpenDocument(worldOrNull) == true);
     QApplication::processEvents();
     CHECK(well.geometry() == bounds);
-    CHECK(sourceOrNull->size() == sourceSize);
+    CHECK(source->size() == sourceSize);
     CHECK(stripOrNull->isHidden() == false);
-    REQUIRE(well.OpenDocument(rendererOrNull) == true);
+    REQUIRE(well.OpenDocument(code) == true);
     QApplication::processEvents();
     CHECK(well.geometry() == bounds);
     const QJsonObject arrangement = well.SaveState();
@@ -756,12 +776,7 @@ TEST_CASE("Code and Viewport reuses the World and keeps both surfaces stable whi
     {
         REQUIRE(window.grab().save(capture + QStringLiteral("-code-viewport.png")) == true);
     }
-    viewsOrNull->setCurrentIndex(0);
-    CHECK(treeOrNull->isHidden() == false);
     CHECK(outlineOrNull->isChecked() == true);
-    viewsOrNull->setCurrentIndex(1);
-    CHECK(treeOrNull->isHidden() == true);
-    CHECK(outlineOrNull->isChecked() == false);
     well.MergeGroups();
     REQUIRE(well.OpenDocument(worldOrNull) == true);
     QApplication::processEvents();
@@ -792,13 +807,13 @@ TEST_CASE("A project's paired Source selection and divider restore together", "[
         QAction* actionOrNull = window.findChild<QAction*>(QStringLiteral("view.codeAndViewport"));
         REQUIRE(actionOrNull != nullptr);
         actionOrNull->trigger();
-        QComboBox* filesOrNull = rendererOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
-        REQUIRE(filesOrNull != nullptr);
-        for (const QString& file : rendererOrNull->GetDocument().GetFiles())
+        const QStringList files = rendererOrNull->GetDocument().GetFiles();
+        for (const QString& file : files)
         {
             if (file.endsWith(QStringLiteral(".slang")) == true)
             {
-                filesOrNull->setCurrentText(file);
+                REQUIRE(rendererOrNull->OpenGraphSource(file) == true);
+                break;
             }
         }
         QSplitter* splitterOrNull =
@@ -820,7 +835,9 @@ TEST_CASE("A project's paired Source selection and divider restore together", "[
     REQUIRE(worldOrNull != nullptr);
     rendererOrNull->SetLivePreview(false);
     CHECK(rendererOrNull->GetSourceViewState() == sourceState);
-    CHECK(reopened.GetDocumentWell().IsDocumentCurrent(rendererOrNull) == true);
+    CodeEditorArea* code = reopened.findChild<CodeEditorArea*>();
+    REQUIRE(code != nullptr);
+    CHECK(reopened.GetDocumentWell().IsDocumentCurrent(code) == true);
     CHECK(reopened.GetDocumentWell().IsDocumentCurrent(worldOrNull) == true);
     CHECK(reopened.GetDocumentWell().SaveState().value(QStringLiteral("groups")) ==
           documents.value(QStringLiteral("groups")));

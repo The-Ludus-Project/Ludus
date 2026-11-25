@@ -11,6 +11,7 @@
 #include "internal/code_document.h"
 #include "internal/document_history.h"
 #include "internal/render_graph_scene_query_budgets.h"
+#include "internal/render_graph_shader_language.h"
 #include "internal/render_graph_source.h"
 
 #include <QByteArray>
@@ -212,17 +213,33 @@ public:
     {
         return source == RenderGraphSource::Saved ? mSavedRevision : mHistory.Revision();
     }
+    /// Stage a package-local shader include with the selected language's suffix as one undoable edit.
+    /// Null initialSource selects the default include template. A nonempty includeTarget links the new file
+    /// from that source in the same undo step.
+    /// Save publishes it. Existing files are preserved; outError describes any failure and its repair.
+    [[nodiscard]] RenderGraphDocumentStatus CreateSharedShaderSource(const QString& file,
+                                                                     RenderGraphShaderLanguage language,
+                                                                     QString& outError,
+                                                                     const QByteArray& initialSource = {},
+                                                                     const QString& includeTarget = {});
+    /// Add named Buffer access for one scene function and lift any explicit legacy opt-out for its
+    /// programs. Applies the source and manifest edits as one undo step; Save publishes them.
+    [[nodiscard]] RenderGraphDocumentStatus
+    AddShaderBufferAccess(const QString& manifest, const QString& file, const QString& function, QString& outError);
     /// Parse a draft graph document; returns false for missing or non-object JSON.
     [[nodiscard]] bool GetGraph(const QString& file, QJsonObject& outGraph) const;
 
     /// Replace a node atomically, preserving connected port identities and types.
     /// Subgraph replacements automatically disconnect missing/incompatible ports and clear
     /// affected configuration-output sources while retaining their declarations, in the same undo step.
+    /// For pipeline nodes, newShaderLanguage selects the source language for newly created programs.
     /// On failure the draft/history is preserved; optional error names the affected endpoint and repair.
-    [[nodiscard]] RenderGraphDocumentStatus ReplaceNode(const QString& file,
-                                                        const QString& configuration,
-                                                        const QJsonObject& node,
-                                                        QString* outErrorOrNull = nullptr);
+    [[nodiscard]] RenderGraphDocumentStatus
+    ReplaceNode(const QString& file,
+                const QString& configuration,
+                const QJsonObject& node,
+                QString* outErrorOrNull = nullptr,
+                RenderGraphShaderLanguage newShaderLanguage = RenderGraphShaderLanguage::Lusl);
     /// Replace a configuration's public finite choices in one undo step. Targets forward to
     /// node.OptionId; incompatible bindings or existing caller overrides reject the edit.
     /// Failure preserves the complete draft and history. Save remains explicit. GUI thread only.
@@ -243,13 +260,16 @@ public:
                                                        QString& outError);
     /// Apply a pipeline and create missing shader programs and source templates as one
     /// undoable draft edit, including the selected technique and recipe. Program placeholders receive generated names.
-    /// New programs grow budgets.programs to fit within supported build limits; a larger value is retained.
+    /// New programs use newShaderLanguage and grow budgets.programs within supported build limits.
+    /// A larger authored budget is retained. Existing sources keep their language.
     /// Existing programs must match stage and source. Failure preserves all draft files; Save publishes new files
     /// without replacement.
-    [[nodiscard]] RenderGraphDocumentStatus ApplyPipeline(const QString& file,
-                                                          const QString& configuration,
-                                                          const QJsonObject& node,
-                                                          QString* outErrorOrNull = nullptr);
+    [[nodiscard]] RenderGraphDocumentStatus
+    ApplyPipeline(const QString& file,
+                  const QString& configuration,
+                  const QJsonObject& node,
+                  QString* outErrorOrNull = nullptr,
+                  RenderGraphShaderLanguage newShaderLanguage = RenderGraphShaderLanguage::Lusl);
     /// Unpack full Scene wires touching a node into typed members as one undoable edit.
     /// Preserves the selected scene/data. Failure preserves all draft files. No disk writes.
     [[nodiscard]] RenderGraphDocumentStatus
@@ -475,6 +495,16 @@ public:
                                                CodeTextSelection before,
                                                CodeTextSelection after,
                                                bool shouldMerge);
+    /// Replace several existing sources' drafts as one undo step named `name` (a
+    /// workspace edit, code editor M4 CE11): Undo restores every file together.
+    /// `file` is the source being edited, with its selection before and after.
+    /// Rejects a stale revision, an unknown file, invalid UTF-8 or a size limit
+    /// without changing the draft or history.
+    [[nodiscard]] CodeEditStatus ReplaceTexts(foundation::uint64 expectedRevision,
+                                              const QMap<QString, QByteArray>& files,
+                                              const char* name,
+                                              const RenderGraphTextState& before,
+                                              const RenderGraphTextState& after);
     void BreakTextGroup() noexcept;
     [[nodiscard]] LUDUS_INLINE const RenderGraphTextState& GetHistoryTextState() const noexcept
     {

@@ -1,0 +1,90 @@
+{
+  "$comment": [
+    "LUSL migration scope, checked by scripts/python/lusl_migration.py through source_policy.py",
+    "(docs/architecture/shading-language.md#l5d-migration-waves). 'migrated' lists directories whose",
+    "shaders are LUSL: each wave adds the directories it ports, and the gate then rejects any Slang",
+    "source (.slang/.slangh) there that 'retained' does not name. 'retained' lists the Slang files or",
+    "directories the repository keeps, each with the reason it stays Slang. Paths are",
+    "checkout-relative; every entry must exist."
+  ],
+  "migrated": [
+    {
+      "path": "apps/editor/shaders",
+      "issue": 1735
+    },
+    {
+      "path": "apps/smoke/shaders",
+      "issue": 1735
+    },
+    {
+      "path": "examples/cornell-box/shaders",
+      "issue": 1735
+    },
+    {
+      "path": "tests/sdk_consumer/shaders",
+      "issue": 1735
+    },
+    {
+      "path": "tools/luminaire-benchmark/shaders",
+      "issue": 1735
+    },
+    {
+      "path": "tools/shader-probe",
+      "issue": 1735
+    },
+    {
+      "path": "tools/sms-benchmark/shaders",
+      "issue": 1735
+    }
+  ],
+  "retained": [
+    {
+      "path": "modules/graphics/rhi/shaders",
+      "reason": "RHI interface vocabulary that LUSL lowering writes against (raster_bindings.slang, ray_query.slang, runtime_bindings.slang)"
+    },
+    {
+      "path": "modules/graphics/rhi/tests/shaders",
+      "reason": "RHI tests of Slang input: graph ray queries, ordered compute and raster storage"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_composite.slang",
+      "reason": "Differential oracle: a renderer GPU test compares its pixels with tests/lusl_composite.lusl"
+    },
+    {
+      "path": "scripts/python/fixtures",
+      "reason": "Legacy-format render-graph template fixtures that the template update and capture warmup tests read"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/diagnostic.slang",
+      "reason": "Slang input of the installed shader helper's contract scripts (verify_shader_build.py and the macOS and Windows scripts) and differential oracle: the RHI parity test compares its pixels with diagnostic.lusl"
+    },
+    {
+      "path": "tools/luminaire-benchmark/shaders/portable_flow.slang",
+      "reason": "export_compute.py splices it into the slice_sampling_luminaire render-graph template's Slang shading; it migrates with that template (L5d wave 3)"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/uniforms.slang",
+      "reason": "Uniform block of diagnostic.slang that the helper contract scripts edit to check include rebuilds and the 16 KiB uniform bound"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/mip_streaming.slang",
+      "reason": "Mip-streaming fixture that reads the bound view's mip count through Slang's GetDimensions level form; LUSL's GetDimensions() returns level-zero extents only"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/r11.slang",
+      "reason": "RHI binding-array test of Slang input: r11arrays indexes images with NonUniformResourceIndex and r11runtime samples a runtime-sized array; LUSL binding arrays take constant indices and a named size"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/r11buffers.slang",
+      "reason": "RHI binding-array test of Slang input: a ConstantBuffer array, which LUSL binding arrays (sampled textures and samplers) do not express"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/r11storage.slang",
+      "reason": "RHI binding-array test of Slang input: an RWStructuredBuffer array, which LUSL binding arrays (sampled textures and samplers) do not express"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/raster.slang",
+      "reason": "Slang input of verify_raster_build.py's manual-binding checks (slot 15 accepted, group 1 and register t16 rejected), which LUSL's declaration-order slots cannot spell"
+    }
+  ]
+}

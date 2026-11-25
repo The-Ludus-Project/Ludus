@@ -8,6 +8,8 @@
 #include "internal/state_view.h"
 
 #include <QAbstractItemView>
+#include <QAccessible>
+#include <QApplication>
 #include <QContextMenuEvent>
 #include <QDir>
 #include <QEvent>
@@ -16,6 +18,7 @@
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QItemSelectionModel>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -48,6 +51,10 @@ constexpr int ROW_PROGRESS_HEIGHT = 3;
 constexpr int PROGRESS_STEPS = 1000;
 /// Quiet period after a catalog folder changes before the list refreshes, so one import's several writes refresh once.
 constexpr int WATCH_DELAY_MILLISECONDS = 250;
+#if !defined(Q_OS_WASM)
+/// Poll interval of the cooked-output watch; the browser editor has no file watcher.
+constexpr int COOKED_WATCH_INTERVAL_MILLISECONDS = 100;
+#endif
 
 [[nodiscard]] QString GetStageText(ContentImportStage stage)
 {
@@ -108,7 +115,8 @@ public:
 };
 } // namespace
 
-ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
+ContentWorkspace::ContentWorkspace(QWidget* parentOrNull, const foundation::filesystem::WatchConfig& cookedWatchConfig)
+    : QWidget(parentOrNull), mCookedWatchTimer(this), mCookedWatch(cookedWatchConfig)
 {
     setObjectName(QStringLiteral("contentWorkspace"));
     auto* layout = new QVBoxLayout(this);
@@ -150,6 +158,7 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
     Table_->setObjectName(QStringLiteral("contentTable"));
     Table_->setAccessibleName(QStringLiteral("Project content resources"));
     Table_->setModel(mFilterOrNull);
+    Table_->installEventFilter(this);
     Table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     ConfigureItemSelection(*Table_);
     Table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -276,17 +285,7 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
             mSelectedIds.append(index.data(Qt::UserRole).toString());
         }
     });
-    connect(Table_, &QTableView::activated, this, [this](const QModelIndex& index) {
-        const ContentRow* row = Model_->Row(mFilterOrNull->mapToSource(index));
-        if (row != nullptr && (row->Type == ContentType::Sound || row->Type == ContentType::Music))
-        {
-            Q_EMIT OpenAudio(row->Id);
-        }
-        else if (row != nullptr && row->Type == ContentType::Mesh)
-        {
-            Status_->setText(QStringLiteral("Mesh editing is not available yet."));
-        }
-    });
+    connect(Table_, &QTableView::activated, this, &ContentWorkspace::activateResource);
     connect(Table_, &QTableView::customContextMenuRequested, this, [this](const QPoint& position) {
         const QModelIndex index = Table_->indexAt(position);
         const QString id = index.data(Qt::UserRole).toString();
@@ -295,7 +294,7 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
             return;
         }
         QMenu menu(this);
-        menu.addAction(QStringLiteral("Retry import"), this, [this, id]() { (void)RetryImport(id); });
+        menu.addAction(getRetryLabel(id), this, [this, id]() { (void)RetryImport(id); });
         menu.addAction(QStringLiteral("Dismiss"), this, [this, id]() { DismissFailure(id); });
         menu.exec(Table_->viewport()->mapToGlobal(position));
     });
@@ -315,8 +314,10 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
         Refresh();
     });
 #if !defined(Q_OS_WASM)
-    // A scene import from the World or an outside cook replaces assets/catalog.json; refresh so the list and its
-    // thumbnails follow the new artifact keys without a manual Refresh.
+    // Audio keeps its directory watcher. Cooked assets have explicit registrations and overflow recovery.
+    mCookedWatchTimer.setObjectName(QStringLiteral("cookedContentWatch"));
+    mCookedWatchTimer.setInterval(COOKED_WATCH_INTERVAL_MILLISECONDS);
+    connect(&mCookedWatchTimer, &QTimer::timeout, this, &ContentWorkspace::pollCookedContent);
     mWatcherOrNull = new QFileSystemWatcher(this);
     connect(mWatcherOrNull, &QFileSystemWatcher::directoryChanged, this, [this]() { mWatchDelay.start(); });
 #endif
@@ -354,6 +355,14 @@ void ContentWorkspace::SetProject(const QString& root, foundation::uint64 epoch,
     mProblemOrNull->hide();
     Applying_ = false;
     watchCatalogs();
+#if !defined(Q_OS_WASM)
+    mCookedWatchTimer.stop();
+    if (mCookedWatch.Reset(mAssetRoot) == true)
+    {
+        mCookedWatchClock.start();
+        mCookedWatchTimer.start();
+    }
+#endif
     RefreshPending_ = Busy() && Root_.isEmpty() == false;
     if (Root_.isEmpty() == false && Busy() == false)
     {
@@ -378,18 +387,14 @@ ContentRequest ContentWorkspace::Request() const
 }
 void ContentWorkspace::Refresh()
 {
-    if (Root_.isEmpty() || Busy() || Closing_ || NextOperation_ == ~foundation::uint64{0})
+    if (Root_.isEmpty() == true || Busy() == true || Closing_ == true || mCookedWatch.NeedsRescan() == true ||
+        NextOperation_ == ~foundation::uint64{0})
     {
         return;
     }
     auto request = Request();
     request.Operation = ++NextOperation_;
     ActiveOperation_ = request.Operation;
-    // A refresh retries a catalog problem; an import failure stays until it is retried or dismissed.
-    if (mProblemImportId.isEmpty() == true)
-    {
-        hideProblem();
-    }
     Status_->setText(QStringLiteral("Reading content catalog…"));
     if (Jobs_->Start(request) == false)
     {
@@ -422,6 +427,13 @@ bool ContentWorkspace::QueueImport(const QString& file, const QString& id)
     {
         return false;
     }
+    // The repair controls can disappear when a retry is queued. Keep keyboard navigation in the Content table.
+    const QWidget* focusOrNull = window()->focusWidget();
+    if (mProblemImportId == id && focusOrNull != nullptr &&
+        (focusOrNull == mRetryOrNull || mProblemOrNull->isAncestorOf(focusOrNull) == true))
+    {
+        Table_->setFocus(Qt::OtherFocusReason);
+    }
     mFailedImports.remove(id);
     mImportQueue.append({ .File = file, .Id = id });
     ++mBatchTotal;
@@ -440,11 +452,22 @@ bool ContentWorkspace::QueueImport(const QString& file, const QString& id)
     Q_EMIT BusyChanged();
     return mHasActiveImport == true || mImportQueue.isEmpty() == false;
 }
+QString ContentWorkspace::getRetryLabel(const QString& id) const
+{
+    return mFailedImports.value(id).ShouldChooseReplacement == true ? QStringLiteral("Choose corrected file…")
+                                                                    : QStringLiteral("Retry import");
+}
+
 bool ContentWorkspace::RetryImport(const QString& id)
 {
     if (mFailedImports.contains(id) == false)
     {
         return false;
+    }
+    if (mFailedImports.value(id).ShouldChooseReplacement == true)
+    {
+        chooseImportFile(id);
+        return true;
     }
     // Take the failure out first: QueueImport clears it anyway, and the file and ID must outlive that.
     const QueuedImport retry = mFailedImports.take(id);
@@ -502,6 +525,15 @@ void ContentWorkspace::startNextImport()
 }
 void ContentWorkspace::ChooseImport(bool reimport)
 {
+    const QString selected = reimport == true ? SelectedId() : QString();
+    if (reimport == false || selected.isEmpty() == false)
+    {
+        chooseImportFile(selected);
+    }
+}
+
+void ContentWorkspace::chooseImportFile(const QString& resourceId)
+{
     if (Root_.isEmpty() || Closing_)
     {
         Status_->setText(QStringLiteral("Open a project, then retry Import."));
@@ -509,38 +541,45 @@ void ContentWorkspace::ChooseImport(bool reimport)
     }
     const auto identity = Epoch_;
     const QString root = Root_;
-    const auto selected = SelectedId();
-    OpenEditorDocument(this,
-                       {
-                           .Title = reimport ? QStringLiteral("Reimport source") : QStringLiteral("Import source"),
-                           .Directory = {},
-                           .Filter = QStringLiteral("Audio (*.wav *.flac)"),
-                           .ProjectFolder = false,
-                           .IsAudioSource = true,
-                       },
-                       [this, identity, root, selected, reimport](const QString& file) {
-                           if (identity != Epoch_ || root != Root_ || Closing_ == true)
-                           {
-                               return;
-                           }
-                           QString id = selected;
-                           if (reimport == false)
-                           {
-                               bool isAccepted = false;
-                               id = QInputDialog::getText(this,
-                                                          QStringLiteral("Stable resource ID"),
-                                                          QStringLiteral("Lowercase resource ID (not a file path)"),
-                                                          QLineEdit::Normal,
-                                                          QStringLiteral("source/") +
-                                                              QFileInfo(file).completeBaseName().toLower(),
-                                                          &isAccepted);
-                               if (isAccepted == false || identity != Epoch_ || root != Root_)
-                               {
-                                   return;
-                               }
-                           }
-                           (void)QueueImport(file, id);
-                       });
+    const bool isReimport = resourceId.isEmpty() == false;
+    const QWidget* focusOrNull = window()->focusWidget();
+    const bool shouldRestoreRepairFocus =
+        mProblemImportId == resourceId && focusOrNull != nullptr &&
+        (focusOrNull == mRetryOrNull || mProblemOrNull->isAncestorOf(focusOrNull) == true);
+    OpenEditorDocument(
+        this,
+        {
+            .Title = isReimport == true ? QStringLiteral("Reimport source") : QStringLiteral("Import source"),
+            .Directory = {},
+            .Filter = QStringLiteral("Audio (*.wav *.flac)"),
+            .ProjectFolder = false,
+            .IsAudioSource = true,
+        },
+        [this, identity, root, resourceId, shouldRestoreRepairFocus](const QString& file) {
+            if (identity != Epoch_ || root != Root_ || Closing_ == true)
+            {
+                return;
+            }
+            QString id = resourceId;
+            if (id.isEmpty() == true)
+            {
+                bool isAccepted = false;
+                id = QInputDialog::getText(this,
+                                           QStringLiteral("Stable resource ID"),
+                                           QStringLiteral("Lowercase resource ID (not a file path)"),
+                                           QLineEdit::Normal,
+                                           QStringLiteral("source/") + QFileInfo(file).completeBaseName().toLower(),
+                                           &isAccepted);
+                if (isAccepted == false || identity != Epoch_ || root != Root_)
+                {
+                    return;
+                }
+            }
+            if (QueueImport(file, id) == true && shouldRestoreRepairFocus == true)
+            {
+                Table_->setFocus(Qt::OtherFocusReason);
+            }
+        });
 }
 void ContentWorkspace::Accept(const ContentResult& result)
 {
@@ -576,6 +615,21 @@ void ContentWorkspace::Accept(const ContentResult& result)
     HasCatalog_ = result.HasAudioCatalog;
     mCatalogRows = result.Rows;
     applyRows();
+    QStringList texturePaths;
+    for (const ContentRow& row : mCatalogRows)
+    {
+        if (row.Type == ContentType::Texture)
+        {
+            texturePaths.append(row.Path);
+        }
+    }
+    const QString failedPath = mCookedWatch.SetTexturePaths(texturePaths);
+    if (failedPath.isEmpty() == false)
+    {
+        reportCookedWatchFailure(
+            QStringLiteral("Could not watch %1. Keep its cooked artifact accessible or use Refresh to validate it.")
+                .arg(failedPath));
+    }
 }
 void ContentWorkspace::finishImport(const ContentResult& result)
 {
@@ -584,7 +638,7 @@ void ContentWorkspace::finishImport(const ContentResult& result)
     {
         return;
     }
-    const QueuedImport finished = mActiveImport;
+    QueuedImport finished = mActiveImport;
     mHasActiveImport = false;
     ++mBatchDone;
     if (result.Status == content::Status::Ok || result.Status == content::Status::Cancelled)
@@ -595,6 +649,7 @@ void ContentWorkspace::finishImport(const ContentResult& result)
     }
     else
     {
+        finished.ShouldChooseReplacement = result.ReplacementGuidance.isEmpty() == false;
         mFailedImports.insert(id, finished);
         Model_->SetOperation(id,
                              {
@@ -652,6 +707,10 @@ void ContentWorkspace::showProblem(const ContentResult& result)
             state.Fix = QStringLiteral("Fix the source file or catalog entry the message names, then try again.");
             break;
     }
+    if (result.ReplacementGuidance.isEmpty() == false)
+    {
+        state.Fix = result.ReplacementGuidance;
+    }
     if (isImport == false)
     {
         state.ActionLabel = QStringLiteral("Refresh");
@@ -659,12 +718,19 @@ void ContentWorkspace::showProblem(const ContentResult& result)
     }
     else
     {
-        // The failed row keeps its reason, so retrying needs no new file choice or ID.
-        state.ActionLabel = QStringLiteral("Retry import");
+        state.ActionLabel = getRetryLabel(result.Request.Id);
         mProblemImportId = result.Request.Id;
     }
     mProblemOrNull->SetContent(state);
     mProblemOrNull->show();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    const QWidget* focusOrNull = QApplication::focusWidget();
+    if (result.ReplacementGuidance.isEmpty() == false && focusOrNull != nullptr && isAncestorOf(focusOrNull) == true)
+    {
+        QAccessibleAnnouncementEvent announcement(mProblemOrNull, state.Cause + QLatin1Char(' ') + state.Fix);
+        QAccessible::updateAccessibility(&announcement);
+    }
+#endif
 }
 void ContentWorkspace::hideProblem()
 {
@@ -823,17 +889,42 @@ void ContentWorkspace::watchCatalogs()
     {
         folders.append(Root_);
     }
-    const QString assets =
-        mAssetRoot.isEmpty() == true ? QString() : QDir(mAssetRoot).filePath(QStringLiteral("assets"));
-    if (assets.isEmpty() == false && QFileInfo(assets).isDir() == true)
-    {
-        folders.append(assets);
-    }
     if (folders.isEmpty() == false)
     {
         (void)mWatcherOrNull->addPaths(folders);
     }
 #endif
+}
+void ContentWorkspace::pollCookedContent()
+{
+    if (Busy() == true || Closing_ == true)
+    {
+        return;
+    }
+    const CookedContentWatchStep step =
+        mCookedWatch.Poll(static_cast<foundation::uint64>(mCookedWatchClock.nsecsElapsed()));
+    if (step.FailedPath.isEmpty() == false)
+    {
+        reportCookedWatchFailure(
+            QStringLiteral("Could not observe %1. Cooked content recovery is pending; restore a readable cooked "
+                           "artifact at that path. The last valid previews remain available.")
+                .arg(step.FailedPath));
+    }
+    if (step.ShouldRefresh == true)
+    {
+        Refresh();
+    }
+}
+void ContentWorkspace::reportCookedWatchFailure(const QString& message)
+{
+    Status_->setText(message);
+    if (mProblemImportId.isEmpty() == true)
+    {
+        ContentResult result;
+        result.Status = content::Status::IoError;
+        result.Message = message;
+        showProblem(result);
+    }
 }
 bool ContentWorkspace::event(QEvent* event)
 {
@@ -849,6 +940,33 @@ bool ContentWorkspace::event(QEvent* event)
     }
     return QWidget::event(event);
 }
+bool ContentWorkspace::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == Table_ && event->type() == QEvent::KeyPress)
+    {
+        const QKeyEvent& key = *static_cast<const QKeyEvent*>(event);
+        if (key.modifiers() == Qt::NoModifier && (key.key() == Qt::Key_Return || key.key() == Qt::Key_Enter))
+        {
+            activateResource(Table_->currentIndex());
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void ContentWorkspace::activateResource(const QModelIndex& index)
+{
+    const ContentRow* rowOrNull = Model_->Row(mFilterOrNull->mapToSource(index));
+    if (rowOrNull != nullptr && (rowOrNull->Type == ContentType::Sound || rowOrNull->Type == ContentType::Music))
+    {
+        Q_EMIT OpenAudio(rowOrNull->Id);
+    }
+    else if (rowOrNull != nullptr && rowOrNull->Type == ContentType::Mesh)
+    {
+        Status_->setText(QStringLiteral("Mesh editing is not available yet."));
+    }
+}
+
 void ContentWorkspace::RestoreSelection()
 {
     const QModelIndex index = mFilterOrNull->mapFromSource(Model_->FindId(SelectedId_));
@@ -885,6 +1003,7 @@ void ContentWorkspace::RenderActions()
     mFindUsersOrNull->setEnabled(row != nullptr && row->Key.isEmpty() == false);
     Reimport_->setEnabled(canImport && row != nullptr && row->Type == ContentType::AudioSource &&
                           row->IsPending == false);
+    mRetryOrNull->setText(getRetryLabel(SelectedId()));
     mRetryOrNull->setEnabled(canImport && row != nullptr && mFailedImports.contains(row->Id) == true);
     mRetryOrNull->setVisible(mFailedImports.isEmpty() == false);
     Cancel_->setEnabled(Busy() && Closing_ == false);
@@ -908,6 +1027,8 @@ void ContentWorkspace::Shutdown()
     Closing_ = true;
     mImportQueue.clear();
     mWatchDelay.stop();
+    mCookedWatchTimer.stop();
+    static_cast<void>(mCookedWatch.Reset({}));
     Jobs_->Shutdown();
     RenderActions();
 }

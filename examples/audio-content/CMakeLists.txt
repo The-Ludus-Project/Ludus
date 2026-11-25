@@ -13,3 +13,11 @@ add_test(NAME generate_audio COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURC
 set_tests_properties(generate_audio PROPERTIES FIXTURES_SETUP audio_content)
 add_test(NAME audio_content_sample COMMAND audio_content_sample --offline "${CMAKE_CURRENT_BINARY_DIR}/content")
 set_tests_properties(audio_content_sample PROPERTIES FIXTURES_REQUIRED audio_content)
+
+add_executable(audio_transition_timing transition_timing.cpp)
+target_link_libraries(audio_transition_timing PRIVATE Ludus::AudioContent Ludus::FoundationMath)
+ludus_apply_app_policy(audio_transition_timing)
+add_test(NAME generate_transition_music COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/generate_transition_fixture.py" "${CMAKE_CURRENT_BINARY_DIR}/transition-content")
+set_tests_properties(generate_transition_music PROPERTIES FIXTURES_SETUP transition_music)
+add_test(NAME audio_transition_timing COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/verify_transition_capture.py" "$<TARGET_FILE:audio_transition_timing>" "${CMAKE_CURRENT_BINARY_DIR}/transition-content" "${CMAKE_CURRENT_BINARY_DIR}/transition-replacement.wav")
+set_tests_properties(audio_transition_timing PROPERTIES FIXTURES_REQUIRED transition_music)

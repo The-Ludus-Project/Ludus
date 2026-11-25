@@ -124,8 +124,25 @@ def main():
     header = next((output / 'build').rglob('InstalledGraph.h'))
     assert header.read_bytes() == (output / 'cli.h').read_bytes(), 'installed CLI/CMake plans differ'
     verify_runtime_package(output, header, runtime, package['package'])
+    if 'spirv' in args.profiles and args.validator and args.spirv_cross:
+        verify_native_record_targets(args, sdk, helper, output)
     print('RG2 installed CLI/CMake, relocation, numeric header and nonvoid depth rejection passed.')
     print('RG3 installed CLI, relocated CMake RUNTIME_PACKAGE and source tool cook identical .lurgrt bytes.')
+
+
+def verify_native_record_targets(args, sdk, helper, output):
+    """Check the portable record fixture with the installed LUSL and shader tools."""
+    luslc = sdk / 'bin' / ('luslc.exe' if os.name == 'nt' else 'luslc')
+    environment = dict(os.environ, PYTHONPATH=str(SOURCE_TOOLS), PYTHONDONTWRITEBYTECODE='1',
+                       LUDUS_LUSLC=str(luslc), LUDUS_RG1_HELPER=str(helper),
+                       LUDUS_RG1_SLANG=str(Path(args.slang).resolve()),
+                       LUDUS_RG1_CROSS=str(Path(args.spirv_cross).resolve()),
+                       LUDUS_RG1_VALIDATOR=str(Path(args.validator).resolve()))
+    fixture = 'test_render_graph_compute.NativeSceneComputeTests'
+    tests = [fixture + '.test_ordered_compute_shares_one_native_edge_table_on_vulkan']
+    if 'wgsl' in args.profiles:
+        tests.append(fixture + '.test_ordered_compute_shares_one_native_edge_table_on_webgpu')
+    subprocess.run([sys.executable, '-m', 'unittest', *tests], check=True, cwd=output, env=environment)
 
 
 def verify_runtime_package(output, header, runtime, package):

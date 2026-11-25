@@ -18,7 +18,7 @@ namespace
 using namespace foundation;
 namespace rhi = graphics::rhi;
 
-// Mirrors the generic shader's std140 block (see apps/smoke/shaders/smoke.slang).
+// Mirrors the generic shader's std140 block (see apps/smoke/shaders/smoke.lusl).
 struct alignas(16) SmokeUniforms final
 {
     float32 Resolution[2];

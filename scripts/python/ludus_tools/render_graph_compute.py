@@ -38,7 +38,7 @@ def lower(node, where, graph):
                    'a buffer-only scene dispatch requires one compute kernel',
                    repair='Assign a compute program and remove the ray callbacks.')
     mappings, outputs, color = ray.lower_ports(node, where, graph, 'scene compute', 'scene compute',
-                                              is_buffer_dispatch=is_buffer_dispatch)
+                                              is_buffer_dispatch=is_buffer_dispatch, allows_color_input=True)
     record = {'id': node['id'], 'kind': 'RayTracing',
               'color_load': color['load'] if color else 'Discard',
               'color_store': color['store'] if color else 'Discard'}

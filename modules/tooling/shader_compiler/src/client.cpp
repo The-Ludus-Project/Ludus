@@ -4,7 +4,6 @@
 #include "codec.hpp"
 
 #include <ludus/foundation/base/byte_order.hpp>
-#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <cstring>
@@ -60,8 +59,8 @@ Status Client::Submit(BorrowedView<const char> endpoint, const Request& request)
     }
     state->Identity = request.Identity;
     state->FileCount = request.Files.GetSize();
-    static_cast<void>(TryWriteLittleEndian<uint32>(static_cast<uint32>(state->RequestBytes.GetSize()),
-                                                   foundation::MakeSpan(state->RequestHeader)));
+    static_cast<void>(
+        TryWriteLittleEndian<uint32>(static_cast<uint32>(state->RequestBytes.GetSize()), state->RequestHeader));
     const Status opened = state->Connection.Open(endpoint);
     if (opened != Status::Ready)
     {
@@ -89,8 +88,7 @@ Status Client::Poll(Result& outResult) noexcept
     if (status == Status::Ready && state.ReplyBytes.IsEmpty() == true)
     {
         uint32 size = 0;
-        if (TryReadLittleEndian<uint32>(foundation::MakeSpan(state.ReplyHeader), size) == false || size == 0 ||
-            size > MAX_MESSAGE_BYTES)
+        if (TryReadLittleEndian<uint32>(state.ReplyHeader, size) == false || size == 0 || size > MAX_MESSAGE_BYTES)
         {
             status = Status::TransportFailed;
         }
