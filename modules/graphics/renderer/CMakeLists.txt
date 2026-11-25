@@ -305,7 +305,10 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     # The four-pass authored wave graph spends more than 120 s in cold lavapipe LLVM compilation.
     set(renderer_test_scene_cold_gpu_timeout_seconds 300)
     set(renderer_test_template_timeout_seconds 600)
-    set(renderer_test_raster_timeout_seconds 60)
+    # Hosted macOS ran ludus_renderer_pixels and ludus_renderer_graph_pixels for 40-44 s in
+    # batches 45442382423 and 45488434151, then 58.2 s and 58.8 s of the former 60 s limit
+    # (batch 45514906937) with no renderer change; the same run was slow throughout.
+    set(renderer_test_raster_timeout_seconds 120)
     if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
         set(renderer_test_raster_timeout_seconds 180)
     endif()
