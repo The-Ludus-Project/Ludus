@@ -277,6 +277,20 @@ class RequiredGateTests(unittest.TestCase):
         for output in ("objcxx_changed", "objcxx_editor"):
             self.assertIn(f"      {output}: ${{{{ steps.scope.outputs.{output} }}}}\n", workflow)
 
+    def test_main_workflow_without_the_objective_cxx_job_still_gates_the_batch(self):
+        # Batch 44859003421 ran main's ci.yml, which predates the Objective-C++ job: every suite
+        # passed, but the candidate's gate rejected the missing objcxx_changed output.
+        for tier in (ci_scope.FULL_TIER, ci_scope.NIGHTLY_TIER):
+            with self.subTest(tier=tier):
+                results = self.results(True, tier)
+                del results[ci_scope.OBJCXX_JOB]
+                del results["changes"]["outputs"]["objcxx_changed"]
+                self.assertEqual(ci_scope.gate_failures(results), [])
+                results["macos-compile"]["result"] = "failure"
+                self.assertIn("macos-compile: expected success", " ".join(ci_scope.gate_failures(results)))
+                del results["macos-compile"]
+                self.assertIn("inventory", " ".join(ci_scope.gate_failures(results)))
+
     def test_objective_cxx_job_is_required_exactly_when_selected(self):
         for tier in sorted(ci_scope.TIERS):
             for required in (True, False):
@@ -306,10 +320,10 @@ class RequiredGateTests(unittest.TestCase):
         # source/tooling job to succeed before promotion.
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         dependencies = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    needs: (.*)$", workflow, re.MULTILINE))
-        # Capacity admission serializes long ARM jobs without depending on formatting
-        # or inheriting the previous lane's success requirement.
-        serial = {"macos-compile": "[changes, macos-sanitizers]",
-                  "macos-analysis": "[changes, macos-compile]"}
+        # Native acceptance runs beside the sanitizers; the nightly analyzer waits for
+        # the sanitizer lane so at most two ARM runners are held, without depending on
+        # formatting or inheriting the previous lane's success requirement.
+        serial = {"macos-analysis": "[changes, macos-sanitizers]"}
         for name in ci_scope.NATIVE_JOBS:
             with self.subTest(job=name):
                 self.assertEqual(dependencies.get(name),
@@ -356,9 +370,11 @@ class RequiredGateTests(unittest.TestCase):
         self.assertRegex(root.joinpath("webgpu-probe.yml").read_text(), r"(?m)^  schedule:\n    - cron: '[^']+'$")
         workflow = root.joinpath("ci.yml").read_text()
         macos_compile = workflow.split("\n  macos-compile:\n", 1)[1].split("\n  macos-sanitizers:\n", 1)[0]
-        inventory = macos_compile.split("--inventory", 1)
-        self.assertEqual(len(inventory), 2)
-        self.assertNotIn("continue-on-error", inventory[0].rsplit("- name:", 1)[1])
+        # The macOS native job runs its check plan; a failed check fails the job.
+        plan = (root.parent.parent / "scripts/ci/macos_native.py").read_text()
+        self.assertEqual(plan.count("--inventory"), 1)
+        self.assertIn("scripts/python/ci_checks.py scripts/ci/macos_native.py", macos_compile)
+        self.assertNotIn("continue-on-error", macos_compile)
         self.assertNotIn("--inventory", workflow.split("\n  macos-analysis:\n", 1)[1].split("\n  formatting:\n", 1)[0])
 
     def test_builds_and_tidy_use_the_runner_core_counts(self):
@@ -504,13 +520,17 @@ class RequiredGateTests(unittest.TestCase):
                                        workflow, re.MULTILINE))
         conditions = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    if: (.*)$",
                                      workflow, re.MULTILINE))
-        # These are all reusable workflows with ARM jobs. Follow the dependency
-        # chain once to ensure none can queue behind an active ARM predecessor.
+        # These are all reusable workflows with ARM jobs. Native (at most two ARM runners)
+        # starts at capture beside the short chain, which runs one workflow at a time, so
+        # the batch asks for at most three ARM runners and no short job waits for native.
         self.assertEqual(dependencies["native"], "snapshot")
-        for previous, current in (("native", "threading"), ("threading", "sdk"), ("sdk", "wiki-macos")):
+        self.assertEqual(dependencies["threading"], "[snapshot]")
+        for previous, current in (("threading", "sdk"), ("sdk", "wiki-macos")):
             with self.subTest(workflow=current):
                 self.assertEqual(dependencies[current], f"[snapshot, {previous}]")
-                self.assertEqual(conditions[current],
+        for name in ("threading", "sdk", "wiki-macos"):
+            with self.subTest(workflow=name):
+                self.assertEqual(conditions[name],
                                  "${{ !cancelled() && needs.snapshot.outputs.should_run == 'true' }}")
         # Other platforms retain parallel qualification, and promotion still
         # requires every result, including a failed earlier ARM workflow.
@@ -993,6 +1013,43 @@ class PullRequestRunnerBudgetTests(unittest.TestCase):
         action = self.ROOT.joinpath(".github/actions/change-scope/action.yml").read_text()
         self.assertNotIn("validated_by", action)
         self.assertNotIn("GITHUB_TOKEN", action)
+
+class PendingPromotionJobTests(unittest.TestCase):
+    """A native job added on develop may be absent from main's ci.yml until promotion."""
+
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def results(self):
+        return RequiredGateTests().results(True, ci_scope.FULL_TIER)
+
+    def test_main_without_a_pending_job_passes_and_a_present_job_is_still_checked(self):
+        for name in ci_scope.PENDING_PROMOTION_JOBS:
+            with self.subTest(job=name):
+                results = self.results()
+                self.assertEqual(ci_scope.gate_failures(results), [])
+                del results[name]
+                self.assertEqual(ci_scope.gate_failures(results), [])
+                for status in ("failure", "cancelled", "skipped"):
+                    results = self.results()
+                    results[name]["result"] = status
+                    self.assertIn(f"{name}: expected success", " ".join(ci_scope.gate_failures(results)))
+
+    def test_only_pending_jobs_may_be_absent(self):
+        results = self.results()
+        del results["macos-compile"]
+        self.assertIn("inventory", " ".join(ci_scope.gate_failures(results)))
+
+    def test_pending_jobs_exist_on_develop_and_are_removed_once_main_has_them(self):
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for name in ci_scope.PENDING_PROMOTION_JOBS:
+            self.assertIn(f"\n  {name}:\n", workflow)
+        shown = subprocess.run(["git", "show", "origin/main:.github/workflows/ci.yml"], cwd=self.ROOT,
+                               capture_output=True, text=True, check=False)
+        if shown.returncode != 0:
+            self.skipTest("origin/main is not available in this checkout")
+        promoted = [name for name in ci_scope.PENDING_PROMOTION_JOBS if f"\n  {name}:\n" in shown.stdout]
+        self.assertEqual(promoted, [], "main defines these jobs now; remove them from PENDING_PROMOTION_JOBS")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@
 #include "internal/code_edit_scope.h"
 #include "internal/code_language_registry.h"
 #include "internal/code_navigation.h"
+#include "internal/code_snippet_session.h"
 #include "internal/code_structure_view.h"
 #include "internal/code_syntax_highlighter.h"
 #include "internal/code_syntax_service.h"
@@ -24,11 +25,13 @@
 #include <QFontDatabase>
 #include <QFontInfo>
 #include <QFontMetrics>
+#include <QFontMetricsF>
 #include <QHelpEvent>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QMimeData>
@@ -45,6 +48,7 @@
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QStringList>
 #include <QStringView>
 #include <QTextBlock>
@@ -75,6 +79,10 @@ constexpr Qt::KeyboardModifier DEFINITION_LINK_MODIFIER = Qt::ControlModifier;
 constexpr int32 COMPLETION_VISIBLE_ROWS = 9;
 constexpr int32 COMPLETION_WIDTH = 420;
 constexpr int32 SIGNATURE_WIDTH = 680;
+// The pointer rests this long before a hover request, as in VS Code.
+constexpr int32 HOVER_DELAY_MILLISECONDS = 300;
+/// The QAction property that holds a language-service command's unavailable reason.
+constexpr const char* UNAVAILABLE_REASON_PROPERTY = "ludusUnavailableReason";
 constexpr int32 INDENT_GUIDE_ALPHA = 48;
 constexpr int32 GUTTER_MARGIN = 6;
 constexpr int32 FOLD_CONTROL_WIDTH = 17;
@@ -91,6 +99,10 @@ constexpr uint32 LIGHT_WARNING = 0x9A6700;
 constexpr uint32 DARK_WARNING = 0xE3B341;
 /// Marker diameter as a divisor of the line height.
 constexpr int32 DIAGNOSTIC_MARKER_DIVISOR = 2;
+// The light bulb's height as a fraction of a text line; its globe and stem split that height.
+constexpr float64 LIGHT_BULB_LINE_FRACTION = 0.75;
+constexpr float64 LIGHT_BULB_GLOBE_FRACTION = 0.75;
+constexpr float64 LIGHT_BULB_STEM_FRACTION = 1.0 - LIGHT_BULB_GLOBE_FRACTION;
 /// An out-of-date report keeps its squiggle, drawn this much more faintly (alpha, 0-255).
 constexpr int32 STALE_UNDERLINE_ALPHA = 140;
 /// Message callout under the caret's line: spacing, shape and how much of the message it shows.
@@ -150,7 +162,8 @@ private:
     }
     void mousePressEvent(QMouseEvent* event) override
     {
-        if (event->button() == Qt::LeftButton && mEditor->toggleGutterFold(event->position().toPoint()) == true)
+        if (event->button() == Qt::LeftButton && (mEditor->toggleGutterFold(event->position().toPoint()) == true ||
+                                                  mEditor->openGutterLightBulb(event->position().toPoint()) == true))
         {
             event->accept();
             return;
@@ -198,6 +211,16 @@ bool IsCodeEditorTabMovingFocus() noexcept
     return isCodeTabMovingFocus;
 }
 
+void SetCodeCommandUnavailableReason(QAction& inoutAction, const QString& reason)
+{
+    inoutAction.setProperty(UNAVAILABLE_REASON_PROPERTY, reason);
+}
+
+QString GetCodeCommandUnavailableReason(const QAction& action)
+{
+    return action.property(UNAVAILABLE_REASON_PROPERTY).toString();
+}
+
 CodeEditor::CodeEditor(QWidget* parentOrNull)
     : QPlainTextEdit(parentOrNull), mGutter(new CodeEditorGutter(this)), mSyntax(new CodeSyntaxService(document())),
       mHighlighter(new CodeSyntaxHighlighter(document(), *mSyntax)), mStructure(new CodeStructureView(this, *mSyntax)),
@@ -223,19 +246,91 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     mSignature->setTextFormat(Qt::RichText);
     mSignature->setWordWrap(true);
     mSignature->setMaximumWidth(SIGNATURE_WIDTH);
+    // The highlighted suggestion's documentation (CE10), beside the list; the
+    // server may fill it in later through completionItem/resolve.
+    mCompletionDocumentation = new QLabel(this);
+    mCompletionDocumentation->setWindowFlags(Qt::ToolTip);
+    mCompletionDocumentation->setAttribute(Qt::WA_ShowWithoutActivating);
+    mCompletionDocumentation->setObjectName(QStringLiteral("codeCompletionDocumentation"));
+    mCompletionDocumentation->setAccessibleName(QStringLiteral("Shader completion documentation"));
+    mCompletionDocumentation->setMargin(INDENT_WIDTH);
+    mCompletionDocumentation->setTextFormat(Qt::PlainText);
+    mCompletionDocumentation->setWordWrap(true);
+    mCompletionDocumentation->setMaximumWidth(SIGNATURE_WIDTH);
+    connect(mCompletionList, &QListWidget::currentRowChanged, this, [this](int32 row) {
+        if (row >= 0)
+        {
+            showCompletionDocumentation();
+            Q_EMIT CompletionHighlighted(row);
+        }
+    });
     mCompletionList->hide();
     mSignature->hide();
+    mCompletionDocumentation->hide();
 
     QAction* complete = new QAction(QStringLiteral("Complete Shader Symbol (Ctrl+Space)"), this);
+    mCompleteAction = complete;
     connect(complete, &QAction::triggered, this, [this]() { Q_EMIT AssistanceRequested(false); });
     complete->setObjectName(QStringLiteral("codeEditorComplete"));
     complete->setEnabled(false);
     addAction(complete);
     QAction* signature = new QAction(QStringLiteral("Shader Signature Help (Ctrl+Shift+Space)"), this);
+    mSignatureAction = signature;
     connect(signature, &QAction::triggered, this, [this]() { Q_EMIT AssistanceRequested(true); });
     signature->setObjectName(QStringLiteral("codeEditorSignature"));
     signature->setEnabled(false);
     addAction(signature);
+    // Hover (CE10): 300 ms of rest, VS Code's default, or Show Hover at the caret.
+    mHoverAction = new QAction(QStringLiteral("Show Hover"), this);
+    mHoverAction->setObjectName(QStringLiteral("codeEditorHover"));
+    mHoverAction->setEnabled(false);
+    connect(mHoverAction, &QAction::triggered, this, [this]() { Q_EMIT HoverRequested(textCursor().position()); });
+    addAction(mHoverAction);
+    // Rename Symbol (CE10): F2, as in VS Code; the box sits over the symbol.
+    mRenameAction = new QAction(QStringLiteral("Rename Symbol"), this);
+    mRenameAction->setObjectName(QStringLiteral("codeEditorRename"));
+    mRenameAction->setShortcut(QKeySequence(Qt::Key_F2));
+    mRenameAction->setShortcutContext(Qt::WidgetShortcut);
+    mRenameAction->setEnabled(false);
+    connect(mRenameAction, &QAction::triggered, this, [this]() { Q_EMIT RenameRequested(); });
+    addAction(mRenameAction);
+    mRenameBox = new QLineEdit(viewport());
+    mRenameBox->setObjectName(QStringLiteral("codeEditorRenameBox"));
+    mRenameBox->setAccessibleName(QStringLiteral("New name"));
+    mRenameBox->setToolTip(QStringLiteral("Enter to rename, Shift+Enter to preview, Escape to cancel."));
+    mRenameBox->installEventFilter(this);
+    mRenameBox->hide();
+    // Code actions (CE10): Ctrl+. (Command+. on macOS), as in VS Code, or the light bulb.
+    mCodeActionsAction = new QAction(QStringLiteral("Show Code Actions"), this);
+    mCodeActionsAction->setObjectName(QStringLiteral("codeEditorCodeActions"));
+    mCodeActionsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Period));
+    mCodeActionsAction->setShortcutContext(Qt::WidgetShortcut);
+    mCodeActionsAction->setEnabled(false);
+    connect(mCodeActionsAction, &QAction::triggered, this, [this]() { Q_EMIT CodeActionsRequested(); });
+    addAction(mCodeActionsAction);
+    connect(this, &QPlainTextEdit::cursorPositionChanged, this, [this]() {
+        if (mCodeActions.isEmpty() == false)
+        {
+            mGutter->update();
+        }
+    });
+    // Inlay hints (CE10): a persisted toggle; Ctrl+Alt shows hidden hints while held.
+    mInlayHintsAction = new QAction(QStringLiteral("Show Inlay Hints"), this);
+    mInlayHintsAction->setObjectName(QStringLiteral("codeEditorInlayHints"));
+    mInlayHintsAction->setCheckable(true);
+    mInlayHintsAction->setChecked(true);
+    mInlayHintsAction->setToolTip(QStringLiteral(
+        "Show parameter names and deduced types from the language server. Hold Ctrl+Alt to show them briefly."));
+    connect(mInlayHintsAction, &QAction::toggled, this, &CodeEditor::SetInlayHintsVisible);
+    addAction(mInlayHintsAction);
+    mHoverDelay.setSingleShot(true);
+    mHoverDelay.setInterval(HOVER_DELAY_MILLISECONDS);
+    connect(&mHoverDelay, &QTimer::timeout, this, [this]() {
+        if (mHoverAction->isEnabled() == true && mHoverPosition >= 0)
+        {
+            Q_EMIT HoverRequested(mHoverPosition);
+        }
+    });
     QFont textFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     textFont.setStyleHint(QFont::Monospace);
     textFont.setFixedPitch(true);
@@ -256,6 +351,7 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     SetFontPointSize(preferences.value(QStringLiteral("codeEditor/fontPoints"), DEFAULT_FONT_POINTS).toInt());
     SetWordWrap(preferences.value(QStringLiteral("codeEditor/wordWrap"), false).toBool());
     SetIndentGuidesVisible(preferences.value(QStringLiteral("codeEditor/indentGuides"), true).toBool());
+    SetInlayHintsVisible(preferences.value(QStringLiteral("codeEditor/inlayHints"), true).toBool());
     setTabStopDistance(fontMetrics().horizontalAdvance(QLatin1Char(' ')) * INDENT_WIDTH);
     mHighlighter->SetPalette(palette());
     connect(mSyntax, &CodeSyntaxService::ResultChanged, this, [this]() {
@@ -370,6 +466,7 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     connect(mChooseFormatterAction, &QAction::triggered, this, &CodeEditor::ChooseFormatterRequested);
     updateGutterWidth();
     mNavigation = new CodeNavigation(*this);
+    mSnippet = new CodeSnippetSession(*this);
     viewport()->setMouseTracking(true);
 }
 
@@ -396,6 +493,51 @@ void CodeEditor::SetIndentGuidesVisible(bool isVisible)
     QSettings().setValue(QStringLiteral("codeEditor/indentGuides"), isVisible);
     viewport()->update();
     Q_EMIT PresentationChanged();
+}
+
+void CodeEditor::StartSnippet(int32 position, const CodeSnippet& snippet)
+{
+    static_cast<void>(mSnippet->Start(position, snippet));
+    mSelectionUpdate.start(0);
+}
+
+bool CodeEditor::IsInSnippet() const noexcept
+{
+    return mSnippet->IsActive();
+}
+
+void CodeEditor::SetInlayHintsVisible(bool isVisible)
+{
+    mShouldShowInlayHints = isVisible;
+    {
+        const QSignalBlocker blocker(mInlayHintsAction);
+        mInlayHintsAction->setChecked(isVisible);
+    }
+    QSettings().setValue(QStringLiteral("codeEditor/inlayHints"), isVisible);
+    updateInlayHintPresentation();
+    Q_EMIT PresentationChanged();
+}
+
+bool CodeEditor::AreInlayHintsShown() const noexcept
+{
+    return mHighlighter->AreInlayHintsShown();
+}
+
+void CodeEditor::updateInlayHintPresentation()
+{
+    mHighlighter->SetInlayHintsShown(mShouldShowInlayHints == true || mIsPeekingInlayHints == true);
+    viewport()->update();
+}
+
+void CodeEditor::SetInlayHints(const QList<CodeInlayHint>& hints)
+{
+    mHighlighter->SetInlayHints(hints);
+    viewport()->update();
+}
+
+const QList<CodeInlayHint>& CodeEditor::GetInlayHints() const noexcept
+{
+    return mHighlighter->GetInlayHints();
 }
 
 void CodeEditor::GoToDiagnostic(bool shouldGoBackward)
@@ -441,9 +583,13 @@ void CodeEditor::paintEvent(QPaintEvent* event)
     }
     if (mMultiCursor.HasSecondaryCursors() == true)
     {
+        // The first visible block's start to the end of the block under the
+        // viewport's bottom edge; both lines are already laid out by the paint.
+        const QTextBlock last = cursorForPosition(viewport()->rect().bottomRight()).block();
         QPainter painter(viewport());
-        mMultiCursor.Paint(painter);
+        mMultiCursor.Paint(painter, firstVisibleBlock().position(), last.position() + last.length() - 1);
     }
+    paintInlayHints(event);
     paintFoldPlaceholders(event);
     paintDiagnosticCallout();
     mLatencyProbe.MarkPainted();
@@ -512,6 +658,67 @@ QRect CodeEditor::getFoldPlaceholderRect(const QTextBlock& block) const
                  caret.top(),
                  fontMetrics().horizontalAdvance(label),
                  fontMetrics().height());
+}
+
+void CodeEditor::paintInlayHints(const QPaintEvent* event)
+{
+    const QList<CodeInlayHint>& hints = mHighlighter->GetInlayHints();
+    if (mHighlighter->AreInlayHintsShown() == false || hints.isEmpty() == true)
+    {
+        return;
+    }
+    QPainter painter(viewport());
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QFontMetricsF metrics(document()->defaultFont());
+    QColor background = palette().color(QPalette::Text);
+    // QColor::setAlphaF takes a float.
+    constexpr float32 BACKGROUND_OPACITY = 0.08F;
+    background.setAlphaF(BACKGROUND_OPACITY);
+    const QColor text = palette().color(QPalette::PlaceholderText);
+    constexpr float64 CORNER_LINE_FRACTION = 0.25;
+    const float64 corner = metrics.height() * CORNER_LINE_FRACTION;
+    const int32 first = firstVisibleBlock().position();
+    qsizetype index = 0;
+    while (index < hints.size() && hints.at(index).Position <= first)
+    {
+        ++index;
+    }
+    while (index < hints.size())
+    {
+        // Hints sharing a position fill the gap the highlighter reserved before it, left to right.
+        const int32 position = hints.at(index).Position;
+        const QTextBlock block = document()->findBlock(position);
+        if (blockBoundingGeometry(block).translated(contentOffset()).top() > event->rect().bottom())
+        {
+            break;
+        }
+        qsizetype end = index;
+        float64 width = 0;
+        while (end < hints.size() && hints.at(end).Position == position)
+        {
+            width += MeasureCodeInlayHint(metrics, hints.at(end));
+            ++end;
+        }
+        QTextCursor cursor(document());
+        cursor.setPosition(position);
+        const QRect caret = cursorRect(cursor);
+        float64 left = caret.left() - width;
+        if (block.isVisible() == true && position > block.position())
+        {
+            for (; index < end; ++index)
+            {
+                const float64 hintWidth = MeasureCodeInlayHint(metrics, hints.at(index));
+                const QRectF area(left, caret.top() + 1, hintWidth, caret.height() - 2);
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(background);
+                painter.drawRoundedRect(area, corner, corner);
+                painter.setPen(text);
+                painter.drawText(area, Qt::AlignCenter, GetCodeInlayHintText(hints.at(index)));
+                left += hintWidth;
+            }
+        }
+        index = end;
+    }
 }
 
 void CodeEditor::paintFoldPlaceholders(const QPaintEvent* event)
@@ -619,19 +826,172 @@ void CodeEditor::paintDiagnosticCallout()
 void CodeEditor::SetLanguage(CodeLanguage language)
 {
     mLanguage = language;
-    for (QAction* action : actions())
-    {
-        if (action->objectName() == QStringLiteral("codeEditorComplete") ||
-            action->objectName() == QStringLiteral("codeEditorSignature"))
-        {
-            action->setEnabled(HasCodeLanguageService(language));
-        }
-    }
+    SetAssistanceAvailability(mAssistanceAvailability);
     mSyntax->SetLanguage(language);
     mHighlighter->SetLanguage(language);
     refreshVisibleSyntax();
     mNavigation->RefreshActions();
     mSelectionUpdate.start(0);
+}
+
+void CodeEditor::SetLanguageServerStatus(const QString& text, const QString& detail)
+{
+    if (mLanguageServerStatus != text || mLanguageServerDetail != detail)
+    {
+        mLanguageServerStatus = text;
+        mLanguageServerDetail = detail;
+        Q_EMIT LanguageServerStatusChanged();
+    }
+}
+
+void CodeEditor::SetAssistanceAvailability(const CodeAssistanceAvailability& availability)
+{
+    mAssistanceAvailability = availability;
+    const bool hasService = HasCodeLanguageService(mLanguage);
+    mCompleteAction->setEnabled(hasService == true && availability.CompletionUnavailableReason.isEmpty() == true);
+    mCompleteAction->setToolTip(availability.CompletionUnavailableReason);
+    mSignatureAction->setEnabled(hasService == true && availability.SignatureUnavailableReason.isEmpty() == true);
+    mSignatureAction->setToolTip(availability.SignatureUnavailableReason);
+    mHoverAction->setEnabled(hasService == true && availability.HoverUnavailableReason.isEmpty() == true);
+    mHoverAction->setToolTip(availability.HoverUnavailableReason);
+    mRenameAction->setEnabled(hasService == true && isReadOnly() == false &&
+                              availability.RenameUnavailableReason.isEmpty() == true);
+    mRenameAction->setToolTip(availability.RenameUnavailableReason);
+    SetCodeCommandUnavailableReason(*mRenameAction, availability.RenameUnavailableReason);
+    mCodeActionsAction->setEnabled(hasService == true && isReadOnly() == false &&
+                                   availability.CodeActionsUnavailableReason.isEmpty() == true);
+    mCodeActionsAction->setToolTip(availability.CodeActionsUnavailableReason);
+    SetCodeCommandUnavailableReason(*mCodeActionsAction, availability.CodeActionsUnavailableReason);
+}
+
+void CodeEditor::SetCodeActions(int32 position, const QList<CodeActionEntry>& actions)
+{
+    mCodeActions = actions;
+    mCodeActionPosition = QTextCursor(document());
+    mCodeActionPosition.setPosition(qBound(0, position, document()->characterCount() - 1));
+    mGutter->update();
+}
+
+bool CodeEditor::HasCodeActions() const
+{
+    return mCodeActions.isEmpty() == false && mCodeActionPosition.isNull() == false &&
+           mCodeActionPosition.block() == textCursor().block();
+}
+
+void CodeEditor::ShowCodeActionMenu()
+{
+    QMenu* menu = new QMenu(this);
+    menu->setObjectName(QStringLiteral("codeEditorCodeActionMenu"));
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    menu->setToolTipsVisible(true);
+    for (qsizetype index = 0; index < mCodeActions.size(); ++index)
+    {
+        const CodeActionEntry& entry = mCodeActions.at(index);
+        QAction* action = menu->addAction(entry.Title);
+        action->setEnabled(entry.DisabledReason.isEmpty() == true);
+        action->setToolTip(entry.DisabledReason);
+        if (entry.IsPreferred == true)
+        {
+            QFont font = action->font();
+            font.setBold(true);
+            action->setFont(font);
+        }
+        connect(action, &QAction::triggered, this, [this, index]() {
+            Q_EMIT CodeActionChosen(static_cast<int32>(index));
+        });
+    }
+    if (mCodeActions.isEmpty() == true)
+    {
+        QAction* none = menu->addAction(QStringLiteral("No code actions here"));
+        none->setEnabled(false);
+    }
+    menu->popup(viewport()->mapToGlobal(cursorRect().bottomLeft()));
+}
+
+bool CodeEditor::openGutterLightBulb(const QPoint& position)
+{
+    const QTextBlock block = cursorForPosition(QPoint(0, position.y())).block();
+    if (HasCodeActions() == false || block != textCursor().block() ||
+        position.x() >= getGutterWidth() - FOLD_CONTROL_WIDTH)
+    {
+        return false;
+    }
+    ShowCodeActionMenu();
+    return true;
+}
+
+void CodeEditor::ShowRenameBox(int32 start, int32 end, const QString& name)
+{
+    QTextCursor symbol(document());
+    symbol.setPosition(start);
+    symbol.setPosition(end, QTextCursor::KeepAnchor);
+    RevealTextCursor(symbol);
+    setTextCursor(symbol);
+    QTextCursor first(document());
+    first.setPosition(start);
+    const QRect anchor = cursorRect(first);
+    constexpr int32 RENAME_MINIMUM_WIDTH = 160;
+    constexpr int32 RENAME_TEXT_ROOM = 48;
+    mRenameBox->setText(name);
+    mRenameBox->selectAll();
+    mRenameBox->resize(qMax(RENAME_MINIMUM_WIDTH, fontMetrics().horizontalAdvance(name) + RENAME_TEXT_ROOM),
+                       mRenameBox->sizeHint().height());
+    mRenameBox->move(qBound(0, anchor.left(), qMax(0, viewport()->width() - mRenameBox->width())),
+                     qMax(0, anchor.top() - (mRenameBox->height() - anchor.height()) / 2));
+    mRenameBox->show();
+    mRenameBox->setFocus(Qt::OtherFocusReason);
+}
+
+void CodeEditor::HideRenameBox()
+{
+    if (mRenameBox->isVisible() == true)
+    {
+        mIsClosingRename = true;
+        const bool hasFocus = mRenameBox->hasFocus();
+        mRenameBox->hide();
+        if (hasFocus == true)
+        {
+            setFocus(Qt::OtherFocusReason);
+        }
+        mIsClosingRename = false;
+    }
+}
+
+bool CodeEditor::IsRenaming() const noexcept
+{
+    return mRenameBox->isVisible();
+}
+
+bool CodeEditor::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == mRenameBox && mRenameBox->isVisible() == true)
+    {
+        if (event->type() == QEvent::KeyPress)
+        {
+            const QKeyEvent* key = static_cast<const QKeyEvent*>(event);
+            if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)
+            {
+                const QString name = mRenameBox->text();
+                HideRenameBox();
+                Q_EMIT RenameAccepted(name, key->modifiers().testFlag(Qt::ShiftModifier));
+                return true;
+            }
+            if (key->key() == Qt::Key_Escape)
+            {
+                HideRenameBox();
+                Q_EMIT RenameCancelled();
+                return true;
+            }
+        }
+    }
+    if (watched == mRenameBox && event->type() == QEvent::FocusOut && mIsClosingRename == false &&
+        mRenameBox->isVisible() == true)
+    {
+        // Clicking elsewhere leaves the name unchanged, as in VS Code.
+        mRenameBox->hide();
+        Q_EMIT RenameCancelled();
+    }
+    return QPlainTextEdit::eventFilter(watched, event);
 }
 
 void CodeEditor::SetLargeFileMode(bool isLarge)
@@ -822,17 +1182,38 @@ void CodeEditor::inputMethodEvent(QInputMethodEvent* event)
     QPlainTextEdit::inputMethodEvent(event);
 }
 
-void CodeEditor::insertFromMimeData(const QMimeData* source)
+void CodeEditor::insertFromMimeData(const QMimeData* sourceOrNull)
 {
-    // Multi-cursor paste distributes clipboard lines across the cursors (CE06);
-    // with no secondary cursor Qt's single-cursor paste is used unchanged.
-    if (isReadOnly() == false && mMultiCursor.HasSecondaryCursors() == true && source != nullptr &&
-        source->hasText() == true && mMultiCursor.HandlePaste(source->text()) == true)
+    if (isReadOnly() == false && sourceOrNull != nullptr && sourceOrNull->hasText() == true &&
+        (mMultiCursor.HasSecondaryCursors() == true || mLanguage == CodeLanguage::Slang))
     {
-        return;
+        const QString text = sourceOrNull->text();
+        if (mMultiCursor.HasSecondaryCursors() == true && mMultiCursor.HandlePaste(text) == true)
+        {
+            return;
+        }
+        if (mLanguage == CodeLanguage::Slang && text.contains(QChar::LineSeparator) == true)
+        {
+            const QTextCursor cursor = textCursor();
+            CodeRegionEdit region =
+            {
+                .Start = cursor.selectionStart(),
+                .End = cursor.selectionEnd(),
+                .Inserted = text,
+            };
+            RepairSlangPaste(document()->toRawText(), {&region, 1});
+            if (region.Inserted != text)
+            {
+                QMimeData repaired;
+                repaired.setText(region.Inserted);
+                const CodeEditScope operation(*this);
+                QPlainTextEdit::insertFromMimeData(&repaired);
+                return;
+            }
+        }
     }
     const CodeEditScope operation(*this);
-    QPlainTextEdit::insertFromMimeData(source);
+    QPlainTextEdit::insertFromMimeData(sourceOrNull);
 }
 
 void CodeEditor::focusOutEvent(QFocusEvent* event)
@@ -843,6 +1224,11 @@ void CodeEditor::focusOutEvent(QFocusEvent* event)
     }
     HideAssistance();
     updateDefinitionLink({}, Qt::NoModifier);
+    if (mIsPeekingInlayHints == true)
+    {
+        mIsPeekingInlayHints = false;
+        updateInlayHintPresentation();
+    }
     QPlainTextEdit::focusOutEvent(event);
     Q_EMIT EditBoundary();
 }
@@ -885,6 +1271,114 @@ void CodeEditor::SetDiagnostics(const QList<CodeDiagnostic>& diagnostics, bool i
     mSelectionUpdate.start(0);
 }
 
+void CodeEditor::SetAnalysisDiagnostics(const QList<CodeAnalysisDiagnostic>& diagnostics, const QString& source)
+{
+    mAnalysis.clear();
+    mAnalysisSource = source;
+    const int32 limit = document()->characterCount() - 1;
+    for (const CodeAnalysisDiagnostic& diagnostic : diagnostics)
+    {
+        if (diagnostic.Start < 0 || diagnostic.End < diagnostic.Start || diagnostic.End > limit)
+        {
+            continue;
+        }
+        DiagnosticMarker marker
+        {
+            .Range = QTextCursor(document()),
+            .Severity = diagnostic.Severity,
+            .Message = diagnostic.Message,
+        };
+        marker.Range.setPosition(diagnostic.Start);
+        marker.Range.setPosition(diagnostic.End, QTextCursor::KeepAnchor);
+        mAnalysis.append(marker);
+    }
+    mGutter->update();
+    mSelectionUpdate.start(0);
+    Q_EMIT AnalysisDiagnosticsChanged();
+}
+
+CodeAnalysisDiagnostic CodeEditor::GetAnalysisDiagnostic(int32 index) const
+{
+    if (index < 0 || index >= mAnalysis.size())
+    {
+        return {};
+    }
+    const DiagnosticMarker& marker = mAnalysis.at(index);
+    return
+    {
+        .Start = marker.Range.selectionStart(),
+        .End = marker.Range.selectionEnd(),
+        .Severity = marker.Severity,
+        .Message = marker.Message,
+    };
+}
+
+const QString& CodeEditor::GetAnalysisSource() const noexcept
+{
+    return mAnalysisSource;
+}
+
+bool CodeEditor::RevealAnalysisDiagnostic(int32 index)
+{
+    if (index < 0 || index >= mAnalysis.size())
+    {
+        return false;
+    }
+    RevealTextCursor(mAnalysis.at(index).Range);
+    return true;
+}
+
+QTextCursor CodeEditor::GetAnalysisDiagnosticRange(int32 index) const
+{
+    return index >= 0 && index < mAnalysis.size() ? mAnalysis.at(index).Range : QTextCursor();
+}
+
+void CodeEditor::ShowHover(int32 position, const QString& text)
+{
+    if (position < 0 || position >= document()->characterCount())
+    {
+        return;
+    }
+    const QString diagnostics = DescribeDiagnosticsAt(position);
+    mHoverText = text.isEmpty() == true || diagnostics.isEmpty() == true ? text + diagnostics
+                                                                         : text + QStringLiteral("\n\n") + diagnostics;
+    if (mHoverText.isEmpty() == true)
+    {
+        HideHover();
+        return;
+    }
+    QTextCursor cursor(document());
+    cursor.setPosition(position);
+    QToolTip::showText(viewport()->mapToGlobal(cursorRect(cursor).bottomLeft()),
+                       MakeToolTipHtml(mHoverText),
+                       viewport());
+}
+
+void CodeEditor::HideHover()
+{
+    mHoverDelay.stop();
+    if (mHoverText.isEmpty() == false)
+    {
+        mHoverText.clear();
+        QToolTip::hideText();
+    }
+}
+
+const QString& CodeEditor::GetHoverText() const noexcept
+{
+    return mHoverText;
+}
+
+void CodeEditor::SetSemanticTokens(const QList<CodeSyntaxToken>& tokens)
+{
+    mHighlighter->SetSemanticTokens(tokens);
+}
+
+const QList<CodeSyntaxToken>& CodeEditor::GetSemanticTokens() const noexcept
+{
+    return mHighlighter->GetSemanticTokens();
+}
+
 QTextCursor CodeEditor::GetDiagnosticRange(int32 index) const
 {
     return index >= 0 && index < mDiagnostics.size() ? mDiagnostics.at(index).Range : QTextCursor();
@@ -923,6 +1417,24 @@ QString CodeEditor::describeDiagnostics(int32 position, int32 blockNumber) const
     if (lines.isEmpty() == false && mAreDiagnosticsCurrent == false)
     {
         lines.prepend(QStringLiteral("Out of date: reported for an earlier version of this text. Build again."));
+    }
+    // Analysis follows the build report, labelled with its server so the two
+    // sources are never confused (CE10).
+    for (const DiagnosticMarker& marker : mAnalysis)
+    {
+        const int32 start = marker.Range.selectionStart();
+        const int32 end = marker.Range.selectionEnd();
+        const bool isCovered =
+            position >= qMax(start - (start == end ? 1 : 0), 0) && position <= end + (start == end ? 1 : 0);
+        if ((position >= 0 && isCovered == true) ||
+            (blockNumber >= 0 && document()->findBlock(start).blockNumber() == blockNumber))
+        {
+            lines.append(QStringLiteral("Analysis (%1) %2: %3")
+                             .arg(mAnalysisSource,
+                                  marker.Severity == CodeDiagnosticSeverity::Error ? QStringLiteral("error")
+                                                                                   : QStringLiteral("warning"),
+                                  marker.Message));
+        }
     }
     return lines.join(QLatin1Char('\n'));
 }
@@ -979,7 +1491,23 @@ QColor CodeEditor::getDiagnosticColor(CodeDiagnosticSeverity severity) const
 
 void CodeEditor::appendDiagnosticSelections(QList<QTextEdit::ExtraSelection>& inoutSelections) const
 {
-    // Errors are appended last so they draw over warnings on shared characters.
+    // Analysis first, dotted, so authoritative build squiggles draw over it; within
+    // each, errors are appended last so they draw over warnings on shared characters.
+    for (const DiagnosticMarker& marker : mAnalysis)
+    {
+        QTextEdit::ExtraSelection selection;
+        selection.cursor = marker.Range;
+        if (selection.cursor.hasSelection() == false && selection.cursor.atBlockEnd() == false)
+        {
+            selection.cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
+        }
+        if (selection.cursor.hasSelection() == true)
+        {
+            selection.format.setUnderlineStyle(QTextCharFormat::DotLine);
+            selection.format.setUnderlineColor(getDiagnosticColor(marker.Severity));
+            inoutSelections.append(selection);
+        }
+    }
     for (const CodeDiagnosticSeverity severity : {CodeDiagnosticSeverity::Warning, CodeDiagnosticSeverity::Error})
     {
         for (const DiagnosticMarker& marker : mDiagnostics)
@@ -1029,9 +1557,15 @@ bool CodeEditor::showGutterToolTip(const QHelpEvent& help)
         const int32 height = static_cast<int32>(blockBoundingRect(block).height());
         if (block.isVisible() == true && position.y() < top + height)
         {
-            const QString text = position.x() >= getGutterWidth() - FOLD_CONTROL_WIDTH
-                                     ? mStructure->DescribeFold(block.blockNumber())
-                                     : DescribeLineDiagnostics(block.blockNumber());
+            QString text = position.x() >= getGutterWidth() - FOLD_CONTROL_WIDTH
+                               ? mStructure->DescribeFold(block.blockNumber())
+                               : DescribeLineDiagnostics(block.blockNumber());
+            if (position.x() < getGutterWidth() - FOLD_CONTROL_WIDTH && block == textCursor().block() &&
+                HasCodeActions() == true)
+            {
+                const QString actions = QStringLiteral("Show code actions (Ctrl+.)");
+                text = text.isEmpty() == true ? actions : text + QStringLiteral("\n\n") + actions;
+            }
             if (text.isEmpty() == true)
             {
                 return false;
@@ -1050,11 +1584,18 @@ bool CodeEditor::viewportEvent(QEvent* event)
     if (event->type() == QEvent::Leave)
     {
         updateDefinitionLink({}, Qt::NoModifier);
+        mHoverPosition = -1;
+        HideHover();
     }
     if (event->type() == QEvent::ToolTip)
     {
         const QHelpEvent* help = static_cast<QHelpEvent*>(event);
         const QTextCursor cursor = cursorForPosition(help->pos());
+        if (mHoverText.isEmpty() == false)
+        {
+            // A server hover is already shown for this rest; keep it.
+            return true;
+        }
         const QString text = getFoldPlaceholderRect(cursor.block()).contains(help->pos()) == true
                                  ? mStructure->DescribeFold(cursor.blockNumber())
                                  : DescribeDiagnosticsAt(cursor.position());
@@ -1115,6 +1656,11 @@ void CodeEditor::changeEvent(QEvent* event)
     {
         setTabStopDistance(fontMetrics().horizontalAdvance(QLatin1Char(' ')) * INDENT_WIDTH);
         updateGutterWidth();
+        if (mHighlighter->GetInlayHints().isEmpty() == false)
+        {
+            // The reserved gaps are measured in the text font.
+            mHighlighter->ScheduleReapply();
+        }
     }
 }
 
@@ -1154,6 +1700,20 @@ void CodeEditor::paintGutter(QPaintEvent* event)
                 painter.setBrush(mAreDiagnosticsCurrent == true ? QBrush(color) : QBrush(Qt::NoBrush));
                 painter.drawEllipse(
                     QRectF(GUTTER_MARGIN, top + (fontMetrics().height() - diameter) / 2.0, diameter, diameter));
+            }
+            if (block == textCursor().block() && HasCodeActions() == true)
+            {
+                // The light bulb's stem tells it apart from a diagnostic dot, which it rings when both apply.
+                const float64 bulb = fontMetrics().height() * LIGHT_BULB_LINE_FRACTION;
+                const QRectF globe(GUTTER_MARGIN - 1,
+                                   top + (fontMetrics().height() - bulb) / 2.0,
+                                   bulb,
+                                   bulb * LIGHT_BULB_GLOBE_FRACTION);
+                painter.setPen(QPen(palette().color(QPalette::Text), 1));
+                painter.setBrush(palette().color(QPalette::Highlight));
+                painter.drawEllipse(globe);
+                painter.drawLine(QPointF(globe.center().x(), globe.bottom()),
+                                 QPointF(globe.center().x(), globe.bottom() + bulb * LIGHT_BULB_STEM_FRACTION));
             }
             painter.setPen(palette().color(QPalette::Text));
             painter.drawText(0,
@@ -1208,6 +1768,19 @@ void CodeEditor::updateSelections()
             selection.cursor.setPosition(secondary.End(), QTextCursor::KeepAnchor);
             selection.format.setBackground(secondaryColor);
             selections.append(selection);
+        }
+    }
+    // Snippet placeholders (CE10) keep a faint background until the session ends.
+    if (mSnippet->IsActive() == true)
+    {
+        QColor placeholderColor = palette().color(QPalette::Highlight);
+        placeholderColor.setAlpha(CURRENT_LINE_ALPHA);
+        for (const QTextCursor& range : mSnippet->GetRanges())
+        {
+            QTextEdit::ExtraSelection placeholder;
+            placeholder.cursor = range;
+            placeholder.format.setBackground(placeholderColor);
+            selections.append(placeholder);
         }
     }
     appendDiagnosticSelections(selections);
@@ -1671,7 +2244,7 @@ void CodeEditor::DeleteLines()
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): line then column is the universal order.
-void CodeEditor::GoToLine(int32 line, int32 column)
+void CodeEditor::GoToLine(int32 line, int32 column, bool shouldRemember)
 {
     const int32 clamped = qBound(1, line, blockCount());
     const QTextBlock block = document()->findBlockByNumber(clamped - 1);
@@ -1680,7 +2253,7 @@ void CodeEditor::GoToLine(int32 line, int32 column)
     {
         cursor.setPosition(block.position() + GetScalarOffset(block.text(), column - 1));
     }
-    if (cursor != textCursor())
+    if (shouldRemember == true && cursor != textCursor())
     {
         mNavigation->RememberCurrent();
     }
@@ -1691,7 +2264,7 @@ void CodeEditor::GoToLine(int32 line, int32 column)
 
 QTextCursor CodeEditor::getDefinitionLinkAt(const QPoint& position) const
 {
-    if (HasCodeLanguageService(mLanguage) == false)
+    if (isReadOnly() == true || HasCodeLanguageService(mLanguage) == false)
     {
         return {};
     }
@@ -1819,6 +2392,16 @@ void CodeEditor::mouseMoveEvent(QMouseEvent* event)
         return;
     }
     updateDefinitionLink(event->position().toPoint(), event->modifiers());
+    if (event->buttons() == Qt::NoButton)
+    {
+        const int32 position = cursorForPosition(event->position().toPoint()).position();
+        if (position != mHoverPosition)
+        {
+            HideHover();
+            mHoverPosition = position;
+            mHoverDelay.start();
+        }
+    }
     QPlainTextEdit::mouseMoveEvent(event);
 }
 
@@ -1839,6 +2422,11 @@ void CodeEditor::keyReleaseEvent(QKeyEvent* event)
     {
         updateDefinitionLink(viewport()->mapFromGlobal(QCursor::pos()), event->modifiers());
     }
+    if (mIsPeekingInlayHints == true && (event->key() == Qt::Key_Control || event->key() == Qt::Key_Alt))
+    {
+        mIsPeekingInlayHints = false;
+        updateInlayHintPresentation();
+    }
     QPlainTextEdit::keyReleaseEvent(event);
 }
 
@@ -1848,6 +2436,14 @@ void CodeEditor::keyPressEvent(QKeyEvent* event)
     if (event->key() == Qt::Key_Control)
     {
         updateDefinitionLink(viewport()->mapFromGlobal(QCursor::pos()), event->modifiers());
+    }
+    constexpr Qt::KeyboardModifiers PEEK_MODIFIERS = Qt::ControlModifier | Qt::AltModifier;
+    if ((event->key() == Qt::Key_Control || event->key() == Qt::Key_Alt) &&
+        (event->modifiers() & PEEK_MODIFIERS) == PEEK_MODIFIERS && mIsPeekingInlayHints == false &&
+        mShouldShowInlayHints == false)
+    {
+        mIsPeekingInlayHints = true;
+        updateInlayHintPresentation();
     }
     LUDUS_PROFILE_SCOPE(CodeEditorKeyPress);
     const int32 revision = document()->revision();
@@ -1861,17 +2457,56 @@ void CodeEditor::keyPressEvent(QKeyEvent* event)
     if (didChange == true && HasCodeLanguageService(mLanguage) == true && event->text().size() == 1 &&
         (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) == Qt::NoModifier)
     {
+        // Trigger characters come from the server's capabilities (CE09); a request
+        // the server does not serve is never triggered by typing.
         const QChar typed = event->text().at(0);
-        const bool isSignature = typed == QLatin1Char('(') || typed == QLatin1Char(',');
-        if (isSignature == true || typed == QLatin1Char('.'))
+        if (mAssistanceAvailability.SignatureUnavailableReason.isEmpty() == true &&
+            mAssistanceAvailability.SignatureTriggers.contains(typed) == true)
         {
-            Q_EMIT AssistanceRequested(isSignature);
+            Q_EMIT AssistanceRequested(true);
+        }
+        else if (mAssistanceAvailability.CompletionUnavailableReason.isEmpty() == true &&
+                 mAssistanceAvailability.CompletionTriggers.contains(typed) == true)
+        {
+            Q_EMIT AssistanceRequested(false);
         }
     }
 }
 
+bool CodeEditor::reportUnavailableShortcut(const QKeyEvent& event)
+{
+    if (event.modifiers() == Qt::NoModifier && event.text().isEmpty() == false)
+    {
+        // Typing never matches a command shortcut; skip the scan on the hot path.
+        return false;
+    }
+    const QKeySequence pressed(event.keyCombination());
+    for (const QAction* action : actions())
+    {
+        const QString reason = GetCodeCommandUnavailableReason(*action);
+        if (action->isEnabled() == true || reason.isEmpty() == true)
+        {
+            continue;
+        }
+        for (const QKeySequence& shortcut : action->shortcuts())
+        {
+            if (shortcut.matches(pressed) == QKeySequence::ExactMatch)
+            {
+                Q_EMIT UnavailableCommandRequested(QStringLiteral("%1 is unavailable. %2").arg(action->text(), reason));
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void CodeEditor::handleKeyPress(QKeyEvent* event)
 {
+    if (reportUnavailableShortcut(*event) == true)
+    {
+        event->accept();
+        return;
+    }
     if (mStructure->MoveAcrossFold(event) == true)
     {
         event->accept();
@@ -1887,6 +2522,31 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
         HideAssistance();
         event->accept();
         return;
+    }
+    // Snippet tab stops (CE10) take Tab, Shift+Tab and Escape before the cursor
+    // set does, since their mirrors are secondary cursors.
+    if (hasPopup == false && mSnippet->IsActive() == true)
+    {
+        if (event->key() == Qt::Key_Tab && event->modifiers() == Qt::NoModifier)
+        {
+            static_cast<void>(mSnippet->Next());
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Backtab)
+        {
+            static_cast<void>(mSnippet->Previous());
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Escape)
+        {
+            mSnippet->End();
+            static_cast<void>(mMultiCursor.Collapse());
+            mSelectionUpdate.start(0);
+            event->accept();
+            return;
+        }
     }
     // Multiple cursors (CE06). The add-cursor commands are QActions bound above,
     // so they reach this view before keyPressEvent; here only the set's own
@@ -2074,8 +2734,10 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
         IndentSelection(true);
         return;
     }
-    if (isReadOnly() == false && event->modifiers() == Qt::NoModifier &&
-        (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter))
+    // Qt's soft break inserts U+2028 inside a text block. Source editing needs a regular newline.
+    if (isReadOnly() == false &&
+        (event->matches(QKeySequence::InsertLineSeparator) == true ||
+         (event->modifiers() == Qt::NoModifier && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter))))
     {
         QTextCursor cursor = textCursor();
         cursor.beginEditBlock();
@@ -2125,6 +2787,53 @@ void CodeEditor::HideAssistance()
 {
     mCompletionList->hide();
     mSignature->hide();
+    mCompletionDocumentation->hide();
+}
+
+void CodeEditor::UpdateCompletion(int32 row, const QString& label, const QString& documentation)
+{
+    QListWidgetItem* itemOrNull = mCompletionList->item(row);
+    if (itemOrNull == nullptr)
+    {
+        return;
+    }
+    itemOrNull->setText(label);
+    itemOrNull->setData(Qt::UserRole, documentation);
+    itemOrNull->setToolTip(documentation.isEmpty() == true
+                               ? QString()
+                               : QStringLiteral("<pre>%1</pre>").arg(documentation.toHtmlEscaped()));
+    if (row == mCompletionList->currentRow())
+    {
+        showCompletionDocumentation();
+    }
+}
+
+QString CodeEditor::GetCompletionDocumentation() const
+{
+    return mCompletionDocumentation->isVisible() == true ? mCompletionDocumentation->text() : QString();
+}
+
+void CodeEditor::showCompletionDocumentation()
+{
+    const QListWidgetItem* itemOrNull = mCompletionList->currentItem();
+    const QString text = itemOrNull == nullptr ? QString() : itemOrNull->data(Qt::UserRole).toString();
+    if (text.isEmpty() == true || mCompletionList->isVisible() == false)
+    {
+        mCompletionDocumentation->hide();
+        return;
+    }
+    mCompletionDocumentation->setText(text);
+    mCompletionDocumentation->adjustSize();
+    // Beside the list, on the side with room.
+    const QRect list = mCompletionList->geometry();
+    const QRect available = screen()->availableGeometry();
+    int32 left = list.right() + 1;
+    if (left + mCompletionDocumentation->width() > available.right())
+    {
+        left = qMax(available.left(), list.left() - mCompletionDocumentation->width());
+    }
+    mCompletionDocumentation->move(left, qMin(list.top(), available.bottom() - mCompletionDocumentation->height()));
+    mCompletionDocumentation->show();
 }
 
 void CodeEditor::ShowCompletions(const QStringList& labels, const QStringList& details)
@@ -2134,6 +2843,7 @@ void CodeEditor::ShowCompletions(const QStringList& labels, const QStringList& d
     for (int32 index = 0; index < labels.size(); ++index)
     {
         QListWidgetItem* item = new QListWidgetItem(labels.at(index), mCompletionList);
+        item->setData(Qt::UserRole, details.value(index));
         item->setToolTip(QStringLiteral("<pre>%1</pre>").arg(details.value(index).toHtmlEscaped()));
     }
     if (labels.isEmpty() == true || hasFocus() == false)
@@ -2150,6 +2860,7 @@ void CodeEditor::ShowCompletions(const QStringList& labels, const QStringList& d
     mCompletionList->move(qBound(available.left(), location.x(), available.right() - mCompletionList->width()),
                           qMin(location.y(), available.bottom() - mCompletionList->height()));
     mCompletionList->show();
+    showCompletionDocumentation();
 }
 
 void CodeEditor::ShowSignature(const QString& html)

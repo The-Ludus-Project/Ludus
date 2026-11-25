@@ -43,6 +43,10 @@ BATCH_WORKFLOWS = {
 DOCUMENTATION_SUITES = frozenset({"wiki", "wiki-macos", "wiki-macos-intel"})
 # Windows lanes that windows-direct3d12.yml's editor_only dispatch runs by themselves.
 WINDOWS_EDITOR_JOBS = frozenset({"MSVC host and D3D12 / Editor", "MSVC host and D3D12 / Editor ASan"})
+# Batch jobs that develop merged into another job. Batches run main's workflow definitions, so
+# until promotion a batch can fail a job that no branch dispatch runs any more; the successor runs
+# the same tests. Remove an entry once main defines the successor.
+PENDING_PROMOTION_SUCCESSORS: dict[tuple[str, str], str] = {}
 WORKFLOW_DIRECTORY = Path(".github/workflows")
 EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
 FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "startup_failure"})
@@ -250,8 +254,9 @@ def dispatch_command(suite: str, branch: str, job: str = "", root: Path | None =
 
 
 def has_evidence(client, suite: str, job_name: str, head_sha: str) -> bool:
-    """Whether the owning workflow's job succeeded on exactly this head commit."""
+    """Whether the owning workflow's job, or its develop successor, succeeded on exactly this head commit."""
     workflow = BATCH_WORKFLOWS[suite]
+    names = {job_name, PENDING_PROMOTION_SUCCESSORS.get((suite, job_name), job_name)}
     listing = client.get(f"actions/workflows/{workflow}/runs?head_sha={head_sha}&per_page={MAX_EVIDENCE_RUNS}")
     runs = listing.get("workflow_runs") if isinstance(listing, dict) else None
     if not isinstance(runs, list):
@@ -259,7 +264,7 @@ def has_evidence(client, suite: str, job_name: str, head_sha: str) -> bool:
     for run in sorted((run for run in runs if isinstance(run, dict) and isinstance(run.get("id"), int)
                        and run.get("head_sha") == head_sha), key=lambda run: run["id"], reverse=True):
         for job in list_jobs(client, run["id"]):
-            if job.get("name") == job_name and job.get("conclusion") == "success":
+            if job.get("name") in names and job.get("conclusion") == "success":
                 return True
     return False
 
@@ -315,7 +320,9 @@ def evaluate(client, health: Health, *, body: object, head_sha: str, branch: str
     for name in declared:
         suite, job = split_batch_job(name)
         if not has_evidence(client, suite, job, head_sha):
-            missing.append(f"- {name}: no successful `{job}` job on {head_sha}; run "
+            successor = PENDING_PROMOTION_SUCCESSORS.get((suite, job))
+            described = f"`{job}` (or its develop successor `{successor}`)" if successor else f"`{job}`"
+            missing.append(f"- {name}: no successful {described} job on {head_sha}; run "
                            f"`{dispatch_command(suite, branch, job)}`")
     if missing:
         return False, [header, "Prove each declared fix on this exact head commit, then re-run the "

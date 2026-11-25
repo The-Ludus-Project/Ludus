@@ -237,16 +237,63 @@ explicitly requested to restart. Browser suspension resets game clock debt and
 follows backend suspend/resume; do not promise sample position continuity without
 backend evidence. User bus gains remain separate from context-owned attenuation.
 
+User volume preferences belong to the `ludus.audio.v1` configuration schema. The
+game maps the master, music and effects roles to its buses. `AudioMixOwner` applies
+edits live and reports them only after the renderer acknowledges the batch. See
+[Audio configuration](engine-configuration.md#audio-configuration).
+
 ## Dynamic music extension
 
 Dynamic definitions use a separate version 2 schema; v1 readers reject them.
-Before its implementation begins, freeze its complete JSON grammar, canonical
-example and validation fixtures in a focused design batch. Required concepts:
-constant tempo as positive rational beats per minute, meter numerator/denominator,
-sections with aligned sources and loop ranges, state-to-section mapping, one
-normalized intensity parameter, per-layer gain curves, explicit transition rules,
-and stingers referencing resident sound definitions. Defaults are serialized.
-Reject incompatible transitions; no inferred tempo maps or automatic time stretching.
+The installed SDK sample's [two-section fixture](../../examples/audio-content/generate_transition_fixture.py)
+generates a catalog, original stereo PCM stems and this canonical score:
+
+```json
+{
+  "version": 2, "id": "music/journey", "bus": "music", "priority": 6, "gain": 1,
+  "tempo": {"numerator": 120, "denominator": 1}, "meter": {"beats": 4, "unit": 4},
+  "initial_state": "exploring",
+  "states": [{"id": "exploring", "section": "explore"}, {"id": "arrived", "section": "arrive"}],
+  "sections": [
+    {"id": "explore", "loop_begin_frame": 96000, "loop_end_frame": 192000,
+     "layers": [{"source": "source/explore", "gain_curve": [[0, 1], [1, 1]]},
+                {"source": "source/explore", "gain_curve": [[0, 0], [1, 0.5]]}]},
+    {"id": "arrive", "loop_begin_frame": 96000, "loop_end_frame": 192000,
+     "layers": [{"source": "source/arrive", "gain_curve": [[0, 1], [1, 1]]},
+                {"source": "source/arrive", "gain_curve": [[0, 0], [1, 0.5]]}]}
+  ],
+  "transitions": [{"from": "explore", "to": "arrive", "quantize": "beat", "fade_frames": 0}],
+  "layer_ramp_frames": 240, "max_stingers": 1,
+  "stingers": [{"id": "accent", "sound": "sound/accent", "quantize": "beat"}]
+}
+```
+
+Every field is required. Identifiers use catalog ID syntax. Each section, state and
+stinger name is unique within its own table. A score admits 1–16 sections,
+1–32 states, up to 64 unique directed transitions between distinct sections and
+up to eight stinger definitions. An initial state and each endpoint must resolve.
+Each layer references an audio source. Its 2–8 intensity/gain pairs lie in [0,1]
+with strictly increasing intensity from zero to one. Interpolate gain linearly.
+Each directed edge counts both prefilled and outgoing stems against the four-stream cap.
+The acquisition worker pins the files and validates matching source lengths and
+rates within each section. The half-open loop interval uses source frames and begins
+after any initial one-time material. Stingers use objects such as
+`{"id":"win","sound":"sound/win","quantize":"bar"}`. The simultaneous stinger limit
+is 1–8 when definitions exist and zero for an empty table.
+
+Tempo counts quarter notes per minute. Both rational terms are integers in
+[1,65535]. Meter counts 1–32 beats with a power-of-two note denominator through
+32. Beat and bar boundaries round up to the next representable session frame,
+using absolute beat indices relative to the cue origin. Priority uses the Audio
+range and cue gain is linear in [0,1]. Fade and layer-ramp durations are unsigned
+32-bit session frame counts.
+
+A streamed hard cut seals when the renderer begins the 128-frame control
+quantum containing the requested frame. Before sealing, the control owner may
+replace the request or cancel it with a zero frame. After sealing, an edit
+returns `TooLate` and the accepted transition plays once. The incoming voice
+reports the applied frame. Scheduling on a stale snapshot can produce a later
+applied frame. Inspect the renderer acknowledgement to distinguish these cases.
 
 The first implementation supports vertical layering and transitions between
 constant-tempo/meter sections of the same cue. Tempo changes, polymeter, intro/outro

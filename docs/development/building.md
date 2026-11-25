@@ -69,6 +69,10 @@ command) before building. Configure and build do not download or repair tools.
   the Ludus source repository. Browser GLSL ES and translated Metal compute also need
   `./scripts/bootstrap-spirv-cross`. If tools moved, update
   `LUDUS_SLANG_COMPILER`, `LUDUS_SPIRV_VALIDATOR`, or `LUDUS_SPIRV_CROSS`.
+  A browser build or SDK consumer that compiles a LUSL (`.lusl`) shader also
+  needs a host `luslc`: run `./scripts/bootstrap-luslc` and set `LUDUS_LUSLC` to
+  the path it prints. The browser preset scripts do this themselves
+  ([cross builds](../modules/tooling/shader-language.md#resources-and-bindings)).
   The macOS presets select the prepared repository-local translator for every
   build flavor, including fresh Debug and Release build directories. A custom
   `-DLUDUS_SPIRV_CROSS=...` overrides that default. Metal raster shaders use
@@ -109,6 +113,14 @@ preset), Browser developer (one Emscripten preset), or Full validation, then
 review the preset and optional tools before pressing **Initialize**. Closing or
 cancelling the selection runs no setup actions.
 
+The window reopens with the workflow, preset, and options you last confirmed
+with **Initialize** in this checkout, even if that setup run failed. **Cancel**
+keeps the previous selection. **Reset to defaults** resets the form, and
+**Initialize** saves the resulting choices. An explicit workflow or a different
+preset starts from its own defaults. Other explicit flags override remembered
+choices, and an incompatible selection falls back to the launch defaults.
+Terminal and CI setup use their usual command-line defaults.
+
 Before installing anything, setup's first step, *Checking this computer*,
 runs fast preflight checks (normally well under a second) and stops with a
 fix for each problem it finds:
@@ -146,7 +158,14 @@ After **Initialize**, a progress window runs setup and shows:
 - the outcome: *Ludus is ready* with the runner's summary, or *Setup failed
   during: step* with the failed step marked, the error, the output's last lines
   and, for a recognised cause, a plain-language fix. **Retry** reruns the same
-  choices after a failure or cancellation.
+  choices after a failure or cancellation;
+- **Run editor**, after a successful setup that built the editor (Enter chooses
+  it). It starts the editor through `./scripts/editor --preset <preset>` and
+  closes setup; the editor keeps running and writes its output to
+  `out/init/editor.log`. If the launcher fails, for example because the editor
+  build is missing, the window stays open with the launcher's last lines, which
+  name the preparation command. Setup that only configures the editor
+  (`--configure-editor-only`) offers just **Close**.
 
 Both windows stay inside the area the menu bar and Dock (or taskbar) leave
 free, read on macOS from the menu bar's screen (`[NSScreen screens]` first
@@ -183,9 +202,12 @@ app bundle on disk, so `./init.sh` runs the window from a generated
 Python's `Python.app`. Without that bundle (`engine.py init` run directly, or a
 Python that is not a framework build) the Dock shows *Python*.
 
-A sudo password prompt still appears in the launching terminal; the window
-shows a notice while it waits. Setup runs in a child `engine.py init --cli`
-process with every chosen option spelled out, so the window never blocks.
+On macOS, graphical iOS setup requests administrator approval in a system
+dialog and identifies the action in the progress window. Canceling approval
+returns to setup with **Retry**. For Linux setup commands that require sudo,
+the window shows where to enter your password in the launching terminal.
+Setup runs in a child `engine.py init --cli` process with every chosen option
+spelled out, so the window stays responsive.
 In the terminal, the CLI opens with a *Ludus Setup* banner (repository, preset,
 scope), prints the same steps as `==> [N/M] label` headers and ends with the
 outcome, the total time and the next commands; a failure names the step that
@@ -193,7 +215,8 @@ stopped. Colour is used only in an interactive terminal and is turned off by
 `NO_COLOR` (any non-empty value) or `TERM=dumb`; the text is identical either way.
 With `LUDUS_INIT_PROGRESS=1` it prints machine-readable lines instead:
 `LUDUS_PROGRESS <index> <total> <label>`, `LUDUS_PROGRESS_DETAIL <done> <total>
-<text>` and `LUDUS_PROGRESS_NOTE <text>` (see `scripts/python/init_progress.py`).
+<text>`, `LUDUS_PROGRESS_NOTE <text>`, and `LUDUS_PROGRESS_ACTION [text]` (see
+`scripts/python/init_progress.py`).
 
 The default Engine contributor workflow prepares system prerequisites,
 project-managed CMake/Ninja/Conan, and Conan dependency files for all native
@@ -216,10 +239,33 @@ linked above when preparing the Windows runtime and editor.
 ./init.sh --cli --persona browser                    # browser development tools
 ./init.sh --cli --persona validation                 # complete native validation
 ./init.sh --gui --with-rad-debugger                   # review optional debugger setup
+./init.sh --cli --with-ios                            # optional iPhone and iPad support on macOS
 ./init.sh --cli --with-editor                        # Qt prerequisites + native editor build
 ./init.sh --cli --no-editor                          # omit optional editor setup (default)
 ./init.sh --cli --no-denoiser                        # build without the OIDN denoiser
 ```
+
+For iPhone or iPad development, select **Set up iPhone and iPad support** in
+Ludus Setup or pass `--with-ios` with a macOS native preset. If Xcode is
+missing, interactive setup opens its Mac App Store listing. Complete the
+installation there and select **Retry** or rerun the same command. On Macs
+that need a different Xcode version, use
+[Apple's Xcode downloads](https://developer.apple.com/xcode/resources/).
+Setup uses the active full Xcode or your `DEVELOPER_DIR` override. If only
+Command Line Tools are selected and `/Applications/Xcode.app` exists, setup
+selects it after the Apple toolchain probe passes. Setup runs Xcode's
+first-launch command, which accepts the license and installs required components.
+You can also open Xcode and review the license there before retrying setup.
+With `--cli`, any administrator password prompt appears in that terminal.
+Setup requests iOS support from
+Xcode if an SDK is missing and checks for the device and Simulator SDKs and
+`devicectl`. It then uses the selected Ludus Clang to compile and link against
+both SDKs, including for an existing Xcode installation. A failure stops setup
+with the failed step, repair instructions, and a sanitized report at
+`out/mobile-probes/apple-toolchain.json`. With `--no-system-install`, setup runs
+the same probe using the existing installation.
+See [Running the M0 probes](mobile-support-plan.md#running-the-m0-probes)
+for the provisional deployment target and the signing and device checks.
 
 `--persona` supplies defaults; an explicit preset and scope flags override those
 defaults. Full validation prepares all native presets even when `--preset-only`
@@ -260,6 +306,10 @@ Reinitialize to change them. `--no-editor` also disables the editor for those
 presets. Custom CMake users can bypass saved choices with
 `-DLUDUS_USE_INIT_OPTIONS=OFF` and set their own target options. Existing checkouts
 without saved choices retain the committed developer preset settings.
+
+The optional **Install Android SDK and NDK** checkbox prepares Android
+development tools and ADB. See [Android setup and the mobile probes](mobile-support-plan.md#prepare-the-android-tools)
+for the terminal equivalent and device testing workflow.
 
 The optional **Build Ludus editor** checkbox is off by default. Selecting it
 installs `qt6-base-dev` and `qt6-wayland` on Ubuntu/Debian when missing, enables

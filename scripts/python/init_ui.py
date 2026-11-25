@@ -11,10 +11,12 @@ import copy
 import os
 import platform
 import sys
+from xml.etree.ElementTree import ParseError
 from dataclasses import dataclass
 from pathlib import Path
 
 import init_failure
+import init_options
 from init_denoiser import preset_supports, validate_denoiser_options
 
 
@@ -55,11 +57,13 @@ CHECKBOX_TEXT_INDENT_POINTS = 23
 OPTION_LABELS = {
     "with_editor": "Build Ludus editor",
     "with_denoiser": "Include OIDN denoiser",
+    "with_android": "Install Android SDK and NDK",
     "with_tests": "Include native test targets",
     "with_smoke_app": "Include sample applications",
     "with_web_probes": "Include browser feasibility probes",
     "with_shader_probe": "Include shader feasibility probe",
     "with_rad_debugger": "Build RAD Debugger",
+    "with_ios": "Set up iPhone and iPad support",
     "preset_only": "Prepare only the selected preset",
     "no_system_install": "Use existing system packages",
     "run_tests": "Build and run native tests after setup",
@@ -69,22 +73,25 @@ OPTION_LABELS = {
     "skip_sdk": "Skip SDK consumer test",
     "ci": "Use CI validation policy",
 }
+GUI_OPTIONS = (*OPTION_LABELS, "with_editor_preview")
 OPTION_HINTS = {
     "with_editor": "Includes the 3D preview and live shaders unless you turn them off in Advanced setup.",
     "with_denoiser": "Denoises editor and game render graphs; adds the OIDN runtime to the SDK. "
                      "macOS Apple silicon only.",
+    "with_android": "Includes ADB and Java for Android builds and device probes.",
     "with_smoke_app": "The smoke test and the native input demo.",
     "with_shader_probe": "Linux Vulkan only; needs separate pinned tools.",
     "with_rad_debugger": "Optional native debugger for Linux x64.",
+    "with_ios": "Prepares Xcode, iOS SDKs and device tools on macOS. Xcode may need an App Store install.",
     "no_system_install": "Skips automatic package installation.",
     "validate": "Build, test, check, run sanitizers and test the SDK.",
     "ci": "Warnings as errors; no local Git hooks.",
 }
 NESTED_OPTIONS = ("skip_checks", "skip_sanitizers", "skip_sdk")
 OPTION_COLUMNS = (
-    (("Targets", ("with_editor", "with_denoiser", "with_tests", "with_smoke_app", "with_web_probes", "with_shader_probe",
+    (("Targets", ("with_editor", "with_denoiser", "with_android", "with_tests", "with_smoke_app", "with_web_probes", "with_shader_probe",
                   "with_rad_debugger")),),
-    (("Setup scope", ("preset_only", "no_system_install")),
+    (("Setup scope", ("preset_only", "no_system_install", "with_ios")),
      ("After setup", ("run_tests", "validate", "skip_checks", "skip_sanitizers", "skip_sdk", "ci"))),
 )
 
@@ -99,12 +106,14 @@ def shader_probe_supported(preset: str) -> bool:
 
 def apply_defaults(args: argparse.Namespace) -> argparse.Namespace:
     result = copy.copy(args)
-    persona = next(persona for persona in PERSONAS if persona.key == args.persona)
+    result.persona = args.persona or "contributor"
+    persona = next(persona for persona in PERSONAS if persona.key == result.persona)
     result.preset = args.preset or persona.preset
     if not args.all_presets and not args.preset_only:
         result.preset_only = persona.preset_only or result.preset.startswith("web-emscripten-")
     result.validate = args.validate or persona.validate
-    for name, default in (("with_tests", result.validate or args.ci or args.run_tests),
+    for name, default in (("with_editor", False), ("with_editor_preview", True),
+                          ("with_tests", result.validate or args.ci or args.run_tests),
                           ("with_smoke_app", persona.smoke_app),
                           ("with_web_probes", False), ("with_shader_probe", False),
                           ("with_denoiser", preset_supports(result.preset))):
@@ -114,6 +123,21 @@ def apply_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def validate_options(args: argparse.Namespace, engine) -> None:
+    if args.android_only or args.with_android:
+        from init_android import host_key, SUPPORTED_HOSTS
+        if host_key() not in SUPPORTED_HOSTS:
+            raise engine.EngineError("Android setup supports macOS (Apple silicon or Intel) and Linux x64.")
+        if args.preset.startswith("web-"):
+            raise engine.EngineError("Android setup requires the native workflow or ./init.sh --cli --android-only.")
+    if args.android_only:
+        if args.with_ios:
+            raise engine.EngineError("--android-only and --with-ios describe conflicting setup scopes.")
+        if args.gui:
+            raise engine.EngineError("--android-only uses the terminal. To use graphical setup, open ./init.sh "
+                                     "and select Install Android SDK and NDK.")
+        return
+    if args.with_ios and (platform.system() != "Darwin" or not args.preset.startswith("macos-clang-")):
+        raise engine.EngineError("--with-ios requires a macOS native setup preset.")
     if args.with_shader_probe and not shader_probe_supported(args.preset):
         raise engine.EngineError(
             "The shader feasibility probe requires the Linux Vulkan backend; macOS uses Metal. "
@@ -151,6 +175,9 @@ def validate_options(args: argparse.Namespace, engine) -> None:
 STORE_TRUE_OPTIONS = (
     ("no_system_install", "--no-system-install"),
     ("with_rad_debugger", "--with-rad-debugger"),
+    ("with_android", "--with-android"),
+    ("accept_android_sdk_license", "--accept-android-sdk-license"),
+    ("with_ios", "--with-ios"),
     ("skip_engine_refresh", "--no-engine-refresh"),
     ("configure_editor_only", "--configure-editor-only"),
     ("run_tests", "--run-tests"),
@@ -176,7 +203,10 @@ PAIRED_OPTIONS = (
 
 def selection_to_argv(args: argparse.Namespace) -> list[str]:
     """Spell a resolved selection as explicit ``engine.py init --cli`` options."""
-    argv = [args.preset, "--cli", "--persona", args.persona]
+    # The validation workflow is a default. The GUI can deselect validation
+    # even while that workflow is selected, so use neutral defaults in the child.
+    persona = "contributor" if args.persona == "validation" and not args.validate else args.persona
+    argv = [args.preset, "--cli", "--persona", persona]
     for name, option in STORE_TRUE_OPTIONS:
         if getattr(args, name, False):
             argv.append(option)
@@ -186,7 +216,7 @@ def selection_to_argv(args: argparse.Namespace) -> list[str]:
 
 
 def wants_gui(args: argparse.Namespace) -> bool:
-    if args.cli:
+    if args.cli or args.android_only:
         return False
     if args.gui:
         return True
@@ -195,24 +225,108 @@ def wants_gui(args: argparse.Namespace) -> bool:
     return sys.platform != "linux" or bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
-def prepare_init(args: argparse.Namespace, engine) -> argparse.Namespace | None:
-    args = apply_defaults(args)
+def restore_gui_selection(args: argparse.Namespace, defaults: argparse.Namespace, engine,
+                          saved: dict[str, str | bool]) -> argparse.Namespace:
+    from web_build import PRESETS
+
+    persona = saved.get("persona")
+    preset = saved.get("preset")
+    if args.persona is not None or (args.preset is not None and args.preset != preset):
+        return defaults
+    if persona not in {item.key for item in PERSONAS} or preset not in (*engine.HOST_PRESETS, *PRESETS):
+        return defaults
+
+    initial = copy.copy(args)
+    initial.persona = persona
+    initial.preset = preset
+    selection = apply_defaults(initial)
+    paired = {name for name, _, _ in PAIRED_OPTIONS}
+    for name in GUI_OPTIONS:
+        value = saved.get(name)
+        supplied = getattr(args, name)
+        is_supplied = supplied is not None if name in paired else supplied
+        if isinstance(value, bool) and not is_supplied:
+            setattr(selection, name, value)
+    if args.all_presets:
+        selection.preset_only = False
+    if args.with_tests is None and (args.validate or args.ci or args.run_tests):
+        selection.with_tests = True
+    try:
+        validate_options(selection, engine)
+    except engine.EngineError:
+        return defaults
+    return selection
+
+
+def prepare_init(raw_args: argparse.Namespace, engine) -> argparse.Namespace | None:
+    args = apply_defaults(raw_args)
     validate_options(args, engine)
     if wants_gui(args):
+        root = engine.repo_root()
+        saved = init_options.read_gui_selection(root)
+        initial = restore_gui_selection(raw_args, args, engine, saved)
         try:
-            args = select_options(args, engine)
-            if args is not None:
-                args.show_progress_window = True
+            selection = select_options(initial, engine, defaults=args)
         except GuiUnavailable as error:
             if args.gui:
                 raise engine.EngineError(str(error)) from error
             print(f"Graphical setup unavailable: {error}\nContinuing with CLI setup.", file=sys.stderr)
-    if args is not None:
-        validate_options(args, engine)
+        else:
+            if selection is None:
+                return None
+            validate_options(selection, engine)
+            try:
+                init_options.save_gui_selection(
+                    root, {name: getattr(selection, name) for name in ("persona", "preset", *GUI_OPTIONS)})
+            except OSError as error:
+                print(f"Could not remember setup choices: {error}\n"
+                      f"Check write permissions for {(root / init_options.GUI_SELECTION_PATH).parent}.", file=sys.stderr)
+            selection.show_progress_window = True
+            return selection
     return args
 
 
-def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | None:
+def review_android_license(tk, ttk, messagebox, parent, license_pin) -> bool:
+    """Show the exact Google SDK agreement before granting consent to setup."""
+    from init_android import load_license_text
+    try:
+        agreement = load_license_text(license_pin)
+    except (OSError, ValueError, ParseError) as error:
+        messagebox.showerror("Android SDK license", f"Could not load the agreement. {error}", parent=parent)
+        return False
+    dialog = tk.Toplevel(parent)
+    dialog.title("Android SDK License Agreement")
+    dialog.transient(parent)
+    dialog.columnconfigure(0, weight=1)
+    dialog.rowconfigure(0, weight=1)
+    text = tk.Text(dialog, width=76, height=22, wrap="word", padx=12, pady=12)
+    text.insert("1.0", agreement)
+    text.configure(state="disabled")
+    text.grid(row=0, column=0, sticky="nsew")
+    scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=text.yview)
+    scrollbar.grid(row=0, column=1, sticky="ns")
+    text.configure(yscrollcommand=scrollbar.set)
+    buttons = ttk.Frame(dialog, padding=12)
+    buttons.grid(row=1, column=0, columnspan=2, sticky="e")
+    is_accepted = False
+
+    def accept():
+        nonlocal is_accepted
+        is_accepted = True
+        dialog.destroy()
+
+    cancel = ttk.Button(buttons, text="Cancel", command=dialog.destroy)
+    cancel.pack(side="left", padx=(0, 8))
+    ttk.Button(buttons, text="Accept and install", command=accept).pack(side="left")
+    dialog.bind("<Escape>", lambda _event: dialog.destroy())
+    dialog.wait_visibility()
+    dialog.grab_set()
+    cancel.focus_set()
+    parent.wait_window(dialog)
+    return is_accepted
+
+
+def select_options(args: argparse.Namespace, engine, *, defaults: argparse.Namespace) -> argparse.Namespace | None:
     try:
         import tkinter as tk
         from tkinter import messagebox, ttk
@@ -260,11 +374,7 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         preset = tk.StringVar(value=args.preset)
         description = tk.StringVar()
         summary = tk.StringVar()
-        flags = {name: tk.BooleanVar(value=getattr(args, name)) for name in (
-            "preset_only", "no_system_install", "with_rad_debugger", "with_editor", "with_editor_preview", "with_denoiser",
-            "with_tests", "run_tests", "with_smoke_app", "with_web_probes", "with_shader_probe", "validate",
-            "skip_checks", "skip_sanitizers", "skip_sdk", "ci",
-        )}
+        flags = {name: tk.BooleanVar(value=getattr(args, name)) for name in GUI_OPTIONS}
 
         card_padding = (space(init_theme.SPACE_LARGE), space(init_theme.SPACE_MEDIUM))
         workflow_card = ttk.Frame(panel, style="Card.TFrame", padding=card_padding)
@@ -316,6 +426,9 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
                             pady=(0, space(init_theme.SPACE_EXTRA_SMALL)))
                         row += 1
 
+        from android_tools import managed_sdk, read_android_pins
+        from init_android import has_accepted_license, host_key, SUPPORTED_HOSTS
+        android_license = read_android_pins(engine.repo_root())["sdkLicense"]
         advanced_toggle = ttk.Button(panel, text="Advanced setup", style="Workspace.Link.TButton",
                                      command=lambda: toggle_advanced())
         advanced_toggle.grid(row=2, column=0, sticky="w", pady=(space(init_theme.SPACE_SMALL), 0))
@@ -345,12 +458,16 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             result.all_presets = not result.preset_only
             return result
 
-        def refresh():
+        def refresh(*, restore_denoiser_default=True):
             browser = preset.get().startswith("web-")
             if browser:
                 flags["preset_only"].set(True)
                 for name in ("with_rad_debugger", "with_editor", "with_tests", "run_tests", "with_shader_probe", "validate", "ci"):
                     flags[name].set(False)
+            android_supported = not browser and host_key() in SUPPORTED_HOSTS
+            if not android_supported:
+                flags["with_android"].set(False)
+            controls["with_android"].configure(state="normal" if android_supported else "disabled")
             from init_editor import SUPPORTED_PRESETS, supported_host
             family = "macos-" if platform.system() == "Darwin" else "linux-"
             editor_supported = supported_host() and preset.get() in SUPPORTED_PRESETS and preset.get().startswith(family)
@@ -361,7 +478,8 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
                 state="normal" if editor_supported and flags["with_editor"].get() else "disabled")
             # Unavailable presets turn the denoiser off; returning to a supported one restores the default.
             denoiser_supported = preset_supports(preset.get())
-            if denoiser_supported and str(controls["with_denoiser"].cget("state")) == "disabled":
+            if (restore_denoiser_default and denoiser_supported
+                    and str(controls["with_denoiser"].cget("state")) == "disabled"):
                 flags["with_denoiser"].set(True)
             if not denoiser_supported:
                 flags["with_denoiser"].set(False)
@@ -384,6 +502,10 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             if not linux_host:
                 flags["with_rad_debugger"].set(False)
                 controls["with_rad_debugger"].configure(state="disabled")
+            ios_supported = platform.system() == "Darwin" and preset.get().startswith("macos-clang-")
+            if not ios_supported:
+                flags["with_ios"].set(False)
+            controls["with_ios"].configure(state="normal" if ios_supported else "disabled")
             for name in ("skip_checks", "skip_sanitizers", "skip_sdk"):
                 controls[name].configure(state="normal" if validating else "disabled")
             # Native validation prepares every preset regardless of --preset-only.
@@ -396,12 +518,12 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
                 action = "Setup plus test builds and execution"
             included = [label for name, label in (("with_tests", "tests"), ("with_smoke_app", "samples"),
                         ("with_web_probes", "browser probes"), ("with_shader_probe", "shader probe"), ("with_editor", "editor"),
-                        ("with_denoiser", "OIDN denoiser")) if flags[name].get()]
+                        ("with_denoiser", "OIDN denoiser"), ("with_android", "Android tools")) if flags[name].get()]
             if flags["with_editor"].get():
                 included.append("3D preview + live shaders" if flags["with_editor_preview"].get() else "document-only editor")
-            summary.set(f"{action} for {scope}.\nOptional targets: {', '.join(included) or 'none'}.\n"
-                        "Progress appears in a window after you choose Initialize; "
-                        "any sudo password prompt appears in the launching terminal.")
+            ios_summary = "Includes iPhone and iPad setup.\n" if flags["with_ios"].get() else ""
+            summary.set(f"{action} for {scope}.\nOptional targets: {', '.join(included) or 'none'}.\n{ios_summary}"
+                        "Progress appears after you choose Initialize.")
 
         def change_workflow(_event=None):
             chosen = next(item for item in PERSONAS if item.label == persona.get())
@@ -431,6 +553,15 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         presets.bind("<<ComboboxSelected>>", lambda _event: refresh())
         description.set(next(item.description for item in PERSONAS if item.key == args.persona))
 
+        def reset_defaults():
+            chosen = next(item for item in PERSONAS if item.key == defaults.persona)
+            persona.set(chosen.label)
+            description.set(chosen.description)
+            preset.set(defaults.preset)
+            for name, value in flags.items():
+                value.set(getattr(defaults, name))
+            refresh(restore_denoiser_default=False)
+
         def accept(_event=None):
             nonlocal selection
             candidate = current_args()
@@ -439,6 +570,16 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             except engine.EngineError as error:
                 messagebox.showerror("Check setup options", str(error), parent=window)
                 return
+            if candidate.with_android and not candidate.accept_android_sdk_license:
+                try:
+                    already_accepted = has_accepted_license(managed_sdk(engine.repo_root()), android_license)
+                except OSError as error:
+                    messagebox.showerror("Android SDK license", f"Could not read SDK license acceptance. {error}", parent=window)
+                    return
+                if not already_accepted:
+                    if not review_android_license(tk, ttk, messagebox, window, android_license):
+                        return
+                    candidate.accept_android_sdk_license = True
             # Open the progress window where the selector was.
             candidate.window_geometry = f"+{window.winfo_x()}+{window.winfo_y()}"
             selection = candidate
@@ -448,6 +589,8 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         footer.grid(row=2, column=0, sticky="ew")
         buttons = ttk.Frame(footer, style="Workspace.TFrame")
         buttons.grid(row=1, column=1, sticky="e", padx=footer.buttons_padding)
+        ttk.Button(buttons, text="Reset to defaults", command=reset_defaults).pack(
+            side="left", padx=(0, space(init_theme.SPACE_SMALL)))
         ttk.Button(buttons, text="Cancel", command=window.quit).pack(side="left", padx=(0, space(init_theme.SPACE_SMALL)))
         initialize = ttk.Button(buttons, text="Initialize", style="Primary.TButton", command=accept)
         initialize.pack(side="left")

@@ -506,6 +506,45 @@ TEST_CASE("Ludus scene import cooks the engine's grain-mix test scene", "[scene_
     CHECK(programs == 1);
 }
 
+TEST_CASE("Ludus scene import cooks the engine's varnished-wood layered test scene",
+          "[scene_cook][ludus-scene][program]")
+{
+    namespace format = ludus::content::scene_format;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(GetTestScene("materials/varnished-wood-panel.luscene.json"), {}, result, error) ==
+            true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    usize layered = 0;
+    bool hasBlackSubstrate = false;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
+        if (material.Scattering.Model != format::MaterialModel::Program)
+        {
+            continue;
+        }
+        ++layered;
+        // Each layered record is an ordered coat over a substrate: a diffuse substrate lobe attenuated by the
+        // coat's complementary transmittance, then the dielectric coat's cosine-power reflection highlight.
+        REQUIRE(material.Program.LobeCount == 2);
+        CHECK(material.Program.Lobes[0].Operation == format::MaterialLobeOperation::Diffuse);
+        CHECK(material.Program.Lobes[1].Operation == format::MaterialLobeOperation::CosinePower);
+        CHECK(material.Metallic == 0);
+        // The ordered coat keeps the material a fixed-dimension reflection, so restricted profiles accept it.
+        CHECK(format::SupportsFixedDimensionReflection(material.Scattering, material.Program) == true);
+        if (material.Name.View() == "Black under coat")
+        {
+            hasBlackSubstrate = true;
+        }
+    }
+    // The varnished-wood panel and the black companion patch under the same coat.
+    CHECK(layered == 2);
+    CHECK(hasBlackSubstrate == true);
+}
+
 TEST_CASE("Ludus scene import cooks the engine's hair-card test scene into LUSCN version 13",
           "[scene_cook][ludus-scene][hair]")
 {
@@ -546,6 +585,55 @@ TEST_CASE("Ludus scene import cooks the engine's hair-card test scene into LUSCN
     }
     CHECK(hairCards == 1);
     CHECK(controls == 1);
+}
+
+TEST_CASE("Ludus scene import preserves a tilted polygon's flat normal far from the origin",
+          "[scene_cook][ludus-scene]")
+{
+    // Width and height are binary fractions. Both sets lie on a plane with normal (-1, -1, 1).
+    constexpr std::string_view LOCAL_POSITIONS = R"([[0, 0, 0], [0.4453125, 0, 0.4453125],
+        [0.4453125, 0.47265625, 0.91796875], [0, 0.47265625, 0.47265625]])";
+    constexpr std::string_view OFFSET_POSITIONS = R"([[900000.0146484375, 900000.0205078125, 900000.0048828125],
+        [900000.4599609375, 900000.0205078125, 900000.4501953125],
+        [900000.4599609375, 900000.4931640625, 900000.9228515625],
+        [900000.0146484375, 900000.4931640625, 900000.4775390625]])";
+    constexpr float32 NORMAL_TOLERANCE = 1e-6F;
+    const math::Vector3 forwardNormal = math::Vector3{-1, -1, 1} * (1.0F / math::Sqrt(3.0F));
+    const ScratchDirectory scratch;
+    const std::string entry = scratch.GetPath("tilted.luscene.json");
+
+    for (const std::string_view positions : {LOCAL_POSITIONS, OFFSET_POSITIONS})
+    {
+        for (const bool isReversed : {false, true})
+        {
+            INFO(positions);
+            INFO(isReversed);
+            std::string document = R"({"format":"ludus.scene","version":1,"name":"Tilted quad",
+              "materials":[{"name":"Wall","model":"diffuse","base_color":[1,1,1]}],
+              "objects":[{"name":"Quad","material":"Wall","positions":)";
+            document += positions;
+            document += isReversed == true ? R"(,"polygons":[[0,3,2,1]]}]})" : R"(,"polygons":[[0,1,2,3]]}]})";
+            WriteFile(entry, document);
+            BestEffortResult result;
+            CookError error;
+            const bool hasImported = ImportSceneBestEffort(entry, {}, result, error);
+            INFO(error.Message.View());
+            REQUIRE(hasImported == true);
+            ludus::resources::SceneDefinition decoded;
+            REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(),
+                                                              result.Bundle.GetSize(),
+                                                              decoded) == ludus::resources::Status::Ok);
+            REQUIRE(decoded.Meshes.GetSize() == 1);
+            const ludus::resources::SceneMesh& mesh = decoded.Meshes[0];
+            CHECK(mesh.Indices.GetSize() == 6);
+            REQUIRE(mesh.Normals.GetSize() == 4);
+            const math::Vector3 expectedNormal = isReversed == true ? -forwardNormal : forwardNormal;
+            for (const math::Vector3& normal : mesh.Normals)
+            {
+                CHECK(math::Length(normal - expectedNormal) < NORMAL_TOLERANCE);
+            }
+        }
+    }
 }
 
 TEST_CASE("Scene detection tells Ludus scene sources from glTF JSON", "[scene_cook][ludus-scene]")

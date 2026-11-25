@@ -55,6 +55,15 @@ public:
     void SetPreview(bool isPreview);
     /// Promote a preview tab to permanent; a no-op when already permanent.
     void MakePermanent();
+    /// Identify a tab whose content is owned by the current editor session.
+    void SetSessionKey(const QString& key);
+    [[nodiscard]] const QString& GetSessionKey() const noexcept;
+    /// Bind a borrowed package source, or detach it before the package is replaced.
+    void BindSessionHost(CodeDocumentHost* hostOrNull);
+    /// Populate an immutable captured source with its provenance.
+    void SetReadOnlySource(const QString& text, const QString& explanation);
+    void AddSessionControls(QWidget& inoutControls, QWidget& inoutStatus);
+    void ShowEditorControls();
 
     /// Re-synchronize the projection from the host after another view edited it.
     /// The controller's guard prevents the mirrored delta from being re-sent.
@@ -90,6 +99,7 @@ Q_SIGNALS:
     void BecamePermanent();
     /// A bound-edit failure message to surface without losing the draft (CE20).
     void Failed(const QString& message);
+    void SessionClosed();
 
 private:
     void bindHost();
@@ -98,7 +108,9 @@ private:
     CodeDocumentController* mController;
     CodeConflictBanner* mBanner;
     CodeFileDocument* mHostOrNull;
+    CodeDocumentHost* mSessionHostOrNull = nullptr;
     QString mPath;
+    QString mSessionKey;
     bool mIsPreview = false;
 };
 } // namespace ludus::editor

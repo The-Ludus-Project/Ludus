@@ -306,7 +306,7 @@ EstimateWaveDeltaSource(SceneContext scene, RayLaunch launch, GratingPoint grati
     if (source.HasSource == false)
         return float3(0);
     float3 radiance =
-        IntegrateWaveSourceRadiance(grating, source, SampleSceneRandom(launch, SHADE_WAVELENGTH_DIMENSION));
+        IntegrateWaveSourceRadiance(grating, source, SampleUniformFloat01(launch, SHADE_WAVELENGTH_DIMENSION));
     return FinishDeltaSourceEstimate(scene, grating.Surface.Hit, source, radiance, queries);
 }
 
@@ -317,7 +317,7 @@ float3 EstimateWaveTraced(SceneContext scene, RayLaunch launch, GratingPoint gra
 {
     GratingFrame frame = grating.Frame;
     float3 outgoingWorld = grating.Surface.ViewDirectionWorld;
-    float wavelengthRandom = SampleSceneRandom(launch, SHADE_WAVELENGTH_DIMENSION);
+    float wavelengthRandom = SampleUniformFloat01(launch, SHADE_WAVELENGTH_DIMENSION);
     if (grating.Profile.AmplitudeNanometers <= 0)
     {
         // J_0(0) = 1: the mirror order carries all the light. Any wavelength gives its direction.
@@ -338,7 +338,7 @@ float3 EstimateWaveTraced(SceneContext scene, RayLaunch launch, GratingPoint gra
     float wavenumberAmplitude = 2 * PI * grating.Profile.AmplitudeNanometers / wavelengthNanometers;
     OrderProposal proposal =
         MakeOrderProposal(firstOrder, lastOrder, 2 * wavenumberAmplitude * dot(outgoingWorld, frame.NormalWorld));
-    int order = SampleOrder(proposal, SampleSceneRandom(launch, SHADE_TRACED_DIRECTION_DIMENSION));
+    int order = SampleOrder(proposal, SampleUniformFloat01(launch, SHADE_TRACED_DIRECTION_DIMENSION));
     float probability = EvaluateOrderProbability(proposal, order);
     float3 incidentWorld;
     if (probability <= 0 ||
@@ -419,12 +419,12 @@ EstimateGeometricDeltaSource(SceneContext scene, RayLaunch launch, GratingPoint 
     if (source.HasSource == false)
         return float3(0);
     float3 reflection =
-        IntegrateFacetSourceReflection(grating, source, SampleSceneRandom(launch, SHADE_FACET_QUADRATURE_DIMENSION));
+        IntegrateFacetSourceReflection(grating, source, SampleUniformFloat01(launch, SHADE_FACET_QUADRATURE_DIMENSION));
     if (any(reflection > 0) == false)
         return float3(0);
     float3 radiance = ConvertHeroReflection(reflection,
                                             source.Light.IncidentCoefficient,
-                                            SampleSceneRandom(launch, SHADE_WAVELENGTH_DIMENSION));
+                                            SampleUniformFloat01(launch, SHADE_WAVELENGTH_DIMENSION));
     return FinishDeltaSourceEstimate(scene, grating.Surface.Hit, source, radiance, queries);
 }
 
@@ -435,7 +435,7 @@ EstimateGeometricTraced(SceneContext scene, RayLaunch launch, GratingPoint grati
 {
     GratingFrame frame = grating.Frame;
     float3 outgoingWorld = grating.Surface.ViewDirectionWorld;
-    float phase = PI * (SampleSceneRandom(launch, SHADE_TRACED_DIRECTION_DIMENSION) - 0.5);
+    float phase = PI * (SampleUniformFloat01(launch, SHADE_TRACED_DIRECTION_DIMENSION) - 0.5);
     float3 facetWorld = MakeFacetNormal(frame, ComputeMaximumFacetSlope(grating.Profile) * sin(phase));
     float3 incidentWorld = ReflectAbout(outgoingWorld, facetWorld);
     float weight = ComputeFacetWeight(frame, facetWorld, outgoingWorld);
@@ -445,7 +445,9 @@ EstimateGeometricTraced(SceneContext scene, RayLaunch launch, GratingPoint grati
     if (any(reflectance > 0) == false)
         return float3(0);
     float3 incidentRadiance = TraceIncidentRadiance(scene, grating.Surface.Hit, incidentWorld, queries);
-    return ConvertHeroReflection(reflectance, incidentRadiance, SampleSceneRandom(launch, SHADE_WAVELENGTH_DIMENSION));
+    return ConvertHeroReflection(reflectance,
+                                 incidentRadiance,
+                                 SampleUniformFloat01(launch, SHADE_WAVELENGTH_DIMENSION));
 }
 
 /// Build the grating at a smooth metal; returns false for every other material, which is shaded classically.

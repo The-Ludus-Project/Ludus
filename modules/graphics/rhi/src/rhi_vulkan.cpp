@@ -12,6 +12,7 @@
 #include "internal/ray_backend.h"
 #include "internal/resources.h"
 #include "internal/surface.h"
+#include "internal/surface_formats_vulkan.h"
 #include "internal/vma.h"
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
@@ -62,8 +63,6 @@ constexpr uint32 MAX_PHYSICAL_DEVICES = 32;
 constexpr uint32 MAX_AVAILABLE_INSTANCE_EXTENSIONS = 128;
 /// Queue families one adapter may report; later families are not considered.
 constexpr uint32 MAX_QUEUE_FAMILIES = 32;
-/// Surface formats one swapchain query may report.
-constexpr uint32 MAX_SURFACE_FORMATS = 64;
 /// Longest wait for a frame or present fence: five seconds.
 constexpr uint64 FENCE_TIMEOUT_NANOSECONDS = 5000000000ULL;
 void RasterVkDependencies(bool surface, VkSubpassDependency (&dependencies)[2]) noexcept;
@@ -597,43 +596,16 @@ bool CreateTargets() noexcept
                                                                        caps.minImageExtent.height,
                                                                        caps.maxImageExtent.height);
         }
-        uint32 count = 0;
-        if (Check(vkGetPhysicalDeviceSurfaceFormatsKHR(GetVulkan().Physical,
-                                                       GetActiveSurface().Surface,
-                                                       &count,
-                                                       nullptr)) == false ||
-            count == 0 || count > MAX_SURFACE_FORMATS)
-        {
-            return false;
-        }
-        foundation::StaticArray<VkSurfaceFormatKHR, MAX_SURFACE_FORMATS> formats{};
-        if (Check(vkGetPhysicalDeviceSurfaceFormatsKHR(GetVulkan().Physical,
-                                                       GetActiveSurface().Surface,
-                                                       &count,
-                                                       formats.GetData())) == false)
-        {
-            return false;
-        }
         VkSurfaceFormatKHR selected{};
-        for (usize i = 0; i < count; ++i)
+        const VkResult formatResult = QueryVulkanSurfaceFormat(vkGetPhysicalDeviceSurfaceFormatsKHR,
+                                                               GetVulkan().Physical,
+                                                               GetActiveSurface().Surface,
+                                                               selected);
+        if (Check(formatResult) == false)
         {
-            const auto format = formats[i].format;
-            if (formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR &&
-                (format == VK_FORMAT_UNDEFINED || format == VK_FORMAT_B8G8R8A8_UNORM ||
-                 format == VK_FORMAT_R8G8B8A8_UNORM || format == VK_FORMAT_B8G8R8A8_SRGB ||
-                 format == VK_FORMAT_R8G8B8A8_SRGB))
-            {
-                selected = formats[i];
-                if (format == VK_FORMAT_UNDEFINED || format == VK_FORMAT_B8G8R8A8_UNORM)
-                {
-                    selected.format = VK_FORMAT_B8G8R8A8_UNORM;
-                    break;
-                }
-            }
-        }
-        if (selected.format == VK_FORMAT_UNDEFINED)
-        {
-            LUDUS_LOG_ERROR(LOG_RHI, "Surface has no supported RGBA8/BGRA8 UNORM or sRGB format");
+            LUDUS_LOG_ERROR(
+                LOG_RHI,
+                "Surface format enumeration failed; retry startup or inspect the driver and RHI host-memory budget");
             return false;
         }
         if (GetVulkan().Format != VK_FORMAT_UNDEFINED && GetVulkan().Format != selected.format)
@@ -1054,7 +1026,7 @@ bool Supports(BackendSelection selection) noexcept
     // explicitly rather than silently falling back to Vulkan.
     return selection == BackendSelection::Auto;
 }
-bool Initialize(const ApplicationInfo& app) noexcept
+static bool InitializeInstance(const ApplicationInfo& app) noexcept
 {
     if (const auto* imported = internal::NativeDeviceRequest())
     {
@@ -1131,13 +1103,13 @@ bool Initialize(const ApplicationInfo& app) noexcept
         hasVersion12 == true;
     return true;
 }
-bool ConnectWindow(const WindowInfo& window) noexcept
+static bool ConnectPrimarySurface(const WindowInfo& window) noexcept
 {
     if (GetVulkan().Instance == VK_NULL_HANDLE)
     {
         return false;
     }
-    // The legacy and owned startup paths connect only the primary surface.
+    // Startup connects only the primary surface.
     GetVulkan().ActiveSurface = 0;
     if (GetVulkan().IsBorrowedDevice && GetVulkan().Pass == VK_NULL_HANDLE)
     {
@@ -1599,7 +1571,7 @@ void SetVulkanObjectName(VkObjectType type, uint64 object, const char* name) noe
     };
     static_cast<void>(vkSetDebugUtilsObjectNameEXT(GetVulkan().Device, &information));
 }
-bool InitializeRendering() noexcept
+static bool InitializeFrameResources() noexcept
 {
     if (GetVulkan().Device == VK_NULL_HANDLE)
     {
@@ -1653,15 +1625,15 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
         return StartupError::InvalidWindow;
     }
     GetVulkan().Session = token;
-    if (backend::Initialize(app) == false)
+    if (InitializeInstance(app) == false)
     {
         return StartupError::InstanceUnavailable;
     }
-    if (ConnectWindow(window) == false)
+    if (ConnectPrimarySurface(window) == false)
     {
         return StartupError::SurfaceUnavailable;
     }
-    if (InitializeRendering() == false)
+    if (InitializeFrameResources() == false)
     {
         return StartupError::RenderingUnavailable;
     }
@@ -1671,7 +1643,7 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
         { .MaxFrameDimension2D = GetVulkan().MaxDimension, .MaxUniformBufferSize = GetVulkan().MaxUniformSize });
     return StartupError::None;
 }
-void ShutdownRendering() noexcept
+static void ReleaseFrameResources() noexcept
 {
     if (GetVulkan().Device == VK_NULL_HANDLE)
     {
@@ -1704,9 +1676,9 @@ void ShutdownRendering() noexcept
 void Shutdown() noexcept
 {
     ReleaseCreatedSurfaces();
-    ShutdownRendering();
+    ReleaseFrameResources();
     ReleaseTargets();
-    // ShutdownRendering waited for every submission that wrote a hosted image.
+    // Frame resource teardown waited for every submission that wrote a hosted image.
     GetActiveSurface().HostedProducer.Disconnect();
     if (GetVulkan().Device != VK_NULL_HANDLE)
     {
@@ -2221,14 +2193,6 @@ FrameStatus End() noexcept
         }
     }
     return FrameStatus::Ready;
-}
-bool BeginFrame() noexcept
-{
-    return Begin() == FrameStatus::Ready;
-}
-bool EndFrame() noexcept
-{
-    return End() == FrameStatus::Ready;
 }
 ResourceStatus CreateShader(usize slot, const ShaderDescription& description, uint32) noexcept
 {

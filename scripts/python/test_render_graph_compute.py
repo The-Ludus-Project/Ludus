@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 from ludus_tools import render_graph as graph, render_graph_build as build, render_graph_ray as ray
-from ludus_tools import render_graph_compute as compute, render_graph_execution as execution
+from ludus_tools import render_graph_compute as compute, render_graph_execution as execution, shader_context
 from ludus_tools.errors import ToolingError
 from test_render_graph_ray import find_ray_compute
 
@@ -47,6 +47,39 @@ class SceneComputeFixture(unittest.TestCase):
 
 
 class SceneComputeLoweringTests(SceneComputeFixture):
+    def test_storage_launch_is_independent_of_viewport_extent(self):
+        self.configuration = next(config for config in self.document['configurations'] if config['id'] == 'ColorInput')
+        self.document['default'] = self.configuration['id']
+        plan = self.compile()
+        producer = next(operation for operation in plan['passes'] if operation['id'] == 'Main/utd')
+        texture = plan['resources'][producer['attachments']['color']['resource']]
+        self.assertEqual([8, 8, 1], producer['dimensions'])
+        self.assertEqual([1, 1], texture['view_scale'])
+        self.assertNotEqual(producer['dimensions'][:2], texture['extent'])
+        self.node('utd')['invocation']['dimensions'] = 'ColorTarget'
+        matched_plan = self.compile()
+        matched_producer = next(operation for operation in matched_plan['passes'] if operation['id'] == 'Main/utd')
+        self.assertTrue(matched_producer['storage_texture'])
+        self.assertEqual(texture['extent'], matched_producer['dimensions'][:2])
+        self.node('utd')['invocation']['dimensions'] = [8, 8, 1]
+        self.node('utd')['invocation'].pop('storage_texture')
+        self.node('utd')['outputs'][0]['load'] = 'Clear'
+        image_plan = self.compile()
+        image_producer = next(operation for operation in image_plan['passes'] if operation['id'] == 'Main/utd')
+        self.assertEqual([8, 8, 1], image_producer['dimensions'])
+        self.assertNotIn('storage_texture', image_producer)
+
+    def test_named_shader_texture_clear_keeps_the_pass_and_dispatch_size(self):
+        self.configuration = next(config for config in self.document['configurations'] if config['id'] == 'NamedColorInputs')
+        self.document['default'] = self.configuration['id']
+        plan = self.compile()
+        producer = next(operation for operation in plan['passes'] if operation['id'] == 'Main/write')
+        self.assertEqual([8, 8, 1], producer['dimensions'])
+        self.assertEqual([('diffraction', 'Clear'), ('weights', 'Load'), ('mask', 'Load')],
+                         [(texture['port'], texture.get('load', 'Load')) for texture in producer['storage_textures']])
+        self.node('write')['outputs'][0]['load'] = 'Discard'
+        self.fails('Capability', 'requires Load/Store or Clear/Store')
+
     def test_scene_compute_node_lowers_to_a_ray_sequence_member(self):
         before = deepcopy(self.document)
         plan = self.compile()
@@ -127,15 +160,21 @@ class SceneComputeLoweringTests(SceneComputeFixture):
         error = self.fails('IncompletePipeline', 'missing its compute shader')
         self.assertEqual('shaders', error.target['field'])
 
-    def test_launch_size_accepts_color_target_and_the_exact_extent(self):
+    def test_launch_size_preserves_explicit_dimensions_in_the_numeric_plan(self):
         info = self.node('info')
-        for dimensions in ('ColorTarget', [96, 64, 1]):
+        for dimensions, expected in (('ColorTarget', [96, 64, 1]), ([32, 32, 1], [32, 32, 1])):
             with self.subTest(dimensions=dimensions):
                 info['invocation']['dimensions'] = dimensions
-                self.assertEqual([96, 64, 1], next(p for p in self.compile()['passes'] if p['id'] == 'Main/info')['dimensions'])
-        info['invocation']['dimensions'] = [32, 32, 1]
-        error = self.fails('AttachmentMismatch', 'Scene compute launch dimensions are')
-        self.assertEqual('invocation.dimensions', error.target['field'])
+                plan = self.compile()
+                member = next(p for p in plan['passes'] if p['id'] == 'Main/info')
+                self.assertEqual(expected, member['dimensions'])
+                package = {'plans': [plan], 'recipes': [{'technique': ray.TECHNIQUE, 'ray_programs': [['SceneInfo']]}]}
+                _, resources, passes, _ = execution.lower_plan(package, 'Default')
+                self.assertEqual((96, 64), (resources[passes[0]['Color']]['Width'], resources[passes[0]['Color']]['Height']))
+                fixed_size = (0, 0) if dimensions == 'ColorTarget' else tuple(expected[:2])
+                self.assertEqual(fixed_size, (passes[0].get('ImageLaunchWidth', 0), passes[0].get('ImageLaunchHeight', 0)))
+        info['invocation']['dimensions'] = [32, 32, 2]
+        self.assertEqual('invocation.dimensions', self.fails('Capability', '2D ray launch').target['field'])
 
     def test_group_size_is_the_wrapper_workgroup(self):
         info = self.node('info')
@@ -293,12 +332,51 @@ class ManifestTests(unittest.TestCase):
 
 @unittest.skipUnless(all(os.environ.get(name) for name in NATIVE_TOOLS), 'requires pinned native shader tools')
 class NativeSceneComputeTests(unittest.TestCase):
-    def build(self, fixture, root, kernel_source):
+    def build(self, fixture, root, kernel_source, *, native_output=None, image_launch=None, lit_consumer=False):
         """Build fixture and return its package, ray recipe and wrapper for the kernel compiled from kernel_source."""
         source = root / fixture.name
         shutil.copytree(fixture, source)
         manifest = source / 'main.lushader.json'
         manifest.write_text((source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+        if native_output is not None:
+            path = source / 'main.lurender.json'
+            document = json.loads(path.read_text())
+            config = next(config for config in document['configurations'] if config['id'] == 'ColorInput')
+            producer = next(node for node in config['nodes'] if node['id'] == 'utd')
+            producer['invocation'].pop('traversal')
+            producer['invocation']['type'] = 'RayTracing'
+            if lit_consumer:
+                next(row for row in producer['shaders'] if row['stage'] == 'ray_generation')['program'] = 'TraceDiffraction'
+            if native_output == 'matched_storage':
+                producer['invocation']['dimensions'] = 'ColorTarget'
+            if native_output == 'image':
+                producer['invocation'].pop('storage_texture')
+                producer['outputs'][0]['load'] = 'Clear'
+                shader = source / kernel_source
+                callbacks = shader.read_text().split('void DiffractionMiss', 1)[1]
+                shader.write_text('float3 ProduceDiffraction(SceneContext scene, RayLaunch launch, '
+                                  'inout RayQueryContext queries, ProduceDiffractionResources resources) '
+                                  '{ return float3(1, 0, 0); }\n'
+                                  'void DiffractionMiss' + callbacks)
+            path.write_bytes(graph.canonical_asset(document))
+        if lit_consumer:
+            value = json.loads(manifest.read_text())
+            next(item for item in value['programs'] if item['id'] == 'ProduceDiffraction')['id'] = 'TraceDiffraction'
+            technique = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)
+            technique['scene_interface']['polygonal_light_sampling'] = True
+            manifest.write_text(json.dumps(value))
+            shader = source / 'main_shaders/read_diffraction.slang'
+            original = shader.read_text()
+            lit = original.replace('return diffraction.bgr;',
+                                   'return diffraction.bgr * LookupSpecularLtc(0.5, float3(0, 0, 1), float3(0.04)).Norm;')
+            self.assertNotEqual(original, lit)
+            shader.write_text(lit)
+        if image_launch is not None:
+            path = source / 'main.lurender.json'
+            document = json.loads(path.read_text())
+            node = next(node for node in document['configurations'][0]['nodes'] if node['kind'] == 'ComputePipeline')
+            node['invocation']['dimensions'] = image_launch
+            path.write_bytes(graph.canonical_asset(document))
         result = build.build_package(manifest, root / (fixture.name + '-build'), helper=os.environ['LUDUS_RG1_HELPER'],
                                      compiler=os.environ['LUDUS_RG1_SLANG'], spirv_cross=os.environ['LUDUS_RG1_CROSS'])
         package = Path(result['package'])
@@ -311,6 +389,649 @@ class NativeSceneComputeTests(unittest.TestCase):
         match = re.search(r'switch \(GetGraphPassIndex\(\)\) \{\n((?:case \d+: [^\n]*' + re.escape(callback_arguments) +
                           r'[^\n]*\n)*)default:', wrapper)
         return re.findall(r'case (\d+):', match[1]) if match else None
+
+    def test_shared_buffer_stride_is_available_when_callback_compilation_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'source'
+            shutil.copytree(SCENE_COMPUTE, source)
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            configuration = next(item for item in document['configurations'] if item['id'] == 'WorkItems')
+            buffer = next(node for node in configuration['nodes'] if node['id'] == 'hits')
+            header = 'main_shaders/edge_table.slang'
+            buffer['shader_struct'] = {'source': header, 'type': 'EdgeTable', 'count': 3}
+            graph_path.write_bytes(graph.canonical_asset(document))
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal"]'))
+            shader = source / 'main_shaders/work_items.slang'
+            shader.write_text('#include "edge_table.slang"\n' + shader.read_text()
+                              + '\nuint Broken() { return undefinedIdentifier; }\n')
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'])
+            output = Path(temporary) / 'build'
+            (source / header).write_text('struct EdgeTable { uint Count; };\n')
+            with self.assertRaisesRegex(ToolingError, 'undefinedIdentifier'):
+                build.build_package(manifest, output, **options, spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            self.assertEqual(4, build.inspect_buffer_stride(manifest, header, 'EdgeTable', root=source, **options))
+            (source / header).write_text('struct EdgeTable { uint4 Header; uint4 Edges[2]; };\n')
+            self.assertEqual(48, build.inspect_buffer_stride(manifest, header, 'EdgeTable', root=source, **options))
+            with self.assertRaisesRegex(ToolingError, 'MissingRecord'):
+                build.inspect_buffer_stride(manifest, header, 'MissingRecord', root=source, **options)
+            self.assertFalse((output / 'current.json').exists())
+
+    def test_ordered_buffer_capacity_tracks_shared_slang_struct(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'source'
+            shutil.copytree(SCENE_COMPUTE, source)
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            configuration = next(item for item in document['configurations'] if item['id'] == 'WorkItems')
+            buffer = next(node for node in configuration['nodes'] if node['id'] == 'hits')
+            header = 'main_shaders/edge_table.slang'
+            buffer['shader_struct'] = {'source': header, 'type': 'EdgeTable', 'count': 1}
+            graph_path.write_bytes(graph.canonical_asset(document))
+            pending = graph.compile_graph(graph_path, configuration='WorkItems')
+            self.assertIn('size resolved by Build Graph', graph.dump_plan(pending))
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal"]'))
+            shader = source / 'main_shaders/work_items.slang'
+            original = shader.read_text()
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            output = Path(temporary) / 'build'
+            inline_source = 'main_shaders/work_items.slang'
+            # Preview an inline struct while the Buffer is still sized in fixed bytes.
+            record = buffer.pop('shader_struct')
+            buffer['bytes'] = 16
+            graph_path.write_bytes(graph.canonical_asset(document))
+            shader.write_text('struct EdgeTable { uint4 Header; uint4 Edges[2]; };\n' + original)
+            self.assertEqual(48, build.inspect_buffer_stride(
+                manifest, inline_source, 'EdgeTable', root=source,
+                helper=options['helper'], compiler=options['compiler']))
+            del buffer['bytes']
+            buffer['shader_struct'] = {**record, 'source': inline_source}
+            graph_path.write_bytes(graph.canonical_asset(document))
+            inline = build.build_package(manifest, output, **options)
+            self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': 'WorkItems',
+                           'stride': 48, 'bytes': 48}, inline['shader_buffer_layouts'])
+            shader.write_text(original)
+            buffer['shader_struct']['source'] = header
+            graph_path.write_bytes(graph.canonical_asset(document))
+            with self.assertRaisesRegex(ToolingError, "quoted #include for shared file 'main_shaders/edge_table.slang'"):
+                build.build_package(manifest, output, **options)
+            shader.write_text('#include "edge_table.slang"\n' + original)
+            for count in (256, 16):
+                (source / header).write_text(
+                    '#pragma once\nstruct EdgeRecord { float4 BeginWorldAndLength; float4 EndWorldAndCumulativeLength; };\n'
+                    f'struct EdgeTable {{ uint4 Header; EdgeRecord Edges[{count}]; }};\n')
+                built = build.build_package(manifest, output, **options)
+                package = Path(built['package'])
+                descriptor = json.loads((package / 'package.json').read_text())
+                plan = next(plan for plan in descriptor['plans'] if plan['configuration'] == 'WorkItems')
+                resource = plan['resources']['Main/hits']
+                expected = 16 + count * 32
+                self.assertEqual(expected, resource['shader_struct']['stride'])
+                self.assertEqual([expected, 1], resource['extent'])
+                self.assertEqual([0, 0], [entry['persistent_buffers'][0]['slot'] for entry in plan['passes']
+                                          if entry['kind'] == 'RayTracing'])
+                _, resources, _, _ = execution.lower_plan(descriptor, 'WorkItems')
+                self.assertIn(expected, [entry['Width'] for entry in resources if entry['Kind'] == 'Buffer'])
+                self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': 'WorkItems',
+                               'stride': expected, 'bytes': expected}, built['shader_buffer_layouts'])
+            buffer['shader_struct']['count'] = 3
+            graph_path.write_bytes(graph.canonical_asset(document))
+            (source / header).write_text('struct EdgeTable { uint Count; };\n')
+            built = build.build_package(manifest, output, **options)
+            self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': 'WorkItems',
+                           'stride': 4, 'bytes': 16}, built['shader_buffer_layouts'])
+            accepted_pointer = (output / 'current.json').read_bytes()
+            (source / header).write_text('struct RenamedEdgeTable { uint4 Header; };\n')
+            with self.assertRaisesRegex(ToolingError, 'EdgeTable'):
+                build.build_package(manifest, output, **options)
+            self.assertEqual(accepted_pointer, (output / 'current.json').read_bytes())
+
+    def check_resource_completion(self, context, server, language, text,
+                                  expression='Edge edge = resources.', expected=('Edges', 'Scratch')):
+        from test_shader_context import ShaderLanguagePeer
+        from urllib.parse import unquote, urlparse
+
+        workspace = Path(unquote(urlparse(context['uri']).path)).parents[1]
+        peer = ShaderLanguagePeer(server, workspace, context.get('server_arguments', ()))
+        try:
+            before = text[:text.index(expression) + len(expression)]
+            peer.notify('textDocument/didOpen', {'textDocument': {
+                'uri': context['uri'], 'languageId': language, 'version': 1, 'text': text}})
+            completion = peer.call('textDocument/completion', {
+                'textDocument': {'uri': context['uri']},
+                'position': {'line': before.count('\n'), 'character': len(before.rsplit('\n', 1)[-1])}})
+            items = completion if isinstance(completion, list) else completion.get('items', [])
+            self.assertTrue(set(expected) <= {item['label'] for item in items})
+        finally:
+            peer.close()
+
+    def test_lusl_typed_array_element_access_uses_reflected_edge_table_layout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(COMPUTE_MIXED, source)
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            configuration = document['configurations'][0]
+            nodes = {node['id']: node for node in configuration['nodes']}
+            nodes['hits'].pop('bytes')
+            nodes['hits']['shader_struct'] = {'source': 'main_shaders/edges.luslh', 'type': 'EdgesData', 'count': 1}
+            nodes['shade']['outputs'] = [port for port in nodes['shade']['outputs'] if port['id'] != 'hits']
+            graph_path.write_bytes(graph.canonical_asset(document))
+            manifest_path = source / 'main.lushader.json'
+            validator = os.environ.get('LUDUS_RG1_VALIDATOR')
+            profiles = ['metal', 'spirv'] if validator else ['metal']
+            manifest = json.loads((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', json.dumps(profiles)))
+            for program in manifest['programs']:
+                if program['id'] in ('Primary', 'Shade'):
+                    program['source'] = program['source'].replace('.slang', '.lusl')
+            manifest_path.write_text(json.dumps(manifest))
+            shaders = source / 'main_shaders'
+            (shaders / 'edges.luslh').write_text(
+                '#pragma once\n'
+                'static const uint32 MAX_EDGE_COUNT = 256;\n'
+                'struct Edge { float32x4 Begin; float32x3 End; float32 Weight; };\n'
+                'struct EdgesData { uint32 EdgesCount; float32 TotalWeight; Edge Edges[MAX_EDGE_COUNT]; };\n')
+            includes = '#include "scene_shader.luslh"\n#include "graph_resources.luslh"\n'
+            producer = (
+                includes +
+                'float32x3 TracePrimary(in SceneContext scene, in RayLaunch launch, '
+                'inout RayQueryContext inoutQueries, in TracePrimaryResources resources)\n'
+                '{\n'
+                '    Edge edge = resources.Hits.LoadEdges(0, 1);\n'
+                '    edge.Weight = 9.0;\n'
+                '    resources.Hits.StoreEdges(0, 1, edge);\n'
+                '    return float32x3(0);\n'
+                '}\n')
+            (shaders / 'primary.lusl').write_text(producer)
+            consumer = (
+                includes +
+                'float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch, '
+                'inout RayQueryContext inoutQueries, in ShadeRecordedHitResources resources)\n'
+                '{\n'
+                '    Edge edge = resources.Hits.LoadEdges(0, 1);\n'
+                '    return float32x3(edge.Weight);\n'
+                '}\n')
+            shade = shaders / 'shade.lusl'
+            shade.write_text(consumer)
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'], validator=validator)
+            luslc = build.language.find_luslc(options['helper'])
+            arrays = [{'name': 'Edges', 'element_type': 'Edge', 'capacity': 256}]
+            for file, text, writable in (('primary', producer, True), ('shade', consumer, False)):
+                with self.subTest(file=file):
+                    context = shader_context.export_context(manifest_path, root / 'editor', f'main_shaders/{file}.lusl',
+                                                            helper=options['helper'], compiler=options['compiler'])
+                    field = context['resources'][0]['fields'][0]
+                    self.assertEqual(arrays, field['record_arrays'])
+                    self.assertEqual(writable, field['writable'])
+                    unfinished = text.replace('resources.Hits.LoadEdges(0, 1)', 'resources.Hits.')
+                    expected = ('LoadEdges', 'StoreEdges') if writable else ('LoadEdges',)
+                    self.check_resource_completion(context, luslc, 'lusl', unfinished,
+                                                   'Edge edge = resources.Hits.', expected)
+            output = root / 'build'
+            built = build.build_package(manifest_path, output, **options)
+            self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': configuration['id'],
+                           'stride': 8208, 'bytes': 8208}, built['shader_buffer_layouts'])
+            _, wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.lusl.slang', profile='metal')
+            self.assertIn('Edge LoadEdges(uint recordIndex, uint elementIndex)', wrapper)
+            self.assertIn('void StoreEdges(uint recordIndex, uint elementIndex, Edge element)', wrapper)
+            self.assertIn('recordIndex * 2052u + 4u + elementIndex * 8u', wrapper)
+            self.assertEqual(1, wrapper.count('void StoreEdges('))
+            accepted = (output / 'current.json').read_bytes()
+            shade.write_text(consumer.replace('return float32x3', 'resources.Hits.StoreEdges(0, 1, edge); return float32x3'))
+            with self.assertRaisesRegex(ToolingError, 'StoreEdges'):
+                build.build_package(manifest_path, output, **options)
+            self.assertEqual(accepted, (output / 'current.json').read_bytes())
+
+    def test_native_edge_table_shares_the_cooked_buffer_between_passes(self):
+        self.check_shared_native_edge_table('metal', is_hardware_reader=True)
+
+    def test_ordered_compute_shares_one_native_edge_table_on_metal(self):
+        self.check_shared_native_edge_table('metal')
+
+    @unittest.skipUnless(os.environ.get('LUDUS_RG1_VALIDATOR'), 'requires pinned SPIR-V validator')
+    def test_ordered_compute_shares_one_native_edge_table_on_vulkan(self):
+        self.check_shared_native_edge_table('spirv')
+
+    def test_ordered_compute_shares_one_native_edge_table_on_webgpu(self):
+        self.check_shared_native_edge_table('wgsl')
+
+    def test_ordered_compute_shares_native_edge_table_with_a_named_texture(self):
+        self.check_shared_native_edge_table('metal', has_named_texture=True)
+
+    def check_shared_native_edge_table(self, target, *, is_hardware_reader=False, has_named_texture=False):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(COMPUTE_MIXED, source)
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            configuration = document['configurations'][0]
+            nodes = {node['id']: node for node in configuration['nodes']}
+            nodes['hits'].pop('bytes')
+            nodes['hits']['shader_struct'] = {
+                'source': 'main_shaders/edges.luslh', 'type': 'EdgesData',
+                'count': 1, 'access': 'Structured',
+            }
+            if is_hardware_reader:
+                nodes['shade']['invocation']['type'] = 'RayTracing'
+            if target == 'wgsl':
+                for node in (nodes['primary'], nodes['shade']):
+                    node['invocation']['traversal'] = 'ComputeBvh'
+            nodes['shade']['outputs'] = [port for port in nodes['shade']['outputs'] if port['id'] != 'hits']
+            if has_named_texture:
+                name = 'diffraction'
+                color = next(node for node in nodes.values() if node['kind'] == 'Target')
+                configuration['nodes'].append({**color, 'id': name, 'extent': [8, 8]})
+                writer = nodes['primary']
+                writer['inputs'].append({'id': name, 'type': 'ColorTexture', 'required': True})
+                writer['outputs'].append({'id': name, 'type': 'ColorTexture', 'target': name,
+                                          'format': 'RGBA8Unorm', 'load': 'Load', 'store': 'Store',
+                                          'access': 'ShaderReadWrite'})
+                configuration['edges'].append({'from': f'{name}.texture', 'to': f'primary.{name}'})
+            graph_path.write_bytes(graph.canonical_asset(document))
+            manifest_path = source / 'main.lushader.json'
+            profiles = {'metal': ['metal', 'wgsl'], 'spirv': ['metal', 'spirv', 'wgsl'], 'wgsl': ['wgsl']}[target]
+            manifest = json.loads((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', json.dumps(['metal'] if has_named_texture else profiles)))
+            for program in manifest['programs']:
+                if program['id'] in ('Primary', 'Shade'):
+                    program['source'] = program['source'].replace('.slang', '.lusl')
+            manifest_path.write_text(json.dumps(manifest))
+            shaders = source / 'main_shaders'
+            (shaders / 'edges.luslh').write_text(
+                '#pragma once\n'
+                'static const uint32 MAX_EDGE_COUNT = 256;\n'
+                'struct Edge { float32x4 Begin; float32x4 End; };\n'
+                'struct EdgesData { uint32 EdgesCount; float32 TotalWeight; uint32x2 Padding; '
+                'Edge Edges[MAX_EDGE_COUNT]; float32 Weights[MAX_EDGE_COUNT]; };\n')
+            includes = '#include "scene_shader.luslh"\n#include "graph_resources.luslh"\n'
+            (shaders / 'primary.lusl').write_text(includes + '''
+float32x3 TracePrimary(in SceneContext scene, in RayLaunch launch,
+                       inout RayQueryContext inoutQueries, in TracePrimaryResources resources)
+{
+    if (launch.PositionPixel.x == 0 && launch.PositionPixel.y == 0)
+    {
+        resources.Hits[0].Edges[0].Begin = float32x4(0.0, 1.0, 0.0, 0.0);
+        resources.Hits[0].Weights[42] = 1.0;
+    }
+    return float32x3(0);
+}
+''')
+            (shaders / 'shade.lusl').write_text(includes + '''
+float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
+                           inout RayQueryContext inoutQueries, in ShadeRecordedHitResources resources)
+{
+    EdgesData edges = resources.Hits[0];
+    Edge first = edges.Edges[0];
+    uint32 index = SampleSceneWeightedIndex(inout inoutQueries, edges.Weights);
+    return index == 42 ? first.Begin.xyz : float32x3(0);
+}
+''')
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            if target == 'spirv':
+                options['validator'] = os.environ['LUDUS_RG1_VALIDATOR']
+            context = shader_context.export_context(manifest_path, root / 'editor', 'main_shaders/shade.lusl',
+                                                    helper=options['helper'], compiler=options['compiler'])
+            self.assertEqual({'name': 'Hits', 'type': 'StructuredBuffer<EdgesData>', 'writable': False,
+                              'native_structured': True}, context['resources'][0]['fields'][0])
+            built = build.build_package(manifest_path, root / 'build', **options)
+            package = Path(built['package'])
+            contents = execution._runtime_contents(str(package), configuration['id'])
+            writer, reader = contents['passes'][:2]
+            self.assertEqual(writer['Buffer1'], reader['Buffer1'])
+            self.assertNotEqual(execution.ABSENT, writer['Buffer1'])
+            self.assertEqual(9232, contents['resources'][writer['Buffer1']]['Width'])
+            writer_entries = contents['artifacts'][('RayTracing', 'compute', target)]['descriptor']['interface']['entries']
+            reader_role = 'NativeRayStages' if is_hardware_reader else 'RecordReadCompute'
+            reader_artifact = contents['artifacts'][(reader_role, 'compute', target)]
+            reader_entries = reader_artifact['descriptor']['interface']['entries']
+            self.assertIn((7, 'StorageReadWrite', 9232),
+                          [(entry['binding'], entry['kind'], entry['size']) for entry in writer_entries])
+            self.assertIn((7, 'StorageRead', 9232),
+                          [(entry['binding'], entry['kind'], entry['size']) for entry in reader_entries])
+            if is_hardware_reader:
+                metal = reader_artifact['bytes'].decode()
+                self.assertRegex(metal, r'const EdgesData_\d+ device\* GraphBuffer1_\d+ \[\[buffer\(7\)\]\]')
+                self.assertNotRegex(metal, r'(?<!const )\bEdgesData_\d+ device\*')
+            self.assertEqual(0 if is_hardware_reader else 1 << reader['RayProgram'], contents['record_reader_mask'])
+            self.assertEqual(9232, contents['native_record_stride'])
+            runtime = root / 'native-edges.lurgrt'
+            execution.cook_runtime(package, runtime)
+            expected_version = (execution.SHADER_TEXTURE_ACCESS_PACKAGE_VERSION if has_named_texture else
+                                execution.NATIVE_GRAPH_RECORD_PACKAGE_VERSION if is_hardware_reader else
+                                execution.RECORD_READER_PACKAGE_VERSION)
+            self.assertEqual(expected_version, int.from_bytes(runtime.read_bytes()[4:8], 'little'))
+            if has_named_texture:
+                from test_render_graph_authoring import parse_runtime
+                parsed = parse_runtime(runtime.read_bytes())
+                self.assertEqual(9232, parsed['native_record_stride'])
+                self.assertEqual(1 << reader['RayProgram'], parsed['record_reader_mask'])
+                self.assertEqual(writer['ShaderTextures'], list(parsed['shader_textures'][0][:1]))
+                self.assertIn((ray.buffers.FIRST_TEXTURE_SLOT, 'StorageTexture2DReadWrite'),
+                              [(entry['binding'], entry['kind']) for entry in writer_entries])
+
+            if not is_hardware_reader:
+                header = root / 'native-edges.h'
+                execution.emit_runtime(package, header, configuration=configuration['id'])
+                self.assertIn(f"result.RecordReaderMask = {1 << reader['RayProgram']};", header.read_text())
+            if target == 'wgsl':
+                fields = next(entry['fields'] for entry in reader_entries if entry['binding'] == 7)
+                self.assertEqual([('EdgesCount', 0), ('TotalWeight', 4), ('Padding', 8),
+                                  ('Edges', 16), ('Weights', 8208)],
+                                 [(field['name'], field['offset']) for field in fields])
+                self.assertEqual((256, 32), (fields[3]['count'], fields[3]['stride']))
+                self.assertEqual((256, 4), (fields[4]['count'], fields[4]['stride']))
+                self.assertEqual(['wgsl'], contents['package']['capability_profiles']['ray_tracing'])
+                accepted = (root / 'build/current.json').read_bytes()
+                nodes['shade']['invocation']['traversal'] = 'NativeQuery'
+                graph_path.write_bytes(graph.canonical_asset(document))
+                with self.assertRaisesRegex(ToolingError, 'WebGPU scene compute.*software traversal'):
+                    build.build_package(manifest_path, root / 'build', **options)
+                self.assertEqual(accepted, (root / 'build/current.json').read_bytes())
+            if target == 'spirv':
+                self.assertIn(('RecordReadCompute', 'compute', 'metal'), contents['artifacts'])
+                schemas = [schema for schema in contents['package']['schemas'] if schema['id'] == 'RendererStatic']
+                metal_stages = {key: item for key, item in contents['artifacts'].items() if key[2] != 'spirv'}
+                interface = {'version': 2, 'scene_shader': 'SceneShaderInputsV1',
+                             **execution._cpu_vertex_interface(schemas[0], metal_stages),
+                             'uniform_schemas': contents['uniform_interface']}
+                self.assertEqual(build.identity(interface), contents['interface_identity'])
+            if is_hardware_reader:
+                accepted = (root / 'build/current.json').read_bytes()
+                layout = shaders / 'edges.luslh'
+                layout.write_text(layout.read_text().replace('float32x4 Begin', 'float32x3 Begin'))
+                writer = shaders / 'primary.lusl'
+                writer.write_text(writer.read_text().replace('float32x4(0.0, 1.0, 0.0, 0.0)', 'float32x3(0.0, 1.0, 0.0)'))
+                with self.assertRaisesRegex(ToolingError, r'Metal native structured buffer.*EdgesData\.Edges\[\]\.Begin') as failure:
+                    build.build_package(manifest_path, root / 'build', **options)
+                error = failure.exception
+                self.assertIn('size 16 bytes. Expected offset 0 and size 12 bytes', error.message)
+                self.assertIn('Use float4 in Slang or float32x4 in LUSL', error.message)
+                self.assertEqual({'source': 'main_shaders/edges.luslh', 'line': 4}, error.location)
+                self.assertEqual(error.location, error.diagnostics[0]['location'])
+                self.assertEqual(accepted, (root / 'build/current.json').read_bytes())
+
+    def test_named_edge_records_cross_compute_and_ray_passes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(COMPUTE_MIXED, source)
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            configuration = document['configurations'][0]
+            nodes = {node['id']: node for node in configuration['nodes']}
+            nodes['hits'].pop('bytes')
+            nodes['hits']['shader_struct'] = {'source': 'main_shaders/edge.slang', 'type': 'Edge', 'count': 16}
+            for identity in ('primary', 'shade'):
+                next(port for port in nodes[identity]['inputs'] if port['id'] == 'hits')['id'] = 'edges'
+                if identity == 'primary':
+                    next(port for port in nodes[identity]['outputs'] if port['id'] == 'hits')['target'] = 'edges'
+                else:
+                    nodes[identity]['outputs'] = [port for port in nodes[identity]['outputs'] if port['id'] != 'hits']
+            nodes['primary']['inputs'] = [port for port in nodes['primary']['inputs']
+                                           if port['type'] in ('Scene', 'Buffer')]
+            nodes['primary']['outputs'] = [port for port in nodes['primary']['outputs'] if port['type'] == 'Buffer']
+            nodes['primary']['invocation'] = {'work_items': 16, 'traversal': 'ComputeBvh'}
+            configuration['edges'] = [edge for edge in configuration['edges']
+                                      if edge['to'] not in ('primary.view', 'primary.color')]
+            for edge in configuration['edges']:
+                if edge['to'] in ('primary.hits', 'shade.hits'):
+                    edge['to'] = edge['to'].replace('.hits', '.edges')
+                if edge['from'] == 'primary.color':
+                    edge['from'] = 'color.texture'
+            configuration['nodes'].append({'id': 'scratch', 'kind': 'Buffer', 'bytes': 16})
+            nodes['shade']['inputs'].insert(0, {'id': 'scratch', 'type': 'Buffer', 'required': True})
+            nodes['shade']['outputs'].append({'id': 'scratch', 'type': 'Buffer', 'target': 'scratch',
+                                              'format': 'Bytes', 'load': 'Load', 'store': 'Store'})
+            configuration['edges'].append({'from': 'scratch.buffer', 'to': 'shade.scratch'})
+            graph_path.write_bytes(graph.canonical_asset(document))
+            manifest_path = source / 'main.lushader.json'
+            validator = os.environ.get('LUDUS_RG1_VALIDATOR')
+            profiles = ['metal', 'spirv'] if validator else ['metal']
+            manifest = json.loads((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', json.dumps(profiles)))
+            manifest_path.write_text(json.dumps(manifest))
+            shaders = source / 'main_shaders'
+            (shaders / 'edge.slang').write_text(
+                '#pragma once\nstruct Edge { float3 BeginWorld; float3 EndWorld; };\n')
+            (shaders / 'primary.slang').write_text(
+                'void StoreEndX(in GraphWritableEdgeView edges, uint index, float value) {\n'
+                '    edges.StoreWord(index * 32 + 16, asuint(value));\n}\n'
+                'float3 TracePrimary(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, '
+                'TracePrimaryResources resources) {\n'
+                '    uint index = launch.WorkItemIndex;\n'
+                '    if (index >= resources.Edges.GetCount()) return float3(0);\n'
+                '    Edge edge; edge.BeginWorld = float3(index); edge.EndWorld = float3(index + 1);\n'
+                '    resources.Edges[index] = edge;\n'
+                '    StoreEndX(resources.Edges, index, float(index + 2));\n'
+                '    return float3(0);\n}\n')
+            consumer = (
+                'float3 ShadeRecordedHit(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, '
+                'ShadeRecordedHitResources resources) {\n'
+                '    Edge edge = resources.Edges[0];\n'
+                '    if (resources.Edges.GetByteSize() < 32) return float3(0);\n'
+                '    float endX = asfloat(resources.Edges.LoadWord(16));\n'
+                '    return float3(endX, edge.EndWorld.yz) - edge.BeginWorld;\n}\n')
+            shade = shaders / 'shade.slang'
+            shade.write_text(consumer)
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'], validator=validator)
+            legacy = ('float3 ShadeRecordedHit(SceneContext scene, RayLaunch launch, inout RayQueryContext queries) '
+                      '{ return float3(0); }\n')
+            shade.write_text(legacy)
+            pending = shader_context.export_context(manifest_path, root / 'editor', 'main_shaders/shade.slang',
+                                                    helper=options['helper'])['resources'][0]
+            self.assertTrue(pending['needs_upgrade'])
+            edges_api = {'name': 'Edges', 'type': 'Edge', 'writable': False, 'byte_access': True}
+            self.assertEqual(edges_api, pending['fields'][0])
+            self.assertEqual(legacy, shade.read_text())
+            with self.assertRaisesRegex(ToolingError, 'Add Resource Access') as failure:
+                build.build_package(manifest_path, root / 'build', **options)
+            self.assertEqual('main_shaders/shade.slang', failure.exception.location['source'])
+            self.assertEqual('add_buffer_access', failure.exception.location['repair'])
+            shade.write_text(consumer)
+            context = shader_context.export_context(manifest_path, root / 'editor', 'main_shaders/shade.slang',
+                                                    helper=options['helper'])
+            self.assertIn('GraphReadOnlyEdgeView Edges;', context['prefix'])
+            self.assertEqual(edges_api, context['resources'][0]['fields'][0])
+            self.assertIn('Layout-dependent accessors are placeholders', context['prefix'])
+            self.assertIn('uint LoadWord(uint byteOffset)', context['prefix'])
+            slangd = Path(options['compiler']).with_name('slangd.exe' if os.name == 'nt' else 'slangd')
+            if slangd.is_file():
+                text = context['prefix'] + consumer.replace('resources.Edges[0]', 'resources.') + context['suffix']
+                self.check_resource_completion(context, slangd, 'slang', text)
+            output = root / 'build'
+            built = build.build_package(manifest_path, output, **options)
+            package = Path(built['package'])
+            _, wrapper = find_ray_compute(package, 'main_shaders/primary.slang', profile='metal')
+            self.assertIn('#include "main_shaders/edge.slang"', wrapper)
+            self.assertIn('GraphWritableEdgeView Edges;', wrapper)
+            self.assertIn('GraphReadOnlyEdgeView Edges;', wrapper)
+            self.assertIn('GraphWritableEdgeView(GraphBuffer0, 16u)', wrapper)
+            self.assertIn('GraphReadOnlyEdgeView(GraphBuffer1, 16u)', wrapper)
+            self.assertIn('index * 8u', wrapper)
+            self.assertIn('uint GetByteSize() { return Count * 32u; }', wrapper)
+            self.assertNotIn('Layout-dependent accessors are placeholders', wrapper)
+            execution.cook_runtime(str(package), root / 'named.lurgrt')
+            nodes['shade']['inputs'].append(nodes['shade']['inputs'].pop(0))
+            graph_path.write_bytes(graph.canonical_asset(document))
+            rebuilt = build.build_package(manifest_path, output, **options)
+            _, reordered = find_ray_compute(Path(rebuilt['package']), 'main_shaders/primary.slang', profile='metal')
+            self.assertIn('GraphReadOnlyEdgeView(GraphBuffer0, 16u)', reordered)
+            self.assertEqual(consumer, shade.read_text())
+
+            # Bind the same typed read-only port through the native Metal ray-generation stage.
+            shade_invocation = nodes['shade']['invocation']
+            shade_invocation['type'] = 'RayTracing'
+            graph_path.write_bytes(graph.canonical_asset(document))
+            built = build.build_package(manifest_path, output, **options)
+            package = Path(built['package'])
+            contents = execution._runtime_contents(str(package), configuration['id'])
+            producer, native_pass = contents['passes']
+            self.assertEqual('HardwarePipeline', native_pass['Traversal'])
+            self.assertEqual(producer['Buffer0'], native_pass['Buffer0'])
+            self.assertNotEqual(execution.ABSENT, native_pass['Buffer0'])
+            native_stage = contents['artifacts'][('NativeRayStages', 'compute', 'metal')]
+            entries = native_stage['descriptor']['interface']['entries']
+            self.assertIn((6, 'StorageReadWrite', 16),
+                          [(entry['binding'], entry['kind'], entry['size']) for entry in entries])
+            native_pipeline = next(recipe['native_pipeline'] for recipe in contents['package']['recipes']
+                                   if recipe['profile'] == 'metal' and 'native_pipeline' in recipe)
+            native_wrapper = (package / 'programs' / native_pipeline / 'wrapper.slang').read_text()
+            self.assertIn('GraphReadOnlyEdgeView(GraphBuffer0, 16u)', native_wrapper)
+            self.assertIn('LudusNativeRayGeneration', native_wrapper)
+            execution.cook_runtime(package, root / 'native-named.lurgrt')
+            accepted_native = (output / 'current.json').read_bytes()
+
+            binding_location = {'source': 'main.lurender.json', 'configuration': configuration['id'],
+                                'node': 'shade', 'instance': 'Main/shade', 'port': 'edges', 'direction': 'input',
+                                'field': 'invocation.type'}
+            for unsupported_profile in ('spirv', 'wgsl'):
+                with self.subTest(unsupported_profile=unsupported_profile):
+                    manifest_path.write_text(json.dumps({**manifest, 'profiles': [unsupported_profile]}))
+                    with self.assertRaisesRegex(ToolingError, r"Main/shade.*'edges'.*Hardware RT pipeline.*Metal") as failure:
+                        build.build_package(manifest_path, output, **options)
+                    self.assertEqual(binding_location, failure.exception.location)
+                    self.assertEqual(accepted_native, (output / 'current.json').read_bytes())
+            manifest_path.write_text(json.dumps(manifest))
+
+            # A record declared in the compute producer is outside the native stage bundle.
+            primary = shaders / 'primary.slang'
+            producer_source = primary.read_text()
+            primary.write_text((shaders / 'edge.slang').read_text() + producer_source)
+            nodes['hits']['shader_struct']['source'] = 'main_shaders/primary.slang'
+            graph_path.write_bytes(graph.canonical_asset(document))
+            with self.assertRaisesRegex(
+                    ToolingError, r"Main/shade.*'edges'.*Hardware RT pipeline.*Edge.*shared .slang") as failure:
+                build.build_package(manifest_path, output, **options)
+            self.assertEqual(binding_location, failure.exception.location)
+            self.assertEqual(accepted_native, (output / 'current.json').read_bytes())
+            primary.write_text(producer_source)
+            nodes['hits']['shader_struct']['source'] = 'main_shaders/edge.slang'
+
+            del shade_invocation['type']
+            graph_path.write_bytes(graph.canonical_asset(document))
+            accepted = (output / 'current.json').read_bytes()
+            shade.write_text(consumer.replace('float endX', 'resources.Edges[0] = edge; float endX'))
+            with self.assertRaisesRegex(ToolingError, 'set|l-value|assign'):
+                build.build_package(manifest_path, output, **options)
+            self.assertEqual(accepted, (output / 'current.json').read_bytes())
+            shade.write_text(consumer.replace('float endX', 'resources.Edges.StoreWord(16, 0); float endX'))
+            with self.assertRaisesRegex(ToolingError, 'StoreWord'):
+                build.build_package(manifest_path, output, **options)
+            self.assertEqual(accepted, (output / 'current.json').read_bytes())
+
+            shade.write_text(consumer)
+            primary = shaders / 'primary.slang'
+            producer = primary.read_text()
+            nodes['hits']['shader_struct']['source'] = 'main_shaders/primary.slang'
+            graph_path.write_bytes(graph.canonical_asset(document))
+            primary.write_text((shaders / 'edge.slang').read_text() + producer)
+            built = build.build_package(manifest_path, output, **options)
+            _, inline_wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.slang', profile='metal')
+            self.assertRegex(inline_wrapper, r'typedef GraphSource\d+::Edge Edge;')
+            self.assertIn('index * 8u', inline_wrapper)
+            primary.write_text(producer)
+
+            # A LUSL header supplies the storage layout to both shader languages.
+            nodes['hits']['shader_struct']['source'] = 'main_shaders/edge.luslh'
+            (shaders / 'edge.luslh').write_text(
+                '#pragma once\n#include "math.luslh"\n#include "endpoints.luslh"\n'
+                'struct Edge { EDGE_VECTOR BeginWorld; EDGE_VECTOR EndWorld; };\n')
+            endpoints = shaders / 'endpoints.luslh'
+            endpoints.write_text('#pragma once\n#define EDGE_VECTOR float32x3\n')
+            graph_path.write_bytes(graph.canonical_asset(document))
+            built = build.build_package(manifest_path, output, **options)
+            self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': configuration['id'],
+                           'stride': 32, 'bytes': 512}, built['shader_buffer_layouts'])
+            _, wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.slang', profile='metal')
+            self.assertIn('#include "main_shaders/edge.luslh.slang"', wrapper)
+            self.assertIn('index * 8u', wrapper)
+            accepted = (output / 'current.json').read_bytes()
+            endpoints.write_text('#pragma once\n#define EDGE_VECTOR MissingVector\n')
+            with self.assertRaisesRegex(ToolingError, 'MissingVector'):
+                build.build_package(manifest_path, output, **options)
+            self.assertEqual(accepted, (output / 'current.json').read_bytes())
+            endpoints.write_text('#pragma once\n#define EDGE_VECTOR float32x3\n')
+
+            for program in manifest['programs']:
+                if program['id'] in ('Primary', 'Shade'):
+                    program['source'] = program['source'].replace('.slang', '.lusl')
+            manifest_path.write_text(json.dumps(manifest))
+            (shaders / 'primary.lusl').write_text(
+                '#include "scene_shader.luslh"\n#include "graph_resources.luslh"\n'
+                'float32x3 TracePrimary(in SceneContext scene, in RayLaunch launch, '
+                'inout RayQueryContext inoutQueries, in TracePrimaryResources resources)\n'
+                '{\n'
+                '    uint32 index = launch.WorkItemIndex;\n'
+                '    if (index < resources.Edges.GetCount())\n'
+                '    {\n'
+                '        Edge edge = 0;\n'
+                '        edge.BeginWorld = float32x3(float32(index));\n'
+                '        edge.EndWorld = edge.BeginWorld + 1;\n'
+                '        resources.Edges.Store(index, edge);\n'
+                '        resources.Edges.StoreWord(index * 32 + 16, resources.Edges.LoadWord(index * 32 + 16));\n'
+                '    }\n'
+                '    return float32x3(0);\n'
+                '}\n')
+            lusl_consumer = (
+                '#include "scene_shader.luslh"\n#include "graph_resources.luslh"\n'
+                'float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch, '
+                'inout RayQueryContext inoutQueries, in ShadeRecordedHitResources resources)\n'
+                '{\n'
+                '    Edge edge = resources.Edges.Load(0);\n'
+                '    if (resources.Edges.GetByteSize() < 32 || resources.Edges.LoadWord(16) == 0)\n'
+                '    {\n'
+                '        return float32x3(0);\n'
+                '    }\n'
+                '    if (resources.Scratch.GetCount() > 0)\n'
+                '    {\n'
+                '        uint32x4 word = resources.Scratch.Load(0);\n'
+                '        word.x = word.x + 1;\n'
+                '        resources.Scratch.Store(0, word);\n'
+                '    }\n'
+                '    return edge.EndWorld - edge.BeginWorld;\n'
+                '}\n')
+            shade_lusl = shaders / 'shade.lusl'
+            legacy_lusl = lusl_consumer.replace('#include "graph_resources.luslh"\n', '').replace(
+                ', in ShadeRecordedHitResources resources', '').replace('resources.Edges.Load(0)', '0')
+            shade_lusl.write_text(legacy_lusl)
+            pending = shader_context.export_context(manifest_path, root / 'lusl-editor', 'main_shaders/shade.lusl',
+                                                    helper=options['helper'], compiler=options['compiler'])['resources'][0]
+            self.assertTrue(pending['needs_upgrade'])
+            self.assertEqual(edges_api, pending['fields'][0])
+            self.assertEqual(legacy_lusl, shade_lusl.read_text())
+            shade_lusl.write_text(lusl_consumer.replace('resources.Edges.Load(0)', 'resources.'))
+            context = shader_context.export_context(manifest_path, root / 'lusl-editor', 'main_shaders/shade.lusl',
+                                                    helper=options['helper'], compiler=options['compiler'])
+            self.assertEqual(edges_api, context['resources'][0]['fields'][0])
+            from urllib.parse import unquote, urlparse
+            staged_source = Path(unquote(urlparse(context['uri']).path))
+            header = staged_source.parents[1] / '_ludus_graph' / 'graph_resources.luslh'
+            self.assertIn('GraphReadOnlyEdgeView Edges;', header.read_text())
+            self.assertIn('uint32 LoadWord(in uint32 byteOffset)', header.read_text())
+            self.assertNotIn('void StoreWord(in uint32 byteOffset', header.read_text())
+            self.assertNotIn('void Store(in uint32 index, in Edge record)', header.read_text())
+            luslc = build.language.find_luslc(options['helper'])
+            self.check_resource_completion(context, luslc, 'lusl', staged_source.read_text())
+            shade_lusl.write_text(lusl_consumer)
+            built = build.build_package(manifest_path, output, **options)
+            execution.cook_runtime(built['package'], root / 'lusl-named.lurgrt')
+            accepted = (output / 'current.json').read_bytes()
+            shade_lusl.write_text(lusl_consumer.replace(
+                'return edge.EndWorld', 'resources.Edges.Store(0, edge); return edge.EndWorld'))
+            with self.assertRaisesRegex(ToolingError, 'Store'):
+                build.build_package(manifest_path, output, **options)
+            self.assertEqual(accepted, (output / 'current.json').read_bytes())
 
     def test_mixed_sequence_can_select_triangle_loop_for_one_kernel(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -333,12 +1054,216 @@ class NativeSceneComputeTests(unittest.TestCase):
             self.assertEqual(1, sum(variant[-1] == ray.TRIANGLE_LOOP_TAG for variant in recipe['ray_programs']))
             execution.cook_runtime(str(package), root / 'mixed.lurgrt')
 
+    def test_native_ray_writes_and_scene_compute_samples_named_textures_in_both_languages(self):
+        from test_render_graph_authoring import parse_runtime
+        for extension, has_image in (('slang', False), ('lusl', False), ('slang', True)):
+            with self.subTest(language=extension, image=has_image), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source = root / 'source'
+                shutil.copytree(SCENE_COMPUTE, source)
+                graph_path = source / 'main.lurender.json'
+                document = json.loads(graph_path.read_text())
+                config = next(item for item in document['configurations'] if item['id'] == 'ColorInput')
+                producer = next(node for node in config['nodes'] if node['id'] == 'utd')
+                target = next(node for node in config['nodes'] if node['id'] == 'diffraction')
+                config['nodes'].append({**target, 'id': 'weights', 'extent': [4, 2]})
+                producer['inputs'].append({**producer['inputs'][-1], 'id': 'weights'})
+                producer['outputs'][0]['access'] = 'ShaderReadWrite'
+                producer['outputs'].append({**producer['outputs'][0], 'id': 'weights', 'target': 'weights'})
+                producer['invocation'] = {'type': 'RayTracing', 'dimensions': [8, 8, 1]}
+                config['edges'].append({'from': 'weights.texture', 'to': 'utd.weights'})
+                consumer = next(node for node in config['nodes'] if node['id'] == 'shade')
+                consumer['inputs'].append({**consumer['inputs'][-1], 'id': 'weights'})
+                config['edges'].append({'from': 'utd.weights', 'to': 'shade.weights'})
+                if has_image:
+                    producer['outputs'][0]['load'] = 'Clear'
+                    config['nodes'].append({**target, 'id': 'preview', 'extent': [64, 32]})
+                    producer['inputs'].append({**producer['inputs'][-1], 'id': 'preview'})
+                    producer['outputs'].append({key: value for key, value in producer['outputs'][0].items()
+                                                if key != 'access'})
+                    producer['outputs'][-1].update(id='preview', target='preview', load='Clear')
+                    producer['invocation']['dimensions'] = 'ColorTarget'
+                    config['edges'].append({'from': 'preview.texture', 'to': 'utd.preview'})
+                graph_path.write_bytes(graph.canonical_asset(document))
+
+                manifest = source / 'main.lushader.json'
+                value = json.loads((source / 'main.lushader.json.in').read_text().replace(
+                    '@RG2_TEST_PROFILES@', '["metal"]'))
+                program = next(item for item in value['programs'] if item['id'] == 'ProduceDiffraction')
+                # Miss and closest-hit remain Slang in a file without the old storage callback.
+                callbacks = source / program['source']
+                callbacks.write_text('void DiffractionMiss' + callbacks.read_text().split('void DiffractionMiss', 1)[1])
+                program['source'] = f'main_shaders/named_textures.{extension}'
+                reader_program = next(item for item in value['programs'] if item['id'] == 'ReadDiffraction')
+                reader_program['source'] = f'main_shaders/read_diffraction.{extension}'
+                manifest.write_text(json.dumps(value))
+                reader_source = source / reader_program['source']
+                if extension == 'slang':
+                    reader_source.write_text(
+                        'float3 ReadDiffraction(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, '
+                        'ReadDiffractionResources resources)\n'
+                        '{\n'
+                        '    return resources.Diffraction.Load(int3(0)).rgb + resources.Weights.Load(int3(0)).rgb;\n'
+                        '}\n')
+                else:
+                    reader_source.write_text(
+                        '#include "scene_shader.luslh"\n#include "graph_resources.luslh"\n'
+                        'float32x3 ReadDiffraction(in SceneContext scene, in RayLaunch launch, '
+                        'inout RayQueryContext inoutQueries, in ReadDiffractionResources resources)\n'
+                        '{\n'
+                        '    return resources.Diffraction.Load(uint32x2(0)).rgb + resources.Weights.Load(uint32x2(0)).rgb;\n'
+                        '}\n')
+                shader = source / program['source']
+                if extension == 'slang':
+                    shader.write_text(
+                        'float3 ProduceDiffraction(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, '
+                        'ProduceDiffractionResources resources)\n'
+                        '{\n'
+                        '    resources.Diffraction[uint2(0)] = resources.Weights[uint2(0)];\n'
+                        '    resources.Weights[uint2(0)] = float4(1);\n'
+                        '    return float3(0);\n'
+                        '}\n')
+                else:
+                    shader.write_text(
+                        '#include "scene_shader.luslh"\n#include "graph_resources.luslh"\n'
+                        'float32x3 ProduceDiffraction(in SceneContext scene, in RayLaunch launch, '
+                        'inout RayQueryContext inoutQueries, in ProduceDiffractionResources resources)\n'
+                        '{\n'
+                        '    resources.Diffraction.Store(uint32x2(0), resources.Weights.Load(uint32x2(0)));\n'
+                        '    resources.Weights.Store(uint32x2(0), float32x4(1));\n'
+                        '    return float32x3(0);\n'
+                        '}\n')
+                options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                               spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+                result = build.build_package(manifest, root / 'build', **options)
+                package = Path(result['package'])
+                contents = execution._runtime_contents(package, 'ColorInput')
+                native = contents['artifacts'][('NativeRayStages', 'compute', 'metal')]
+                named_slots = {entry['binding'] for entry in native['descriptor']['interface']['entries']}
+                self.assertTrue({ray.buffers.FIRST_TEXTURE_SLOT, ray.buffers.FIRST_TEXTURE_SLOT + 1} <= named_slots)
+                writer, reader = contents['passes']
+                self.assertEqual(not has_image, writer['Color'] == execution.ABSENT)
+                self.assertEqual((0, 0) if has_image else (8, 8),
+                                 (writer.get('ImageLaunchWidth', 0), writer.get('ImageLaunchHeight', 0)))
+                self.assertNotIn(writer['Color'], writer['ShaderTextures'])
+                self.assertEqual(reader['SourceColor'], writer['ShaderTextures'][0])
+                self.assertEqual([writer['ShaderTextures'][1]], reader['AdditionalSampledTextures'])
+                compute_bindings = contents['artifacts'][('RayTracing', 'compute', 'metal')]['descriptor']['interface']['entries']
+                self.assertTrue(set(ray.buffers.SAMPLED_TEXTURE_SLOTS[:2]) <=
+                                {entry['binding'] for entry in compute_bindings})
+                self.assertNotEqual(*writer['ShaderTextures'])
+                destination = root / 'named-textures.lurgrt'
+                execution.cook_runtime(package, destination, configuration='ColorInput')
+                parsed = parse_runtime(destination.read_bytes())
+                self.assertEqual(tuple(writer['ShaderTextures']), parsed['shader_textures'][0][:2])
+                expected_version = (execution.SHADER_TEXTURE_CLEAR_PACKAGE_VERSION if has_image else
+                                    execution.SAMPLED_TEXTURES_PACKAGE_VERSION)
+                self.assertEqual(expected_version, parsed['version'])
+                self.assertEqual([1, 0] if has_image else [], parsed['shader_texture_clear_masks'])
+                self.assertEqual((writer['ShaderTextures'][1], execution.ABSENT),
+                                 parsed['additional_sampled_textures'][1])
+                header = root / 'named-textures.hpp'
+                execution.emit_runtime(package, header, configuration='ColorInput')
+                slots = ', '.join(str(slot) for slot in writer['ShaderTextures'])
+                self.assertIn(f'.ShaderTextures = {{{slots}, format::ABSENT}}', header.read_text())
+                api = shader_context.export_context(manifest, root / 'editor', program['source'],
+                                                    helper=options['helper'], compiler=options['compiler'])
+                resource_fields = next(item['fields'] for item in api['resources'] if item['program'] == program['id'])
+                self.assertEqual(['Diffraction', 'Weights'], [field['name'] for field in resource_fields])
+                self.assertTrue(all(field['texture'] and field['writable'] for field in resource_fields))
+                api = shader_context.export_context(manifest, root / 'editor-read', reader_program['source'],
+                                                    helper=options['helper'], compiler=options['compiler'])
+                resource_fields = next(item['fields'] for item in api['resources'] if item['program'] == 'ReadDiffraction')
+                self.assertEqual(['Diffraction', 'Weights'], [field['name'] for field in resource_fields])
+                self.assertTrue(all(field['texture'] and not field['writable'] for field in resource_fields))
+
+    def test_scene_compute_samples_an_earlier_ray_color_output(self):
+        from test_render_graph_authoring import parse_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package, recipe, wrapper = self.build(SCENE_COMPUTE, root, 'main_shaders/produce_diffraction.slang')
+            self.assertTrue(recipe['color_input'])
+            self.assertIn('Texture2D<float4> GraphColorInput;', wrapper)
+            self.assertIn('RWTexture2D<float4> GraphStorageTexture;', wrapper)
+            destination = root / 'color-input.lurgrt'
+            execution.cook_runtime(package, destination, configuration='ColorInput')
+            _, resources, passes, _ = execution.lower_plan(
+                json.loads((package / 'package.json').read_text()), 'ColorInput')
+            self.assertEqual(2, len(passes))
+            self.assertEqual(passes[0]['Color'], passes[1]['SourceColor'])
+            self.assertNotEqual(passes[1]['Color'], passes[1]['SourceColor'])
+            self.assertEqual('Color', resources[passes[1]['SourceColor']]['Kind'])
+            self.assertTrue(passes[0]['HasStorageTexture'])
+            self.assertEqual((8, 8), (passes[0]['ImageLaunchWidth'], passes[0]['ImageLaunchHeight']))
+            self.assertEqual((1, 1), (resources[passes[0]['Color']]['ViewNumerator'],
+                                     resources[passes[0]['Color']]['ViewDenominator']))
+            parsed = parse_runtime(destination.read_bytes())
+            self.assertEqual(execution.SHADER_TEXTURE_ACCESS_PACKAGE_VERSION, parsed['version'])
+            self.assertEqual((1, 0, 8, 8), parsed['passes'][0][-4:])
+            header = root / 'legacy-storage.h'
+            execution.emit_runtime(package, header, configuration='ColorInput')
+            self.assertIn('.ImageLaunchWidth = 8, .ImageLaunchHeight = 8, .HasStorageTexture = true',
+                          header.read_text())
+
+    def test_native_ray_stages_can_write_the_storage_texture(self):
+        from test_render_graph_authoring import parse_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package, recipe, _ = self.build(SCENE_COMPUTE, root, 'main_shaders/read_diffraction.slang',
+                                            native_output='storage', lit_consumer=True)
+            self.assertTrue(recipe['storage_texture'])
+            self.assertIn('native_pipeline', recipe)
+            contents = execution._runtime_contents(str(package), 'ColorInput')
+            self.assertTrue(contents['ltc_table'])
+            native = contents['artifacts'][('NativeRayStages', 'compute', 'metal')]
+            self.assertNotIn(ray.LTC_TABLE_SLOT, {entry['binding'] for entry in native['descriptor']['interface']['entries']})
+            native_wrapper = (package / 'programs' / recipe['native_pipeline'] / 'wrapper.slang').read_text()
+            self.assertNotIn('ReadDiffraction', native_wrapper)
+            native_pass = next(item for item in contents['passes'] if item['Traversal'] == 'HardwarePipeline')
+            self.assertGreater(native_pass['RayProgram'], 0)
+            self.assertRegex(native_wrapper, rf"case {native_pass['RayProgram']}: .*ProduceDiffraction")
+            destination = root / 'native-storage.lurgrt'
+            execution.cook_runtime(package, destination, configuration='ColorInput')
+            stages = parse_runtime(destination.read_bytes())['stages']
+            stage = next(stage for stage in stages if stage['role'] == execution.NATIVE_RAY_STAGE_ROLE)
+            self.assertEqual((8, 8, 1), stage['workgroup'])
+
+    def test_native_ray_stages_can_write_a_target_sized_storage_texture(self):
+        from test_render_graph_authoring import parse_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package, recipe, wrapper = self.build(SCENE_COMPUTE, root, 'main_shaders/read_diffraction.slang',
+                                                 native_output='matched_storage', lit_consumer=True)
+            self.assertTrue(recipe['storage_texture'])
+            self.assertIn('RWTexture2D<float4> GraphStorageTexture;', wrapper)
+            destination = root / 'matched-storage.lurgrt'
+            execution.cook_runtime(package, destination, configuration='ColorInput')
+            parsed = parse_runtime(destination.read_bytes())
+            self.assertEqual((1, 0, 0, 0), parsed['passes'][0][-4:])
+            self.assertTrue(any(stage['role'] == execution.NATIVE_RAY_STAGE_ROLE for stage in parsed['stages']))
+
+    def test_native_ray_stages_can_return_a_fixed_image_sampled_by_scene_compute(self):
+        from test_render_graph_authoring import parse_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package, recipe, _ = self.build(SCENE_COMPUTE, root, 'main_shaders/produce_diffraction.slang',
+                                            native_output='image')
+            self.assertIn('native_pipeline', recipe)
+            self.assertFalse(recipe.get('storage_texture', False))
+            self.assertTrue(recipe['color_input'])
+            destination = root / 'native-image.lurgrt'
+            execution.cook_runtime(package, destination, configuration='ColorInput')
+            parsed = parse_runtime(destination.read_bytes())
+            self.assertEqual((0, 0, 8, 8), parsed['passes'][0][-4:])
+            self.assertTrue(any(stage['role'] == execution.NATIVE_RAY_STAGE_ROLE for stage in parsed['stages']))
+
     def test_compute_kernels_dispatch_only_from_ray_generation(self):
         from test_render_graph_authoring import parse_runtime
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             # The fixture's Default configuration runs scene_info.slang; WorkItems adds a second ray kernel.
-            package, recipe, wrapper = self.build(SCENE_COMPUTE, root, 'main_shaders/scene_info.slang')
+            package, recipe, wrapper = self.build(SCENE_COMPUTE, root, 'main_shaders/scene_info.slang',
+                                                 image_launch=[8, 8, 1])
             self.assertIn('case 0: return GraphSource0::ShadeSceneInfo(scene, launch, queries);', wrapper)
             self.assertIn('RWStructuredBuffer<uint4> GraphBuffer0', wrapper)
             self.assertEqual([], self.cases(wrapper, '(scene, hit, queries, payload)'))
@@ -347,7 +1272,9 @@ class NativeSceneComputeTests(unittest.TestCase):
             self.assertTrue(recipe['persistent_buffers'])
             destination = root / 'scene_compute.lurgrt'
             execution.cook_runtime(str(package), destination)
-            self.assertEqual(execution.PACKAGE_VERSION, parse_runtime(destination.read_bytes())['version'])
+            parsed = parse_runtime(destination.read_bytes())
+            self.assertEqual(execution.PACKAGE_VERSION, parsed['version'])
+            self.assertEqual((0, 0, 8, 8), parsed['passes'][0][-4:])
 
             _, _, wrapper = self.build(COMPUTE_MIXED, root, 'main_shaders/primary.slang')
             self.assertIn('case 0: return GraphSource2::TracePrimary(scene, launch, queries);', wrapper)

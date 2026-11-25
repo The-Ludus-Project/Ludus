@@ -91,6 +91,8 @@ nav:
       - Build and initialize: development/building.md
       - Port a new platform: development/platform-porting.md
       - Mobile support plan: development/mobile-support-plan.md
+      - Mobile application lifecycle and surfaces: architecture/mobile-application-lifecycle.md
+      - Touch input contract: architecture/touch-input.md
       - Native debugging: development/debugging.md
       - Diagnostics: development/diagnostics.md
       - Behavior contracts and cooking: architecture/behavior-s4.md
@@ -103,6 +105,7 @@ nav:
       - Save, validate and build render graphs: development/render-graph-authoring.md
       - Render graph authoring proposal: architecture/render-graph-authoring.md
       - Shared scene shader contract proposal: architecture/shared-scene-shader-contract.md
+      - Renderer sampling architecture: architecture/renderer-sampling.md
       - Ludus Shading Language (LUSL) proposal: architecture/shading-language.md
       - Render graph frame capture proposal: architecture/render-graph-frame-capture.md
       - Sequencer and cinematic capture proposal: architecture/sequencer-cinematics.md
@@ -111,9 +114,11 @@ nav:
       - Best-effort scene import: development/best-effort-scene-import.md
       - Ludus scene source format and test scenes: architecture/scene-source-format.md
       - Release packages: development/game-packaging-publishing.md
+      - Qualify hair and skin in a standalone game: development/hair-skin-standalone-qualification.md
       - Browser editor build: development/browser-editor.md
   - Samples:
       - Your first rendered scene: examples/cornell-box.md
+      - Edit the lighting in Light Court: examples/light-court.md
       - Cook and capture staircase2: examples/reference-scene.md
   - Learn:
       - How Ludus fits together: wiki/learn/architecture.md

@@ -4,6 +4,8 @@
 
 #include "renderer_atmosphere_celestial.slang"
 #include "renderer_atmosphere_transport.slang"
+#include "renderer_aurora_layer.slang"
+#include "renderer_cloud_layer.slang"
 
 struct AtmosphereViewParameters
 {
@@ -22,6 +24,8 @@ struct AtmosphereViewParameters
     float4 GalacticCenterWorld;       // xyz: galactic center, orthogonal to GalacticNorthWorld.
     float4 PlanetDirectionsWorld[ATMOSPHERE_PLANET_CAPACITY];
     float4 PlanetIlluminance[ATMOSPHERE_PLANET_CAPACITY];
+    float4 CloudLayer[CLOUD_LAYER_UNIFORM_ROWS];
+    float4 AuroraLayer[AURORA_LAYER_UNIFORM_ROWS];
 };
 LUDUS_SHADER_BINDING(0)
 ConstantBuffer<AtmosphereViewParameters> atmosphereView LUDUS_SHADER_UNIFORM_REGISTER(0);
@@ -213,6 +217,44 @@ float3 EvaluateNightSky(in float3 directionWorld, float angularFootprint)
     return background;
 }
 
+// The background ray continues to the ground or the top of the shell; the material resolve redraws covered pixels.
+float3 ComposeSkyCloudLayer(in float3 directionWorld, in float3 clearRadiance)
+{
+    float height = atmosphereView.RadialUpWorld.w;
+    float3 upWorld = atmosphereView.RadialUpWorld.xyz;
+    float3 sunWorld = atmosphereView.DirectionToSunWorld.xyz;
+    float zenithCosine = clamp(dot(directionWorld, upWorld), -1, 1);
+    float solarZenithCosine = atmosphereView.DirectionToSunWorld.w;
+    bool hitsGround = zenithCosine < ComputeHorizonCosine(height);
+    float boundary = hitsGround ? GetDistanceToGround(height, zenithCosine) : GetDistanceToTop(height, zenithCosine);
+    CloudLayerSegment cloud = IntegrateCloudLayer(atmosphereTransmittance,
+                                                  UnpackCloudLayer(atmosphereView.CloudLayer),
+                                                  directionWorld,
+                                                  sunWorld,
+                                                  atmosphereView.SolarIlluminance.xyz,
+                                                  height,
+                                                  zenithCosine,
+                                                  solarZenithCosine,
+                                                  boundary * CLOUD_LAYER_METRES_PER_KILOMETRE);
+    if (cloud.ExitMetres <= cloud.EntryMetres)
+    {
+        return clearRadiance;
+    }
+    AtmosphereSegment air = IntegrateAtmosphere(atmosphereTransmittance,
+                                                atmosphereMultiple,
+                                                height,
+                                                zenithCosine,
+                                                solarZenithCosine,
+                                                clamp(dot(directionWorld, sunWorld), -1, 1),
+                                                cloud.EntryMetres / CLOUD_LAYER_METRES_PER_KILOMETRE,
+                                                CLOUD_LAYER_AIR_STEPS,
+                                                atmosphereView.Lighting.x > 0);
+    return ComposeCloudLayer(cloud,
+                             air.Radiance * atmosphereView.SolarIlluminance.xyz,
+                             air.Transmittance,
+                             clearRadiance);
+}
+
 [shader("fragment")] float4 AtmosphereDisplayMain(in DeferredVarying input) : SV_Target0
 {
     float3 directionWorld = GetViewDirectionWorld(input.PositionClip.xy);
@@ -242,6 +284,20 @@ float3 EvaluateNightSky(in float3 directionWorld, float angularFootprint)
     }
     AtmosphereBackgroundTransport transport = EvaluateAtmosphereBackground(directionWorld);
     float3 radiance = transport.Radiance * atmosphereView.SolarIlluminance.xyz + transport.Transmittance * boundary;
+    AuroraLayerParameters aurora = UnpackAuroraLayer(atmosphereView.AuroraLayer);
+    if (aurora.AxisXWorld.w > 0)
+    {
+        const float UNBOUNDED_AURORA_RAY = 2 * (GROUND_RADIUS + AURORA_TOP_KILOMETRES);
+        radiance += transport.Transmittance * IntegrateAuroraLayer(aurora,
+                                                                   atmosphereView.RadialUpWorld.xyz,
+                                                                   directionWorld,
+                                                                   atmosphereView.RadialUpWorld.w,
+                                                                   UNBOUNDED_AURORA_RAY);
+    }
+    if (atmosphereView.CloudLayer[0].w > 0)
+    {
+        radiance = ComposeSkyCloudLayer(directionWorld, radiance);
+    }
     if (atmosphereView.Output.z > 0)
     {
         radiance = MapSceneToDisplay(radiance, atmosphereView.Output.z, uint(atmosphereView.Output.w + 0.5));

@@ -37,7 +37,11 @@ constexpr uint32 MAX_STATE_FIELDS = 16;
 /// Encoded state: magic, version, contract digest and field count before the fields.
 constexpr usize STATE_HEADER_BYTES = 44;
 constexpr uint32 STATE_MAGIC = 0x34534842;
-constexpr usize STATE_DIGEST_OFFSET = 8;
+constexpr usize STATE_VERSION_OFFSET = sizeof(uint32);
+constexpr usize STATE_DIGEST_OFFSET = STATE_VERSION_OFFSET + sizeof(uint32);
+constexpr usize STATE_COUNT_OFFSET = STATE_DIGEST_OFFSET + DIGEST_BYTES;
+constexpr usize STATE_FIELD_KIND_OFFSET = sizeof(uint32);
+constexpr usize STATE_FIELD_VALUE_OFFSET = STATE_FIELD_KIND_OFFSET + sizeof(uint32);
 /// Encoded bytes of one state field: identifier, type and value words.
 constexpr usize STATE_FIELD_BYTES = 12;
 /// Largest Luau number accepted for a uint32 field.
@@ -52,6 +56,10 @@ constexpr usize PACKAGE_PROGRAM_COUNT_OFFSET = 112;
 constexpr usize PACKAGE_RESERVED_OFFSET = 116;
 /// Most programs one package carries.
 constexpr uint32 MAX_PACKAGE_PROGRAMS = 8;
+constexpr usize PROGRAM_REVISION_OFFSET = sizeof(uint64);
+constexpr usize PROGRAM_SIZE_OFFSET = PROGRAM_REVISION_OFFSET + sizeof(uint64);
+constexpr usize PROGRAM_FLAGS_OFFSET = PROGRAM_SIZE_OFFSET + sizeof(uint32);
+constexpr usize PROGRAM_DEPENDENCIES_OFFSET = PROGRAM_FLAGS_OFFSET + sizeof(uint32);
 
 // Bounded contract/value admission shared by native and Luau execution.
 bool Name(const char* text) noexcept
@@ -376,19 +384,23 @@ bool EncodeState(const Contract& contract, const Record& state, std::span<uint8>
     }
     uint8 bytes[236]{};
     auto data = std::span<uint8>{bytes};
-    (void)TryWriteLittleEndian(STATE_MAGIC, data);
-    (void)TryWriteLittleEndian(uint32{1}, data.subspan(4));
+    (void)TryWriteLittleEndian(STATE_MAGIC, {data.data(), data.size()});
+    (void)TryWriteLittleEndian(uint32{1}, {data.data() + STATE_VERSION_OFFSET, data.size() - STATE_VERSION_OFFSET});
     (void)Hex(contract.Digest, bytes + STATE_DIGEST_OFFSET);
-    (void)TryWriteLittleEndian(state.Count, data.subspan(40));
+    (void)TryWriteLittleEndian(state.Count, {data.data() + STATE_COUNT_OFFSET, data.size() - STATE_COUNT_OFFSET});
     // Descriptor order makes equivalent record permutations serialize identically.
     for (usize i = 0; i < contract.State.size(); ++i)
     {
         const auto field = contract.State[i];
         const auto value = FieldValue(state, field.Id);
         auto destination = data.subspan(44 + i * 12, 12);
-        (void)TryWriteLittleEndian(field.Id, destination);
-        (void)TryWriteLittleEndian(static_cast<uint32>(value.Type), destination.subspan(4));
-        (void)TryWriteLittleEndian(value.Scalar, destination.subspan(8));
+        (void)TryWriteLittleEndian(field.Id, {destination.data(), destination.size()});
+        (void)TryWriteLittleEndian(
+            static_cast<uint32>(value.Type),
+            {destination.data() + STATE_FIELD_KIND_OFFSET, destination.size() - STATE_FIELD_KIND_OFFSET});
+        (void)TryWriteLittleEndian(
+            value.Scalar,
+            {destination.data() + STATE_FIELD_VALUE_OFFSET, destination.size() - STATE_FIELD_VALUE_OFFSET});
     }
     std::memcpy(output.data(), bytes, size);
     written = size;
@@ -403,9 +415,9 @@ bool DecodeState(const Contract& contract, std::span<const uint8> bytes, Record&
     uint32 magic = 0, version = 0;
     uint8 digest[32]{};
     Record candidate;
-    (void)TryReadLittleEndian(bytes, magic);
-    (void)TryReadLittleEndian(bytes.subspan(4), version);
-    (void)TryReadLittleEndian(bytes.subspan(40), candidate.Count);
+    (void)TryReadLittleEndian({bytes.data(), bytes.size()}, magic);
+    (void)TryReadLittleEndian({bytes.data() + STATE_VERSION_OFFSET, bytes.size() - STATE_VERSION_OFFSET}, version);
+    (void)TryReadLittleEndian({bytes.data() + STATE_COUNT_OFFSET, bytes.size() - STATE_COUNT_OFFSET}, candidate.Count);
     (void)Hex(contract.Digest, digest);
     if (magic != STATE_MAGIC || version != 1 ||
         std::memcmp(bytes.data() + STATE_DIGEST_OFFSET, digest, DIGEST_BYTES) != 0 ||
@@ -418,14 +430,15 @@ bool DecodeState(const Contract& contract, std::span<const uint8> bytes, Record&
     {
         const auto data = bytes.subspan(44 + static_cast<usize>(i) * 12, 12);
         uint32 kind = 0;
-        (void)TryReadLittleEndian(data, candidate.Items[i].Id);
-        (void)TryReadLittleEndian(data.subspan(4), kind);
+        (void)TryReadLittleEndian({data.data(), data.size()}, candidate.Items[i].Id);
+        (void)TryReadLittleEndian({data.data() + STATE_FIELD_KIND_OFFSET, data.size() - STATE_FIELD_KIND_OFFSET}, kind);
         if (kind != 1 && kind != 2)
         {
             return false;
         }
         candidate.Items[i].Data.Type = static_cast<Kind>(kind);
-        (void)TryReadLittleEndian(data.subspan(8), candidate.Items[i].Data.Scalar);
+        (void)TryReadLittleEndian({data.data() + STATE_FIELD_VALUE_OFFSET, data.size() - STATE_FIELD_VALUE_OFFSET},
+                                  candidate.Items[i].Data.Scalar);
     }
     if (ValidRecord(candidate, contract.State, {}, {}) == false)
     {
@@ -704,12 +717,19 @@ struct LuauProvider::Impl
         uint32 version = 0, total = 0, programs = 0, reserved = 0;
         uint8 profile[32]{}, contract[32]{};
         if (bytes.size() < 120 || bytes.size() > usize{2} * 1024 * 1024 || std::memcmp(bytes.data(), MAGIC, 8) != 0 ||
-            TryReadLittleEndian(bytes.subspan(PACKAGE_VERSION_OFFSET), version) == false || version != 1 ||
-            TryReadLittleEndian(bytes.subspan(PACKAGE_TOTAL_OFFSET), total) == false || total != bytes.size() ||
-            TryReadLittleEndian(bytes.subspan(PACKAGE_PROGRAM_COUNT_OFFSET), programs) == false || programs == 0 ||
-            programs > MAX_PACKAGE_PROGRAMS ||
-            TryReadLittleEndian(bytes.subspan(PACKAGE_RESERVED_OFFSET), reserved) == false || reserved != 0 ||
-            Hex(LuauProfile(), profile) == false || Hex(Schema.Digest, contract) == false ||
+            TryReadLittleEndian({bytes.data() + PACKAGE_VERSION_OFFSET, bytes.size() - PACKAGE_VERSION_OFFSET},
+                                version) == false ||
+            version != 1 ||
+            TryReadLittleEndian({bytes.data() + PACKAGE_TOTAL_OFFSET, bytes.size() - PACKAGE_TOTAL_OFFSET}, total) ==
+                false ||
+            total != bytes.size() ||
+            TryReadLittleEndian(
+                {bytes.data() + PACKAGE_PROGRAM_COUNT_OFFSET, bytes.size() - PACKAGE_PROGRAM_COUNT_OFFSET},
+                programs) == false ||
+            programs == 0 || programs > MAX_PACKAGE_PROGRAMS ||
+            TryReadLittleEndian({bytes.data() + PACKAGE_RESERVED_OFFSET, bytes.size() - PACKAGE_RESERVED_OFFSET},
+                                reserved) == false ||
+            reserved != 0 || Hex(LuauProfile(), profile) == false || Hex(Schema.Digest, contract) == false ||
             std::memcmp(bytes.data() + PACKAGE_PROFILE_OFFSET, profile, DIGEST_BYTES) != 0 ||
             std::memcmp(bytes.data() + PACKAGE_CONTRACT_OFFSET, contract, DIGEST_BYTES) != 0)
         {
@@ -726,10 +746,11 @@ struct LuauProvider::Impl
             auto data = bytes.subspan(cursor, 88);
             auto& program = Programs[i];
             uint32 size = 0, flags = 0;
-            (void)TryReadLittleEndian(data, program.Asset);
-            (void)TryReadLittleEndian(data.subspan(8), program.Revision);
-            (void)TryReadLittleEndian(data.subspan(16), size);
-            (void)TryReadLittleEndian(data.subspan(20), flags);
+            (void)TryReadLittleEndian({data.data(), data.size()}, program.Asset);
+            (void)TryReadLittleEndian({data.data() + PROGRAM_REVISION_OFFSET, data.size() - PROGRAM_REVISION_OFFSET},
+                                      program.Revision);
+            (void)TryReadLittleEndian({data.data() + PROGRAM_SIZE_OFFSET, data.size() - PROGRAM_SIZE_OFFSET}, size);
+            (void)TryReadLittleEndian({data.data() + PROGRAM_FLAGS_OFFSET, data.size() - PROGRAM_FLAGS_OFFSET}, flags);
             if (program.Asset == 0 || program.Revision == 0 || size == 0 || size > 262144 ||
                 (flags & ~uint32{0x10f}) != 0 || (flags & 15U) > 8)
             {
@@ -747,7 +768,10 @@ struct LuauProvider::Impl
             entrypoint = entrypoint || program.Entrypoint;
             for (uint32 j = 0; j < 8; ++j)
             {
-                (void)TryReadLittleEndian(data.subspan(24 + static_cast<usize>(j) * 8), program.Dependencies[j]);
+                (void)TryReadLittleEndian(
+                    {data.data() + PROGRAM_DEPENDENCIES_OFFSET + static_cast<usize>(j) * sizeof(uint64),
+                     sizeof(uint64)},
+                    program.Dependencies[j]);
                 if ((j < program.DependencyCount) == (program.Dependencies[j] == 0))
                 {
                     return false;

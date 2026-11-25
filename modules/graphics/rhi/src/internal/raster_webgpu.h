@@ -223,12 +223,12 @@ BindingCapabilities BindingLimits() noexcept
     }
     return
     {
-        .MaxDynamicUniformBuffers = limits.maxDynamicUniformBuffersPerPipelineLayout < internal::RASTER_BINDINGS
+        .MaxDynamicUniformBuffers = limits.maxDynamicUniformBuffersPerPipelineLayout < RASTER_BINDING_COUNT
                                         ? limits.maxDynamicUniformBuffersPerPipelineLayout
-                                        : static_cast<uint32>(internal::RASTER_BINDINGS),
-        .MaxDynamicStorageBuffers = limits.maxDynamicStorageBuffersPerPipelineLayout < internal::RASTER_BINDINGS
+                                        : static_cast<uint32>(RASTER_BINDING_COUNT),
+        .MaxDynamicStorageBuffers = limits.maxDynamicStorageBuffersPerPipelineLayout < RASTER_BINDING_COUNT
                                         ? limits.maxDynamicStorageBuffersPerPipelineLayout
-                                        : static_cast<uint32>(internal::RASTER_BINDINGS),
+                                        : static_cast<uint32>(RASTER_BINDING_COUNT),
         .MaxTextureArrayElements = 1,
         .MaxDescriptorsPerSet = internal::CurrentStorageLimits().DescriptorsPerSet < internal::RASTER_BINDINGS
                                     ? internal::CurrentStorageLimits().DescriptorsPerSet
@@ -239,8 +239,8 @@ BindingCapabilities BindingLimits() noexcept
         .MaxUniformBuffersPerStage = limits.maxUniformBuffersPerShaderStage,
         .MaxSampledTexturesPerStage = limits.maxSampledTexturesPerShaderStage,
         .MaxSamplersPerStage = limits.maxSamplersPerShaderStage,
-        .MaxUniformBuffersPerSet = static_cast<uint32>(internal::RASTER_BINDINGS),
-        .MaxSamplersPerSet = static_cast<uint32>(internal::RASTER_BINDINGS),
+        .MaxUniformBuffersPerSet = static_cast<uint32>(RASTER_BINDING_COUNT),
+        .MaxSamplersPerSet = static_cast<uint32>(RASTER_BINDING_COUNT),
     };
 }
 RasterCapabilities RasterLimits() noexcept
@@ -318,9 +318,9 @@ RasterStorageCapabilities RasterStorageLimits() noexcept
     {
         return {};
     }
-    const uint32 textures = limits.maxStorageTexturesPerShaderStage < internal::RASTER_BINDINGS
+    const uint32 textures = limits.maxStorageTexturesPerShaderStage < RASTER_BINDING_COUNT
                                 ? limits.maxStorageTexturesPerShaderStage
-                                : static_cast<uint32>(internal::RASTER_BINDINGS);
+                                : static_cast<uint32>(RASTER_BINDING_COUNT);
     return
     {
         .MaxVertexStorageBuffers = compute.MaxStorageBindings,

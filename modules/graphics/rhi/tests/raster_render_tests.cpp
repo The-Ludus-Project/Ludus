@@ -14,12 +14,14 @@
 #include <ludus/graphics/rhi/pipeline_preparation.h>
 
 #include "cull.h"
+#include "cull_slots.h"
 #include "internal/gpu_scope_backend.h"
 #include "internal/measurement.h"
 #include "internal/readback.h"
 #include "merged_frame.h"
 #include "ordered_frame.h"
 #include "raster.h"
+#include "raster_slots.h"
 #include "raster_test_readiness.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -152,12 +154,12 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
     REQUIRE(rhi::CreateTextureView(device, texture, view) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::CreateSampler(device, {}, sampler) == rhi::RasterStatus::Ready);
     rhi::RasterBindingResource resources[3];
-    resources[0].Binding = 0;
+    resources[0].Binding = ludus::shaders::raster::slots::TINT;
     resources[0].Buffer = uniform;
     resources[0].Size = 16;
-    resources[1].Binding = 1;
+    resources[1].Binding = ludus::shaders::raster::slots::IMAGE;
     resources[1].Texture = view;
-    resources[2].Binding = 2;
+    resources[2].Binding = ludus::shaders::raster::slots::IMAGE_SAMPLER;
     resources[2].Sampler = sampler;
     rhi::BindingSetHandle set, backgroundSet;
     REQUIRE(rhi::CreateBindingSet(device, layout, resources, set) == rhi::RasterStatus::Ready);
@@ -173,9 +175,10 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
         REQUIRE(rhi::Destroy(device, backgroundUniform) == rhi::RasterStatus::Ready);
     }
     const rhi::RasterVertexStream streams[2]{{20, false}, {8, true}};
-    const rhi::RasterVertexAttribute attributes[3]{{0, 0, 0, rhi::RasterVertexFormat::Float3},
-                                                   {1, 0, 12, rhi::RasterVertexFormat::Float2},
-                                                   {2, 1, 0, rhi::RasterVertexFormat::Float2}};
+    const rhi::RasterVertexAttribute attributes[3]{
+        {ludus::shaders::raster::locations::INPUT_POSITION, 0, 0, rhi::RasterVertexFormat::Float3},
+        {ludus::shaders::raster::locations::INPUT_UV, 0, 12, rhi::RasterVertexFormat::Float2},
+        {ludus::shaders::raster::locations::INPUT_OFFSET, 1, 0, rhi::RasterVertexFormat::Float2}};
     rhi::PipelineRequest request;
     rhi::RasterPipelineDescription pipelineDescription{vs,
                                                        fs,
@@ -284,9 +287,10 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
             rhi::BindingLayoutHandle computeLayout;
             REQUIRE(rhi::CreateRasterShader(device, kernel, shader) == rhi::RasterStatus::Ready);
             REQUIRE(rhi::CreateBindingLayout(device, kernel.Bindings, computeLayout) == rhi::RasterStatus::Ready);
-            const rhi::RasterBindingResource bindings[]{{0, candidates, 0, 32},
-                                                        {1, instances, 0, 16},
-                                                        {2, arguments, 0, 20}};
+            namespace cull_slots = ludus::shaders::cull::slots;
+            const rhi::RasterBindingResource bindings[]{{cull_slots::CANDIDATES, candidates, 0, 32},
+                                                        {cull_slots::VISIBLE, instances, 0, 16},
+                                                        {cull_slots::ARGUMENTS, arguments, 0, 20}};
             REQUIRE(rhi::CreateBindingSet(device, computeLayout, bindings, dispatch.Bindings) ==
                     rhi::RasterStatus::Ready);
             REQUIRE(rhi::CreateComputePipeline(device, {shader, computeLayout}, dispatch.Pipeline) ==
@@ -776,9 +780,10 @@ TEST_CASE("Raster pipeline preparation reports creations, shared requests and fi
     CHECK(report.HasDriverMemory == false);
     CHECK(report.DriverMemoryBytes == 0);
     const rhi::RasterVertexStream streams[2]{{20, false}, {8, true}};
-    const rhi::RasterVertexAttribute attributes[3]{{0, 0, 0, rhi::RasterVertexFormat::Float3},
-                                                   {1, 0, 12, rhi::RasterVertexFormat::Float2},
-                                                   {2, 1, 0, rhi::RasterVertexFormat::Float2}};
+    const rhi::RasterVertexAttribute attributes[3]{
+        {ludus::shaders::raster::locations::INPUT_POSITION, 0, 0, rhi::RasterVertexFormat::Float3},
+        {ludus::shaders::raster::locations::INPUT_UV, 0, 12, rhi::RasterVertexFormat::Float2},
+        {ludus::shaders::raster::locations::INPUT_OFFSET, 1, 0, rhi::RasterVertexFormat::Float2}};
     rhi::RasterPipelineDescription
         pipelineDescription{vs, fs, layout, streams, attributes, true, false, rhi::RasterTarget::Rgba8Unorm};
     // Direct creation launches immediately; it never waits in the request queue.

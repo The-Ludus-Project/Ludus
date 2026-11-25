@@ -1,8 +1,13 @@
 #include <ludus/content/content.h>
 #include <ludus/content/json.h>
 #include <ludus/foundation/filesystem/filesystem.hpp>
+#include <ludus/foundation/memory/allocation_domain.hpp>
+#include <ludus/foundation/parsing/parsing.hpp>
 
 #include <new>
+#include <span>
+#include <string_view>
+#include <type_traits>
 
 namespace ludus::content
 {
@@ -41,7 +46,7 @@ bool Bytes::Resize(usize size) noexcept
 }
 bool ValidId(std::string_view value) noexcept
 {
-    if (value.empty() || value.size() > 128 || value.front() == '/' || value.back() == '/')
+    if (value.empty() || value.size() > MAX_RESOURCE_ID_BYTES || value.front() == '/' || value.back() == '/')
     {
         return false;
     }
@@ -64,136 +69,226 @@ bool ValidPath(std::string_view value) noexcept
 {
     return foundation::filesystem::ValidPath(value);
 }
-Catalog::Catalog(Catalog&& other) noexcept : mEntries(other.mEntries), mCount(other.mCount)
+namespace
 {
-    other.mEntries = nullptr;
-    other.mCount = 0;
-}
-Catalog& Catalog::operator=(Catalog&& other) noexcept
+constexpr char RESOURCE_ARRAY_FIELD[] = "resources";
+constexpr usize DECIMAL_RADIX = 10;
+constexpr usize MAX_INDEX_DIGITS = 20; // Maximum decimal width of a uint64.
+static_assert(sizeof(usize) <= sizeof(uint64));
+static_assert(sizeof(RESOURCE_ARRAY_FIELD) - 1 + MAX_INDEX_DIGITS + sizeof("[].path") <= sizeof(Diagnostic::Field));
+
+char* CopyDiagnosticField(char* destination, std::string_view field) noexcept
 {
-    if (this != &other)
+    for (const char character : field)
     {
-        delete[] mEntries;
-        mEntries = other.mEntries;
-        mCount = other.mCount;
-        other.mEntries = nullptr;
-        other.mCount = 0;
+        *destination++ = character;
     }
-    return *this;
+    *destination = '\0';
+    return destination;
 }
-Catalog::~Catalog() noexcept
+
+Status FailCatalog(Status result, std::string_view field, Diagnostic& outDiagnostic) noexcept
 {
-    delete[] mEntries;
+    outDiagnostic.Result = result;
+    outDiagnostic.Offset = foundation::parsing::UNKNOWN_BYTE_OFFSET;
+    CopyDiagnosticField(outDiagnostic.Field, field);
+    return result;
 }
+
+Status FailResource(usize index, std::string_view field, Diagnostic& outDiagnostic) noexcept
+{
+    outDiagnostic.Result = Status::Invalid;
+    outDiagnostic.Offset = foundation::parsing::UNKNOWN_BYTE_OFFSET;
+    char* destination = CopyDiagnosticField(outDiagnostic.Field, RESOURCE_ARRAY_FIELD);
+    *destination++ = '[';
+    usize divisor = 1;
+    while (index / divisor >= DECIMAL_RADIX)
+    {
+        divisor *= DECIMAL_RADIX;
+    }
+    for (; divisor != 0; divisor /= DECIMAL_RADIX)
+    {
+        *destination++ = static_cast<char>('0' + index / divisor);
+        index %= divisor;
+    }
+    *destination++ = ']';
+    if (field.empty() == false)
+    {
+        *destination++ = '.';
+    }
+    CopyDiagnosticField(destination, field);
+    return Status::Invalid;
+}
+
+bool ParseResourceKind(std::string_view name, uint64 version, Kind& outKind) noexcept
+{
+    if (name == "audio-source")
+    {
+        outKind = Kind::AudioSource;
+    }
+    else if (name == "sound")
+    {
+        outKind = Kind::Sound;
+    }
+    else if (name == "music")
+    {
+        outKind = Kind::Music;
+    }
+    else if (name == "mesh")
+    {
+        outKind = Kind::Mesh;
+    }
+    else if (name == "cooked-scene")
+    {
+        outKind = Kind::CookedScene;
+    }
+    else if (name == "cooked-geometry" && version >= 2)
+    {
+        outKind = Kind::CookedGeometry;
+    }
+    else
+    {
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+Catalog::Catalog() noexcept : Catalog(GetSystemAllocationDomain()) {}
+Catalog::Catalog(const AllocationDomain& domain) noexcept : mDomain(&domain) {}
+Catalog::Catalog(Catalog&& other) noexcept = default;
+Catalog& Catalog::operator=(Catalog&& other) noexcept = default;
+Catalog::~Catalog() noexcept = default;
+
+void Catalog::EntryDeleter::operator()(Resource* entries) const noexcept
+{
+    static_assert(std::is_trivially_destructible_v<Resource>);
+    LUDUS_ASSERT(DomainOrNull != nullptr);
+    DomainOrNull->Free(entries, Count * sizeof(Resource), alignof(Resource));
+}
+
+Catalog::EntryOwner Catalog::allocateEntries(usize count) const noexcept
+{
+    static_assert(MAX_RESOURCES <= (~usize{0}) / sizeof(Resource));
+    LUDUS_ASSERT(count <= MAX_RESOURCES);
+    void* storageOrNull = mDomain->TryAllocate(count * sizeof(Resource), alignof(Resource));
+    if (storageOrNull == nullptr)
+    {
+        return {};
+    }
+    Resource* entries = ::new (storageOrNull) Resource[count]{};
+    return EntryOwner(entries, { .DomainOrNull = mDomain, .Count = count });
+}
+
+std::span<const Resource> Catalog::Entries() const noexcept
+{
+    const Resource* entriesOrNull = mEntries.Get();
+    return {entriesOrNull, entriesOrNull == nullptr ? 0 : mEntries.GetDeleter().Count};
+}
+
 const Resource* Catalog::Find(std::string_view id) const noexcept
 {
-    for (usize i = 0; i < mCount; ++i)
+    for (const Resource& entry : Entries())
     {
-        if (mEntries[i].Id.View() == id)
+        if (entry.Id.View() == id)
         {
-            return &mEntries[i];
+            return &entry;
         }
     }
     return nullptr;
 }
-Status Catalog::Read(std::string_view json, Diagnostic& diagnostic) noexcept
+
+Status Catalog::Read(std::string_view json, Diagnostic& outDiagnostic) noexcept
 {
-    JsonDocument document;
-    auto status = document.Read(json, diagnostic);
+    JsonDocument document(*mDomain);
+    const Status status = document.Read(json, outDiagnostic);
     if (status != Status::Ok)
     {
         return status;
     }
-    const auto root = document.Root();
+
+    const JsonValue root = document.Root();
+    if (root.Object() == false)
+    {
+        return FailCatalog(Status::Invalid, "$", outDiagnostic);
+    }
     uint64 version = 0;
-    // Versioned extension: version 1 is the original catalog; version 2 adds the
-    // cooked-geometry kind. A version-1 document still parses and rejects that
-    // kind string, so older catalogs round-trip unchanged.
-    if (root.Fields({"version", "resources"}) == false || root.Get("version").Integer(version) == false ||
-        (version != 1 && version != 2))
+    if (root.Get("version").Integer(version) == false || (version != 1 && version != 2))
     {
-        return diagnostic.Result = Status::Invalid;
+        return FailCatalog(Status::Invalid, "version", outDiagnostic);
     }
-    const auto entries = root.Get("resources");
-    const usize count = entries.Count();
-    if (entries.Array() == false || count > MAX_RESOURCES)
+    const JsonValue resources = root.Get(RESOURCE_ARRAY_FIELD);
+    if (resources.Value == nullptr)
     {
-        return diagnostic.Result = Status::Limit;
+        return FailCatalog(Status::Invalid, RESOURCE_ARRAY_FIELD, outDiagnostic);
     }
-    auto* next = new (std::nothrow) Resource[count];
-    if (next == nullptr)
+    if (root.Fields({"version", RESOURCE_ARRAY_FIELD}) == false)
     {
-        return diagnostic.Result = Status::OutOfMemory;
+        return FailCatalog(Status::Invalid, "$", outDiagnostic);
     }
-    for (usize i = 0; i < count; ++i)
+    const usize count = resources.Count();
+    if (resources.Array() == false || count > MAX_RESOURCES)
     {
-        const auto item = entries.At(i);
-        std::string_view id, path, kind;
-        bool valid = item.Fields({"id", "kind", "path"}) && item.Get("id").String(id) && ValidId(id) &&
-                     item.Get("path").String(path) && ValidPath(path) && item.Get("kind").String(kind);
-        if (valid)
+        return FailCatalog(Status::Limit, RESOURCE_ARRAY_FIELD, outDiagnostic);
+    }
+
+    EntryOwner candidate = allocateEntries(count);
+    Resource* entriesOrNull = candidate.Get();
+    if (count != 0 && entriesOrNull == nullptr)
+    {
+        return FailCatalog(Status::OutOfMemory, RESOURCE_ARRAY_FIELD, outDiagnostic);
+    }
+    for (usize index = 0; index < count; ++index)
+    {
+        const JsonValue item = resources.At(index);
+        if (item.Object() == false)
         {
-            if (kind == "audio-source")
+            return FailResource(index, {}, outDiagnostic);
+        }
+        Resource& entry = entriesOrNull[index];
+        std::string_view id;
+        if (item.Get("id").String(id) == false || ValidId(id) == false || entry.Id.Set(id) == false)
+        {
+            return FailResource(index, "id", outDiagnostic);
+        }
+        std::string_view path;
+        if (item.Get("path").String(path) == false || ValidPath(path) == false || entry.Path.Set(path) == false)
+        {
+            return FailResource(index, "path", outDiagnostic);
+        }
+        std::string_view kind;
+        if (item.Get("kind").String(kind) == false || ParseResourceKind(kind, version, entry.Type) == false)
+        {
+            return FailResource(index, "kind", outDiagnostic);
+        }
+        if (item.Fields({"id", "kind", "path"}) == false)
+        {
+            return FailResource(index, {}, outDiagnostic);
+        }
+        for (usize previous = 0; previous < index; ++previous)
+        {
+            if (entriesOrNull[previous].Id.View() == id)
             {
-                next[i].Type = Kind::AudioSource;
-            }
-            else if (kind == "sound")
-            {
-                next[i].Type = Kind::Sound;
-            }
-            else if (kind == "music")
-            {
-                next[i].Type = Kind::Music;
-            }
-            else if (kind == "mesh")
-            {
-                next[i].Type = Kind::Mesh;
-            }
-            else if (kind == "cooked-scene")
-            {
-                next[i].Type = Kind::CookedScene;
-            }
-            else if (kind == "cooked-geometry" && version >= 2)
-            {
-                next[i].Type = Kind::CookedGeometry;
-            }
-            else
-            {
-                valid = false;
+                return FailResource(index, "id", outDiagnostic);
             }
         }
-        for (usize j = 0; valid && j < i; ++j)
-        {
-            if (next[j].Id.View() == id)
-            {
-                valid = false;
-            }
-        }
-        if (valid == false)
-        {
-            delete[] next;
-            return diagnostic.Result = Status::Invalid;
-        }
-        (void)next[i].Id.Set(id);
-        (void)next[i].Path.Set(path);
     }
     // Stable IDs, independent of source array ordering.
-    for (usize i = 1; i < count; ++i)
+    for (usize index = 1; index < count; ++index)
     {
-        const auto item = next[i];
-        usize pos = i;
-        while (pos > 0 && next[pos - 1].Id.View() > item.Id.View())
+        const Resource item = entriesOrNull[index];
+        usize position = index;
+        while (position > 0 && entriesOrNull[position - 1].Id.View() > item.Id.View())
         {
-            next[pos] = next[pos - 1];
-            --pos;
+            entriesOrNull[position] = entriesOrNull[position - 1];
+            --position;
         }
-        next[pos] = item;
+        entriesOrNull[position] = item;
     }
-    delete[] mEntries;
-    mEntries = next;
-    mCount = count;
+    mEntries = Move(candidate);
     return Status::Ok;
 }
+
 Status Catalog::Put(const Resource& resource) noexcept
 {
     if ((resource.Type != Kind::AudioSource && resource.Type != Kind::Sound && resource.Type != Kind::Music &&
@@ -202,39 +297,40 @@ Status Catalog::Put(const Resource& resource) noexcept
     {
         return Status::Invalid;
     }
-    const auto* existing = Find(resource.Id.View());
-    if (existing != nullptr)
+    const Resource* existingOrNull = Find(resource.Id.View());
+    if (existingOrNull != nullptr)
     {
-        return existing->Path.View() == resource.Path.View() && existing->Type == resource.Type ? Status::Ok
-                                                                                                : Status::Conflict;
+        return existingOrNull->Path.View() == resource.Path.View() && existingOrNull->Type == resource.Type
+                   ? Status::Ok
+                   : Status::Conflict;
     }
-    if (mCount >= MAX_RESOURCES)
+
+    const std::span<const Resource> entries = Entries();
+    if (entries.size() >= MAX_RESOURCES)
     {
         return Status::Limit;
     }
-    auto* next = new (std::nothrow) Resource[mCount + 1];
-    if (next == nullptr)
+    EntryOwner candidate = allocateEntries(entries.size() + 1);
+    Resource* replacementOrNull = candidate.Get();
+    if (replacementOrNull == nullptr)
     {
         return Status::OutOfMemory;
     }
-    for (usize i = 0; i < mCount; ++i)
+    usize position = entries.size();
+    while (position > 0 && entries[position - 1].Id.View() > resource.Id.View())
     {
-        next[i] = mEntries[i];
+        replacementOrNull[position] = entries[position - 1];
+        --position;
     }
-    next[mCount] = resource;
-    usize pos = mCount;
-    while (pos > 0 && next[pos - 1].Id.View() > resource.Id.View())
+    replacementOrNull[position] = resource;
+    for (usize index = 0; index < position; ++index)
     {
-        next[pos] = next[pos - 1];
-        --pos;
+        replacementOrNull[index] = entries[index];
     }
-    next[pos] = resource;
-    delete[] mEntries;
-    mEntries = next;
-    ++mCount;
+    mEntries = Move(candidate);
     return Status::Ok;
 }
-Status Catalog::Write(Bytes& output) const noexcept
+Status Catalog::Write(Bytes& outBytes) const noexcept
 {
     Bytes buffer;
     if (buffer.Resize(MAX_DOCUMENT_BYTES) == false)
@@ -245,31 +341,33 @@ Status Catalog::Write(Bytes& output) const noexcept
     // Emit schema version 2 only when a cooked-geometry entry is present, so a
     // catalog without geometry keeps round-tripping as version 1.
     bool hasGeometry = false;
-    for (usize i = 0; i < mCount; ++i)
+    const std::span<const Resource> entries = Entries();
+    for (const Resource& entry : entries)
     {
-        if (mEntries[i].Type == Kind::CookedGeometry)
+        if (entry.Type == Kind::CookedGeometry)
         {
             hasGeometry = true;
         }
     }
-    writer.Raw(hasGeometry ? "{\n  \"version\": 2,\n  \"resources\": [" : "{\n  \"version\": 1,\n  \"resources\": [");
-    for (usize i = 0; i < mCount; ++i)
+    writer.Raw(hasGeometry == true ? "{\n  \"version\": 2,\n  \"resources\": ["
+                                   : "{\n  \"version\": 1,\n  \"resources\": [");
+    for (usize index = 0; index < entries.size(); ++index)
     {
-        const auto& r = mEntries[i];
-        writer.Raw(i == 0 ? "\n    { \"id\": " : ",\n    { \"id\": ");
-        writer.String(r.Id.View());
+        const Resource& entry = entries[index];
+        writer.Raw(index == 0 ? "\n    { \"id\": " : ",\n    { \"id\": ");
+        writer.String(entry.Id.View());
         writer.Raw(", \"kind\": ");
-        writer.String(r.Type == Kind::Sound            ? "sound"
-                      : r.Type == Kind::Music          ? "music"
-                      : r.Type == Kind::Mesh           ? "mesh"
-                      : r.Type == Kind::CookedScene    ? "cooked-scene"
-                      : r.Type == Kind::CookedGeometry ? "cooked-geometry"
-                                                       : "audio-source");
+        writer.String(entry.Type == Kind::Sound            ? "sound"
+                      : entry.Type == Kind::Music          ? "music"
+                      : entry.Type == Kind::Mesh           ? "mesh"
+                      : entry.Type == Kind::CookedScene    ? "cooked-scene"
+                      : entry.Type == Kind::CookedGeometry ? "cooked-geometry"
+                                                           : "audio-source");
         writer.Raw(", \"path\": ");
-        writer.String(r.Path.View());
+        writer.String(entry.Path.View());
         writer.Raw(" }");
     }
     writer.Raw("\n  ]\n}");
-    return writer.Finish(output);
+    return writer.Finish(outBytes);
 }
 } // namespace ludus::content

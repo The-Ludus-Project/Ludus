@@ -1,0 +1,32 @@
+name: Batch outcome reports
+run-name: Batch ${{ github.event.workflow_run.id }} · attempt ${{ github.event.workflow_run.run_attempt }}
+
+# A completed event also arrives for cancelled attempts. Nothing in this
+# workflow is a dependency of the coordinator or runs candidate code.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run
+on:
+  workflow_run:
+    workflows: [Batched integration and promotion]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  report:
+    name: Report batch outcome and timing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read the completed coordinator attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BATCH_RUN_ID: ${{ github.event.workflow_run.id }}
+          BATCH_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          python3 scripts/python/batch_outcome.py "$BATCH_RUN_ID" "$BATCH_RUN_ATTEMPT" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,27 @@
+// Material and geometry parity entry point of the SMS Figure 17 scene; benchmark.py validate
+// compares its results with the CPU model (docs/development/benchmark-scenes.md).
+#include "figure17.luslh"
+
+[stage(compute), threads(PARITY_GROUP_SIZE, 1, 1)]
+void ValidateFigure17(in uint32x3 threadIndex : DispatchThreadId)
+{
+    uint32 count = inputs.GetDimensions();
+    uint32 index = threadIndex.x;
+    if (index >= count / INPUT_RECORD_COUNT)
+    {
+        return;
+    }
+    uint32 inputRecord = index * INPUT_RECORD_COUNT;
+    float32x4 coordinates = inputs[inputRecord];
+    float32x3 normalWorld;
+    float32x3 value = EvaluateBeckmann(coordinates.xy,
+                                       inputs[inputRecord + 1].xyz,
+                                       inputs[inputRecord + LIGHT_INPUT_RECORD].xyz,
+                                       coordinates.z,
+                                       out normalWorld);
+    uint32 outputRecord = index * OUTPUT_RECORD_COUNT;
+    results[outputRecord] = float32x4(normalWorld, 0);
+    results[outputRecord + 1] = float32x4(value, 0);
+    results[outputRecord + 2] = IntersectRectangles(inputs[inputRecord + RAY_ORIGIN_INPUT_RECORD].xyz,
+                                                    inputs[inputRecord + RAY_DIRECTION_INPUT_RECORD].xyz);
+}

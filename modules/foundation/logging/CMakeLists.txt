@@ -152,6 +152,21 @@ if(LUDUS_BUILD_TESTS)
     ludus_enable_test_exceptions(ludus_logging_allocation_failure_tests)
     add_test(NAME ludus_logging_allocation_failure_tests COMMAND ludus_logging_allocation_failure_tests)
 
+    # Process exit without LogSystem::Shutdown() while a logging worker runs
+    # (issue 2188): each mode must exit with status 0 rather than terminate.
+    # The browser logger has no workers.
+    if(NOT EMSCRIPTEN)
+        add_executable(ludus_logging_exit_child tests/exit_without_shutdown_child.cpp)
+        target_link_libraries(ludus_logging_exit_child PRIVATE Ludus::FoundationLogging)
+        ludus_apply_project_defaults(ludus_logging_exit_child)
+        foreach(logging_exit_mode IN ITEMS synchronous asynchronous)
+            add_test(NAME ludus_logging_exit_without_shutdown_${logging_exit_mode}
+                COMMAND ludus_logging_exit_child ${logging_exit_mode})
+            set_tests_properties(ludus_logging_exit_without_shutdown_${logging_exit_mode}
+                PROPERTIES LABELS "unit;foundation;logging" TIMEOUT 30)
+        endforeach()
+    endif()
+
     add_test(NAME ludus_foundation_logging_tests COMMAND ludus_foundation_logging_tests)
     set_tests_properties(ludus_foundation_logging_tests PROPERTIES LABELS "unit;foundation;logging")
 endif()

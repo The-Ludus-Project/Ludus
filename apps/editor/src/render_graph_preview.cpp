@@ -13,6 +13,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
+#include <ludus/graphics/rhi/rhi.h>
 #include <ludus/runtime/resources/scene.h>
 
 #include "internal/offscreen_frame_reader.h"
@@ -216,7 +217,10 @@ QString DescribeUnrenderedWorldFeatures(const QString& configuration, renderer::
         }
         const renderer::WorldFeatureDescription description = renderer::DescribeWorldFeature(feature);
         names.append(QString::fromUtf8(description.Name));
-        functions.append(QString::fromUtf8(description.Function));
+        if (*description.Function != '\0')
+        {
+            functions.append(QString::fromUtf8(description.Function));
+        }
         omissions.append(QString::fromUtf8(description.Omission));
     }
     if (names.isEmpty() == true)
@@ -226,14 +230,18 @@ QString DescribeUnrenderedWorldFeatures(const QString& configuration, renderer::
     const QString graph = configuration.isEmpty() == true
                               ? QStringLiteral("The selected graph configuration")
                               : QStringLiteral("Graph configuration “%1”").arg(configuration);
-    return QStringLiteral("World features not rendered: %1. %2 draws the World without them. %3 To draw them, call %4 "
-                          "from a ray callback, as the World features table in Render Preview shows. Or turn on Force "
-                          "raster in the viewport toolbar to see them with the engine's default raster graph, or "
-                          "disable the Atmosphere entity in the World.")
-        .arg(names.join(QStringLiteral(", ")),
-             graph,
-             omissions.join(QLatin1Char(' ')),
-             functions.join(QStringLiteral(" and ")));
+    const bool hasMissingAurora = (features & renderer::GetWorldFeatureBit(renderer::WorldFeature::Aurora)) != 0;
+    const QString rayHelp = functions.isEmpty() == true
+                                ? QString{}
+                                : QStringLiteral(" Call %1 from a ray callback, as the World features table in "
+                                                 "Render Preview shows.")
+                                      .arg(functions.join(QStringLiteral(" and ")));
+    const QString disableHelp = hasMissingAurora == true && functions.isEmpty() == true
+                                    ? QStringLiteral("turn off Northern lights in Atmosphere Properties")
+                                    : QStringLiteral("disable the Atmosphere entity in the World");
+    return QStringLiteral("World features not rendered: %1. %2 draws the World without them. %3%4 Turn on Force "
+                          "raster in the viewport toolbar to use the engine's default raster graph, or %5.")
+        .arg(names.join(QStringLiteral(", ")), graph, omissions.join(QLatin1Char(' ')), rayHelp, disableHelp);
 }
 
 QString DescribeRenderGraphFailureStage(renderer::RenderGraphFailureStage stage)
@@ -654,6 +662,7 @@ struct RenderGraphPreview::State final
         /// Runtime package and generation identity, for ray path capture of this generation.
         QString PackagePath;
         QByteArray GenerationIdentity;
+        QByteArray RuntimeIdentity;
         RenderGraphPreviewSource Source;
         StaticArray<format::Resource, format::MAX_RESOURCES> Descriptions{};
         /// FindRenderGraphCaptureProblem of every logical resource, for the reference capture window.
@@ -728,6 +737,8 @@ struct RenderGraphPreview::State final
     QString RequestedPath;
     RenderGraphPreviewSource RequestedSource;
     QString RasterFallbackPath;
+    QString AttemptedPackagePath;
+    QString LoadProblem;
     bool ShouldForceRaster = false;
     bool ShouldReselectRenderer = false;
     UniquePtr<renderer::RenderGraphPackage> WaitingOrNull;
@@ -909,6 +920,10 @@ void RenderGraphPreview::Detach() noexcept
     {
         return;
     }
+    if (HasFailedDevice() == true)
+    {
+        state.LoadProblem.clear();
+    }
     state.Trace.Cancel("preview detached");
     state.FinishCandidateTrace("preview detached");
     EndViewportTrace(state.Active.Source.EditTrace.Lifetime, "preview detached");
@@ -970,6 +985,13 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     state.RequestedPath = runtimePackagePath;
     state.RequestedSource = source;
     state.RasterFallbackPath = rasterFallbackPath;
+    state.LoadProblem.clear();
+    const auto rejectLoad = [this, &state](RenderGraphPreviewLoad result, const QString& reason) {
+        state.LoadProblem = reason;
+        mStatus = reason;
+        Q_EMIT Changed();
+        return result;
+    };
     state.ShouldReselectRenderer = false;
     if (state.WaitingOrNull.Get() != nullptr &&
         state.Waiting.Source.EditTrace.CandidateId != source.EditTrace.CandidateId)
@@ -979,58 +1001,61 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     state.WaitingOrNull.Reset();
     UniquePtr<renderer::RenderGraphPackage> package;
     QByteArray decodedRuntimeIdentity;
-    const auto readPackage = [this, &package, &decodedRuntimeIdentity](const QString& path) {
+    const auto readPackage = [&rejectLoad, &package, &decodedRuntimeIdentity](const QString& path) {
         QFile file(path);
         if (QFileInfo(path).isFile() == false || QFileInfo(path).size() > MAX_PACKAGE_BYTES ||
             file.open(QIODevice::ReadOnly) == false)
         {
-            setStatus(QStringLiteral("No readable runtime generation at %1; cook the runtime first.")
-                          .arg(QFileInfo(path).fileName()));
-            return RenderGraphPreviewLoad::Unreadable;
+            return rejectLoad(RenderGraphPreviewLoad::Unreadable,
+                              QStringLiteral("No readable runtime generation at %1; cook the runtime first.")
+                                  .arg(QFileInfo(path).fileName()));
         }
         const QByteArray bytes = file.read(MAX_PACKAGE_BYTES + 1);
         if (bytes.size() > MAX_PACKAGE_BYTES)
         {
-            setStatus(QStringLiteral("The runtime generation exceeds the 16 MiB runtime bound."));
-            return RenderGraphPreviewLoad::Unreadable;
+            return rejectLoad(RenderGraphPreviewLoad::Unreadable,
+                              QStringLiteral("The runtime generation exceeds the 16 MiB runtime bound."));
         }
         decodedRuntimeIdentity = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex();
         package.Reset(new (std::nothrow) renderer::RenderGraphPackage);
         if (package.Get() == nullptr)
         {
-            setStatus(QStringLiteral("The runtime generation could not be allocated."));
-            return RenderGraphPreviewLoad::Failed;
+            return rejectLoad(RenderGraphPreviewLoad::Failed,
+                              QStringLiteral("The runtime generation could not be allocated."));
         }
         const renderer::RenderGraphPackageStatus decoded =
             package->Decode({reinterpret_cast<const uint8*>(bytes.constData()), static_cast<usize>(bytes.size())});
         if (decoded != renderer::RenderGraphPackageStatus::Ready)
         {
-            setStatus(QStringLiteral("The runtime generation was rejected (%1); the shown frame is kept.")
-                          .arg(DescribePackageStatus(decoded)));
-            return RenderGraphPreviewLoad::Malformed;
+            return rejectLoad(RenderGraphPreviewLoad::Malformed,
+                              QStringLiteral("The runtime generation was rejected (%1); the shown frame is kept.")
+                                  .arg(DescribePackageStatus(decoded)));
         }
         return RenderGraphPreviewLoad::Staged;
     };
-    RenderGraphPreviewLoad loaded = readPackage(runtimePackagePath);
+    const bool hasDistinctFallback = rasterFallbackPath.isEmpty() == false && rasterFallbackPath != runtimePackagePath;
+    // A broken or missing project package must not prevent an explicit switch to the engine's raster package.
+    const bool isForceFallback = state.ShouldForceRaster == true && hasDistinctFallback == true;
+    QString selectedPath = isForceFallback == true ? rasterFallbackPath : runtimePackagePath;
+    state.AttemptedPackagePath = selectedPath;
+    RenderGraphPreviewLoad loaded = readPackage(selectedPath);
     if (loaded != RenderGraphPreviewLoad::Staged)
     {
         return loaded;
     }
-    QString selectedPath = runtimePackagePath;
     QString rendererStatus = QStringLiteral("Raster renderer.");
     const bool hasRayTracingPass = renderer::UsesRayTracing(package->GetPlan());
-    const bool hasDistinctFallback = rasterFallbackPath.isEmpty() == false && rasterFallbackPath != runtimePackagePath;
-    // Force raster draws the engine's default raster graph whatever the requested graph contains: a graph can
-    // trace rays in authored compute pipelines without a RayTracing pass, and an authored raster graph may lack
-    // what the World needs (only the default clustered deferred programs draw an Atmosphere).
-    // A ray graph named as its own fallback still reads it, so the raytracing pass is rejected below.
-    bool shouldUseFallback =
-        state.ShouldForceRaster == true && (hasDistinctFallback == true || hasRayTracingPass == true);
-    if (state.ShouldForceRaster == true && hasRayTracingPass == true && rasterFallbackPath.isEmpty() == true)
+    bool shouldUseFallback = isForceFallback;
+    if (state.ShouldForceRaster == true && isForceFallback == false && hasRayTracingPass == true)
     {
-        setStatus(QStringLiteral("Force raster needs the engine's default raster package, which this editor build "
-                                 "does not have. Turn Force raster off to draw the selected render graph."));
-        return RenderGraphPreviewLoad::Unsupported;
+        if (rasterFallbackPath.isEmpty() == true)
+        {
+            return rejectLoad(
+                RenderGraphPreviewLoad::Unsupported,
+                QStringLiteral("Force raster needs the engine's default raster package, which this editor build "
+                               "does not have. Turn Force raster off to draw the selected render graph."));
+        }
+        shouldUseFallback = true;
     }
     QString rayRendererStatus;
     if (hasRayTracingPass == true && state.ShouldForceRaster == false)
@@ -1045,17 +1070,17 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
                 renderer::SelectRenderGraphRenderer(state.Device, renderer::RenderGraphPreference::Automatic, selected);
             if (status != rhi::RasterStatus::Ready)
             {
-                setStatus(QStringLiteral("Renderer selection failed (%1); the shown frame is kept.")
-                              .arg(DescribeRasterStatus(status)));
-                return RenderGraphPreviewLoad::Failed;
+                return rejectLoad(RenderGraphPreviewLoad::Failed,
+                                  QStringLiteral("Renderer selection failed (%1); the shown frame is kept.")
+                                      .arg(DescribeRasterStatus(status)));
             }
         }
         if (selected == renderer::RenderGraphRenderer::Raster)
         {
             if (rasterFallbackPath.isEmpty() == true)
             {
-                setStatus(QStringLiteral("A raster runtime package is required for this renderer selection."));
-                return RenderGraphPreviewLoad::Unsupported;
+                return rejectLoad(RenderGraphPreviewLoad::Unsupported,
+                                  QStringLiteral("A raster runtime package is required for this renderer selection."));
             }
             shouldUseFallback = true;
         }
@@ -1068,15 +1093,19 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     }
     if (shouldUseFallback == true)
     {
-        loaded = readPackage(rasterFallbackPath);
-        if (loaded != RenderGraphPreviewLoad::Staged)
+        state.AttemptedPackagePath = rasterFallbackPath;
+        if (selectedPath != rasterFallbackPath)
         {
-            return loaded;
+            loaded = readPackage(rasterFallbackPath);
+            if (loaded != RenderGraphPreviewLoad::Staged)
+            {
+                return loaded;
+            }
         }
         if (renderer::UsesRayTracing(package->GetPlan()) == true)
         {
-            setStatus(QStringLiteral("The raster fallback contains a raytracing pass; it was rejected."));
-            return RenderGraphPreviewLoad::Unsupported;
+            return rejectLoad(RenderGraphPreviewLoad::Unsupported,
+                              QStringLiteral("The raster fallback contains a raytracing pass; it was rejected."));
         }
         selectedPath = rasterFallbackPath;
     }
@@ -1117,9 +1146,9 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
         target.Descriptions[i] = resource;
         if (resource.IsSurface == 1)
         {
-            setStatus(QStringLiteral("This configuration renders to a presentation surface. Preview an Export "
-                                     "(ColorTexture) root; Present roots run in the game host."));
-            return RenderGraphPreviewLoad::Unsupported;
+            return rejectLoad(RenderGraphPreviewLoad::Unsupported,
+                              QStringLiteral("This configuration renders to a presentation surface. Preview an Export "
+                                             "(ColorTexture) root; Present roots run in the game host."));
         }
         if (hasTarget == false && resource.IsExported == 1 && resource.Kind == format::Aspect::Color)
         {
@@ -1131,8 +1160,8 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     }
     if (hasTarget == false)
     {
-        setStatus(QStringLiteral("This configuration exports no color texture for the preview to show."));
-        return RenderGraphPreviewLoad::Unsupported;
+        return rejectLoad(RenderGraphPreviewLoad::Unsupported,
+                          QStringLiteral("This configuration exports no color texture for the preview to show."));
     }
     for (usize count = plan.Passes.GetSize(); count > 0; --count)
     {
@@ -1169,6 +1198,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     target.Catalogue =
         MakeTargetCatalogue(plan, package->GetGenerationIdentity(), namesDocument, decodedRuntimeIdentity);
     target.PackagePath = Move(selectedPath);
+    target.RuntimeIdentity = decodedRuntimeIdentity;
     const BorrowedView<const uint8> generationIdentity = package->GetGenerationIdentity();
     target.GenerationIdentity = QByteArray(reinterpret_cast<const char*>(generationIdentity.GetDataOrNull()),
                                            static_cast<qsizetype>(generationIdentity.GetSize()));
@@ -1192,14 +1222,13 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
                                            : QFileInfo(runtimePackagePath).absolutePath();
         if (ReadLightTransformerPreviewSetup(modelDirectory, model, modelError) == false)
         {
-            setStatus(modelError);
-            return RenderGraphPreviewLoad::Unreadable;
+            return rejectLoad(RenderGraphPreviewLoad::Unreadable, modelError);
         }
         model.Description.EncoderShader = ludus::shaders::renderer_light_transformer_encoder::Compute();
 #else
-        setStatus(QStringLiteral(
-            "Light Transformer requires a native Metal or Vulkan preview. Select a raster template for this device."));
-        return RenderGraphPreviewLoad::Unsupported;
+        return rejectLoad(RenderGraphPreviewLoad::Unsupported,
+                          QStringLiteral("Light Transformer requires a native Metal or Vulkan preview. Select a raster "
+                                         "template for this device."));
 #endif
     }
     state.WaitingModel = Move(model);
@@ -1310,6 +1339,32 @@ void RenderGraphPreview::SetSlowFrameMilliseconds(float64 milliseconds) noexcept
 const QString& RenderGraphPreview::GetRasterFallbackPath() const noexcept
 {
     return mState->RasterFallbackPath;
+}
+const QString& RenderGraphPreview::GetAttemptedPackagePath() const noexcept
+{
+    return mState->AttemptedPackagePath;
+}
+bool RenderGraphPreview::HasRasterRecovery() const
+{
+    const State& state = *mState;
+    return state.ShouldForceRaster == false && state.RequestedPath.isEmpty() == false &&
+           state.RequestedPath != state.RasterFallbackPath && state.AttemptedPackagePath != state.RasterFallbackPath &&
+           state.Active.PackagePath != state.RasterFallbackPath && HasReadableRasterFallback() == true;
+}
+const QString& RenderGraphPreview::GetLoadProblem() const noexcept
+{
+    return mState->LoadProblem;
+}
+bool RenderGraphPreview::HasFailedDevice() const noexcept
+{
+    const rhi::StartupState startup = rhi::GetStartup().State;
+    return mState->IsAttached == true &&
+           (startup == rhi::StartupState::Failed || startup == rhi::StartupState::DeviceLost);
+}
+bool RenderGraphPreview::HasReadableRasterFallback() const
+{
+    const QFileInfo fallback(mState->RasterFallbackPath);
+    return fallback.isFile() == true && fallback.isReadable() == true;
 }
 const QString& RenderGraphPreview::GetOutputTarget() const noexcept
 {
@@ -2065,7 +2120,7 @@ void RenderGraphPreview::submitFrame(renderer::RenderGraph& inoutGraph, uint64 g
                       .arg(DescribeRasterStatus(rendered)));
         return;
     }
-    Q_EMIT SubmissionRecorded();
+    Q_EMIT SubmissionRecorded(state.Active.RuntimeIdentity);
     state.RenderedGeneration = generation;
     // Progressive samples of one drawable scene keep its view even after newer revisions evict it.
     if (state.HasRenderedView == false || state.RenderedRevision != drawableRevision)
@@ -2447,6 +2502,10 @@ bool RenderGraphPreview::GetWorldFeatureSupport(renderer::WorldFeature feature,
 
 QString RenderGraphPreview::GetDisplayStatus() const
 {
+    if (mState->LoadProblem.isEmpty() == false)
+    {
+        return mState->LoadProblem;
+    }
     const QString activationFailure = DescribeRenderGraphActivationFailure(mState->Activation.GetReport());
     if (activationFailure.isEmpty() == false)
     {
@@ -2527,13 +2586,16 @@ void RenderGraphPreview::pollFailures()
         worst = state.Failures[index].TotalPixels > state.Failures[worst].TotalPixels ? index : worst;
     }
     const renderer::RenderGraphRayFailures& summary = state.Failures[worst];
-    const QString text =
-        summary.TotalPixels == 0
-            ? QString{}
-            : QStringLiteral("%1 pixels of ray pass %2 failed (the failure colour). %3")
-                  .arg(QLocale().toString(static_cast<qulonglong>(summary.TotalPixels)))
-                  .arg(state.Active.RayPasses[worst])
-                  .arg(QString::fromUtf8(renderer::DescribeRenderGraphFailureReason(summary.MainReason)));
+    QString text = summary.TotalPixels == 0
+                       ? QString{}
+                       : QStringLiteral("%1 pixels of ray pass %2 failed (the failure colour). %3")
+                             .arg(QLocale().toString(static_cast<qulonglong>(summary.TotalPixels)))
+                             .arg(state.Active.RayPasses[worst])
+                             .arg(QString::fromUtf8(renderer::DescribeRenderGraphFailureReason(summary.MainReason)));
+    if (summary.LuslBoundsLine != 0)
+    {
+        text += QStringLiteral(" LUSL index out of bounds at line %1.").arg(summary.LuslBoundsLine);
+    }
     if (text != mFailureText)
     {
         mFailureText = text;

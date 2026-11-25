@@ -30,6 +30,7 @@ class QHelpEvent;
 class QAction;
 class QListWidget;
 class QLabel;
+class QLineEdit;
 QT_END_NAMESPACE
 
 namespace ludus::editor
@@ -37,8 +38,11 @@ namespace ludus::editor
 class CodeEditorGutter;
 class CodeSyntaxHighlighter;
 class CodeSyntaxService;
+class CodeSyntaxToken;
 class CodeStructureView;
 class CodeNavigation;
+class CodeSnippetSession;
+struct CodeSnippet;
 
 /// Stable identities for lexical, syntax and semantic language profiles.
 enum class CodeLanguage : foundation::uint8
@@ -82,6 +86,72 @@ struct CodeDiagnostic final
 
 /// Reusable Qt text-input surface. Bound undo routes to the document owner;
 /// unbound views use Qt undo. No file, compilation or language-server lifetime. GUI thread only.
+/// A language server's analysis message for the current text (code editor M4,
+/// CE10). It is kept apart from build diagnostics, which stay the authority for
+/// build errors. Start and End are UTF-16 positions in the view's document.
+struct CodeAnalysisDiagnostic final
+{
+    foundation::int32 Start = 0;
+    foundation::int32 End = 0;
+    CodeDiagnosticSeverity Severity = CodeDiagnosticSeverity::Error;
+    QString Message;
+};
+
+/// What an inlay hint names (LSP 3.17 `InlayHintKind`).
+enum class CodeInlayHintKind : foundation::uint8
+{
+    Other,
+    /// A deduced type, such as `: float` after a `let` name.
+    Type,
+    /// The parameter an argument binds, such as `value:` before it.
+    Parameter,
+};
+
+/// A language server's inline hint (code editor M4, CE10). The view draws its
+/// label just before Position in space it reserves; the label is never part of
+/// the document, the clipboard or the history.
+struct CodeInlayHint final
+{
+    /// UTF-16 position in the view's document. A hint at a line start is not shown.
+    foundation::int32 Position = 0;
+    QString Label;
+    CodeInlayHintKind Kind = CodeInlayHintKind::Other;
+    /// A space before or after the label, as the server asks.
+    bool HasPaddingLeft = false;
+    bool HasPaddingRight = false;
+    [[nodiscard]] bool operator==(const CodeInlayHint& other) const = default;
+};
+
+/// One entry of the code actions list (code editor M4, CE10).
+struct CodeActionEntry final
+{
+    QString Title;
+    /// Why the entry cannot be applied, shown in its tooltip; empty when it can.
+    QString DisabledReason;
+    /// The server marks the fix it recommends; preferred entries are listed first.
+    bool IsPreferred = false;
+};
+
+/// What the current language server serves for completion and signature help,
+/// from its advertised capabilities (code editor M4, CE09).
+struct CodeAssistanceAvailability final
+{
+    /// Characters that request completion when typed.
+    QString CompletionTriggers = QStringLiteral(".");
+    /// Characters that request signature help when typed.
+    QString SignatureTriggers = QStringLiteral("(,");
+    /// Why completion is disabled, or empty when it is available.
+    QString CompletionUnavailableReason;
+    /// Why signature help is disabled, or empty when it is available.
+    QString SignatureUnavailableReason;
+    /// Why hover is disabled, or empty when it is available.
+    QString HoverUnavailableReason;
+    /// Why Rename Symbol is disabled, or empty when it is available.
+    QString RenameUnavailableReason;
+    /// Why Show Code Actions is disabled, or empty when it is available.
+    QString CodeActionsUnavailableReason;
+};
+
 class CodeEditor final : public QPlainTextEdit
 {
     Q_OBJECT
@@ -112,6 +182,16 @@ public:
     {
         return mLanguage;
     }
+    /// Present the attached server's lifecycle state. Empty text means no active server.
+    void SetLanguageServerStatus(const QString& text, const QString& detail = {});
+    [[nodiscard]] LUDUS_INLINE const QString& GetLanguageServerStatus() const noexcept
+    {
+        return mLanguageServerStatus;
+    }
+    [[nodiscard]] LUDUS_INLINE const QString& GetLanguageServerDetail() const noexcept
+    {
+        return mLanguageServerDetail;
+    }
     /// Apply a single native undo group; commands preserve read-only buffers.
     void IndentSelection(bool shouldOutdent = false);
     /// Multiple-cursor commands (CE06). AddCursorAbove/Below place a collapsed
@@ -132,7 +212,7 @@ public:
     /// Clamp a one-based line, and an optional one-based Unicode scalar column, to
     /// the document and reveal that position. Column 0 selects the line start.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): line then column is the universal order.
-    void GoToLine(foundation::int32 line, foundation::int32 column = 0);
+    void GoToLine(foundation::int32 line, foundation::int32 column = 0, bool shouldRemember = true);
     /// View-only source history and semantic navigation presentation; owned by this editor.
     [[nodiscard]] LUDUS_INLINE CodeNavigation& GetNavigation() const noexcept
     {
@@ -144,6 +224,68 @@ public:
     /// first edit marks them out of date until the producer replaces them.
     /// isCurrent false says the report already describes an earlier text version.
     void SetDiagnostics(const QList<CodeDiagnostic>& diagnostics, bool isCurrent);
+    /// Replace the language server's analysis markers. `source` names the server
+    /// ("slangd") in their descriptions. Ranges outside the document are ignored.
+    void SetAnalysisDiagnostics(const QList<CodeAnalysisDiagnostic>& diagnostics, const QString& source);
+    [[nodiscard]] LUDUS_INLINE foundation::int32 GetAnalysisDiagnosticCount() const noexcept
+    {
+        return static_cast<foundation::int32>(mAnalysis.size());
+    }
+    [[nodiscard]] QTextCursor GetAnalysisDiagnosticRange(foundation::int32 index) const;
+    /// The analysis marker at `index` at its current, edit-moved position, or a
+    /// default value when out of range.
+    [[nodiscard]] CodeAnalysisDiagnostic GetAnalysisDiagnostic(foundation::int32 index) const;
+    /// The server named by SetAnalysisDiagnostics ("slangd").
+    [[nodiscard]] const QString& GetAnalysisSource() const noexcept;
+    /// Select the analysis marker at `index`, expanding folds around it. False when out of range.
+    bool RevealAnalysisDiagnostic(foundation::int32 index);
+    /// Show a server hover for `position` (plain text, escaped here) with that
+    /// position's build and analysis diagnostics. Empty text shows diagnostics only.
+    void ShowHover(foundation::int32 position, const QString& text);
+    void HideHover();
+    /// The text of the hover currently shown, or empty; for tests.
+    [[nodiscard]] const QString& GetHoverText() const noexcept;
+    /// Replace the language server's semantic tokens (code editor M4, CE10): ordered,
+    /// disjoint UTF-16 ranges of this view's document, colored by their syntax role
+    /// over the syntax tokens. Edits move them until the next replacement; an empty
+    /// list leaves only syntax coloring.
+    void SetSemanticTokens(const QList<CodeSyntaxToken>& tokens);
+    /// The current semantic tokens at their edit-moved positions.
+    [[nodiscard]] const QList<CodeSyntaxToken>& GetSemanticTokens() const noexcept;
+    /// Replace the language server's inlay hints, ordered by position. Edits move
+    /// later hints and drop the ones at the edit until the next replacement.
+    void SetInlayHints(const QList<CodeInlayHint>& hints);
+    /// The current inlay hints at their edit-moved positions, shown or not.
+    [[nodiscard]] const QList<CodeInlayHint>& GetInlayHints() const noexcept;
+    /// Persist whether inlay hints are drawn (default true); the text, its
+    /// layout positions and history are unchanged. Holding Ctrl+Alt (Command+Option
+    /// on macOS) shows hidden hints until either key is released. GUI thread only.
+    void SetInlayHintsVisible(bool isVisible);
+    /// Whether inlay hints are drawn now, including while Ctrl+Alt is held.
+    [[nodiscard]] bool AreInlayHintsShown() const noexcept;
+    /// Visit the tab stops of `snippet`, whose Text was just inserted at UTF-16
+    /// `position` (code editor M4, CE10). Tab and Shift+Tab move between stops,
+    /// stops with the same index are edited together, and `$0`, Escape or moving
+    /// out of the snippet ends it. No text changes here.
+    void StartSnippet(foundation::int32 position, const CodeSnippet& snippet);
+    /// Whether a snippet's tab stops are being visited.
+    [[nodiscard]] bool IsInSnippet() const noexcept;
+    /// Show the inline rename box over the symbol at UTF-16 [start, end) with
+    /// `name` selected, and give it focus (code editor M4, CE10). Enter emits
+    /// RenameAccepted (Shift+Enter asks for a preview); Escape or leaving the box
+    /// emits RenameCancelled. The text never changes here.
+    void ShowRenameBox(foundation::int32 start, foundation::int32 end, const QString& name);
+    void HideRenameBox();
+    [[nodiscard]] bool IsRenaming() const noexcept;
+    /// Replace the code actions found at UTF-16 `position` (code editor M4, CE10).
+    /// While the caret is on that line and `actions` is not empty, the gutter
+    /// shows a light bulb that opens them. Edits move the position.
+    void SetCodeActions(foundation::int32 position, const QList<CodeActionEntry>& actions);
+    /// Whether the light bulb is shown on the caret's line.
+    [[nodiscard]] bool HasCodeActions() const;
+    /// Open the code actions list at the caret. Choosing an enabled entry emits
+    /// CodeActionChosen with its index in the list SetCodeActions gave.
+    void ShowCodeActionMenu();
     [[nodiscard]] LUDUS_INLINE foundation::int32 GetDiagnosticCount() const noexcept
     {
         return static_cast<foundation::int32>(mDiagnostics.size());
@@ -167,11 +309,21 @@ public:
     void Undo();
     void Redo();
     void SetCanFormat(bool canFormat);
+    /// Apply the language server's completion and signature capabilities: the
+    /// characters that trigger each request while typing, and why a command is
+    /// disabled (empty when available). The defaults allow both so the first
+    /// request can start a server lazily.
+    void SetAssistanceAvailability(const CodeAssistanceAvailability& availability);
     /// Present copied assistance results at the caret. No text mutation; choosing
     /// an item emits its row to the version-checking editing controller.
     void ShowCompletions(const QStringList& labels, const QStringList& details);
     void ShowSignature(const QString& html);
     void HideAssistance();
+    /// Replace a shown suggestion's label and documentation, as a resolved item
+    /// arrives (code editor M4, CE10). Out-of-range rows are ignored.
+    void UpdateCompletion(foundation::int32 row, const QString& label, const QString& documentation);
+    /// The documentation shown beside the suggestions, or empty when hidden.
+    [[nodiscard]] QString GetCompletionDocumentation() const;
     /// Nestable input/command boundaries, including edits spanning many ranges.
     void BeginEditOperation(CodeEditKind kind = CodeEditKind::Command);
     void EndEditOperation();
@@ -204,7 +356,29 @@ Q_SIGNALS:
     void AssistanceRequested(bool isSignature);
     void AssistanceDismissed();
     void CompletionChosen(foundation::int32 row);
+    /// The highlighted suggestion changed to `row`, including the first one shown.
+    void CompletionHighlighted(foundation::int32 row);
+    /// Rename Symbol (F2) ran at the caret.
+    void RenameRequested();
+    /// The rename box was confirmed with `name`; `shouldPreview` is true for Shift+Enter.
+    void RenameAccepted(const QString& name, bool shouldPreview);
+    /// The rename box was dismissed without renaming.
+    void RenameCancelled();
+    /// Show Code Actions (Ctrl+.) ran at the caret.
+    void CodeActionsRequested();
+    /// An entry of the code actions list was chosen.
+    void CodeActionChosen(foundation::int32 index);
     void SignatureOverloadRequested(foundation::int32 direction);
+    /// Analysis markers were replaced.
+    void AnalysisDiagnosticsChanged();
+    /// The server lifecycle text or its detail changed.
+    void LanguageServerStatusChanged();
+    /// The shortcut of a language-service command the server does not support
+    /// was pressed. `message` names the command and the reason, for the status
+    /// line where the user acted; the source and selection are unchanged.
+    void UnavailableCommandRequested(const QString& message);
+    /// The pointer rested on `position` for the hover delay, or Show Hover ran at the caret.
+    void HoverRequested(foundation::int32 position);
     /// The number of cursors changed (1 plus the secondary cursors, CE06). The
     /// status bar shows the count; emitted only when the count actually changes.
     void CursorCountChanged(foundation::int32 count);
@@ -217,17 +391,35 @@ Q_SIGNALS:
 private:
     QListWidget* mCompletionList;
     QLabel* mSignature;
+    QLabel* mCompletionDocumentation;
+    QLineEdit* mRenameBox;
+    QAction* mRenameAction;
+    /// The rename box is being closed on purpose; its focus loss is not a cancel.
+    bool mIsClosingRename = false;
+    QAction* mCodeActionsAction;
+    QList<CodeActionEntry> mCodeActions;
+    /// Where the code actions were found, anchored so edits move it.
+    QTextCursor mCodeActionPosition;
+    [[nodiscard]] bool openGutterLightBulb(const QPoint& position);
+    void showCompletionDocumentation();
+    bool eventFilter(QObject* watched, QEvent* event) override;
     friend class CodeEditorGutter;
     friend class CodeStructureView;
     void resizeEvent(QResizeEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void paintIndentGuides(const QPaintEvent* event);
     void paintFoldPlaceholders(const QPaintEvent* event);
+    void paintInlayHints(const QPaintEvent* event);
+    void updateInlayHintPresentation();
     [[nodiscard]] QRect getFoldPlaceholderRect(const QTextBlock& block) const;
     void paintDiagnosticCallout();
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
     void handleKeyPress(QKeyEvent* event);
+    /// Report a pressed shortcut that belongs to an unavailable language-service
+    /// command. Qt ignores a disabled action's shortcut, so without this the key
+    /// would do nothing at all. Returns true when the key was reported.
+    [[nodiscard]] bool reportUnavailableShortcut(const QKeyEvent& event);
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
@@ -238,7 +430,7 @@ private:
     void changeEvent(QEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     void inputMethodEvent(QInputMethodEvent* event) override;
-    void insertFromMimeData(const QMimeData* source) override;
+    void insertFromMimeData(const QMimeData* sourceOrNull) override;
     void focusOutEvent(QFocusEvent* event) override;
     bool viewportEvent(QEvent* event) override;
     /// The structural-editing pairs for the current language, from the registry
@@ -286,21 +478,37 @@ private:
     CodeSyntaxHighlighter* mHighlighter;
     CodeStructureView* mStructure;
     CodeLanguage mLanguage = CodeLanguage::PlainText;
+    QString mLanguageServerStatus;
+    QString mLanguageServerDetail;
     QTimer mSelectionUpdate;
     QTimer mVisibleSyntaxUpdate;
     QList<DiagnosticMarker> mDiagnostics;
+    QList<DiagnosticMarker> mAnalysis;
+    QString mAnalysisSource;
+    QTimer mHoverDelay;
+    foundation::int32 mHoverPosition = -1;
+    QString mHoverText;
+    QAction* mHoverAction;
     QString mDiagnosticText;
     bool mAreDiagnosticsCurrent = true;
     /// The text changed after the markers were set; they still point at where the problem was.
     bool mHasEditedSinceReport = false;
     bool mShouldShowIndentGuides = true;
+    bool mShouldShowInlayHints = true;
+    /// Ctrl+Alt is held, showing hidden inlay hints.
+    bool mIsPeekingInlayHints = false;
+    QAction* mInlayHintsAction;
     bool mShouldPairBrackets = true;
     bool mShouldUseDocumentHistory = false;
     bool mCanUndo = false;
     bool mCanRedo = false;
     QAction* mFormatAction;
+    QAction* mCompleteAction;
+    QAction* mSignatureAction;
+    CodeAssistanceAvailability mAssistanceAvailability;
     QAction* mChooseFormatterAction;
     CodeNavigation* mNavigation;
+    CodeSnippetSession* mSnippet;
     /// Name underlined for Ctrl+click (Command+click on macOS) Go to Definition.
     QTextCursor mDefinitionLink;
     /// A definition click owns the press until release, so dragging never selects.
@@ -318,4 +526,13 @@ void SetCodeEditorTabMovesFocus(bool isTabMovingFocus);
 
 /// Whether Tab moves focus out of code editors instead of indenting. GUI thread only.
 [[nodiscard]] bool IsCodeEditorTabMovingFocus() noexcept;
+
+/// Record why the language-service command `inoutAction` is unavailable, or
+/// clear it with an empty reason. The owner still disables the action; a code
+/// editor reports the reason when the action's shortcut is pressed. GUI thread only.
+void SetCodeCommandUnavailableReason(QAction& inoutAction, const QString& reason);
+
+/// The reason recorded by SetCodeCommandUnavailableReason, or empty when the
+/// command is available or not a language-service command. GUI thread only.
+[[nodiscard]] QString GetCodeCommandUnavailableReason(const QAction& action);
 } // namespace ludus::editor

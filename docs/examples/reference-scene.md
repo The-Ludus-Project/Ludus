@@ -1,7 +1,9 @@
 # Cook and capture staircase2
 
 Convert the locally supplied **Modern Hall / staircase2** scene and render it
-through Ludus's L6 reference renderer. This native installed-SDK sample selects
+through Ludus's L6 reference renderer. Get Modern Hall from the
+[reference scene catalog](../development/best-effort-scene-import.md#reference-scene-downloads).
+This native installed-SDK sample selects
 **CPU-oracle traversal explicitly**. It produces a complete linear HDR capture;
 its PNG preview is a separate, documented display conversion.
 
@@ -434,7 +436,9 @@ acceptance compares captures from the same profile and current binary.
 ## Full static Sponza and SunTemple acceptance
 
 The authored/HDR renderer acceptance uses the supplied main Sponza glTF and
-SunTemple FBX under `references/resources`. Its optional fixture adapter is
+SunTemple FBX under `references/resources`. See the
+[reference scene catalog](../development/best-effort-scene-import.md#reference-scene-downloads)
+for both downloads. The optional fixture adapter is
 **test tooling**, independent of the installed scene importer. It never downloads
 assets or executes supplied `.pyscene` files. Fixtures, manifests and images stay
 in ignored `out/`; the original supplied resources are read-only.

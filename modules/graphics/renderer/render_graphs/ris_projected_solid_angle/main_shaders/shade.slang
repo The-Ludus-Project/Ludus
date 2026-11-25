@@ -272,10 +272,10 @@ float3 SampleResampledEmissiveLight(SceneContext scene,
         return float3(0);
     }
     // One diffuse sample omega_0 and, unless the LTC-space clip is empty, one LTC sample omega_1.
-    float2 diffuseSample = float2(SampleSceneRandom(launch, SHADE_DIFFUSE_TECHNIQUE_DIMENSION_FIRST),
-                                  SampleSceneRandom(launch, SHADE_DIFFUSE_TECHNIQUE_DIMENSION_FIRST + 1));
-    float2 specularSample = float2(SampleSceneRandom(launch, SHADE_SPECULAR_TECHNIQUE_DIMENSION_FIRST),
-                                   SampleSceneRandom(launch, SHADE_SPECULAR_TECHNIQUE_DIMENSION_FIRST + 1));
+    float2 diffuseSample = float2(SampleUniformFloat01(launch, SHADE_DIFFUSE_TECHNIQUE_DIMENSION_FIRST),
+                                  SampleUniformFloat01(launch, SHADE_DIFFUSE_TECHNIQUE_DIMENSION_FIRST + 1));
+    float2 specularSample = float2(SampleUniformFloat01(launch, SHADE_SPECULAR_TECHNIQUE_DIMENSION_FIRST),
+                                   SampleUniformFloat01(launch, SHADE_SPECULAR_TECHNIQUE_DIMENSION_FIRST + 1));
     float3 radiance = float3(0);
     for (uint index = uint(LightTechnique::Diffuse); index <= uint(LightTechnique::Specular); ++index)
     {
@@ -371,9 +371,9 @@ float3 SampleBsdfStrategy(SceneContext scene,
                           inout ResampledLightContext inoutContext,
                           inout RayQueryContext queries)
 {
-    float3 directionSample = float3(SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST),
-                                    SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST + 1),
-                                    SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST + 2));
+    float3 directionSample = float3(SampleUniformFloat01(launch, SHADE_BSDF_DIMENSION_FIRST),
+                                    SampleUniformFloat01(launch, SHADE_BSDF_DIMENSION_FIRST + 1),
+                                    SampleUniformFloat01(launch, SHADE_BSDF_DIMENSION_FIRST + 2));
     float3 sampledDirectionWorld =
         SampleStandardBsdf(shadingPoint.Material, shadingPoint.ViewDirectionWorld, directionSample);
     float sampledLengthSquared = dot(sampledDirectionWorld, sampledDirectionWorld);

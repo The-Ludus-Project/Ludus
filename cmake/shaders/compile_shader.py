@@ -487,6 +487,7 @@ def main():
     parser.add_argument('--native-ray-pipeline', action='store_true')
     parser.add_argument('--native-ray-storage', default='{}')
     parser.add_argument('--graph-software-rays', action='store_true')
+    parser.add_argument('--graph-storage-texture', action='store_true')
     parser.add_argument('--native-binding-arrays', action='store_true')
     parser.add_argument('--runtime-binding-arrays', action='store_true')
     parser.add_argument('--include', action='append', default=[])

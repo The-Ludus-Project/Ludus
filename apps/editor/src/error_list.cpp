@@ -10,6 +10,7 @@
 #include <QAbstractItemView>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -514,7 +515,7 @@ void ErrorList::ReplaceEntries(ErrorListProducer producer, const QList<ErrorList
     mEntries = foundation::Move(kept);
     render();
     Q_EMIT CountsChanged();
-    if (isChanged == true && hasProblem == true)
+    if (isChanged == true && hasProblem == true && producer != ErrorListProducer::Analysis)
     {
         Q_EMIT ProblemsReported();
     }
@@ -575,7 +576,9 @@ bool ErrorList::SelectFirstProblem()
         firstRow = firstRow < 0 ? row : firstRow;
         if (mEntries.at(itemOrNull->data(ENTRY_ROLE).toInt()).Severity == ErrorListSeverity::Error)
         {
-            mTable->selectRow(row);
+            mTable->setCurrentCell(row,
+                                   SEVERITY_COLUMN,
+                                   QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
             mTable->scrollToItem(itemOrNull);
             return true;
         }
@@ -584,7 +587,7 @@ bool ErrorList::SelectFirstProblem()
     {
         return false;
     }
-    mTable->selectRow(firstRow);
+    mTable->setCurrentCell(firstRow, SEVERITY_COLUMN, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
     return true;
 }
 

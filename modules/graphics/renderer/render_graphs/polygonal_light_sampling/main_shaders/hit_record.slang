@@ -124,8 +124,8 @@ bool TryLoadHitRecord(SceneContext scene, RayLaunch launch, out HitRecord outRec
 SceneQuery TraceAndStoreHitRecord(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
     HitRecord record = (HitRecord)0;
-    record.JitterPixel = float2(SampleSceneRandom(launch, PRIMARY_RANDOM_DIMENSION_FIRST),
-                                SampleSceneRandom(launch, PRIMARY_RANDOM_DIMENSION_FIRST + 1));
+    record.JitterPixel = float2(SampleUniformFloat01(launch, PRIMARY_RANDOM_DIMENSION_FIRST),
+                                SampleUniformFloat01(launch, PRIMARY_RANDOM_DIMENSION_FIRST + 1));
     record.SampleIndex = launch.SampleIndex;
     SurfaceHit hit;
     SceneQuery status = TraceClosest(scene, queries, MakeCameraRay(launch, record.JitterPixel), hit);

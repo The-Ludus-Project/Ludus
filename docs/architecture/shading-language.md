@@ -9,8 +9,7 @@ render-graph programs with a ported shader (L1e-2). The
 [module guide](../modules/tooling/shader-language.md) describes their exact
 behavior and limits. Still open from L1:
 - reporting development bounds-check failures through the render graph;
-- the Metal loop code-generation measurement;
-- configuration values for render-graph programs.
+- the Metal loop code-generation measurement.
 
 L2 is implemented:
 - L2a: interfaces, conformance, extensions, struct constants and
@@ -239,6 +238,38 @@ LUSL keeps a C preprocessor, run before parsing:
     `[[fallthrough]]`.
   - Loop and branch attributes such as `[unroll]` and `[loop]` pass through to
     Slang from an allowlist.
+
+#### Runtime const locals
+
+A function-local `const` accepts any well-typed initializer, including a
+runtime function call. The initializer is evaluated once each time execution
+reaches the declaration. A `const` local requires an initializer
+that produces a value, so `= void` is invalid.
+
+The local and its fields and elements are read-only after initialization.
+The checker rejects assignments, increments and decrements, mutating method
+calls, and uses of the local or its subobjects as `out` or `inout` arguments.
+Reads and value copies are allowed.
+
+Constant-expression eligibility still depends on the initializer. A local
+initialized by a constant expression keeps its existing compile-time uses.
+A runtime-initialized local is invalid in constant-expression positions such
+as an array size or `static_assert`. Module and struct `static const`
+declarations still require compile-time initializers. Uniformity and
+coordinate spaces follow the existing analysis of the initializer.
+
+Functions can return related values together in a named struct. The caller can
+bind the whole result read-only with a local declaration:
+
+```c
+const LightSample sample = SampleIncidentLight(scene, selected, receiver, shapeSample);
+```
+
+The checker records a runtime-initialized local as `Symbol::IsRuntimeConstant`,
+and lowering writes it as an ordinary Slang local initialized at its
+declaration. Usage and diagnostics are in the
+[module guide](../modules/tooling/shader-language.md#names-and-declarations);
+[issue 2214](https://github.com/The-Ludus-Project/Ludus/issues/2214) delivered it.
 
 ### Types
 
@@ -906,6 +937,17 @@ are its `graphs/Main` programs, most of them instances of engine templates.
 
 L5 records the retained files in one list under `config/`, each with its reason.
 
+**The migrated-scope gate.** `config/lusl_migration.json` lists the
+directories whose shaders are LUSL (`migrated`) and the Slang files or
+directories the repository keeps (`retained`), each with its reason. The
+changed-source gate (`scripts/python/source_policy.py`, through
+`lusl_migration.py`) reads the whole tree. It rejects every `.slang` or
+`.slangh` file under a migrated directory that the retained list does not name,
+however the file arrived: added, renamed or copied. It also rejects a stale
+entry, a retained path that is not Slang, a duplicate and a reason too short to
+say why the file stays. A wave adds the directories it ports to `migrated` in
+the change that deletes their Slang originals.
+
 ### L5a: language and library gaps
 
 | Gap | Ludus files | Sample files | Proposed form |
@@ -928,21 +970,29 @@ remain: buffer lengths have no direct Metal spelling, and `extern slang` atomics
 spelling; both programs compile through ray-query SPIR-V as their Slang originals do. See the
 [module guide](../modules/tooling/shader-language.md#resources-and-bindings).
 
+**L5a textures, arrays and intrinsics.** The
+[module guide](../modules/tooling/shader-language.md#resources-and-bindings)
+defines coordinate widths, sampler types, and slot allocation for the new
+texture shapes and named binding arrays. Fixed arrays use constant descriptor
+indices and the native binding-array profile. The Metal readback fixture
+compares LUSL and Slang with the same textures and checks the result against the
+authored texels and depth comparisons.
+
 Generic structs (`LUSL0304`) and `dynamic` dispatch are not needed by any
 current file and stay deferred. Tracked in issues [1729](https://github.com/The-Ludus-Project/Ludus/issues/1729) (resource queries,
 atomics, barriers) and [1730](https://github.com/The-Ludus-Project/Ludus/issues/1730) (texture kinds, binding arrays, intrinsics).
 
 ### L5b: shared libraries and build paths
 
-- **Includes outside the source directory.** `ludus_compile_shader` rejects a
-  LUSL include directory outside the source's directory, but renderer recipes
-  include nine roots (FoundationMath, FoundationGeometry, SceneFormat,
-  RenderGraphFormat, RHI and renderer headers). The LUSL path accepts the same
-  include roots as the Slang path.
-- **Host/shader layout headers.** Slang includes C++ layout headers such as
-  `renderer_gpu_preview_layout.h` and `scene_shader_layout.h`. Each gets a
-  LUSL-readable form generated from its C++ owner, so the constants keep one
-  owner.
+- **Includes outside the source directory.** Standalone LUSL accepts the
+  renderer's shared include roots (FoundationMath, FoundationGeometry,
+  SceneFormat, RenderGraphFormat, RHI and renderer headers).
+- **Host/shader layout headers.** The LUSL headers for GPU preview, reference
+  rendering, the scene shader interface and point search derive their macros
+  from the corresponding C++ owners. The same qualification recipe builds in
+  the source tree and installed SDK. See the
+  [standalone shader workflow](../modules/tooling/shader-language.md#resources-and-bindings)
+  for regeneration.
 - **Ownership of shared libraries.** L3c generates `.luslh` declarations from
   Slang reflection. When a library such as `math.slang` becomes LUSL, its
   `.lusl` source is the owner, its Slang consumers include the generated
@@ -952,8 +1002,9 @@ atomics, barriers) and [1730](https://github.com/The-Ludus-Project/Ludus/issues/
   render-graph templates instantiate Slang files. New programs default to
   `.lusl`, with Slang still selectable, so the Editor does not keep making
   Slang after its templates migrate.
-- **Configuration values for render-graph programs**, still open from L1, close
-  before a template that reads configuration macros migrates.
+- **Configuration values for render-graph programs** are authored on LUSL
+  program records. The [module guide](../modules/tooling/shader-language.md#render-graph-programs)
+  describes the fields and stage cache behavior.
 
 Tracked in issues [1731](https://github.com/The-Ludus-Project/Ludus/issues/1731) (include roots and layout headers), [1732](https://github.com/The-Ludus-Project/Ludus/issues/1732)
 (Editor authoring) and [1733](https://github.com/The-Ludus-Project/Ludus/issues/1733) (configuration values). Library ownership
@@ -973,6 +1024,41 @@ moves in wave 5.
 
 The items other than ray storage are tracked in issue [1734](https://github.com/The-Ludus-Project/Ludus/issues/1734).
 
+For signed-overflow lowering, the migrated workgroup reduction
+(`tests/lusl_shared_memory/barriers.lusl` under the renderer) exercises signed
+index and accumulator additions in each reduction step. Slang 2026.1.2 emits
+signed additions in the original Metal loop. The LUSL output keeps the same loop
+and threadgroup barrier, and emits two calls to the same wrapping helper per
+active thread. The helper adds `uint` bit patterns and bitcasts the result back
+to `int`. This comparison inspects emitted Metal source.
+
+On Apple M5 (macOS 26.6, 25G72, Metal safe math), each dispatch used 4,096 groups
+of 64 threads and checked every group sum and neighbor exchange against the CPU
+formula. The measurement used one dispatch per command buffer and subtracted
+Metal's GPU start timestamp from its end timestamp. After five warmup dispatches
+per variant, 60 measurements per variant alternated which variant ran first.
+
+| Shader | p10 (µs) | Median (µs) | p90 (µs) |
+| --- | ---: | ---: | ---: |
+| Slang | 76.92 | 77.08 | 273.87 |
+| LUSL | 76.92 | 77.19 | 196.25 |
+
+The medians differ by 0.11 µs (0.14%), with substantial tail variation. The
+measurement covers this kernel and device.
+
+`traversal_parity_lusl` checks Metal's native-query path against the original
+Slang callbacks. A caller can keep its `inout RayQueryContext` signature while
+passing a value copy to the isolated helper and copying back the helper's
+explicit `out` result. Slang emits `DontInline` for that helper, and the Metal
+translator restores it as `noinline`. The existing merged-kernel check rejects
+intersection queries placed directly in the kernel. The native GPU fixture
+checks both the emitted annotation and identical query results.
+
+The Windows source runtime's raster graph suite cooks the LUSL vertex, color,
+and depth callbacks in `rg2_bound_lusl` through the pinned DXIL toolchain.
+It checks the cooked color stages for signed DXIL and compares the graph's
+Direct3D 12 WARP pixels with the original Slang graph.
+
 ### L5d: migration waves
 
 Each wave ports files that only depend on LUSL or retained Slang, deletes the
@@ -986,6 +1072,34 @@ changed-source gate, which then rejects new Slang sources there.
 | 3 | Render-graph templates, one template per change | Sample's instances of a template migrate in a Sample change built against that SDK | [1737](https://github.com/The-Ludus-Project/Ludus/issues/1737) |
 | 4 | Sample's project-only programs | After the templates they include | [1738](https://github.com/The-Ludus-Project/Ludus/issues/1738) |
 | 5 | Shared libraries: FoundationMath, FoundationGeometry, the scene shader API, reservoir and sampling helpers | Last: every remaining consumer is LUSL or reaches them through generated Slang | [1739](https://github.com/The-Ludus-Project/Ludus/issues/1739) |
+
+**Wave 1 status.** The retained list, the gate, and the Editor's texture
+viewer depth pack (`apps/editor/shaders`) are migrated. The standalone shader
+helper lowers sources that name `LUDUS_GLSL_ES` once per value, as the
+[module guide](../modules/tooling/shader-language.md#resources-and-bindings)
+describes. Browser builds lower LUSL with a host `luslc` (`LUDUS_LUSLC`, built
+by `./scripts/bootstrap-luslc`). With it, the Cornell box
+(`examples/cornell-box/shaders`), `apps/smoke/shaders` and the shader probe
+(`tools/shader-probe`) are migrated. The helper forwards `DEFINES` to `luslc`.
+The RHI render tests (Vulkan, Metal and Direct3D 12) and the generic SDK render
+consumer draw the fullscreen diagnostic from
+`tests/sdk_consumer/shaders/diagnostic.lusl`. `diagnostic.slang` and its
+`uniforms.slang` are retained: the installed helper's contract scripts use them
+to check that it still accepts Slang sources, and the RHI parity test compares
+the two programs' pixels on each backend in the same run. The benchmark tools'
+kernels (`tools/luminaire-benchmark/shaders`, `tools/sms-benchmark/shaders`) are
+migrated. They reach render-graph template code through `extern slang`.
+`portable_flow.slang` is retained, because the luminaire exporter splices it into
+the `slice_sampling_luminaire` template's Slang. The standalone SDK consumer
+shaders (`tests/sdk_consumer/shaders`) are migrated, and their host code binds by
+the generated `<NAME>_slots.h` constants. Five Slang files stay there, each
+listed in the retained list with its reason:
+- `raster.slang`: the helper's manual-binding checks in `verify_raster_build.py`.
+- `r11.slang`, `r11buffers.slang`, `r11storage.slang`: the non-uniform,
+  runtime-sized, constant-buffer and storage-buffer binding arrays. LUSL binding
+  arrays take sampled textures and samplers with constant indices.
+- `mip_streaming.slang`: it reads the bound view's mip count, and
+  `GetDimensions()` returns only level-zero extents.
 
 ### Acceptance
 
@@ -1028,6 +1142,25 @@ The design's six open questions were resolved by the author on November 4,
 | May game projects relax naming? | Yes, through a project-wide `strict`/`warn`/`off` style setting. The engine is always `strict`, and language rules are never relaxed | [Style rules](#style-rules) |
 | Development bounds checks on local arrays? | Yes, for local and `groupshared` arrays: clamp and latch a mapped failure. Release builds emit no checks | [Development bounds checks](#development-bounds-checks) |
 
+## Conferences and journals to follow
+
+Start with the Khronos shading symposium for changes in Slang and shader
+tooling. Use the graphics and programming-language research venues to evaluate
+language changes, and the game-development archives to see how those choices
+affect shader authors and shipped games.
+
+| Resource | Type | Focus for LUSL |
+| --- | --- | --- |
+| Khronos Real-Time Shading Symposium | Practitioner and research symposium | Follow Slang, HLSL and GLSL compiler development, reflection, source-level debugging and backend portability. Check proposed improvements against LUSL's [Slang lowering and target pipeline](#compiler-architecture). [Khronos program](https://www.khronos.org/events/real-time-shading-symposium-2027) and [2026 Shading Languages Symposium archive](https://www.khronos.org/events/shading-languages-symposium-2026) |
+| ACM SIGGRAPH and SIGGRAPH Asia | Research conferences | Search the technical programs for shader languages, modular materials and cross-stage composition. Compare how those systems express the same material families with [LUSL interfaces and concepts](#interfaces-concepts-and-templates). [ACM SIGGRAPH conference archives](https://www.siggraph.org/siggraph-events/conferences/) |
+| ACM Transactions on Graphics (TOG) | Journal | Look for full language and rendering-system evaluations with representative scenes. Use their baselines to design shader-library migration comparisons for authoring effort, permutation counts and GPU output. [ACM journal](https://dl.acm.org/journal/tog) |
+| High-Performance Graphics (HPG) | Research conference | Look for GPU execution studies, specialized pipelines and shader performance measurements. Use them to choose workloads for timing and generated-code comparisons during [L5 qualification](#l5c-qualification-before-bulk-migration). [HPG programs](https://highperformancegraphics.org/) |
+| ACM SIGPLAN PLDI and OOPSLA, and Proceedings of the ACM on Programming Languages (PACMPL) | Research conferences and journal | Follow compiler correctness and testing at PLDI and language design and type systems at OOPSLA. Search their PACMPL issues for techniques to extend [uniformity checking](#uniformity), [space types](#matrices-and-coordinate-spaces) and differential shader tests. [SIGPLAN conferences](https://sigplan-www.sigplan.hosting.acm.org/Conferences/) and [PACMPL](https://sigplan-www.sigplan.hosting.acm.org/PACMPL/) |
+| IEEE/ACM International Symposium on Code Generation and Optimization (CGO) | Research conference | Look for compiler IR, lowering and optimization studies. Use their measurement methods when evaluating [emitted shader code](#testing) or a future direct backend. [CGO conference series](https://cgo.org/) |
+| GDC Festival of Gaming | Industry conference | Search the programming and graphics sessions for shader cooks, variant budgets and editor iteration. Use production case studies to choose what to measure during the Sample migration and in installed-SDK builds. [GDC Vault](https://gdcvault.com/) |
+| SIGGRAPH Advances in Real-Time Rendering in Games | Industry and research course series | Follow production renderers for patterns that stress shader interfaces, such as material layering and libraries shared across passes. Use them to choose representative Editor and cooked-package fixtures. [Course archive](https://advances.realtimerendering.com/) |
+| Journal of Computer Graphics Techniques (JCGT) | Journal | Look for shader-based techniques with enough implementation detail to reproduce them. Use them as small workloads for [LUSL and Slang parity tests](#testing). [JCGT issues](https://jcgt.org/read.html) |
+
 ## References
 
 These sources informed the design. Code comments will cite them where each idea
@@ -1056,3 +1189,71 @@ is implemented.
   The rules for uniform control flow, derivative operations and `discard` as
   demotion. LUSL declares `uniform` parameters instead of inferring
   per-parameter requirements.
+
+### References for further work
+
+- Yong He, Theresa Foley, Teguh Hofstee, Haomin Long and Kayvon Fatahalian,
+  “Shader Components: Modular and High Performance Shader Development,”
+  *ACM Transactions on Graphics* 36(4), SIGGRAPH 2017, §§5.6–6. The paper
+  specializes reusable shader components by implementation and parameter value.
+  During the [shared-library migration](#l5b-shared-libraries-and-build-paths),
+  a material or lighting helper with two concrete implementations could test
+  whether LUSL's [interfaces and concepts](#interfaces-concepts-and-templates)
+  remove duplicated shader code while staying within the existing package
+  budgets and preserving the output of each cooked variant.
+  [Author-hosted paper](https://graphics.cs.cmu.edu/projects/shadercomp/he17_shadercomp.pdf)
+- Damian Nachman (Unity Technologies), “Improvements to shader build times
+  and memory usage in 2021 LTS,” December 2022, “Shader variant
+  prefiltering.” Unity excludes combinations early
+  using render-pipeline settings to reduce enumeration work. If the Sample
+  migration slows shader cooking, measure clean and incremental cook times,
+  package size, and the separate configuration, program and specialization
+  counts. Use the package's authored configurations as the baseline. Cook and
+  run the affected configurations through the SDK to check that each still
+  resolves to the expected programs.
+  [Unity engineering article](https://unity.com/blog/engine-platform/2021-lts-improvements-to-shader-build-times-and-memory-usage)
+- Dietrich Geisler, Irene Yoon, Aditi Kabra, Horace He, Yinnon Sanders and Adrian
+  Sampson, “Geometry Types for Graphics Programming,” *Proceedings of the ACM on
+  Programming Languages* 4, OOPSLA 2020, §§3–5. Gator distinguishes reference
+  frames, geometric kinds such as points and directions, and coordinate
+  representations. When porting shared geometry helpers, test mismatched
+  frames, legal transform composition and the translation behavior of points
+  and directions. Use the last case to assess whether
+  [LUSL's explicit space types](#matrices-and-coordinate-spaces) need a
+  point/direction distinction at those interfaces.
+  [Paper](https://doi.org/10.1145/3428241)
+- LLVM Project, “Convergence and Uniformity,” “Temporal Divergence” and “Static
+  Uniformity Analysis.” LLVM models values produced by threads that leave a
+  loop on different iterations. If real shaders expose limitations in
+  [LUSL's conservative uniformity checker](#uniformity), use paired loop
+  fixtures to distinguish valid reconvergence from values that remain varying
+  after a loop. Check that rejected cases point the Editor author to the
+  deciding LUSL condition and that accepted cases compile on supported targets.
+  [LLVM design documentation](https://llvm.org/docs/ConvergenceAndUniformity.html)
+- Alastair F. Donaldson, Hugues Evrard, Andrei Lascu and Paul Thomson,
+  “Automated Testing of Graphics Shader Compilers,” *Proceedings of the ACM
+  on Programming Languages* 1, OOPSLA 2017, §§1.1 and 3. GLFuzz compares
+  rendering from shaders related by a transformation that preserves behavior.
+  Ludus already applies that idea in the
+  [same-backend raster fixture](https://github.com/The-Ludus-Project/Ludus/issues/1634)
+  for helper calls and named arguments. The same method can cover other lowering
+  changes during L5 by cooking equivalent LUSL shaders with shared inputs and
+  comparing readback on each backend.
+  [Paper](https://doi.org/10.1145/3133917)
+- Bastien Lecoeur, Hasan Mohsin and Alastair F. Donaldson, “Program
+  Reconditioning: Avoiding Undefined Behaviour When Finding and Reducing
+  Compiler Bugs,” *Proceedings of the ACM on Programming Languages* 7,
+  PLDI 2023, §§3–5. GLSLsmith and WGSLsmith constrain generated and reduced
+  programs to avoid undefined behavior and reduce false mismatches. To extend
+  [LUSL's existing fuzz and parity checks](#testing), start with bounded
+  compute programs that exercise defined integer behavior and compare exact
+  readback against an independently computed result. Add floating-point
+  cases once their comparison rules account for rounding on each target.
+  [Paper](https://doi.org/10.1145/3591294)
+- Microsoft PIX team, “Using automatic shader PDB resolution in PIX,” “PDB
+  Best Practices” and “Emitting PDBs for DXIL Shaders.” PIX can discover
+  external shader debug data using the compiler's suggested name. For the
+  [DXIL debug-view qualification](#tooling), capture a cooked SDK shader on
+  Windows and verify that PIX resolves its symbols and opens the original
+  `.lusl` file at the expected line through LUSL's lowering chain.
+  [Microsoft PIX engineering article](https://devblogs.microsoft.com/pix/using-automatic-shader-pdb-resolution-in-pix/)

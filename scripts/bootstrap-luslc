@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""Build the host luslc for cross builds and print its path (scripts/python/host_luslc.py).
+
+Pass the printed path as -DLUDUS_LUSLC=<path> when configuring an Emscripten build or an
+installed browser SDK consumer that compiles a .lusl shader. Rerunning rebuilds incrementally.
+"""
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts/python"))
+
+import host_luslc  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) > 1:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    try:
+        print(host_luslc.ensure(ROOT))
+    except host_luslc.HostLuslcError as error:
+        print("bootstrap-luslc: " + str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

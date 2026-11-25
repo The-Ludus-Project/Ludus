@@ -395,6 +395,37 @@ TEST_CASE("Viewport statistics average a fixed window and format the overlay", "
                          "42 draws"));
 }
 
+TEST_CASE("Compact statistics drop p95 and max, and the collapsed chip is one short line",
+          "[editor][viewport][statistics]")
+{
+    ViewportStatistics statistics;
+    statistics.Width = 1280;
+    statistics.Height = 720;
+    statistics.Draws = 42;
+    statistics.CpuMilliseconds.Add(1.5);
+    statistics.CpuMilliseconds.Add(2.5);
+    statistics.GpuState = ViewportGpuTimeState::Available;
+    statistics.GpuMilliseconds.Add(0.25);
+    const QString full = FormatViewportStatistics(statistics);
+    const QString compact = FormatCompactViewportStatistics(statistics);
+    CHECK(full.contains(QStringLiteral("p95")) == true);
+    CHECK(compact.contains(QStringLiteral("p95")) == false);
+    CHECK(compact.contains(QStringLiteral("GPU: 0.25 ms")) == true);
+    CHECK(compact.contains(QStringLiteral("Editor CPU per frame: 2.00 ms")) == true);
+    CHECK(compact.size() < full.size());
+    const QString summary = FormatViewportStatisticsSummary(statistics);
+    CHECK(summary.contains(QLatin1Char('\n')) == false);
+    CHECK(summary.startsWith(QStringLiteral("Stats · CPU ")) == true);
+    const QString expanded = MakeStatisticsOverlayText(compact, summary);
+    SetViewportStatisticsOverlayCollapsed(true);
+    const QString collapsed = MakeStatisticsOverlayText(compact, summary);
+    SetViewportStatisticsOverlayCollapsed(false);
+    CHECK(expanded.startsWith(QStringLiteral("▾ Stats")) == true);
+    CHECK(collapsed == QStringLiteral("▸ ") + summary);
+    CHECK(collapsed.size() < expanded.size());
+    CHECK(IsViewportStatisticsOverlayCollapsed() == false);
+}
+
 TEST_CASE("Viewport statistics show GPU n/a when timestamps are unavailable", "[editor][viewport][statistics]")
 {
     ViewportStatistics statistics;

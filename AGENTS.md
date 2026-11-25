@@ -105,7 +105,9 @@ existing item that covers the work.
 - Batches run `main`'s workflow definitions against the candidate's sources, so a
   workflow edit reaches batches only after promotion. Keep file lists, test lists
   and other candidate data out of workflow YAML: upload by pattern and name tests
-  in candidate files (`tests/sdk_consumer/browser-suites.json`). See
+  in candidate files (`tests/sdk_consumer/browser-suites.json`). Put a migrated
+  job's commands in its check plan (`scripts/ci/macos_native.py`), which runs every
+  independent check and reports each failure. See
   `docs/development/continuous-integration.md#batch-workflow-definitions`.
 - Request a manual batch only when the maintainer needs earlier qualification;
   retry an unchanged failed candidate only after investigating the failure. See
@@ -163,6 +165,11 @@ engine code. Discuss such cases in the PR before adding them.
   (`cmake/EngineCompilerWarnings.cmake`).
 - CI builds with warnings-as-errors (`LUDUS_WARNINGS_AS_ERRORS=ON`). Do not
   introduce new warnings; do not suppress them without justification in the PR.
+- Pull requests build only on Linux; MSVC and Emscripten warnings first appear in
+  batches. Declare a constant, internal function or parameter use under the same
+  preprocessor condition as its uses, and use `if constexpr` for conditions that
+  name only constants. See
+  `docs/development/continuous-integration.md#platform-only-warnings`.
 
 ### Formatting and static analysis
 
@@ -258,6 +265,7 @@ copied from `modules/content/scene_cook/.clang-tidy`) are checked in full.
 | Case rules: private/protected methods camelCase; public methods, free functions, types PascalCase; private members `m` + PascalCase; parameters and locals camelCase; constants UPPER_CASE | clang-tidy `readability-identifier-naming`: adopted scopes in full, `--tidy-changed` on changed lines |
 | No magic numbers | `source_policy.py` (lexical) and clang-tidy `readability-magic-numbers` (`--tidy-changed`) on changed non-test lines; waive a justified literal with `// ludus-style: magic-number <reason>` |
 | Pointers/integers compared explicitly | clang-tidy `readability-implicit-bool-conversion` on changed lines |
+| Symbols used only under an `#if` branch declared there, and `[[maybe_unused]]` when only `LUDUS_ASSERT` reads them; `if constexpr` for conditions naming only constants | `source_policy.py` (lexical) on changed lines; waive with `// ludus-style: conditional-use <reason>` or `constant-condition <reason>`. Linux Clang builds also enable `-Wunreachable-code` |
 | `out`/`inout` prefix on non-const lvalue reference parameters; none on rvalue references | N2: adopted scopes and changed lines (`out` vs `inout` choice is review-only) |
 | Boolean names read as questions | N3 (declarations spelled `bool`): adopted scopes and changed lines |
 | `OrNull` on nullable pointer variables | N4 (explicit null initializers): adopted scopes and changed lines; inferred nullability is review-only |
@@ -345,6 +353,11 @@ rejects the explicit `== true`/`== false` style.
   common material/transport shaders. Preserve reflection and installation tests.
   C++ math headers are not automatically Slang-compatible: keep language-specific
   declarations in their owner's shader include, with matched numerical tests.
+- Write shaders in directories that `config/lusl_migration.json` lists as
+  migrated in LUSL. `source_policy.py` rejects any `.slang`/`.slangh` file
+  there that the file's retained list does not name with a reason. A migration
+  wave deletes the Slang originals and adds their directories in one change. See
+  `docs/architecture/shading-language.md#l5d-migration-waves`.
 - Run `python3 scripts/python/source_policy.py --base <base-commit-or-ref>`.
   CI checks added/modified lines against the PR base, including standalone
   samples and tests, without a debt baseline. Existing violations do not permit

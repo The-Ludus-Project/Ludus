@@ -1,0 +1,74 @@
+// Two-stage Newton solver of the specular manifold sampling (SMS) port.
+#pragma once
+
+#include "reflection_map.luslh"
+
+// Thanks to Tizian Zeltner, Iliyan Georgiev and Wenzel Jakob, "Specular Manifold Sampling for Rendering
+// High-Frequency Caustics and Glints", SIGGRAPH 2020, sections 4.1-4.5,
+// https://doi.org/10.1145/3386569.3392408. Use offset-normal solves, smoothed LEAN initialization and
+// repeated independent re-hit trials. This port uses slope constraints and analytic derivatives;
+// it estimates ITS OWN Newton basin mass, rather than borrowing probabilities from the original solver.
+
+bool SolveReflection(in float32x3 receiverWorld,
+                     in float32x3 lightWorld,
+                     in float32x2 target,
+                     in float32x2 initialUv,
+                     in bool isSmoothed,
+                     out float32x2 outCoordinatesUv)
+{
+    float32x2 coordinatesUv = initialUv;
+    float32 beta = 1;
+    outCoordinatesUv = 0;
+    for (uint32 iteration = 0; iteration < SOLVER_ITERATIONS; ++iteration)
+    {
+        ReflectionMap map = EvaluateReflectionMap(receiverWorld, lightWorld, coordinatesUv, isSmoothed);
+        if (map.IsValid == false)
+        {
+            return false;
+        }
+        float32x2 difference = map.Residual - target;
+        if (length(difference) < SOLVER_TOLERANCE)
+        {
+            outCoordinatesUv = coordinatesUv;
+            return true;
+        }
+        float32 determinant = ComputeDeterminant(map.DerivativeU, map.DerivativeV);
+        if (abs(determinant) < MINIMUM_MAP_DETERMINANT)
+        {
+            return false;
+        }
+        float32x2 newtonStep = float32x2(ComputeDeterminant(difference, map.DerivativeV),
+                                         ComputeDeterminant(map.DerivativeU, difference)) /
+            determinant;
+        float32x2 candidateUv = coordinatesUv - beta * newtonStep;
+        if (any(candidateUv < float32x2(0)) == true || any(candidateUv >= float32x2(1)) == true)
+        {
+            beta *= 0.5;
+            continue;
+        }
+        coordinatesUv = candidateUv;
+        beta = min(1, 2 * beta);
+    }
+    return false;
+}
+
+bool SolveTwoStage(in float32x3 receiverWorld,
+                   in float32x3 lightWorld,
+                   in float32x2 target,
+                   in float32x2 initialUv,
+                   in float32x2 normalDraw,
+                   out float32x2 outCoordinatesUv)
+{
+    float32x2 mean = sceneData[SMOOTH_SLOPE_RECORD].xy;
+    float32x3 cholesky = sceneData[SMOOTH_COVARIANCE_RECORD].xyz;
+    float32x2 smoothTarget =
+        -0.5 * (mean - target) -
+        float32x2(cholesky.x * normalDraw.x, cholesky.y * normalDraw.x + cholesky.z * normalDraw.y);
+    float32x2 smoothUv;
+    if (SolveReflection(receiverWorld, lightWorld, smoothTarget, initialUv, true, out smoothUv) == false)
+    {
+        outCoordinatesUv = 0;
+        return false;
+    }
+    return SolveReflection(receiverWorld, lightWorld, target, smoothUv, false, out outCoordinatesUv);
+}

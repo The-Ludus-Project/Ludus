@@ -572,6 +572,19 @@ attachment-only, one mip; unsupported devices return Unsupported and callers cho
 the linear RGBA8 LDR path. LDR clips radiance above one before tone mapping; HDR
 preserves it. This is explicit quality selection, not a failed-frame fallback.
 
+For a dark gradient, check the scene attachment and the final SDR output
+separately. At exposure one, Reinhard followed by sRGB maps scene-linear
+`0.001` to display byte `3` when the scene attachment is RGBA16F. A linear
+RGBA8 scene attachment rounds that input to `0` before tone mapping, so the
+same pixel produces byte `0`. For a fixed camera, exposure, and tone curve,
+compare a scene-linear readback and the resulting SDR bytes for the same
+ramp. If the linear target merged distinct shades, try a supported float
+attachment where the chosen profile admits it. If the shades survive until
+the SDR write, evaluate dithering at that write. Use the same comparison when
+choosing the precision of a linear display intermediate for UI composition.
+[Bram Stolk's dark-gradient example](https://stolk.org/blog/srgb-versus-linear-colour-space.html)
+illustrates the cost of quantizing before the transfer.
+
 `PrepareLightingPresentation` retains an immutable source, mapping and manual
 exposure. It precreates both output encoding choices and selects one using the
 acquired `FrameInfo.Encoding`. Apply exposure and the selected `ToneCurve` once: guarded per-channel
@@ -1768,6 +1781,72 @@ save, and scene preparation for slot overrides. The proposed composition canvas
 will share that validation and history. A later Scattering Lab can inspect
 lobes, sampled directions, energy, and raw CPU/GPU reference results.
 
+### The first opaque layered material
+
+The first authored opaque layered material is a dielectric varnish over a
+diffuse wood substrate, built on the shared closure evaluator of gate 2. It is
+the engine test scene
+[`materials/varnished-wood-panel.luscene.json`](scene-source-format.md#engine-test-scenes),
+with the panel beside a black companion patch under the same coat.
+
+The layer order is a parameter blend, the operation Davide Pesare names *pattern
+layering*: an ordered coat over a substrate whose weights blend before the lobes,
+distinct from mixing scattering responses or walking an attenuating coat. The
+coat is a `cosine_power` reflection highlight weighted by the coat's
+normal-incidence reflectance, and the diffuse wood substrate is weighted by the
+coat's complementary transmittance, so the coat sits over the wood and attenuates
+it. The reflectance is the Fresnel `((eta − 1) / (eta + 1))²` of the authored
+coat index 1.5, which is 0.04. The lobe order records the layer order: the
+substrate lobe first, the coat lobe over it.
+
+Because every lobe of the closure program is a fixed-dimension reflection, the
+layered material carries that same guarantee
+(`SupportsFixedDimensionReflection`), so the restricted estimators of gate 2
+accept it with unchanged graph source and the general graphs draw it too. A
+raster profile draws the material's metallic-roughness approximation
+(`base_color`, `metallic`, `roughness`), which is the author's visible
+approximation of the coat.
+
+**Author it.** Edit the panel's program in a
+[scene source](scene-source-format.md#closure-program), or import the fixture
+into World and edit the coat reflectance and the substrate colour as closure
+parameters. Raising the coat reflectance deepens the varnish; the black patch's
+black substrate leaves the coat reflection alone, so it reads the coat response
+on its own, the black-substrate control role of
+[PR #1364](https://github.com/The-Ludus-Project/Ludus/pull/1364). Changing the
+layer order or an invalid parameter fails the program with a message that names
+the fix (scene source) or keeps the edit buffer and the last drawable World
+until a valid revision is ready (World Material document).
+
+**Author it from a World slot.** An author also creates the layered material
+directly from a slot with
+[Make Coated Diffuse…](../development/editor-workspace.md#edit-a-coated-diffuse-material-from-world):
+a built-in coated-diffuse model whose ordered layers are a dielectric coat
+(typed coat GGX alpha, index of refraction and optical thickness) over the
+slot's diffuse base colour as the substrate. This is the shared built-in
+coated-diffuse evaluator rather than the closure program of the fixture; the two
+express the same ordered coat over a substrate. The Material document names the
+ordered layers and edits the typed coat parameters, with a shared instance for
+every inheriting slot and a per-slot override, through World's edit, history,
+save and preparation. An invalid coat value keeps the edit buffer and the last
+drawable World until a valid revision is ready, and because the coat runs an
+internal walk, the document names the fixed-dimension profile that cannot
+capture it and the compatible-profile or raster fallback.
+
+**Package it.** Cook the World and its materials with `ludus-cook import`, then
+consume the same cooked World and material revision from a project built against
+the installed SDK, the
+[installed-SDK project workflow](../development/project-sdk-workflow.md). The
+layered material is ordinary cooked content: it needs no engine source and no
+new renderer entry point, so a project on a compatible renderer profile draws
+the authored coat response while the author changes camera or lighting. A
+profile that cannot consume a material capability gives the author an explicit
+diagnostic or a named fallback, the same capability contract the Editor uses.
+
+The conductor layer (metallic paint) extends this fixture after
+[#1376](https://github.com/The-Ludus-Project/Ludus/issues/1376) qualifies the
+dielectric coating over a conductor substrate.
+
 ### Implementation gates
 
 1. Preserve existing material IDs and rendering behavior through adapters for
@@ -1793,7 +1872,18 @@ lobes, sampled directions, energy, and raw CPU/GPU reference results.
    Verify that the general graph accepts it with unchanged source and the
    restricted graph either admits it or identifies a missing guarantee.
    Expand physical layering and subsurface transport with raw linear CPU/GPU
-   parity and explicit profile coverage.
+   parity and explicit profile coverage. Status: the
+   [first opaque layered material](#the-first-opaque-layered-material) is
+   authored on the shared closure evaluator as an ordered dielectric varnish
+   over a diffuse wood substrate (`materials/varnished-wood-panel.luscene.json`,
+   the varnished-wood cook check), with a black companion patch for the coat
+   response on its own. World also authors the layered material directly from a
+   slot with **Make Coated Diffuse…**: a created coated-diffuse material (its
+   base colour the substrate, typed coat alpha, IOR and thickness the coat),
+   edited through the Material document's shared instance, per-slot override,
+   undo, redo, save and reopen, with the internal-walk profile diagnostic. The
+   metallic-paint conductor layer extends the fixture after
+   [#1376](https://github.com/The-Ludus-Project/Ludus/issues/1376).
 
 ### Hair and skin rendering
 
@@ -2043,7 +2133,12 @@ and package that saved World in an
 Verify retained material assignments, textures and shader dependencies, and
 compare the clean package's rendered output with the editor on a declared
 target and raster profile. The standalone qualification depends on both
-raster features. [Installed SDK #1400](https://github.com/The-Ludus-Project/Ludus/issues/1400)
+raster features, and no single raster profile shades both, so it qualifies the
+one saved bust World through the forward lit profile for hair cards and the
+clustered deferred profile for skin. See
+[Qualify hair and skin in a standalone game](../development/hair-skin-standalone-qualification.md)
+and the [`hair_skin_bust` fixture](https://github.com/The-Ludus-Project/Ludus/tree/develop/tests/sdk_consumer/hair_skin_bust).
+[Installed SDK #1400](https://github.com/The-Ludus-Project/Ludus/issues/1400)
 
 Defer strand production work until a named static groom and memory budget
 justify a paired CPU and GPU prototype. The candidate is Matt Jen-Yuan Chiang,
@@ -2648,7 +2743,10 @@ Record any intentionally mixed approximation in the capture's rendering profile.
 
 Scene shaders enumerate analytic lights, mesh emitters and the environment through
 `GetLightCount` and `GetLightInfo`. For direct lighting, `SampleLight` selects one
-catalog source and samples its incident light. The chosen kind owns its draws.
+catalog source and samples its incident light at a world-space position. A
+`SurfaceHit` supplies the same position through `shadingHit.PositionWorld`.
+The chosen light kind owns its draws. The integrator handles visibility and
+scattering separately.
 The result carries the source PMF and the conditional probability separately.
 For a BSDF ray, `EvaluateLightAlongRay` returns emitted radiance and the two
 probability terms under the same selection policy, whether the ray hits a mesh
@@ -2876,7 +2974,9 @@ preserve raster, required requests fail startup explicitly. Metal additionally e
 native ray stage/function-table execution on hardware-ray devices supporting function
 pointers. The logical RT node selects this separately from inline-query compute or
 custom/software compute traversal; see [ray invocation authoring](../development/render-graph-authoring.md).
-Updates/refits, procedural primitives, motion and asynchronous compute remain unavailable.
+The RHI exposes [R16b refits and compaction](../development/fullscreen-rendering.md#acceleration-structure-refit-and-compaction-r16b),
+but the RT0 node does not use them yet; refit and rebuild policy is RT3. Procedural
+primitives, motion and asynchronous compute remain unavailable.
 
 The installed `ludus_compile_ray_queries(TARGET ... NAME ...)` helper cooks the
 fixed query kernel with verified Slang/SPIRV-Cross source and binary provenance.
@@ -3230,6 +3330,23 @@ out/build/macos-clang-debug/modules/graphics/renderer/ludus_reference_benchmark 
   out/bench/staircase2 512 225 64 8 gpu 3
 ```
 
+In place of a scene directory, `cornell:ARRANGEMENT[:TILES]` generates the
+Cornell tile room of the
+[hit-shading measurements](#measured-hit-shading-cost-and-decision). The
+arrangements are `single`, `striped`, `interleaved`, `shuffled` and `only-0` to
+`only-4`, and TILES is 5 or 10. `LUDUS_REFERENCE_BENCHMARK_KERNELS` names GPU
+transport kernels to compare in one process: `reference`, `repeat-closest`,
+`repeat-visibility` and `permuted`, separated by commas. Runs alternate their
+order. The benchmark fails when a kernel's checksum or query counts differ from
+the first kernel's, and prints each kernel's median per-dispatch transport time
+and its paired difference:
+
+```bash
+LUDUS_REFERENCE_BENCHMARK_KERNELS=reference,repeat-closest,repeat-visibility,permuted \
+  out/build/macos-clang-release/modules/graphics/renderer/ludus_reference_benchmark \
+  cornell:interleaved 384 384 64 8 gpu 8
+```
+
 On Apple M5 Metal (macOS 26.6, debug build, about 29,000 triangles), the median
 BVH needed 7.8–7.9 s of transport device time for 512×225 pixels at 64 samples
 per pixel and depth 8. Wall time was 9.5–9.6 s. The SAH BVH with near-first
@@ -3549,9 +3666,16 @@ reach the translated MSL, so shared code whose bits must match the CPU oracle, w
 FoundationMath builds without contraction, keeps the product in its own
 translated statement. `TryMutateMetropolisPrimary` gives its step a second use
 for this, and the `ludus_renderer_metropolis_parity` case checks the bits.
-Turning contraction off for every compute library instead made 2,816 of 4,096
-pixels of the 64 x 64 wave capture exceed `WavePropagationCapacity`, so the wave
-connection's region stepping depends on contraction
+With contraction disabled on an Apple M5, the unobstructed 64 x 64 wave
+capture could latch `WavePropagationCapacity` before reaching the propagation
+loop. Separating the statuses showed the light-source escape exhausting its
+attempts even though the first probe segment was clear. The C++ oracle and
+Slang now use a hit-only BVH walk for escape probes. That walk stops at the
+first intersection and leaves region gathering to the propagation loop, where
+the triangle IDs are needed to build the transmission mask.
+The Metal regression prepends `#pragma METAL fp contract(off)` to the test's
+cooked compute shader and requires a complete capture with finite, positive
+radiance at every pixel
 ([#1546](https://github.com/The-Ludus-Project/Ludus/issues/1546)).
 
 Three GPU-transport cases (`L6 depth 4`, one-more-vertex HGS and conditional ReSTIR
@@ -3676,6 +3800,9 @@ for area-light visibility segments. Expose offset diagnostics instead of scene
 authors tuning a hidden epsilon.
 
 ### Progressive reference integrator
+
+The [renderer sampling architecture](renderer-sampling.md) defines sample
+pattern ownership and the proposal boundary shared with authored shaders.
 
 Jakub Boksansky and Adam Marrs's “The Reference Path Tracer” (*Ray Tracing Gems II*,
 chapter 14, especially 14.3.1–14.3.7) supports integrating an inspectable reference
@@ -4136,6 +4263,92 @@ Check raw emission, direct, indirect and total radiance against the
 [CPU oracle contract](#cpu-and-gpu-reference-implementation-requirement).
 Exercise partially filled queues and capacity exhaustion, and verify that
 every admitted sample is committed exactly once on successful completion.
+
+#### Measured hit-shading cost and decision
+
+**Decision: do not prototype a hit-shading queue.** Traversal takes almost all
+of the transport dispatch on Staircase2. Everything else, including hit shading,
+takes about 5%, so grouping hits by material cannot recover enough to pay for a
+queue. This decision completes issue
+[#1250](https://github.com/The-Ludus-Project/Ludus/issues/1250). Revisit it
+only if a scene's measured non-traversal share is large.
+
+The renderer timestamps cover one transport dispatch, so the benchmark compares
+it with diagnostic kernels cooked from the same source.
+`renderer_reference_repeat_closest` traces every closest-hit query twice, and
+`renderer_reference_repeat_visibility` does the same for every visibility query.
+The repeated query must return the same hit, or the capture fails. The added
+device time estimates each traversal class's cost while the paths stay unchanged.
+The remainder of the dispatch is camera rays, shading, light sampling and
+accumulation. `renderer_reference_permuted` is the coherence control after
+Foley and Sugerman: threads take pixels in a fixed pseudorandom order, and every
+pixel still commits its own addressed sample. All three diagnostic kernels
+reproduced the reference checksum and closest and visibility query counts in
+every run, so they render the same image and commit each sample exactly once.
+The production `renderer_reference` Metal source is unchanged.
+
+Setup: Apple M5 Metal on macOS 26.6, a `macos-clang-release` build, 64 samples
+per pixel, depth 8 and roulette from depth 3. The benchmark alternates the four
+kernels in one process and reverses their order on every other run. Staircase2
+ran at 512×225 for 10 runs per kernel and the Cornell rooms at 384×384 for 8. The
+GPU timing batches timed every transport and reduction dispatch. Other processes
+shared the machine and its GPU; Staircase2's reference dispatch took 31 ms here,
+about twice the earlier 1.03–1.13 s per capture. Values are medians, with
+interquartile ranges of the paired per-run differences in brackets.
+
+| Scene | Reference dispatch | + repeated closest | + repeated visibility | Remainder | + permuted |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Staircase2, 28,831 triangles | 31.2 ms | +17.5 [16.2, 17.9] | +12.3 [11.8, 12.8] | 1.4 ms (5%) | +3.3 [1.9, 4.3] |
+| Cornell, diffuse walls (`single`) | 18.4 ms | +9.6 [9.4, 10.1] | +5.2 [4.7, 5.8] | 3.7 ms (20%) | +3.6 [2.8, 4.9] |
+| Cornell, `striped` | 22.9 ms | +8.4 [8.1, 9.7] | +4.9 [4.4, 5.8] | 9.7 ms (42%) | +9.7 [9.3, 10.3] |
+| Cornell, `interleaved` | 23.4 ms | +8.5 [7.9, 9.9] | +4.7 [4.5, 5.4] | 10.2 ms (44%) | +7.1 [7.0, 7.7] |
+| Cornell, `shuffled` | 22.9 ms | +8.2 [7.7, 8.4] | +4.1 [3.9, 4.6] | 10.6 ms (46%) | +7.0 [6.8, 8.0] |
+
+The Cornell room is generated by the benchmark. It holds 1,082 triangles in fixed
+positions, with two diffuse blocks and one ceiling light. Its walls are split
+into 10×10 quads. The `striped`, `interleaved` and `shuffled` arrangements put
+each of five materials on a fifth of every wall: diffuse, metallic-roughness,
+gold conductor, coated diffuse and thin dielectric. They use vertical stripes,
+alternation that gives every neighbouring quad a different material, and a fixed
+random order. With one material on every wall, the remainder per closest-hit query
+was 14, 11, 11, 57 and 5 ns respectively, so the coated diffuse random walk is the
+expensive path. The mixed rooms spent 26–28 ns per query. A divergence-free
+mixture of the five would cost about 20 ns, so material divergence costs about
+2–3 ms of a 23 ms dispatch. That is at most 13% in a room built to provoke it. The
+`single` room and the identical diffuse-only room differ by 2 ms in remainder,
+which bounds the resolution of this subtraction.
+
+The measurements support these conclusions:
+
+- **Hit shading.** Staircase2 spends at most about 1.4 ms of a 31 ms dispatch
+  outside traversal. Even a free scheduler would gain at most that. MoonRay's
+  queuing, sorting and layout conversion took 6.86–18.99% of render time, which
+  exceeds this bound.
+- **Material coherence.** The three mixed arrangements cost the same within
+  noise, so contiguous materials on screen do not make shading cheaper. After
+  the first bounce, rays are incoherent in every arrangement. Permuting pixels costs
+  3.3 ms on Staircase2 and 3.6 ms on the diffuse room, which is the traversal
+  coherence cost. It costs 7–10 ms on the mixed rooms, so fully divergent primary
+  hits add up to 6 ms. The unpermuted kernel does not have that divergence.
+- **Traversal.** Traversal remains the cost to reduce. On Staircase2 a closest
+  query costs about 44 ns, and a visibility query about 44 ns. Wall time is
+  dominated by per-sample submission and readback: 6.9 s per capture against
+  2.0 s of transport. See the
+  [resumable traversal evaluation](https://github.com/The-Ludus-Project/Ludus/issues/1887).
+
+Limits of the method:
+
+- A repeated query finds its nodes already in cache. That understates
+  traversal cost and overstates the remainder, so the remainder is an upper
+  bound on hit shading.
+- Inlining a second traversal can raise register pressure for the whole kernel.
+  Metal reported 1,024 threads per threadgroup and a 32-lane SIMD for all four
+  kernels, but Apple GPUs expose neither register counts nor active-lane counters
+  without Xcode's GPU tools. Active-lane and register-pressure measurements
+  remain unavailable on this machine.
+- Opacity tests during traversal count as traversal. No other backend or GPU
+  has been profiled. A device with expensive shading relative to traversal
+  should repeat this measurement before reopening the queue question.
 
 ### Ray milestones and evidence
 
@@ -5870,16 +6083,24 @@ its existing level-zero sampling contract.
 
 The optional analytic-light bake also samples incoming bounced radiance at
 a bounded uniform World grid. Six cosine projections form an ambient cube at
-each probe. Short first-hit rays populate six coarse face depth maps in the
-same atlas, 8 × 8 texels per face. The depth maps store distance along the
-face axis so planar walls aligned to the grid give consistent comparisons across neighbouring rays.
+each probe. Short first-hit rays populate six 16 × 16 axial depth faces.
+Depth along the face axis keeps comparisons consistent across neighbouring
+rays for axis-aligned planes. Each RGBA8 visibility texel holds four neighbouring
+UNORM8 depths in one bilinear footprint. This lets the shader compare each
+depth with the receiver before filtering, using one texture load. The footprint
+clamps at the dominant face's edge.
+
 This adapts the visibility-aware interpolation of [Majercik, Guertin,
 Nowrouzezahrai and McGuire, *Dynamic Diffuse Global Illumination with Ray-Traced
 Irradiance Fields*, §5](https://jcgt.org/published/0008/02/01/) for an offline
-bake with nearest depth samples.
+bake. The lookup subtracts 1/128 of a cell from the receiver depth to cover
+UNORM8 rounding over the two-cell range. Coverage up to 75% contributes zero.
+Coverage above 75% ramps to one and scales the probe's trilinear weight.
+This suppresses partial visibility that could otherwise dominate the
+normalized blend near an occluder.
 
-The authored Lit shader samples up to eight neighbours, rejects occluded or
-invalid probes, and renormalizes the remaining trilinear weights. A material
+The authored Lit shader samples up to eight neighbours, rejects invalid probes, and
+renormalizes the visibility-weighted trilinear blend. A material
 binds either the probe atlas or a surface chart. The volume contributes only
 bounce from the selected analytic lights, so receivers keep live direct
 lighting and environment. Marked moving receivers are excluded from the
@@ -5889,9 +6110,9 @@ to evaluate their original transport against the full scene.
 
 #### Probe visibility near walls and openings
 
-Each lookup compares the receiver against one nearest sample of an 8 × 8
-axial depth map per face. The ray through that texel's centre can cross a
-different part of a wall from the ray to the receiver. It can see around a
+The previous 8 × 8 layout compared the receiver against the nearest axial
+depth sample. The ray through that texel's centre could cross a
+different part of a wall from the ray to the receiver. It could see around a
 thin or diagonal obstruction, or hit a wall where the receiver's ray would
 pass through a doorway. Renormalizing the surviving weights can magnify a
 single wrongly admitted probe. Receiver meshes marked for probe GI are
@@ -5928,7 +6149,8 @@ The hidden native editor test *Native Lit probe GI visibility qualification
 around thin and diagonal walls and a doorway*
 (`apps/editor/tests/render_native_tests.mm`, `[.render-native][probe-gi]`)
 renders the studied cell through the production World bake and native Lit
-viewport. It runs in the macOS batch jobs and locally with the Cocoa platform.
+viewport. It runs in the macOS batch jobs and locally with the Cocoa platform. The first
+measurements below describe the earlier nearest-depth layouts.
 
 - **Fixture.** A 3 × 2 × 2 grid with 1 m spacing and origin
   (−1, 0.5, −0.5) m puts the studied cell between lit probes at x = 0 and
@@ -5999,34 +6221,87 @@ The GPU rows are 30-frame means at 1024 × 697 physical pixels, with 95th
 percentiles up to 5.8 ms. The two layouts did not differ beyond run-to-run
 variation.
 
-**Decision.** The bake uses 8 × 8 faces. They remove the diagonal leak and
-keep the bounce through the opening at the exact-visibility value, for 3.8
-times the atlas bytes and no measurable GPU cost. Worlds saved with 4 × 4
-atlases fail the atlas extent check on open, so the editor rebakes them in
-the background. Two errors remain. A receiver 5 cm (5 % of the spacing) from
-an axis-aligned wall leaked at four of ten heights, where a lit probe's
-dominant face texel misses the wall. Just past an opening, one wrongly admitted probe outweighs the
-reference by 0.2. The exact-visibility lookup has neither error with the
-same weights, so both belong to the single nearest-texel depth comparison.
-A seam-aware variant also tested each face within one edge texel of the
-dominant axis. In the CPU lookup it removed two of the four near-field leaks
-but not the largest, so it was not adopted. A filtered distance
-representation, such as the mean and second-moment test of Majercik et al.
-§5, is the next candidate and should be measured with this fixture.
+The 8 × 8 baseline removed the diagonal leak and retained doorway bounce at
+the exact-visibility value. A seam-aware lookup required nearby faces to agree
+and removed two of the four near-field leaks in the CPU lookup. The largest
+leak remained.
 
-Usable limits from the 1 m qualification:
+**Filtered visibility.** The CPU evaluator also tried the one-sided Chebyshev
+test from Majercik et al. §5. It bilinearly filters depth and squared depth,
+returns full visibility up to the mean, then uses variance divided by variance
+plus squared distance past the mean. The equal-weight control uses depths
+{1, 1, 3, 3} and {2−√2, 2, 2, 2+√2}. Both have mean 2 and second moment 5.
+At distance 2.5 with zero bias, Chebyshev returns 0.8 for both. Comparing the
+individual taps gives coverage 0.5 and 0.25 respectively. The two moments
+discard the distinction between these depth distributions. The production
+coverage cutoff suppresses both of these partially visible footprints.
 
-- Keep probe layers more than 1.6 % of the spacing from surfaces, the
-  bake's minimum clearance of 2/255 of its two-cell depth range. A probe
-  closer than that is invalid. Where every neighbour is invalid, receivers
+The doorway sweep moves the rendered receiver across the opening edge at
+x = 0.65 m from y = 0.91 to 1.09 m. At each measured pixel the fixture traces
+independent segments to the valid probes. It separately records blocked
+trilinear weight admitted by the filter and visible trilinear weight rejected,
+before renormalization. The same calculation evaluates the moment test with
+the four packed depths, tap weights and receiver bias of the filtered lookup.
+
+| Doorway sweep, pre-normalization trilinear weight | Four-tap comparison | Chebyshev moments |
+| --- | ---: | ---: |
+| False admission, mean / peak | .0074 / .0266 | .1317 / .3487 |
+| False rejection, mean / peak | .0021 / .0103 | 0 / 0 |
+
+At y = 1.01 m, the filtered receiver still measured 0.0506 against 0.0088
+with exact visibility. Normalizing the surviving weights can amplify even
+a small false admission along the edge.
+
+The Apple M5 Cocoa/Metal Development comparison used the same engine bake
+and native Lit fixture for the 8 × 8 nearest-depth baseline and 16 × 16
+filtered candidate.
+
+| Receiver or path | Transport reference | 8 × 8 native | 16 × 16 native | 16 × 16 exact segments |
+| --- | ---: | ---: | ---: | ---: |
+| Near wall x = 0.55 m, worst of ten heights | 0 | .1574 | 0 | 0 |
+| Dark side of the diagonal wall | 0 | 0 | 0 | 0 |
+| Doorway, lit side x = 0.35 m | .3583 | .401 | .6084 | .6108 |
+| Doorway, just past the opening x = 0.55 m | .1571 | .2791 | .2791 | .2793 |
+| Doorway, dark side x = 0.65 m | .0236 | .2189 | .0090 | .0086 |
+
+At x = 0.35 m, the filter admits the visible lit-side probes again and
+matches the exact-segment lookup. The higher irradiance error at that
+point measures coarse interpolation of the probe irradiance. The fixture
+keeps the original checks and caps the 5 cm near-field leak at 0.04 and
+the dark-side doorway sample at the transport reference plus 0.01.
+The editor rejects 4 × 4 and 8 × 8 saved atlases by extent and rebakes
+them from the World inputs.
+
+| Cost | 8 × 8 nearest | 16 × 16 filtered |
+| --- | ---: | ---: |
+| Unpadded bytes per probe | 1,560 | 6,168 |
+| Atlas bytes, 12 probes | 19,456 | 77,824 |
+| Atlas bytes, 12 × 12 × 12 probes | 2,696,192 | 10,661,888 |
+| Visibility rays per probe | 384 | 1,536 |
+| CPU bake, axis wall control, 40 probes on four workers | 13.5 ms | 26.3 ms |
+| CPU bake, range over the five fixtures | 11.1–45.7 ms | 11.2–50.1 ms |
+| GPU frame with probe lookups, mean / p95 | 1.465 / 5.594 ms | 1.120 / 3.157 ms |
+| GPU frame outside the volume, mean / p95 | 2.264 / 4.507 ms | 2.056 / 15.337 ms |
+
+The CPU rows average 16 seeds for each 40-probe reference bake. Each GPU
+row uses the last 30 presented frames at 1024 × 697 physical pixels.
+The outside-volume p95 varied substantially between runs.
+
+
+Usable limits:
+
+- Keep probe layers more than 1.6 % of the spacing from floors, ceilings and
+  walls. The bake invalidates a probe if any depth ray rounds below code 2
+  in the two-cell distance range. Where every neighbour is invalid, receivers
   lose all baked bounce; the embedded case lost 1.96–3.43.
-- Expect leaks at receivers about 5 % of the spacing from a wall and just
-  past an opening. Choose a spacing whose cells do not straddle a thin divider near
-  where receivers move, or move the volume so walls fall near cell centres.
-- Trilinear interpolation across 1 m cells overestimated the lit half by
-  51–62 %. Probes nearer the light and floor contributed brighter bounce.
-  Visibility does not cause this error. Smaller spacing reduces it but was
-  not qualified here.
+- Check narrow openings and wall edges in the Lit viewport. Directional
+  undersampling and the coverage cutoff can reject partial visibility. Choose
+  a volume placement and spacing that preserve bounce through the opening.
+- The 1 m cell overestimated the lit half by 51–62% even with exact
+  probe-segment visibility. A separate spacing trial keeps the transport
+  reference fixed and changes the grid to 0.5 m with an X offset of −0.25 m.
+  Across the five lit samples the largest absolute relative error fell
+  from about 63% to 7% with exact segments in both lookups.
 
 ### Material debug views
 

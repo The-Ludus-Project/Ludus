@@ -183,7 +183,10 @@ def _validate_node(node, where):
     elif kind == "Camera":
         fields |= {"active", "role", "target_type"}
     elif kind == "Buffer":
-        fields |= ({"bytes_per_pixel", "extent"} if "bytes_per_pixel" in node else {"bytes"})
+        if "shader_struct" in node:
+            fields.add("shader_struct")
+        else:
+            fields |= ({"bytes_per_pixel", "extent"} if "bytes_per_pixel" in node else {"bytes"})
     elif kind == "Target":
         fields |= {"type", "format", "extent", "samples", "imported", "initialized", "presentation"}
     elif kind == "Raster":
@@ -216,7 +219,22 @@ def _validate_node(node, where):
         _require(node["role"] != "Presentation" or node["target_type"] == "ColorTexture",
                  "TypeMismatch", where, "a presentation camera requires a color target")
     elif kind == "Buffer":
-        if 'bytes_per_pixel' in node:
+        if 'shader_struct' in node:
+            record = node['shader_struct']
+            _keys(record, ('source', 'type', 'count'), where, ('access',))
+            if 'access' in record:
+                _enum(record['access'], ('Structured', 'PackedWords'), where + '/shader_struct/access')
+            source = record['source']
+            _require(type(source) is str and source.endswith(('.slang', '.luslh')) and
+                     not any(character in source for character in ('\\', ':', '"', '\0', '\n', '\r')),
+                     'Source', where, 'select a package-relative .slang or .luslh file for the buffer struct')
+            relative = Path(source)
+            _require(not relative.is_absolute() and '..' not in relative.parts and relative.as_posix() == source,
+                     'Source', where, 'the struct file must be inside the graph package')
+            name = _identifier(record['type'], where)
+            _require('-' not in name, 'Schema', where, 'enter a shader struct identifier')
+            _integer(record['count'], 1, ray.MAX_BUFFER_BYTES, where)
+        elif 'bytes_per_pixel' in node:
             _integer(node['bytes_per_pixel'], ray.BUFFER_WORD_BYTES, ray.MAX_BUFFER_PIXEL_BYTES, where)
             _require(node['bytes_per_pixel'] % ray.BUFFER_WORD_BYTES == 0 and node['extent'] == 'RenderSize',
                      'Capacity', where, 'pixel buffers require RenderSize and a stride multiple of 16')
@@ -279,7 +297,7 @@ def _validate_document(value, where):
             _require(value['version'] == 2 or (node.get('kind') not in sizes.KINDS and node.get('extent') != 'RenderSize'),
                      'Version', location, 'shared render sizes require document version 2')
             _validate_node(node, location + "/" + str(node.get("id", "node"))
-                           if node.get("kind") in (*pipeline.KINDS, *sizes.KINDS, 'StructuredBuffer', 'Upscale') else location)
+                           if node.get("kind") in (*pipeline.KINDS, *sizes.KINDS, 'Buffer', 'StructuredBuffer', 'Upscale') else location)
             _require(node["id"] not in nodes, "DuplicateIdentity", location, node["id"])
             nodes.add(node["id"])
         for edge in config["edges"]:
@@ -808,7 +826,11 @@ def _operation_resource_uses(operation):
         writes = use['access'] == 'ReadWrite'
         yield use['resource'], use['input_version'], use['output_version'] if writes else None, True if writes else None
     for use in operation.get('persistent_buffers', ()):
+        yield use['resource'], use['input_version'], use['output_version'], True if use['output_version'] is not None else None
+    for use in operation.get('storage_textures', ()):
         yield use['resource'], use['input_version'], use['output_version'], True
+    for use in operation.get('sampled_textures', ()):
+        yield use['resource'], use['input_version'], None, None
     for field in ('visibility', 'visibility_depth', 'source_color'):
         if field in operation:
             use = operation[field]
@@ -901,6 +923,8 @@ class _Compiler:
                              'pixel buffer exceeds storage capacity; reduce the connected RenderSize scale')
                 self.resources[where] = {'type': 'Buffer', 'format': 'Bytes', 'extent': [capacity, 1],
                                          'samples': 1, 'imported': False, 'initialized': True, 'presentation': False}
+                if 'shader_struct' in node:
+                    self.resources[where]['shader_struct'] = node['shader_struct']
                 if 'bytes_per_pixel' in node:
                     self.resources[where]['bytes_per_pixel'] = node['bytes_per_pixel']
                     if inputs['size'].scale:
@@ -930,38 +954,63 @@ class _Compiler:
                 outputs["view"] = _Value("View", origin=where, cameras=(where,) if node["active"] else ())
             elif kind == "RayTracing":
                 is_compute = authored_pipeline['kind'] == compute.SOURCE_KIND
-                work_items = authored_pipeline['invocation'].get('work_items', 0)
-                expected_dimensions = None
+                invocation = authored_pipeline['invocation']
+                work_items = invocation.get('work_items', 0)
+                is_storage_texture = invocation.get('storage_texture', False)
+                dimensions = invocation.get('dimensions')
+                label = 'scene compute pass' if is_compute else 'ray pipeline'
                 if work_items == 0:
-                    target = self.resources[inputs['color'].resource]
-                    label = 'scene compute pass' if is_compute else 'ray pipeline'
                     _require(inputs['view'].cameras, 'CameraTarget', where, f'{label} requires an active camera',
                              port=input_mapping['view'], direction='input', expected='active camera View', actual='inactive camera View',
                              repair='Enable Active on the connected camera and give it a route to Export or Present.')
+                launch_dimensions = dimensions
+                if 'color' in inputs:
+                    target = self.resources[inputs['color'].resource]
                     _require(target['format'] == 'RGBA8Unorm' and target['samples'] == 1 and not target['presentation'],
                              'Capability', where, f'{label} requires an offscreen single-sample RGBA8Unorm target',
                              port=input_mapping['color'], direction='input', expected='offscreen RGBA8Unorm, samples=1',
                              actual=f"{target['format']}, samples={target['samples']}, presentation={target['presentation']}",
                              repair='Connect an offscreen single-sample RGBA8Unorm color target.')
-                    dimensions = authored_pipeline['invocation']['dimensions']
-                    expected_dimensions = [*target['extent'], 1]
-                    _require(dimensions == 'ColorTarget' or (not target.get('view_scale') and dimensions == expected_dimensions),
-                             'AttachmentMismatch', where,
-                             (f"Color target '{inputs['color'].resource}' is view-relative; explicit launch dimensions {dimensions} "
-                              'cannot follow view changes. Choose Match color target in Invocation.' if target.get('view_scale') else
-                              f"{'Scene compute' if is_compute else 'Ray'} launch dimensions are {dimensions}, but color target '{inputs['color'].resource}' "
-                              f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}."),
-                             field='invocation.dimensions', expected='ColorTarget' if target.get('view_scale') else expected_dimensions,
-                             actual=dimensions, repair='Choose Match color target in Invocation → Launch size.')
-                visibility_reads = {}
+                    launch_dimensions = [*target['extent'], 1] if dimensions == 'ColorTarget' else dimensions
+                    if is_storage_texture:
+                        _require(not target['imported'] and inputs['color'].version == 0 and
+                                 not target.get('storage_texture') and 'visibility' not in inputs,
+                                 'Capability', where,
+                                 'storage texture dispatch needs its own graph-owned Target and an ordinary View',
+                                 port=input_mapping['color'], direction='input',
+                                 repair='Connect a dedicated offscreen Target and remove any visibility/depth inputs.')
+                        target['storage_texture'] = True
+                        target['initialized'] = True
+                texture_reads = {}
                 if 'visibility' in inputs:
+                    visibility = self.resources[inputs['visibility'].resource]
+                    _require(dimensions == 'ColorTarget' or
+                             (not visibility.get('view_scale') and dimensions == [*visibility['extent'], 1]),
+                             'AttachmentMismatch', where, 'visibility reconstruction needs one invocation per visibility texel',
+                             field='invocation.dimensions',
+                             repair='Choose Match color target, or match a fixed visibility texture extent.')
                     for aspect in ('visibility', 'visibility_depth'):
                         source_value = inputs[aspect]
                         resource = self.resources[source_value.resource]
                         _require(source_value.defined and resource['extent'] == target['extent'] and
                                  resource.get('view_scale') == target.get('view_scale') and resource['samples'] == 1,
                                  'AttachmentMismatch', where, 'visibility/depth must be initialized and match the ray extent')
-                        visibility_reads[aspect] = {'resource': source_value.resource, 'input_version': source_value.version}
+                        texture_reads[aspect] = {'resource': source_value.resource, 'input_version': source_value.version}
+                sampled_textures = []
+                for key, port in input_mapping.items():
+                    if not key.startswith('sampled:') or key not in inputs:
+                        continue
+                    source_value = inputs[key]
+                    resource = self.resources[source_value.resource]
+                    _require(source_value.defined and
+                             ('color' not in inputs or source_value.resource != inputs['color'].resource) and
+                             resource['format'] == 'RGBA8Unorm' and resource['samples'] == 1 and
+                             not resource['presentation'], 'AttachmentMismatch', where,
+                             'scene compute color input requires a defined, separate, offscreen RGBA8Unorm texture',
+                             port=port, direction='input',
+                             repair='Connect the color output of an upstream scene compute or ray pass.')
+                    sampled_textures.append({'port': port, 'resource': source_value.resource,
+                                             'input_version': source_value.version})
                 structured = [port['id'] for port in authored_pipeline['inputs'] if port['type'] == 'Buffer' and
                               'stride' in self.resources[inputs['buffer:' + port['id']].resource]]
                 _require(not is_compute or not structured, 'Capability', where,
@@ -974,32 +1023,83 @@ class _Compiler:
                 buffer_outputs = {}
                 for slot, port in enumerate(port for port in authored_pipeline['inputs'] if port['type'] == 'Buffer'):
                     identity = 'buffer:' + port['id']
-                    if 'stride' in self.resources[inputs[identity].resource]:
+                    resource = self.resources[inputs[identity].resource]
+                    if 'stride' in resource:
                         continue
-                    output = next((port for port in authored_pipeline['outputs'] if port['target'] == input_mapping[identity]), None)
-                    _require(output is not None, 'Capability', where, 'each persistent Buffer input requires a paired Load/Store Buffer output')
-                    written = self.write(inputs[identity], {identity + '_load': 'Load', identity + '_store': 'Store'},
-                                         identity, where, ())
-                    buffer_uses.append({'resource': written.resource, 'slot': slot,
-                                        'input_version': inputs[identity].version, 'output_version': written.version})
-                    buffer_outputs[output['id']] = written
+                    output = next((row for row in authored_pipeline['outputs'] if row['target'] == input_mapping[identity]), None)
+                    _require(output is not None or 'shader_struct' in resource, 'Capability', where,
+                             'raw persistent Buffer inputs require a paired Load/Store output',
+                             port=port['id'], direction='input',
+                             repair='Add a paired Writable Resource or choose From shader struct for read-only access.')
+                    source = inputs[identity]
+                    version = None
+                    if output is not None:
+                        written = self.write(source, {identity + '_load': 'Load', identity + '_store': 'Store'},
+                                             identity, where, ())
+                        version = written.version
+                        buffer_outputs[output['id']] = written
+                    use = {'resource': source.resource, 'slot': slot,
+                           'input_version': source.version, 'output_version': version}
+                    if buffers.is_native_record(resource.get('shader_struct')):
+                        use['binding_slot'] = buffers.NATIVE_RECORD_SLOT
+                    buffer_uses.append(use)
                 _require(len({use['resource'] for use in buffer_uses}) == len(buffer_uses), 'MultipleWriters', where,
                          'one physical buffer cannot occupy both buffer inputs of a pass')
+                _require(len({use.get('binding_slot', use['slot']) for use in buffer_uses}) == len(buffer_uses),
+                         'Capability', where, 'the native structured Buffer reserves the second graph binding. '
+                         'Put the other Buffer input first or use Packed words for this configuration.')
                 attachments = {}
                 color_outputs = {}
-                if work_items == 0:
-                    value = self.write(inputs['color'], node, 'color', where, inputs['view'].cameras)
+                if 'color' in inputs:
+                    source = replace(inputs['color'], defined=True) if is_storage_texture else inputs['color']
+                    value = self.write(source, node, 'color', where, inputs['view'].cameras)
                     attachments['color'] = {'resource': value.resource, 'input_version': inputs['color'].version,
                                             'output_version': value.version, 'defined': value.defined,
-                                            'load': 'Clear', 'store': 'Store'}
+                                            'load': node['color_load'], 'store': 'Store'}
                     color_outputs[output_mapping['color']] = value
+                if work_items == 0:
                     launch = {'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
-                              'dimensions': expected_dimensions}
+                              'dimensions': launch_dimensions}
                 else:
                     launch = {'work_items': work_items}
+                storage_textures = []
+                occupied_textures = {inputs[key].resource for key in ('color', 'visibility', 'visibility_depth')
+                                     if key in inputs}
+                occupied_textures.update(use['resource'] for use in sampled_textures)
+                output_ports = {port['id']: port for port in authored_pipeline['outputs']}
+                for key, port in input_mapping.items():
+                    if not key.startswith('texture:'):
+                        continue
+                    source = inputs[key]
+                    texture = self.resources[source.resource]
+                    _require(source.resource not in occupied_textures, 'MultipleWriters', where,
+                             'a shader texture must use its own allocation within this pass',
+                             port=port, direction='input', repair='Connect a different Target or remove the duplicate port.')
+                    occupied_textures.add(source.resource)
+                    _require(texture['format'] == 'RGBA8Unorm' and texture['samples'] == 1 and
+                             not texture['presentation'] and not texture['imported'],
+                             'Capability', where, 'shader read/write requires a graph-owned, single-sample RGBA8Unorm Target',
+                             port=port, direction='input', repair='Connect a dedicated offscreen Target.')
+                    _require(source.version == self.latest[source.resource], 'StaleVersion', where,
+                             'shader read/write must consume the current texture version',
+                             port=port, direction='input', repair='Connect the previous writer’s output.')
+                    if source.version == 0:
+                        texture['initialized'] = True
+                    texture['storage_texture'] = True
+                    output_port = output_ports[output_mapping[key]]
+                    load = output_port['load']
+                    value = self.write(replace(source, defined=True) if source.version == 0 else source,
+                                       {'texture_load': load, 'texture_store': 'Store'}, 'texture', where,
+                                       inputs['view'].cameras if 'view' in inputs else (), port=port)
+                    color_outputs[output_port['id']] = value
+                    storage_textures.append({'port': port, 'resource': value.resource,
+                                             'input_version': source.version, 'output_version': value.version,
+                                             **({'load': 'Clear'} if load == 'Clear' else {})})
                 storage = {}
                 storage_outputs = {}
                 for name in sorted(set(inputs) - {'scene', 'view', 'color', 'visibility', 'visibility_depth'}):
+                    if name.startswith(('texture:', 'sampled:')):
+                        continue
                     buffer = inputs[name]
                     if 'stride' not in self.resources[buffer.resource]:
                         continue
@@ -1023,8 +1123,11 @@ class _Compiler:
                     'technique': ray.TECHNIQUE, 'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
                     'asset_configuration': config['id'], 'vertex_layout': 'RendererStatic', 'material': 'DefaultOpaque',
                     'scene': inputs['scene'].origin, 'scene_data': inputs['scene'].scene_data, **launch,
+                    **({'storage_texture': True} if is_storage_texture else {}),
                     'dependencies': sorted({v.producer for v in inputs.values() if v.producer}), 'pipeline': authored_pipeline,
-                    'persistent_buffers': buffer_uses, 'buffers': storage, **visibility_reads,
+                    'persistent_buffers': buffer_uses, 'buffers': storage, **texture_reads,
+                    **({'storage_textures': storage_textures} if storage_textures else {}),
+                    **({'sampled_textures': sampled_textures} if sampled_textures else {}),
                     'attachments': attachments})
                 if is_compute:
                     # Only the offline plan names the source; the numeric pass record stays RayTracing (design D1).
@@ -1215,7 +1318,7 @@ class _Compiler:
             for operation in self.passes:
                 if operation['id'] == average['id']:
                     continue
-                reads = [*operation.get('attachments', {}).values(),
+                reads = [*operation.get('attachments', {}).values(), *operation.get('sampled_textures', ()),
                          *(operation[key] for key in ('visibility', 'visibility_depth', 'source_color') if key in operation)]
                 _require(not any(read['resource'] == source['resource'] and
                                  read['input_version'] == source['input_version'] for read in reads),
@@ -1400,10 +1503,16 @@ def dump_plan(plan):
         if entry['kind'] == 'RayTracing':
             if 'work_items' in entry:
                 lines.append(f"    launch: {entry['work_items']} scene work items")
+            elif 'color' in entry['attachments']:
+                target = entry['attachments']['color']['resource']
+                target_kind = 'storage texture' if entry.get('storage_texture') else 'color target'
+                lines.append(f"    launch: {entry['dimensions']}; {target_kind}: {target}")
             else:
-                lines.append(f"    launch: {entry['dimensions']}; color target: {entry['attachments']['color']['resource']}")
+                lines.append(f"    launch: {entry['dimensions']}; shader-writable textures")
             if 'source_kind' in entry:
                 lines.append(f"    source: {entry['source_kind']} (scene compute pass in the ray sequence)")
+            for source in buffers.get_sampled_textures(entry):
+                lines.append(f"    sampled color: {source['resource']}@{source['input_version']}")
         for name, use in entry.get('buffers', {}).items():
             lines.append(f"    {name}: {use['resource']}@{use['input_version']} -> @{use['output_version']} ({use['access']})")
         for aspect, attachment in entry.get("attachments", {}).items():
@@ -1417,6 +1526,12 @@ def dump_plan(plan):
     for root in plan["roots"]:
         lines.append(f"Root {root['id']}: {root['kind']} {root['resource']}@{root['version']}")
     lines.extend(_dump_resource_uses(plan))
+    for identity, resource in plan['resources'].items():
+        if 'shader_struct' in resource:
+            record = resource['shader_struct']
+            size = (f"{record['stride']} bytes per element, {resource['extent'][0]} bytes allocated"
+                    if 'stride' in record else 'size resolved by Build Graph')
+            lines.append(f"{identity}: {record['count']} × {record['type']} from {record['source']} ({size})")
     lines.append("Authored techniques: " + ", ".join(plan["techniques"]))
     lines.append("Pending: " + ", ".join(plan["checks_pending"]))
     return "\n".join(lines)

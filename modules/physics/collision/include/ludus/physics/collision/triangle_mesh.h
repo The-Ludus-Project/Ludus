@@ -18,7 +18,8 @@ namespace ludus::physics::collision
 {
 /// Largest number of source triangles one mesh admits (the Explore as Player preview bound).
 ///
-/// A cooked mesh stores at most 76 bytes per triangle: 40 for the triangle and at most 36 for hierarchy nodes.
+/// A cooked mesh stores at most 80 bytes per triangle: 44 for the triangle with its feature flags and at most 36 for
+/// hierarchy nodes.
 inline constexpr uint32 MAX_TRIANGLE_MESH_TRIANGLES = 8000000;
 
 /// Largest hierarchy depth, counting the root as depth one. The builder's balanced split keeps every child at
@@ -31,6 +32,67 @@ inline constexpr uint32 MAX_TRIANGLE_MESH_HIERARCHY_DEPTH = 64;
 /// The ratio is the sine of the smallest admitted apex angle of a thin triangle; coincident or collinear corners
 /// always fail it.
 inline constexpr float64 MIN_TRIANGLE_SHAPE_RATIO = 1.0e-7;
+
+/// Default of TriangleMeshCookSettings::ActiveEdgeCosine: the cosine of five degrees.
+inline constexpr float64 DEFAULT_ACTIVE_EDGE_COSINE = 0.99619469809174555;
+
+/// @brief Which triangle edges and corners generate their own contact normals, on each side of the triangle.
+///
+/// Cooking classifies every edge from the triangles that share it (see InternalEdgePolicy). A contact against an
+/// *active* edge or corner may push along that feature's own direction; a contact against an inactive one uses the
+/// triangle's face normal, so a shape sliding across the interior of a flat or concave surface never catches on the
+/// seams between triangles. The front side is the side the winding normal points to. Edge `i` runs from corner `i`
+/// to corner `(i + 1) % 3`. Read the bits with IsTriangleEdgeActive and IsTriangleCornerActive.
+using TriangleFeatureFlags = uint16;
+
+/// Number of corners, and of edges, of a triangle.
+inline constexpr uint32 TRIANGLE_FEATURE_COUNT = 3;
+/// First bit of the three "edge active on the front side" flags in TriangleFeatureFlags.
+inline constexpr uint32 TRIANGLE_FRONT_EDGE_SHIFT = 0;
+/// First bit of the three "edge active on the back side" flags.
+inline constexpr uint32 TRIANGLE_BACK_EDGE_SHIFT = 3;
+/// First bit of the three "corner active on the front side" flags.
+inline constexpr uint32 TRIANGLE_FRONT_CORNER_SHIFT = 6;
+/// First bit of the three "corner active on the back side" flags.
+inline constexpr uint32 TRIANGLE_BACK_CORNER_SHIFT = 9;
+/// Every edge and corner active on both sides: the conservative classification.
+inline constexpr TriangleFeatureFlags ALL_TRIANGLE_FEATURES_ACTIVE = 0x0FFF;
+
+/// @brief Whether edge `edge` (0 to 2) is active on the front side (`isFrontSide`) or the back side.
+[[nodiscard]] constexpr bool IsTriangleEdgeActive(TriangleFeatureFlags flags, uint32 edge, bool isFrontSide) noexcept
+{
+    const uint32 shift = isFrontSide == true ? TRIANGLE_FRONT_EDGE_SHIFT : TRIANGLE_BACK_EDGE_SHIFT;
+    return ((static_cast<uint32>(flags) >> (shift + edge)) & 1U) != 0;
+}
+
+/// @brief Whether corner `corner` (0 to 2) is active on the front side (`isFrontSide`) or the back side.
+[[nodiscard]] constexpr bool
+IsTriangleCornerActive(TriangleFeatureFlags flags, uint32 corner, bool isFrontSide) noexcept
+{
+    const uint32 shift = isFrontSide == true ? TRIANGLE_FRONT_CORNER_SHIFT : TRIANGLE_BACK_CORNER_SHIFT;
+    return ((static_cast<uint32>(flags) >> (shift + corner)) & 1U) != 0;
+}
+
+/// @brief How cooking classifies triangle edges for contact generation.
+enum class InternalEdgePolicy : uint8
+{
+    /// Find the triangles that share each edge by their source indices and classify the edge:
+    ///
+    /// - An edge of one triangle (a boundary), of three or more triangles (nonmanifold), or of two triangles with
+    ///   inconsistent winding is active on both sides.
+    /// - An edge of two consistently wound triangles whose normals differ by less than
+    ///   TriangleMeshCookSettings::ActiveEdgeCosine allows is inactive on both sides.
+    /// - Any other edge is active only on its convex side: the front for a ridge, the back for a valley.
+    ///
+    /// A corner is active on a side when any edge of the mesh that ends at its source vertex is active on that side.
+    /// Vertices are matched by index, never by position, so an unwelded seam stays a pair of active boundaries.
+    /// Classification allocates temporary storage of eight bytes per triangle edge plus five bytes per referenced
+    /// vertex during the cook.
+    Classify,
+    /// Mark every edge and corner active on both sides without looking for neighbours. Queries are unaffected;
+    /// contacts may catch on interior seams.
+    KeepAll,
+};
 
 /// @brief What cooking does with a degenerate triangle.
 enum class DegenerateTrianglePolicy : uint8
@@ -55,6 +117,11 @@ struct TriangleMeshCookSettings final
     /// Treatment of triangles that fail MIN_TRIANGLE_SHAPE_RATIO. Rejecting is the default so that unusable
     /// geometry is reported rather than silently dropped.
     DegenerateTrianglePolicy DegeneratePolicy = DegenerateTrianglePolicy::Reject;
+    /// How edges are classified for contact generation. Skipped degenerate triangles are no one's neighbour.
+    InternalEdgePolicy EdgePolicy = InternalEdgePolicy::Classify;
+    /// Under InternalEdgePolicy::Classify, an edge between two consistently wound triangles is a crease, active on
+    /// its convex side, when the cosine of the angle between their normals is below this value; in [-1, 1].
+    float64 ActiveEdgeCosine = DEFAULT_ACTIVE_EDGE_COSINE;
 };
 
 /// @brief Outcome of TriangleMesh::TryCook.
@@ -97,10 +164,11 @@ public:
     /// Validation runs before any allocation and visits triangles in source order: the index count must be a
     /// multiple of three; the triangle count must be in [1, MAX_TRIANGLE_MESH_TRIANGLES]; every index must refer
     /// to a position; every referenced coordinate must be finite and within MAX_COORDINATE_METERS; and degenerate
-    /// triangles follow `settings.DegeneratePolicy`. Cooking then copies the admitted triangles and builds the
-    /// hierarchy. The result is deterministic for identical inputs.
+    /// triangles follow `settings.DegeneratePolicy`. Cooking then copies the admitted triangles, classifies their
+    /// edges under `settings.EdgePolicy` and builds the hierarchy. The result is deterministic for identical inputs.
     /// @param source Borrowed positions and indices, read only during this call.
-    /// @param settings Degenerate-triangle policy.
+    /// @param settings Degenerate-triangle policy, edge policy and crease threshold; an unknown policy or a
+    /// threshold that is not finite or lies outside [-1, 1] fails with InvalidArgument.
     /// @param outMesh Receives the new mesh on success. Unchanged on any failure, including allocation failure.
     /// @return Success, or the failing status with the first offending triangle when attributable.
     [[nodiscard]] static TriangleMeshCookResult
@@ -148,6 +216,15 @@ public:
     {
         return mTriangles.GetSize();
     }
+    /// @brief Read the feature classification of one admitted source triangle.
+    ///
+    /// A diagnostic for tests and debug views: it searches the cooked triangles linearly.
+    /// @param sourceTriangleIndex Index of the triangle in the cook source.
+    /// @param outFlags Receives the flags on success; unchanged on failure.
+    /// @return Success; NoGeometry for an uncooked mesh; or IndexOutOfRange when no admitted triangle has that
+    /// source index (it was skipped as degenerate, or lies past the end of the source).
+    [[nodiscard]] Status TryGetTriangleFeatures(uint32 sourceTriangleIndex,
+                                                TriangleFeatureFlags& outFlags) const noexcept;
     /// Number of degenerate source triangles left out under DegenerateTrianglePolicy::Skip.
     [[nodiscard]] LUDUS_INLINE uint32 GetSkippedTriangleCount() const noexcept
     {
@@ -173,10 +250,11 @@ private:
     /// One admitted triangle and its index in the source.
     struct Triangle final
     {
-        foundation::math::Vector3 FirstMesh;  ///< First corner in mesh space, meters.
-        foundation::math::Vector3 SecondMesh; ///< Second corner in mesh space, meters.
-        foundation::math::Vector3 ThirdMesh;  ///< Third corner in mesh space, meters.
-        uint32 SourceIndex = 0;               ///< Index of the triangle in the cook source.
+        foundation::math::Vector3 FirstMesh;                          ///< First corner in mesh space, meters.
+        foundation::math::Vector3 SecondMesh;                         ///< Second corner in mesh space, meters.
+        foundation::math::Vector3 ThirdMesh;                          ///< Third corner in mesh space, meters.
+        uint32 SourceIndex = 0;                                       ///< Index of the triangle in the cook source.
+        TriangleFeatureFlags Features = ALL_TRIANGLE_FEATURES_ACTIVE; ///< Active edges and corners per side.
     };
     /// Preorder hierarchy node: an internal node's left child follows it; Right names the right child.
     struct Node final
@@ -191,6 +269,7 @@ private:
     friend class TriangleMeshRaycaster;
     friend class TriangleMeshBoxCaster;
     friend class TriangleMeshConvexCaster;
+    friend class TriangleMeshContacts;
 
     foundation::Array<Triangle> mTriangles;
     foundation::Array<Node> mNodes;

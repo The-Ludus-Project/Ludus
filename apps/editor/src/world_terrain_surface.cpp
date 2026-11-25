@@ -294,6 +294,7 @@ bool BakeTerrainSurface(const terrain::TerrainFieldGrid& grid,
                         const TerrainWaterLevels* waterOrNull,
                         float32 snowLineMetres,
                         math::RandomKey variationKey,
+                        terrain::TerrainNoiseLayout variationLayout,
                         QImage& outImage,
                         math::Vector3& outMeanLinear,
                         QString& outError)
@@ -383,6 +384,7 @@ bool BakeTerrainSurface(const terrain::TerrainFieldGrid& grid,
             const float64 positionZ = static_cast<float64>(v) * extentZ;
             const float32 variation =
                 static_cast<float32>(terrain::SampleTerrainNoise(variationKey,
+                                                                 variationLayout,
                                                                  0,
                                                                  positionX / VARIATION_WAVELENGTH_METRES,
                                                                  positionZ / VARIATION_WAVELENGTH_METRES));

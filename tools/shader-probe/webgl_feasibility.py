@@ -11,13 +11,14 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 TOOLS = ROOT / "out/shader-tools"
 SOURCE = Path(__file__).resolve().parent
 LOCK = json.loads((ROOT / "config/shader_toolchain.json").read_text())
 CROSS_LOCK = json.loads((ROOT / "config/spirv_cross_toolchain.json").read_text())
-OFFSETS = {"resolution": 0, "elapsedTime": 8, "direction": 16, "tint": 32}
+OFFSETS = {"Resolution": 0, "ElapsedTime": 8, "Direction": 16, "Tint": 32}
 
 
 def run(command: list[str], *, echo: bool = True) -> str:
@@ -82,13 +83,24 @@ def derive_glsl_es_layout(code: str) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "out/shader-probe-webgl")
+    parser.add_argument("--luslc", type=Path, help="luslc that lowers probe.lusl (default: ./scripts/bootstrap-luslc)")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     slang, cross = verify_tools()
-    source = SOURCE / "probe.slang"
-    commands = []
-    for stage, entry in (("vertex", "vertexMain"), ("fragment", "fragmentMain")):
+    luslc = args.luslc
+    if luslc is None:
+        sys.path.insert(0, str(ROOT / "scripts/python"))
+        import host_luslc
+        luslc = host_luslc.ensure(ROOT)
+    # The SDK helper's lowering step; it keeps both LUDUS_GLSL_ES variants in one module.
+    source = output / "probe.lusl.slang"
+    lowering = [sys.executable, ROOT / "cmake/shaders/lower_lusl.py", "--luslc", luslc.resolve(),
+                "--root", SOURCE, "--source", "probe.lusl", "--name", "probe", "--output", source,
+                "--slots", output / "probe_slots.h", "--depfile", output / "lusl.d"]
+    run(lowering)
+    commands = [[str(part) for part in lowering]]
+    for stage, entry in (("vertex", "VertexMain"), ("fragment", "FragmentMain")):
         spirv = output / f"probe.{stage}.spv"
         command = [slang, source, "-target", "spirv", "-profile", "spirv_1_3",
                    "-entry", entry, "-stage", stage, "-o", spirv]
@@ -112,7 +124,7 @@ def main() -> None:
         (output / ("index.html" if name == "webgl.html" else name)).write_text((SOURCE / name).read_text())
     (output / "build-evidence.json").write_text(json.dumps({
         "slang": LOCK["slang"], "spirv_cross": CROSS_LOCK["spirv_cross"],
-        "commands": commands, "source_sha256": digest(source),
+        "commands": commands, "source_sha256": digest(SOURCE / "probe.lusl"),
         "artifacts": {p.name: digest(p) for p in sorted(output.iterdir())
                       if p.suffix in (".spv", ".essl")},
         "runtime_validation": "Not established by translation; run the WebGL 2 pixel probe."}, indent=2) + "\n")

@@ -36,7 +36,7 @@ central document well, and **tool windows** dock around it (see
 | --- | --- |
 | Start Page | New/Open and recent projects while no project is open |
 | World | 2D/3D placement, game-owned entities/components, typed fields, references, shared history/save/recovery and trusted preview |
-| Render Graph | The open render-graph package: its source tree beside the node **Canvas**, the **Source** text editor and the validated **Plan** ([render-graph authoring](render-graph-authoring.md)) |
+| Render Graph | The open render-graph package: its source tree beside the node **Canvas** and the validated **Plan**, with **Open Source** for the Code workspace ([render-graph authoring](render-graph-authoring.md)) |
 | Code | Any project text file as a code tab: shared buffer, atomic save, external-change conflicts, crash recovery and the code status bar ([code editor](code-editor.md)) |
 | Project Settings | One readable column (at most about 110 characters wide, left-aligned) of **Project** (name, folder, engine, components), **Build** (profile, setup status chip with its check details and Check/Repair actions, Build and run/Stop, collapsible build and launch details) and **Rendering resolution** sections sharing one left-aligned label column; values can be selected and copied, and **Save settings** is the page's primary action, enabled once something changed |
 | Scripts | Project-owned script and sequence drafts |
@@ -311,16 +311,23 @@ Version-1 descriptors retain their original Linux preset contract.
 
 Qt 6.12.0's Cocoa accessibility bridge incorrectly deletes a table's accessibility
 identity when releasing a synthetic row, column or cell that borrows it. This can
-crash a screen reader or UI inspector while reading selected cells. The editor
+crash a screen reader or UI inspector while reading selected cells. Releasing a
+native row also deleted the cell interfaces that an accessibility client had read,
+although the Qt item-view table still cached them. The next row insertion or
+removal, such as an editor selector rebuilding its items with `clear()`, then
+crashed with a null dereference in `QAccessibleTable::modelChange`. The editor
 installs a process-local ownership correction before creating its widgets: real
-elements retain Qt's cleanup, while synthetic elements never delete borrowed
-identities. Other Qt versions are unchanged, and the system Qt installation is
+elements retain Qt's cleanup for interfaces they own, while synthetic elements
+never delete borrowed identities and native cells never delete interfaces that
+their item-view table owns; the table releases those on model changes and
+destruction. Other Qt versions are unchanged, and the system Qt installation is
 not modified. An unexpected native layout fails startup with a diagnostic rather
 than applying the correction blindly. Thanks to The Qt Company for the
 [Cocoa accessibility implementation](https://github.com/qt/qtbase/blob/v6.12.0/src/plugins/platforms/cocoa/qcocoaaccessibilityelement.mm)
 used to identify the ownership error. The macOS `ludus_editor_accessibility_tests`
 exercise native selection, deselection, model resets and widget destruction for
-tables, lists and trees; they require the Cocoa platform plugin.
+tables, lists and trees, and rebuild a combo box after a client reads its items;
+they require the Cocoa platform plugin.
 
 Live Play and native reload support macOS Debug/Development profiles with
 validated Mach-O UUIDs and immutable detached DWARF symbols. Build and Play,
@@ -533,30 +540,29 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   Group**, **Merge All Tab Groups** and the tab context menu move documents
   between groups. Groups share one direction at a time, up to four groups.
 - **View → Code and Viewport** (Ctrl+Alt+V; Command+Option+V on macOS), also in
-  the Source pane's **Source** menu, opens the Source editor beside the existing
-  interactive World document. It reuses the World's viewport, camera and render
-  device; it does not open the Render Preview image panel or create another viewport.
-  Graph navigation temporarily collapses in Source to leave room for code; switch
-  to Canvas to show it again. The Sources visibility preference is preserved.
+  Code workspace's **Source** menu, opens the graph's Code tabs beside the
+  existing interactive World document. It reuses the World's viewport, camera
+  and render device. **Return to Graph** restores the canvas and node selection.
   The World's header and hierarchy also collapse so its viewport fills the pane;
   returning to a single World restores them and their splitter preference.
   Drag the divider to size the two panes. Existing horizontal group sizes are
   preserved when invoking the command again, and other open tabs and drafts stay
-  open. The project remembers the groups, divider, graph, source file and selected
-  Source view when the editor closes normally or switches projects. These are
+  open. The project remembers the groups, divider, graph and active package source
+  when the editor closes normally or switches projects. These are
   view preferences, not a recovery copy of unsaved source text. Missing or invalid
   saved graphs leave the current graph intact. Live Preview keeps its existing
   saved-source policy; compilation progress remains in the status-bar activity
-  chip. The Render Graph toolbar stays visible while the graph is shown in either
-  group, so moving between code and viewport does not resize the document area.
+  chip. The Render Graph toolbar stays visible while package code is shown in
+  either group, so moving between code and viewport keeps the document area stable.
 - **Tool windows** dock around the documents. The calm default keeps the documents
   as large as the window allows: Project Explorer (tabbed with Content and Render
   Preview) is on the left, Properties (tabbed with Live Inspector, and Ray Paths
   when a capture starts) is on the right, and the diagnostics group below the
-  documents starts **closed**: Error List tabbed with Output, Timing and
-  Profiling. Each opens when there is something to show: new errors or warnings
-  reveal the Error List, a build reveals Output, the first Play session of an
-  editor run reveals Timing, and recording reveals Profiling. Drag a title bar to
+  documents starts **closed**: Error List tabbed with Search, References,
+  Output, Timing and Profiling. Each opens when there is something to show: new
+  errors or warnings reveal the Error List, Find in Files reveals Search, Find
+  References in a shader reveals References, a build reveals Output, the first
+  Play session of an editor run reveals Timing, and recording reveals Profiling. Drag a title bar to
   move, tab or float a tool window. **View** shows and focuses one (Project
   Explorer Ctrl+Alt+L, Properties F4, Error List Ctrl+Alt+E, Output Ctrl+Alt+O,
   Render Preview). The **Window** menu lists every tool window with a check mark
@@ -915,7 +921,12 @@ The game measures its own passes, so it must render through a
 `rhi::HostedGpuRecorder` with GPU timing enabled and name its passes with
 `GpuScope`. The [World-demo game](../examples/world-demo.md#record-gpu-passes-from-the-editor)
 does both, so Play it and record **GPU** to see its viewport passes. A game
-without a recorder fails the recording with that reason.
+without a recorder fails the recording with that reason. When the game's device
+has no per-pass timestamp counters (for example a virtual machine's Apple
+Paravirtual device), the recording still runs: the status says
+**Per-pass counters unavailable on the game's device; frame timing only**, and
+the trace holds one whole-frame duration per measured frame, with
+`passTimingSupported` false.
 **CPU** still records the editor; **Both** is refused while a game plays. The
 saved trace belongs to the game: Perfetto names its GPU process after the game
 and its process ID, and `ludusHostedProducer` in the JSON lists the recorded
@@ -1027,6 +1038,38 @@ reports no data instead of producing a misleading successful capture.
 See the [GPU timing contract](../architecture/profiling-final.md#basic-gpu-timing-for-perfetto)
 and [graphics-debugging plan](../architecture/graphics-debugging.md#perfetto-recording-in-the-editor)
 for pass timing, clock calibration and later process targets.
+
+### Find the authored operation for a GPU timing sample
+
+Keep the original Editor Perfetto JSON export and the
+`.lurgrt.resources.json` sidecar from the cooked World graph. Each recorded
+World graph frame carries the SHA-256 of the cooked package submitted on that
+frame. Keep the sidecar for each revision you want to inspect after recooking.
+
+From the source checkout, export a report for an inclusive frame range:
+
+```sh
+python3 scripts/python/render_graph_timing_lookup.py --editor-trace trace.json \
+    --plan world.lurgrt.resources.json --first-frame 12 --last-frame 19
+```
+
+Use a row's frame, device session, scope identity and scope pass index to find
+the measurement in the trace. For the reverse lookup, add
+`--operation Main/West/draw` using the qualified operation ID from the saved
+plan. Cooked raster and upscale operations carry scope mappings. Both members
+of a measured merged scope resolve to the same group-wide
+duration when the plan carries the member list. A group-wide duration only
+supports conclusions about the whole group. A frame whose operation was culled
+has no matching scope. A skipped measurement or missing recorded plan shows
+an unavailable state. If a saved sidecar predates scope mappings, recook the
+original build generation and check that the cooked package SHA-256 is the same.
+Supply additional saved revisions with repeated `--plan`.
+
+For the Metal [installed-SDK skylight fixture](render-graph-authoring.md#sky-visibility),
+save the standard output of `skylight timing open` and pass it with
+`--sdk-timing` in place of `--editor-trace`. Use the sidecar for the exact
+cooked package staged in the app. GPU duration and the SDK fixture's CPU
+preparation time appear in distinct fields, both in nanoseconds.
 
 ### Trace a shader edit to its first paint
 
@@ -1252,8 +1295,10 @@ There are no separate Scene or 3D Levels authoring tabs.
    an exact value. The slider edits the same draft as typing, so
    **Apply Changes** and **Reset Fields** treat both alike. Position, rotation,
    scale and colour channels keep their compact rows: drag an axis letter to
-   change one of those. The default World's Transform also reads as one
-   Position, Rotation and Scale row each rather than nine separate rows.
+   change one of those. Hold Shift for fine steps or Control (Command on macOS)
+   for coarse steps. You can switch sensitivity during the drag and the current
+   value stays put until you move the pointer. The default World's Transform
+   reads as one Position, Rotation and Scale row each.
 4. Use **Apply Changes** to validate all fields as one edit. Invalid text stays
    visible and the applied document stays intact. **Reset Fields** restores the
    last applied values. Selection and structural commands wait for Apply/Reset.
@@ -1579,7 +1624,9 @@ active, the handle under the pointer thickens and lightens and the cursor become
 an open hand; while a handle is dragged the cursor is a closed hand, that handle
 stays highlighted and the other axes fade towards the viewport colour. The half of
 a rotation ring behind the pivot is dimmer, so the ring reads as a loop around the
-object. Hover is tracked only while no mouse button is down, costs one handle
+object. A ring segment shorter than one logical pixel cannot start a rotation.
+Start on another part of an edge-on ring or orbit the view. Hover is
+tracked only while no mouse button is down, costs one handle
 projection per mouse move, and is cleared when the pointer leaves the viewport. The
 silhouette previews the candidate throughout a drag. Release applies one
 validated World edit and refreshes the shaded scene; **Undo** restores the entire
@@ -1982,6 +2029,13 @@ mappings and explicit Project BRDF assignments. Renderables that override
 coating or roughness still appear under the same resource. Inspect an individual
 renderable to see its effective values.
 
+### Author a World's regional climate
+
+Open **Environment** in the World sidebar to author the World's climate presets,
+schedules and feathered regions, preview them at a time and position, and apply
+them as one undoable edit. See
+[Edit a climate in the Environment tool](../modules/gameplay/weather.md#edit-a-climate-in-the-environment-tool).
+
 ### Check an imported diffuse material against a swatch
 
 For a glTF dielectric (`metallicFactor` set to zero and no metallic map),
@@ -2007,9 +2061,23 @@ especially with very dark materials, use an independently calibrated swatch.
 
 ### Edit a coated-diffuse material from World
 
-Select an imported object whose Material model is **Coated diffuse** and choose
-**Edit Material…** in its inspector. You can also select a renderable in the
-**Materials** list and choose **Edit Material…** with Properties hidden.
+Author a coated-diffuse material on an ordinary slot with **Make Coated
+Diffuse…** in the **Material** group. It opens the create dialog on the
+**Coated diffuse (varnish over substrate)** model, with the slot's base colour
+as the diffuse substrate and the coat GGX alpha, coating index of refraction
+(IOR), and optical thickness starting from the shared coating defaults. The
+created material is an ordered dielectric coat over a diffuse substrate: the
+coat sits over the wood and attenuates it. Applying it creates and assigns the
+material for every slot that shares the source material, in one undoable edit,
+and the slot's Material model becomes **Coated diffuse**. The action is offered
+on a resolved reflection slot that is not already coated-diffuse and carries no
+override; a project BRDF, hair card, or skin slot returns to its material first.
+
+Select an object whose Material model is **Coated diffuse** (imported, or made
+with **Make Coated Diffuse…**) and choose **Edit Material…** in its inspector.
+You can also select a renderable in the **Materials** list and choose
+**Edit Material…** with Properties hidden. The document names the ordered
+layers, a dielectric coat over a diffuse substrate.
 
 The Material document shows the resource ID, all slots using it, and which slots
 have their own coating. Edit the isotropic GGX alpha, coating index of refraction
@@ -2042,7 +2110,10 @@ match the imported defaults. The built-in viewport reuses draw materials for
 matching nonemissive surfaces with the same tint.
 
 The raster view approximates changes in coat roughness. A compatible reference
-capture uses the authored alpha, IOR and optical thickness together.
+capture uses the authored alpha, IOR and optical thickness together. The coat
+runs an internal walk, so a fixed-dimension reference profile cannot capture it:
+the document names that limit and asks the author to choose a compatible
+reference profile or keep the raster approximation.
 [Coated-diffuse reference profile](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference)
 
 ### Assign and edit a project BRDF
@@ -2154,6 +2225,19 @@ test. **Metallic** and **Roughness** are the values the program reads; their
 tooltips say so. The raster viewport draws them as a
 metallic-roughness approximation. The reference paths, Wave Tracing and
 Metropolis evaluate the program itself.
+
+A closure program authors an opaque layered material as a parameter blend.
+Import `tests/scenes/materials/varnished-wood-panel.luscene.json`, the
+[first opaque layered material](../architecture/renderer-systems.md#the-first-opaque-layered-material):
+an ordered dielectric varnish coat over a diffuse wood substrate, beside a black
+companion patch under the same coat. The panel's two lobes read as the layer
+order, the diffuse substrate first and the coat's cosine-power reflection over
+it. The viewport draws the metallic-roughness approximation; the reference paths
+evaluate the blended program. Change the coat reflectance constant or the
+substrate colour in the scene source and reimport to deepen or lighten the
+varnish; the black patch isolates the coat response. An invalid parameter or a
+reordered lobe that breaks the program fails the import with a message that
+names the fix, and World keeps the last drawable scene.
 
 A closure program can also replace an unsupported imported material: choose it
 under **Replacement**, as the next section describes. **Save World** and
@@ -2445,6 +2529,36 @@ account for the shift in a nearby moon's apparent position. A value of zero
 treats the source as distant. The rule follows a prescribed circular orbit and
 uses the same horizon cutoff as the Earth templates.
 
+### Render a celestial time-lapse
+
+In the native World viewport, save the composition with **View → Set start view
+from this view**. Set at least one enabled directional light to **Dynamic
+Celestial → Earth Sun** or **Earth Moon**. Set the World's date and observer
+location, and link those lights to the Atmosphere to show their disks and
+changes in the sky. Older Worlds with static lights keep their authored lighting
+until you choose an Earth preset.
+
+1. Open **Reference…**. Choose **RT1 reference** and its traversal and sample
+   count, or **Render graph** and a capturable graph output. Set the image size,
+   then choose **Time-lapse…**. To use a different source or quality, close
+   Time-lapse, change the selection in Reference and reopen it.
+2. Set **Start** and **End** on the World's clock, plus **Video length** and
+   **Frame rate**. Drag the frame slider to preview a time from the saved
+   camera. Scrubbing renders a lower-cost still with the selected source and
+   leaves the World and its live viewport available for editing. The last
+   complete preview stays visible while a new frame renders.
+3. Choose **Export MP4…** and enter a new filename. Export uses the quality
+   selected in Reference. It renders every frame in order, including both
+   selected instants, and completes each frame before advancing celestial time.
+   **Stop** cancels the job. The MP4 appears at its destination after encoding.
+
+MP4 export uses a local [FFmpeg](https://ffmpeg.org/download.html) build with
+the `libx264` encoder. The editor finds it on PATH or prompts for the executable.
+The destination needs space for the video and the staged PNGs. The World camera,
+observer and graph are frozen when Time-lapse opens. With automatic viewport
+exposure selected, the capture meters each sampled sky. A graph must support
+Reference capture of the selected output, using its authored capture profile.
+
 ### Add a clear-sky atmosphere
 
 In a default World, open **Add World Preset → Atmosphere** from the entity
@@ -2505,6 +2619,36 @@ off in the light controls hides the disk. The presets' angular sizes drive the
 sky disks. **Sun Disk Radius** sets the disk for a linked Sun with an authored
 direction; its default matches the real Sun. Properties hide it while the
 linked Sun uses an Earth preset, which sets its own size. Direct lights use the renderer's existing directional shadow path.
+
+To add clouds, select the Atmosphere and tick **Properties → Atmosphere →
+Cloud layer**, then apply the edit. Properties then shows the layer's fields.
+The layer is one flat, horizontal slab centred on the Atmosphere entity and
+turned with its rotation: **Cloud base** and **Cloud thickness** set its
+height range above the entity's ground plane, **Cloud size X** and **Cloud
+size Z** its footprint along the entity's local axes, and **Cloud edge fade**
+how gradually it thins out at the sides. **Cloud extinction** is the
+fraction of light removed per metre at **Cloud density** one; a density of
+zero draws the clear sky. **Cloud albedo** is the scattered fraction of that
+light, and **Cloud forward scattering** brightens the cloud around the Sun.
+The linked Sun lights the cloud through the air, so a sunset reddens it.
+Distant clouds take on the same haze as distant ground. Look up from below
+the base or toward the slab from outside its footprint.
+
+The cloud layer is a controlled prototype in the default clustered deferred
+raster graph, drawn for perspective cameras inside the atmosphere. It casts no
+shadow on the ground, does not change the sky's light on surfaces, and has no
+multiple scattering, so thick clouds look darker than real ones. Orthographic
+views, ray-traced configurations and RT1 reference captures leave it out.
+[Cloud transport contract](../architecture/world-environment.md#controlled-cloud-layer)
+
+To add northern lights, select the Atmosphere, tick **Northern lights** in
+Properties, and apply. Look low toward the Atmosphere entity's local +Z at
+night. Rotate the entity around its up axis to move the curtains around the
+horizon. **Aurora emission** controls their brightness. **Aurora time** selects
+a frame in the 120-second loop. The viewport shows that fixed time for authoring
+and Play advances from it. Use a perspective camera inside the atmosphere and
+**Force raster** if the active graph omits the effect.
+[Aurora transport contract](../architecture/world-environment.md#auroral-curtains)
 
 A perspective camera above the atmosphere can see the illuminated limb and
 the celestial background. The ground uses a dark boundary. Below ground or
@@ -2600,11 +2744,12 @@ blue from the other channels isolates the panel's colour response.
 | Blocker | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 |
 | Saturated, blue light on | — | — | .13084, .09286, .27074 | 7, 20, 67 |
 
-The default Lit bake held 768 bytes of RGBA8 surface-chart texels and 19,456
-bytes of RGBA8 probe-atlas texels. Those are encoded payload sizes before GPU
+The original 8 × 8 nearest-depth qualification of this scene held 768 bytes
+of RGBA8 surface-chart texels and 19,456 bytes of RGBA8 probe-atlas texels. Those are encoded payload sizes before GPU
 allocation padding. In hosted Play and Release the player supplied no baked
 texture bytes and reported zero chart draws and zero probe draws at every
-sample. The light switch still affected both profiles.
+sample. The light switch still affected both profiles. The filtered 16 × 16 bake
+uses 77,824 bytes for the same probe grid and retains the 768 chart bytes.
 
 **Moving receiver.** The sample follows the 1 m grid, 20 cm doorway, marked
 receiver path and visibility criteria from the native probe qualification. All
@@ -2756,17 +2901,16 @@ realtime lighting and the authored environment. Save the World to keep the
 volume and receiver settings. Save again after the bake is ready to retain the
 atlas alongside the charts. If an older cache contains only charts, the native
 editor prepares the missing atlas in the background. A cache saved with the
-earlier 4 × 4 visibility faces is also rebaked in the background; save again
-to keep the new atlas.
+earlier 4 × 4 or 8 × 8 nearest-depth faces is also rebaked in the background.
+Save again to keep the new 16 × 16 atlas.
 
 Probe visibility is directional and coarse. Keep the volume's probe planes
 more than 1.6 % of the spacing from floors, ceilings and walls: a probe that
 touches geometry is ignored, and a receiver whose eight neighbours are all
-ignored gets no baked bounce. Receivers within about 5 % of the spacing of a
-wall can still pick up bounce from the far side, and so can receivers just
-past an opening. Move a GI Probe Receiver along both sides of a wall
-and through any doorway while checking the Lit viewport. Each move rebakes,
-which takes about half a second for a small volume. If bounce crosses a
+ignored gets no baked bounce. The filtered depth test reduces leaks along
+thin walls and doorways, and sub-texel openings can lose some bounce. Move
+a GI Probe Receiver along both sides of a wall and through any doorway
+while checking the Lit viewport. Each move rebakes the volume. If bounce crosses a
 closed wall or disappears in the opening, adjust the volume's position or
 spacing, let it rebake, and repeat the same movement. Use the result that
 preserves bounce through the opening while keeping the closed wall dark where
@@ -3145,10 +3289,19 @@ the [reference capture](#reference-capture-of-the-viewport) instead.
 viewport's current camera. Its **Source** is **RT1 reference** by default, which
 path-traces the camera with the renderer's RT1 progressive reference integrator.
 Use the result as ground truth for the raster image. Set the image's long side
-(the short side follows the viewport's aspect), the samples per pixel, the maximum
-scattering depth and the traversal, then choose **Capture viewport**. The
-**Render graph** source captures the viewport's own graph instead; see
-[Capture the render graph](#capture-the-render-graph).
+(the short side follows the viewport's aspect), the maximum scattering depth and
+the traversal. Then choose a **Sample preset** and select **Capture viewport**.
+
+- **Quick inspection** is the default at 16 samples per pixel. Use it to check
+  broad lighting and material changes with a shorter wait.
+- **Detailed comparison** traces 128 samples per pixel to reduce noise when
+  comparing subtle lighting changes, including small regions lit indirectly.
+- **Custom** keeps the displayed sample count and lets you enter your own. Editing
+  **Samples** also selects **Custom**.
+
+**Samples** shows the target in samples per pixel before capture. A preset changes
+only the next RT1 sample target. The **Render graph** source has its own sample
+control. See [Capture the render graph](#capture-the-render-graph).
 
 The settings, the capture buttons, progress and status sit in one column at the
 window's leading edge; the Reference, Render graph and Difference images take the
@@ -3162,8 +3315,10 @@ navigation or edits do not change it; capture again to include them. The window
 shows the image as it fills in, the minimum samples reached per pixel, the number
 of analytic lights and the elapsed time. **Stop** discards the capture. **Save…**
 writes the linear `LUHDR01` capture and, beside it, a PNG with the same base name.
-A capture saved before it finishes is marked partial and keeps exact per-pixel
-sample counts. Convert the HDR file with
+To keep an in-progress result, choose **Save…** while the capture is still
+running, before choosing **Stop**. The HDR records the requested target and marks
+the file partial with the exact per-pixel sample counts in the saved image.
+Convert the HDR file with
 [`scripts/reference-hdr`](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
 The PNG and the window show the reference the way the viewport displays its
 output when the capture starts. When a ToneMap draws that output, they use its
@@ -3204,10 +3359,10 @@ the scene's own, as the raster does. Its linked Sun arrives dimmed and reddened
 by the air between the Sun and the camera. The progress line then names
 **Atmosphere sky**. The sky is evaluated once at the camera's altitude, so a low
 Sun that the buildings block leaves an interior lit by skylight and
-inter-reflection alone, much darker than a raster profile that does not shadow
-its sky lighting. Night-sky stars, the Moon's disk and aerial perspective over
-scene distances are left out. Move the Sun with its celestial time or rotation
-for a brighter scene.
+inter-reflection alone. Primary camera rays can see the Sun and Moon disks and
+the enabled night sky. For aerial perspective along the camera-to-surface path,
+use the clustered deferred raster view. Move the Sun with its celestial time or
+rotation for a brighter scene.
 
 | Traversal | Use |
 | --- | --- |
@@ -3248,8 +3403,9 @@ Stopping the viewport's device cancels a running capture.
 In the native editor, the **Render graph** source runs the World viewport's
 render graph, with its package and output, to the requested samples per pixel at
 the frozen camera, and saves the linear mean as a `.lurgcap` file with a PNG
-beside it. It needs a project graph in the viewport; otherwise the source is
-unavailable. Maximum depth, traversal and comparison describe RT1 and are disabled.
+beside it. The preview and PNG use the captured ray pass's ToneMap curve and
+exposure multiplier when it has a ToneMap. It needs a project graph in the
+viewport. Maximum depth, traversal and comparison describe RT1 and are disabled.
 
 The **Graph** list chooses what the capture renders. **Viewport output**, the
 default, is what the viewport currently draws, and the line below names it, for
@@ -3682,9 +3838,20 @@ The **Content** work area projects the saved audio `content/catalog.json` and
 the cooked scene asset catalog `assets/catalog.json` into one table of names,
 types, operation status and paths. Textures, materials, meshes, scenes,
 lighting and licences appear beside audio sources, sounds, music and cooked
-geometry; a material shows its source material name. A file watcher refreshes
-the list a quarter of a second after either catalog changes, so a recook from
-the command line appears without pressing **Refresh**.
+geometry. A material shows its source material name. The native Editor polls
+the cooked catalog and registered cooked textures, so a command-line recook
+appears without pressing **Refresh**. Audio catalog notifications keep their
+quarter-second debounce.
+
+If cooked change hints overflow, Content rescans its registrations before
+validating the published catalog. An observation error keeps recovery pending
+and names the affected path. Restore a readable cooked file there to let the
+next scan finish. The catalog worker checks preview artifact sizes and digests,
+texture records, and material dependency keys. On failure, the browser keeps
+the last valid list and previews and tells you which artifact to recook or
+restore. The browser watches up to 1,023 cooked texture paths per project.
+Catalog changes still trigger validation when that registration budget is full,
+and **Refresh** rechecks the current catalog and its preview artifacts.
 
 Search is live and case-insensitive. Every space-separated word must appear in
 the name, resource ID, type name or path, so `brick wall` finds the material
@@ -3715,7 +3882,13 @@ dependency checks and publication implementation. Import validates saved loops
 and matching sample rates, captures catalog/dependency digests, and rechecks
 consulted inputs before publication. It never rewrites authored Sound or Music
 settings. Errors name the failing stage or dependency and retain the last valid
-catalog/list. Refresh explicitly retries a failed catalog read.
+catalog/list. When a replacement is shorter than a saved loop, the failure names
+the source ID, the candidate's frame count and sample rate, and the loop's required
+end frame. Use **Choose corrected file** from the problem panel or failed row to
+pick another export for the same ID. Cancelling the picker keeps the failure
+available and the old source active. When keyboard focus is in Content, the Editor
+requests a screen-reader announcement of the rejection and repair guidance on
+Qt 6.8 or later.
 
 The copied source is published to an immutable `sources/<key>.wav` or `.flac`
 file. The SHA-256 key includes source bytes, format, importer version and native
@@ -3741,7 +3914,7 @@ do not block project changes; their cancelled/stale results are discarded.
 acknowledged. Cancellation wins before publication begins; a late request cannot
 undo a catalog commit. The UI then waits for the actual success or failure.
 Quit cancels and asynchronously drains owned work without blocking the GUI.
-Polling exists only during an active job. Workers never call model/widget APIs
+Job completion polling exists only during an active job. Workers never call model/widget APIs
 or capture a window pointer. Browser controls explain their desktop requirement.
 Native support follows the [host prerequisites](#prerequisites-optional-editor-setup).
 Browser import and persistence still need acceptance.
@@ -3766,11 +3939,13 @@ base colour texture, roughness, metalness and emission. Every other type shows
 its typed icon. Thumbnails are requested only by rows the view actually paints,
 generated on a private pool of two worker threads (one request per event loop
 turn on the browser), and kept in a 16 MiB cache keyed by resource ID and
-artifact key. A recook changes the key, so the old thumbnail is never shown and
-an unchanged asset is never redrawn. The waiting queue holds at most 256
-requests and drops the oldest first, because those rows have scrolled away.
-Failures are cached per key and the row keeps its icon. Texture decoding reads
-only the texel rows it samples and admits SceneFormat's 4096 texel limit.
+artifact key. A recook changes the keys of the affected materials. The list
+keeps their last drawable thumbnails while replacements are prepared and
+reuses the cached thumbnail for each unchanged asset. The waiting queue holds
+at most 256 requests and drops the oldest first, because those rows have
+scrolled away. Failures are cached per key. A row without a previous thumbnail
+shows its type icon. Thumbnail rendering reads only the texel rows it samples
+and admits SceneFormat's 4096 texel limit.
 
 Imports queue: **Import** while another import runs adds the file to the queue,
 and its row appears at once as *Queued*. The running import reports its stage
@@ -3780,9 +3955,11 @@ column shows the stage and percentage over a thin progress bar, and the strip
 under the list shows
 "Importing 2 of 3", the resource ID, the stage and the overall fraction across
 the batch. A failed import keeps its row with *Failed:* and the worker's reason,
-the problem panel names the resource and offers **Retry import**, and the
-**Retry import** button and the row's context menu retry the same file and ID
-(the context menu can also dismiss the failure). Cancel stops the running
+the problem panel names the resource and offers a repair. **Retry import** repeats
+the same file and ID after an in-place fix. **Choose corrected file** opens another
+export when dependency validation found a saved loop that the candidate cannot
+cover. The row's context menu also offers the repair and can dismiss the failure.
+Cancel stops the running
 import and drops the queue. Cooking scene assets stays in the C++ engine; the
 browser only reads its published catalog and artifacts.
 
@@ -3792,8 +3969,14 @@ late-cancel semantics, ID selection across filtering, unchanged-role updates,
 stale operation/project results, GUI-owned completion and shutdown, search
 terms and type chips, texture and material thumbnails, thumbnail cache keys,
 failures and queue limits, scene catalog listing, queued import progress, and
-failure and retry. CI runs
-those fixtures under Clang 18 analysis and ASan/UBSan.
+failure and retry. See the
+[S3 acceptance evidence](editor-workspace-evidence.md#s3-content-lifecycle-acceptance)
+for the MainWindow and native accessibility journeys.
+
+The native `ludus_editor_cooked_content_recovery_tests` test forces lost hints
+and a full failed rescan in one cooked project. It compares the settled material
+thumbnails to a fresh validated catalog read and checks the unrelated preview
+identity and a held file reader across repair.
 
 ## The project descriptor (version 1)
 
@@ -3878,14 +4061,21 @@ World recovery remains with the existing [World recovery owner](#save-recovery-a
 
 Save validates the whole draft, takes a short cooperative lock in an ignored
 `.ludus/` directory beside the descriptor, checks the on-disk bytes still match
-the digest recorded at Open/last Save, then writes atomically with `QSaveFile`
-(direct-write fallback disabled). A short/failed write, commit failure, or disk
-conflict **retains the old saved file and your dirty draft** and reports the
-error; it never silently overwrites. If the file changed on disk you get a
-Conflict and an explicit Reload (with discard confirmation).
+the digest recorded at Open or the last Save, then writes atomically with
+`QSaveFile`. A failed save leaves the dirty draft and undo history available.
 
-Open/Reload/Close on a dirty document offer Save / Discard / Cancel; a failed
-Save aborts that action.
+When the descriptor changes on disk, Project Settings opens a read-only
+comparison. Each changed field shows the saved baseline, the disk value at the
+time of inspection, and the pending draft. The comparison marks fields that
+changed on both sides and explains when the disk values cannot be read or
+validated. **Cancel** keeps the draft and undo history. **Reload** reads and
+validates the latest disk revision before replacing the draft. If validation
+fails, the editor explains the failure and keeps the draft and undo history.
+Both choices leave the descriptor bytes on disk as they are.
+
+Opening or closing a dirty project offers Save, Discard, and Cancel. A failed
+Save aborts the action. Reload from the menu asks before discarding a dirty
+draft.
 
 ## Build / run semantics
 

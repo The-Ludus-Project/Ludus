@@ -33,7 +33,7 @@ CodeDocumentSnapshot RenderGraphCodeDocument::GetSnapshot() const noexcept
     return {{mEpoch, mBinding, mDocument.GetRevision()},
             mDocument.GetDraftView(mFile),
             static_cast<foundation::usize>(RenderGraphDocument::MAX_FILE_BYTES),
-            mDocument.IsDirty()};
+            mDocument.IsFileDirty(mFile)};
 }
 
 CodeEditStatus

@@ -1,0 +1,22 @@
+// R18c binding fixture: four read-only buffers, one writable buffer and four constant buffers in
+// one compute kernel, nine slots in declaration order. Host code binds them through r18c_slots.h.
+struct Settings
+{
+    uint32x4 Value;
+};
+StructuredBuffer<uint32> primary;
+StructuredBuffer<uint32> secondary;
+StructuredBuffer<uint32> third;
+StructuredBuffer<uint32> fourth;
+RWStructuredBuffer<uint32> output;
+ConstantBuffer<Settings> firstSettings;
+ConstantBuffer<Settings> secondSettings;
+ConstantBuffer<Settings> thirdSettings;
+ConstantBuffer<Settings> fourthSettings;
+
+[stage(compute), threads(1, 1, 1)]
+void ComputeMain()
+{
+    output[0] = primary[firstSettings.Value.x] + secondary[0] + third[0] + fourth[0] + firstSettings.Value.y +
+        secondSettings.Value.x + thirdSettings.Value.x + fourthSettings.Value.x;
+}

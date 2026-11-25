@@ -4040,6 +4040,10 @@ TEST_CASE("Ordered graph encoding preserves the caller frame and retains submitt
     REQUIRE(CompileOrderedGraph(session.Device, graph, report) == RasterStatus::Ready);
     CHECK(EncodeOrderedGraph(session.Device, session.Surface, graph) == RasterStatus::InvalidState);
     REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
+    reference::Submission = RasterStatus::CapacityExceeded;
+    CHECK(EncodeOrderedGraph(session.Device, session.Surface, graph) == RasterStatus::CapacityExceeded);
+    CHECK(reference::Submitted == 0);
+    reference::Submission = RasterStatus::Ready;
     REQUIRE(EncodeOrderedGraph(session.Device, session.Surface, graph) == RasterStatus::Ready);
     CHECK(reference::Submitted == 0);
     FrameInfo information;

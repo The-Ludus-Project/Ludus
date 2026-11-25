@@ -4,10 +4,11 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-find_package(Ludus CONFIG REQUIRED COMPONENTS Resources GraphicsRenderer GraphicsText FoundationTime)
+find_package(Ludus CONFIG REQUIRED COMPONENTS Resources GraphicsRenderer GraphicsText Ui UiRender UiText FoundationTime)
 if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     enable_testing()
     add_subdirectory(../light_transformer light-transformer)
+    add_subdirectory(../lusl_layout lusl-layout)
 endif()
 
 add_executable(ludus_sdk_renderer_consumer ../renderer.cpp)
@@ -39,6 +40,34 @@ if(EMSCRIPTEN)
     target_link_options(ludus_sdk_renderer_overlays_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
     set_target_properties(ludus_sdk_renderer_overlays_consumer PROPERTIES OUTPUT_NAME renderer-overlays SUFFIX ".js")
     configure_file(../renderer-overlays.html renderer-overlays.html COPYONLY)
+endif()
+
+# U1 clip/hit qualification: Ui paint through UiRender, compared with routed presses per pixel.
+add_executable(ludus_sdk_ui_render_consumer ../ui_render.cpp)
+target_link_libraries(ludus_sdk_ui_render_consumer PRIVATE Ludus::UiRender Ludus::FoundationTime)
+target_compile_options(ludus_sdk_ui_render_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+ludus_compile_renderer_shaders(TARGET ludus_sdk_ui_render_consumer SHADERS renderer_overlay)
+if(EMSCRIPTEN)
+    target_link_options(ludus_sdk_ui_render_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
+    set_target_properties(ludus_sdk_ui_render_consumer PROPERTIES OUTPUT_NAME ui-render SUFFIX ".js")
+    configure_file(../ui-render.html ui-render.html COPYONLY)
+endif()
+
+# U1 text qualification: labels on Ui elements drawn through UiText inside UiRender's scissored runs.
+add_executable(ludus_sdk_ui_text_consumer ../ui_text.cpp)
+target_link_libraries(ludus_sdk_ui_text_consumer PRIVATE Ludus::UiText Ludus::FoundationTime)
+target_compile_options(ludus_sdk_ui_text_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+ludus_compile_renderer_shaders(TARGET ludus_sdk_ui_text_consumer SHADERS renderer_overlay)
+if(EMSCRIPTEN)
+    target_link_options(ludus_sdk_ui_text_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
+    set_target_properties(ludus_sdk_ui_text_consumer PROPERTIES OUTPUT_NAME ui-text SUFFIX ".js")
+    configure_file(../ui-text.html ui-text.html COPYONLY)
+else()
+    # Native labels are shaped from the packaged fixture font through LabelCache.
+    find_package(Ludus CONFIG REQUIRED COMPONENTS Text FoundationFilesystem)
+    target_link_libraries(ludus_sdk_ui_text_consumer PRIVATE Ludus::FoundationFilesystem)
+    target_compile_definitions(ludus_sdk_ui_text_consumer PRIVATE
+        LUDUS_UI_TEXT_FONT_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/../../../modules/text/tests/fixtures")
 endif()
 
 add_executable(ludus_sdk_renderer_materials_consumer ../renderer_materials.cpp)
@@ -330,6 +359,8 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
         Ludus::FoundationTime Ludus::FoundationThreading Ludus::FoundationLogging)
     target_compile_options(ludus_sdk_ray_storage_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
     ludus_compile_renderer_shaders(TARGET ludus_sdk_ray_storage_consumer SHADERS renderer_composite)
+    # The layout and sensitivity checks run the SDK's Python verifier.
+    find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     set(storage_source "${CMAKE_CURRENT_SOURCE_DIR}/../rg2/ray_storage_bindings")
     foreach(storage_language lusl slang)
         set(name ray_storage_${storage_language})
@@ -354,13 +385,13 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
                 "PYTHONPATH=${Ludus_DIR}/render_graph" "${Python3_EXECUTABLE}" -O "${verifier}" sensitivity
                 "${staged}/main.lushader.json" "${Ludus_DIR}/shaders" "${LUDUS_SLANG_COMPILER}"
                 "${LUDUS_SPIRV_CROSS}" "$<TARGET_FILE:ludus_sdk_ray_storage_consumer>")
-            set_tests_properties(ludus_sdk_ray_storage_sensitivity PROPERTIES TIMEOUT 240)
+            # Without native ray queries (the hosted runners' Apple Paravirtual device) the
+            # consumer reports 77, and the check skips with it.
+            set_tests_properties(ludus_sdk_ray_storage_sensitivity PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77)
         endif()
         add_test(NAME ludus_sdk_${name} COMMAND ludus_sdk_ray_storage_consumer "${package_directory}" "${name}.lurgrt")
-        set_tests_properties(ludus_sdk_${name} PROPERTIES TIMEOUT 210)
-        if(NOT APPLE)
-            set_tests_properties(ludus_sdk_${name} PROPERTIES SKIP_RETURN_CODE 77)
-        endif()
+        # An adapter without native ray queries, including Apple's Paravirtual device, skips with 77.
+        set_tests_properties(ludus_sdk_${name} PROPERTIES TIMEOUT 210 SKIP_RETURN_CODE 77)
     endforeach()
 endif()
 

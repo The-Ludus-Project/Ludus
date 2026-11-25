@@ -7,6 +7,8 @@
 #include "internal/editor_commands.h"
 #include "internal/main_window.h"
 
+#include <ludus/foundation/base/core.h>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <QAction>
@@ -27,7 +29,9 @@ using namespace ludus::editor;
 
 namespace
 {
-constexpr int FADE_SETTLE_MILLISECONDS = 150;
+// The fade runs on the animation timer, which a loaded hosted runner can delay well past
+// its 100 ms duration; wait for it to finish instead of sleeping a fixed time.
+constexpr ludus::foundation::int32 FADE_FINISH_DEADLINE_MILLISECONDS = 5000;
 PaletteEntry MakeEntry(const QString& label, const QString& group, bool isEnabled)
 {
     PaletteEntry entry;
@@ -134,8 +138,8 @@ TEST_CASE("The palette fades in over 100 ms and appears at once under reduced mo
     fading->show();
     CHECK(fading->IsFading() == true);
     CHECK(fading->windowOpacity() < 1.0);
-    QTest::qWait(PALETTE_FADE_MILLISECONDS + FADE_SETTLE_MILLISECONDS);
-    CHECK(fading->IsFading() == false);
+    CHECK(QTest::qWaitFor([fading]() { return fading->IsFading() == false; }, FADE_FINISH_DEADLINE_MILLISECONDS) ==
+          true);
     CHECK(fading->windowOpacity() == 1.0);
     fading->close();
 

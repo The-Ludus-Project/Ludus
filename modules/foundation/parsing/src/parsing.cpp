@@ -40,7 +40,7 @@ bool ByteCursor::ReadUint8(uint8& output) noexcept
 
 bool ByteCursor::ReadUint32LittleEndian(uint32& output) noexcept
 {
-    if (TryReadLittleEndian(mInput.subspan(mPosition), output) == false)
+    if (TryReadLittleEndian({mInput.data() + mPosition, mInput.size() - mPosition}, output) == false)
     {
         return false;
     }
@@ -50,7 +50,7 @@ bool ByteCursor::ReadUint32LittleEndian(uint32& output) noexcept
 
 bool ByteCursor::ReadUint64LittleEndian(uint64& output) noexcept
 {
-    if (TryReadLittleEndian(mInput.subspan(mPosition), output) == false)
+    if (TryReadLittleEndian({mInput.data() + mPosition, mInput.size() - mPosition}, output) == false)
     {
         return false;
     }

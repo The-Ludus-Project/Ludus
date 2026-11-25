@@ -4,7 +4,10 @@ import contextlib
 import importlib.util
 import io
 import os
+import re
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -165,6 +168,35 @@ class GenerateLuslhTests(unittest.TestCase):
         self.assertEqual(generate_luslh.main(), 0)
         sys.argv = ['generate_luslh.py', '--check', '--tool', str(self.tool), str(template)]
         self.assertEqual(generate_luslh.main(), 0)
+
+
+class GenerateLuslLayoutsTests(unittest.TestCase):
+    def test_check_rejects_layout_header_drift(self):
+        generator = HELPER.with_name('generate_lusl_layouts.py')
+        specification = importlib.util.spec_from_file_location('generate_lusl_layouts', generator)
+        layouts = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(layouts)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for owner, _ in layouts.OWNERS:
+                (root / owner).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(layouts.ROOT / owner, root / owner)
+            command = [sys.executable, '-O', str(generator), '--root', str(root)]
+            subprocess.run(command, check=True)
+            subprocess.run([*command, '--check'], check=True)
+
+            owner = next(owner for owner, _ in layouts.OWNERS if owner.name == 'point_search_layout.h')
+            header = (root / owner).with_suffix('.luslh')
+            authored = header.read_text(encoding='utf-8')
+            edited, count = re.subn(r'(?m)^(#define LUDUS_POINT_SEARCH_GROUP_SIZE )\d+$', r'\g<1>1', authored)
+            self.assertEqual(count, 1)
+            self.assertNotEqual(edited, authored)
+            header.write_text(edited, encoding='utf-8')
+            result = subprocess.run([*command, '--check'], capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Stale LUSL layout headers', result.stderr)
+            self.assertIn(str(header), result.stderr)
+            self.assertEqual(header.read_text(encoding='utf-8'), edited)
 
 
 if __name__ == '__main__':

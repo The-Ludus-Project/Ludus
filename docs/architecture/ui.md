@@ -1,7 +1,12 @@
 # Runtime UI architecture
 
-Status: U0 implemented in `Ludus::Ui`. U1-U4 below are a delivery plan,
-not implemented capabilities. Sandbox consumes U0 through the installed SDK.
+Status: U0 implemented in `Ludus::Ui`. U1 is in progress: the
+[render adapter](#u1-render-adapter) (`Ludus::UiRender`), its clip/hit
+qualification and the [text adapter](#u1-text-adapter) (`Ludus::UiText`) with
+atlas exhaustion and device-loss handling are implemented; the glyph raster
+sweeps (fractional origins, display-scale raster size, baseline phase) remain.
+U2-U4 below are a delivery plan, not implemented capabilities. Sandbox consumes
+U0 through the installed SDK.
 
 ## Decision and current constraints
 
@@ -83,9 +88,9 @@ Ludus::Ui -> FoundationBase (public)
                   |
        layout snapshot + paint commands + action result
           /                         \
-Platform/DOM semantic adapter      render adapter -> RHI
+Platform/DOM semantic adapter      Ludus::UiRender -> Renderer overlays -> RHI
           |                         |
- text composition events      future UiText -> Ludus::Text
+ text composition events      Ludus::UiText -> GraphicsText -> Ludus::Text (native)
 ```
 
 Ui does not link Platform, Input, Text, RHI, Qt or any third-party UI framework.
@@ -186,15 +191,141 @@ text-shaping callback or use synchronous GPU queries on the UI path.
 
 The Sandbox's six-command fullscreen uniform adapter is deliberately bounded.
 It proves U0 on the current renderer, but per-fragment rectangle loops scale with
-screen area and are not the eventual general UI renderer. U1 replaces this
-adapter with indexed quads/scissors once the RHI supports them.
+screen area and are not the eventual general UI renderer. U1's
+[render adapter](#u1-render-adapter) replaces it with scissored overlay quads.
+
+## U1 render adapter
+
+`Ludus::UiRender` (`ludus/graphics/ui_render/ui_render.hpp`) converts committed
+`PaintCommand` values into the renderer's existing `OverlayList`. The list and
+`OverlayRenderer` already own the indexed quad upload, R8 coverage sampling,
+scissor and bounded versioning (see
+[renderer overlays](renderer-systems.md#implemented-l2-mutable-versions-and-overlays)),
+so UiRender adds no pipeline, shader or GPU resource of its own and Ui still
+links no renderer code.
+
+A `SurfaceMapping` names one uniform scale, the physical position of the logical
+origin (safe-area insets) and the framebuffer extent. Physical point *p* maps to
+logical (*p* - origin) / scale, computed in float64 and rounded once to float32.
+`MapPhysicalToLogical` is that mapping; adapters use it for every pointer
+`Event`. A physical pixel is painted for a command exactly when its centre maps
+inside the command's half-open `Bounds`, with the right and bottom edges summed
+in float32 as Ui hit testing sums them. `TryComputePhysicalRectangle` corrects
+its float64 estimate against the float32 mapping, so a pixel-centre tie (logical
+34.25 at scale 2 lands on physical 68.5) resolves the same way for paint and
+routing. Painted coverage and the activatable region therefore agree pixel for
+pixel at integer and fractional scales; GPU tie-breaking rules never decide an
+edge because every quad edge lies on a pixel boundary.
+
+Each command carries its effective clip (`PaintCommand::Clip`, the same clip hit
+testing uses). Its quad is the snapped clipped bounds, and its scissor is the
+snapped clip. Bounds never exceed the clip in real arithmetic; if float32
+rounding of the clipped right/bottom edge would leave a painted pixel outside the
+snapped clip, the scissor grows to include it rather than diverging from routing.
+Commands that cover no pixel centre are culled. Adjacent commands with the same
+clip merge into one draw; translucent order is never changed. UiText labels
+share this scissor contract; image commands in later milestones will too.
+
+`AppendPaint` validates the mapping and every command, then checks the list's
+remaining vertices (six per quad) and runs, before appending anything. Every
+failure leaves the list and report unchanged and does not count as a dropped
+overlay command. `PaintReport` records commands read, quads, culled commands and
+new runs; these are the batching counters U1 acceptance measures. The overlay
+list's bounds (512 quads, 256 runs per prepared version) are the current limit;
+a document needing more must split across prepared versions or wait for a
+measured larger list.
+
+Qualification lives in two places. The CPU tests in
+`modules/graphics/ui_render/tests` check the pixel-centre rule over 1260 edge,
+scale and origin combinations, and route a press at every pixel of the
+clip/hit document at scales 1, 1.5 and 2 and after a resize. The installed-SDK
+fixture `tests/sdk_consumer/ui_render.cpp` renders that document offscreen
+through `OverlayRenderer`, reads the RGBA8 target back, and requires every
+pixel's colour and routed press to match the snapped paint list, plus explicit
+probes inside the clip, on its half-open edge, in the overflow and in the
+sibling that follows the scissor change. Native CI runs it on the Linux
+(Vulkan) and macOS (Metal) SDK jobs; the browser suite runs it on WebGPU and
+WebGL 2 and requires byte-identical readbacks across both. Results and pending
+evidence are in [UI validation](ui-validation.md#u1-render-adapter).
+
+## U1 text adapter
+
+`Ludus::UiText` (`ludus/graphics/ui_text/ui_text.hpp`) draws shaped text on Ui
+elements as GraphicsText coverage quads in the runs UiRender emits. Ui still
+links neither Text nor the renderer: a `Label` names its element by
+`WidgetId`, the identity Ui already requires, and carries glyph quads the caller
+prepared. Labels are adapter input beside the document, not document fields, so
+`Element` stays a plain value and Ui never sees strings, fonts or atlas UVs.
+
+`AppendUi` walks `GetLayout()` in submission order. For each element it appends
+the element's fill exactly as `AppendPaint` would (the shared
+`TryComputePaintQuad`), then every label naming the element. A later sibling's
+fill therefore covers an earlier element's text, and a transparent element
+(which emits no paint command) can still carry a label. A label is positioned
+from the element's unclipped layout box: its pen origin and baseline are logical
+offsets, mapped with the surface scale and origin and not snapped. Its scissor is
+the element's effective clip, the clip its fill and hit region use; when the
+element has a fill, the label reuses the fill's overlay style, so the fill and its
+text share one draw. Text outside the element's own bounds is drawn where that
+clip allows, so size the element to contain its ink or nest it in a clipping
+element. Labels of hidden or absent elements append nothing. Each label records
+the scale its glyphs were rasterized for, and a mismatch with the mapping is
+rejected rather than drawn at the wrong raster size.
+
+The renderer's `CanMergeOverlayStyles` is the one merge rule; both adapters
+count runs with it. `AppendUi` validates every label (including hidden ones),
+command and glyph, and the list's remaining vertex and run capacity, before
+appending anything, so failures change nothing. `UiTextReport` adds glyph,
+culled-glyph and text-run counts to the fill counters, plus the pixel centres the
+appended quads shade inside their scissors, which divided by the framebuffer area
+is the overdraw factor. Glyphs wholly outside their scissor are culled rather than
+uploaded. The browser build has all of this; only shaping is native.
+
+### Label cache, atlas exhaustion and device loss
+
+`LabelCache` (`ludus/graphics/ui_text/label_cache.hpp`, native only) holds at
+most 32 labels of up to 64 glyphs, one per element, and the GraphicsText atlas
+they sample. `SetLabel` copies a shaped run through `PrepareText`; the layout is
+borrowed only during the call. The atlas key includes the physical pixel height,
+so a run shaped for another display scale uses new cells and stale cells cannot
+serve it; returning to an earlier scale reuses its cells without rasterizing.
+
+When the live atlas is full, `SetLabel` compacts automatically: it copies the
+coverage of the glyphs live labels use into a second CPU atlas (no rasterizing),
+adds the new run there and swaps atlases. Compaction loses no authored data, so
+it needs no confirmation (see "Errors offer solutions" in `AGENTS.md`). If the
+run still does not fit, `SetLabel` returns `CapacityExceeded`, keeps every
+label, including that element's last ready label, and the cells they address,
+and reports a `LabelRepair` with the counts: `RemoveLabel` (all slots used),
+`ShortenLabel` (more than 64 glyphs) or `ReduceGlyphs` (remove labels, use fewer
+pixel sizes or shorten text). An application shows that repair with the counts
+where the label was edited.
+
+`GetAtlasRevision()` advances whenever labels may address cells a previously
+published texture lacks; publish a new atlas texture then and keep earlier
+textures until the overlay versions that sample them are released. The cache owns
+no GPU objects. After device loss, reinitialize `OverlayRenderer`, publish
+`GetAtlas()` to the new device and rebuild the list from `GetLabels()`; nothing is
+shaped or rasterized again, and the application keeps presenting its last
+drawable frame until the rebuilt version is ready.
+
+The CPU tests in `modules/graphics/ui_text/tests` check paint-order interleaving,
+run merging, parity with `AppendPaint` when no labels are attached, clip culling,
+hidden labels, scale/origin mapping and atomic failures, plus Latin, Hangul and
+right-to-left Arabic shaping fixtures, display-scale keys, compaction and the
+failures that keep the last ready label. The installed-SDK fixture
+`tests/sdk_consumer/ui_text.cpp` renders labels on a clipped document offscreen and
+checks every pixel against a composite of the snapped fills and atlas coverage;
+natively it also rejects an atlas-exhausting label and rebuilds every GPU object
+after destroying the device, and both must reproduce the last frame byte for byte.
+Results are in [UI validation](ui-validation.md#u1-text-adapter).
 
 ## Delivery sequence and acceptance
 
 | Milestone | Deliverable | Acceptance |
 | --- | --- | --- |
 | U0 (this change) | CPU document layout, clipped rect paint, button routing/focus, SDK export, shared Sandbox HUD | Debug/Development and ASan/UBSan tests; format/tidy; installed native/web consumer; transactional failure/capture regressions; actual browser pixels |
-| U1 | RHI quad/index/texture/scissor capabilities; UiRender and UiText adapters, atlas uploads | Vulkan/WebGPU/WebGL 2 pixel parity; shaping fixtures, atlas exhaustion/device loss; no GPU work in Ui; batching/overdraw measurements |
+| U1 (UiRender and UiText implemented) | RHI quad/index/texture/scissor capabilities; UiRender and UiText adapters, atlas uploads | Vulkan/WebGPU/WebGL 2 pixel parity; shaping fixtures, atlas exhaustion/device loss; no GPU work in Ui; batching/overdraw measurements |
 | U2 | Semantic names/values, native accessibility, text edit/IME, modal scopes, controller direction navigation, scrolling | Screen reader/keyboard/controller journeys; composition/bidi/grapheme tests; focus restore and cancellation under removal/reload |
 | U3 | Versioned authoring documents, shared themes/variants, localization, atomic hot reload, inspector | Bounds/ID/source diagnostics; rejected reload preserves live UI; portrait/ultrawide/DPI/safe-area/text-expansion matrix; no user-code callbacks in validation |
 | U4 | Virtualized lists, explicit dirty revisions, selective cache/animation | Representative large-menu captures; frame cost p50/p95 and memory before/after; invalidation regressions; reduced-motion support |

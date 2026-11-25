@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import unittest
+from unittest import mock
 
 import batch_ci
 import develop_health
@@ -224,6 +225,20 @@ class GateTests(unittest.TestCase):
         self.assertFalse(is_open)
         self.assertIn("gh workflow run wiki.yml --ref codex/fix`", "\n".join(lines))
 
+    # The browser renderer suites merged into the packaged suite; main defines the successor now,
+    # so this test supplies the mapping that once bridged their promotion.
+    @mock.patch.dict(develop_health.PENDING_PROMOTION_SUCCESSORS,
+                     {("browser", "Renderer browser tests (baseline)"): "Packaged browser tests (software GPU)"})
+    def test_a_merged_batch_job_is_proven_by_its_develop_successor(self):
+        red = develop_health.Health(24, "u", ("browser / Renderer browser tests (baseline)",))
+        body = "Batch-Fix: browser / Renderer browser tests (baseline)"
+        self.add_evidence("webgpu-probe.yml", [job("Packaged browser tests (software GPU)", "failure")])
+        is_open, lines = self.evaluate(body=body, health=red)
+        self.assertFalse(is_open)
+        self.assertIn("develop successor `Packaged browser tests (software GPU)`", "\n".join(lines))
+        self.add_evidence("webgpu-probe.yml", [job("Packaged browser tests (software GPU)", "success")])
+        self.assertTrue(self.evaluate(body=body, health=red)[0])
+
     def test_declarations_are_line_anchored_unique_and_bounded(self):
         body = ("Batch-Fix: native / ASan and UBSan\n  Batch-Fix:  native / ASan and UBSan  \n"
                 "Not a Batch-Fix: native / Ubuntu Clang\nBatch-Fix:\n")
@@ -284,6 +299,13 @@ class WorkflowContractTests(unittest.TestCase):
                                   workflow))
         self.assertEqual(callers, develop_health.BATCH_WORKFLOWS)
         self.assertEqual(set(batch_ci.VALIDATION_JOBS) | {"recovery"}, set(develop_health.BATCH_WORKFLOWS))
+
+    def test_successors_are_jobs_of_the_owning_workflow(self):
+        for (suite, job_name), successor in develop_health.PENDING_PROMOTION_SUCCESSORS.items():
+            with self.subTest(job=job_name):
+                text = (self.ROOT / ".github/workflows" / develop_health.BATCH_WORKFLOWS[suite]).read_text(
+                    encoding="utf-8")
+                self.assertRegex(text, rf"(?m)^    name: {re.escape(successor)}$")
 
     def test_evidence_workflows_can_be_dispatched_on_a_branch(self):
         for workflow in develop_health.BATCH_WORKFLOWS.values():

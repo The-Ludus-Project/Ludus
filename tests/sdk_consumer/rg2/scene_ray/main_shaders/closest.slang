@@ -1,6 +1,15 @@
 // Data/query acceptance shader, deliberately without a lighting estimator.
 void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)
 {
+    SurfaceHit filtered;
+    const SceneQuery filteredStatus = TraceClosestExcludingTriangles(scene,
+                                                                     queries,
+                                                                     hit.IncomingRay,
+                                                                     uint2(hit.TriangleIndex, SCENE_INVALID_INDEX),
+                                                                     filtered);
+    if (filteredStatus == SceneQuery::Failure ||
+        (filteredStatus == SceneQuery::Surface && filtered.TriangleIndex == hit.TriangleIndex))
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     MaterialSample material = EvaluateMaterial(scene, hit);
     payload.Radiance = material.BaseColor + EvaluateEmission(scene, hit, -hit.IncomingRay.DirectionWorld);
     SelectedLight selected = SelectLight(scene, queries);

@@ -408,7 +408,7 @@ class ExecutionTests(unittest.TestCase):
         header = struct.unpack('<10I', data[:40])
         self.assertEqual(header[:2], (execution.PACKAGE_MAGIC, execution.PACKAGE_VERSION))
         self.assertEqual(header[5:9], (4, 1, 2, 4))
-        records = 104 + execution.RESOURCE_RECORD_BYTES * 2 + 4 + 22 * 4
+        records = 104 + execution.RESOURCE_RECORD_BYTES * 2 + 4 + execution.PASS_RECORD_BYTES
         self.assertEqual(struct.unpack('<5I', data[records:records + 20]), (0, 0, 2, 0, 4))
 
     def test_runtime_package_names_its_resources_in_record_order(self):
@@ -428,6 +428,10 @@ class ExecutionTests(unittest.TestCase):
         suffix = b''.join(struct.pack('<I', len(name.encode())) + name.encode() + bytes(-len(name.encode()) % 4)
                           for name in pass_names)
         self.assertTrue(destination.read_bytes().endswith(suffix))
+        self.assertEqual(names['gpu_scopes'], [
+            {'scope_identity': index, 'operations': [name]}
+            for index, name in enumerate(pass_names, start=1)
+        ])
         header = self.root / 'named.hpp'
         execution.emit_runtime(self.output, header)
         self.assertIn('PASS_NAMES.GetData()', header.read_text())

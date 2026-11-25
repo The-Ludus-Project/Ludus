@@ -11,6 +11,7 @@ namespace ludus::physics::collision
 {
 using foundation::float32;
 using foundation::float64;
+using foundation::uint16;
 using foundation::uint32;
 using foundation::uint64;
 using foundation::uint8;

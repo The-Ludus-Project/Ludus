@@ -1,4 +1,4 @@
-// Keyboard input while host_folder.js suspends the editor, without a browser.
+// Input while host_folder.js suspends the editor, without a browser.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -30,6 +30,23 @@ function key(type, value, extra = {}) {
     stopImmediatePropagation() { this.isStopped = true; },
   };
 }
+
+// A pointer event whose composed path holds one element per class in `classes`, from the
+// target up, followed by the document and the window.
+function pointer(type, classes, extra = {}) {
+  const path = [...classes.map(name => ({classList: {contains: value => value === name}})), {}, {}];
+  return {
+    type, isTrusted: true,
+    isPrevented: false, isStopped: false,
+    composedPath() { return path; },
+    preventDefault() { this.isPrevented = true; },
+    stopPropagation() { this.isStopped = true; },
+    ...extra,
+  };
+}
+
+// The elements Qt 6.10 puts between a clicked widget and its screen's shadow root.
+const QT_WINDOW = ['qt-window-canvas', 'qt-window', 'qt-decorated-window'];
 
 function send({listeners}, event) {
   for (const {type, listener, options} of listeners) {
@@ -76,6 +93,32 @@ test('dispatched, composition and clipboard keys keep their browser default', ()
     key('keydown', 'x', {ctrlKey: true}),
   ]) {
     assert.equal(send(loaded, event).isPrevented, false, event.key);
+  }
+  loaded.input.end();
+});
+
+test('a click in a Qt window while a file call is suspended keeps Qt focused', () => {
+  const loaded = load();
+  loaded.input.begin();
+  for (const type of ['pointerdown', 'mousedown']) {
+    const event = send(loaded, pointer(type, QT_WINDOW));
+    assert.ok(event.isPrevented, `${type} must not move focus from Qt's input element to the body`);
+    assert.equal(event.isStopped, false, "the click must still reach Qt's queue among other input");
+  }
+  loaded.input.end();
+  assert.equal(send(loaded, pointer('pointerdown', QT_WINDOW)).isPrevented, false, 'Qt cancels clicks itself while it runs');
+});
+
+test('page controls and dispatched clicks keep their browser default', () => {
+  const loaded = load();
+  loaded.input.begin();
+  for (const event of [
+    pointer('pointerdown', ['page-button']),
+    pointer('mousedown', []),
+    pointer('pointerdown', QT_WINDOW, {isTrusted: false}),
+    pointer('mousedown', QT_WINDOW, {composedPath: undefined}),
+  ]) {
+    assert.equal(send(loaded, event).isPrevented, false, event.type);
   }
   loaded.input.end();
 });

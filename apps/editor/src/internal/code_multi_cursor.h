@@ -3,8 +3,11 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
+
 #include <QList>
 #include <QString>
+#include <QStringView>
 
 QT_BEGIN_NAMESPACE
 class QKeyEvent;
@@ -48,6 +51,11 @@ struct CodeRegionEdit final
     QString Inserted;            ///< Replacement text with LF newlines; the host owns CRLF re-insertion.
     bool IsPrimary = false;      ///< The one region whose caret the single Qt cursor follows afterwards.
 };
+
+/// Normalize U+2028 in pasted Slang code, using the complete edited text to
+/// distinguish code from literals and comments. Only inserted text is changed.
+/// Unmappable, overlapping or out-of-order ranges leave all regions unchanged.
+void RepairSlangPaste(QStringView source, foundation::BorrowedView<CodeRegionEdit> inoutRegions);
 
 /// Secondary-cursor state and input distribution for one CodeEditor (CE06).
 /// Owned by the editor and used only on the GUI thread. The secondary cursors
@@ -121,8 +129,12 @@ public:
     /// Paint the secondary carets over the viewport, after the base
     /// QPlainTextEdit paint and before the latency probe marks the frame. The
     /// secondary selections are drawn by the view as Qt extra selections, since
-    /// extra selections paint no caret of their own.
-    void Paint(QPainter& inoutPainter) const;
+    /// extra selections paint no caret of their own. Only carets whose UTF-16
+    /// position lies in [firstVisiblePosition, lastVisiblePosition] are painted:
+    /// locating a caret lays out its line, so carets outside the viewport would
+    /// cost a layout per cursor per paint.
+    void
+    Paint(QPainter& inoutPainter, foundation::int32 firstVisiblePosition, foundation::int32 lastVisiblePosition) const;
 
     /// Replace the secondary cursors with `secondaryCursors` (document order, in
     /// UTF-16 positions) and repaint. The controller calls this when it restores

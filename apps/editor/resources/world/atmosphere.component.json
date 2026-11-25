@@ -46,6 +46,132 @@
       "default": "",
       "unit": "",
       "help": "Bind a different directional light to the optional lunar disk. Its Transform or celestial driver sets the direction."
+    },
+    {
+      "id": "aurora",
+      "label": "Northern lights",
+      "type": "boolean",
+      "default": false,
+      "unit": "",
+      "help": "Draw auroral curtains toward this entity's local +Z direction. Use a perspective camera and look low in the night sky."
+    },
+    {
+      "id": "auroraEmission",
+      "label": "Aurora emission",
+      "type": "number",
+      "default": 0.0000005,
+      "unit": "nits/m",
+      "min": 0,
+      "max": 0.001,
+      "help": "Peak brightness added per metre through a curtain. Zero hides the layer."
+    },
+    {
+      "id": "auroraTime",
+      "label": "Aurora time",
+      "type": "number",
+      "default": 0,
+      "unit": "s",
+      "min": 0,
+      "max": 120,
+      "help": "Preview a moment in the 120-second loop. Play starts the animation here."
+    },
+    {
+      "id": "clouds",
+      "label": "Cloud layer",
+      "type": "boolean",
+      "default": false,
+      "unit": "",
+      "help": "Draw one bounded, flat cloud slab centred on this entity, lit by the Sun. It does not yet shade the ground."
+    },
+    {
+      "id": "cloudBase",
+      "label": "Cloud base",
+      "type": "number",
+      "default": 1500,
+      "unit": "m",
+      "min": 0,
+      "max": 20000,
+      "help": "Height of the cloud's flat underside above this entity's ground plane."
+    },
+    {
+      "id": "cloudThickness",
+      "label": "Cloud thickness",
+      "type": "number",
+      "default": 1000,
+      "unit": "m",
+      "min": 1,
+      "max": 10000,
+      "help": "Distance from the cloud's underside to its top."
+    },
+    {
+      "id": "cloudSizeX",
+      "label": "Cloud size X",
+      "type": "number",
+      "default": 40000,
+      "unit": "m",
+      "min": 100,
+      "max": 200000,
+      "help": "Width of the cloud along this entity's local X axis."
+    },
+    {
+      "id": "cloudSizeZ",
+      "label": "Cloud size Z",
+      "type": "number",
+      "default": 40000,
+      "unit": "m",
+      "min": 100,
+      "max": 200000,
+      "help": "Width of the cloud along this entity's local Z axis."
+    },
+    {
+      "id": "cloudEdgeFade",
+      "label": "Cloud edge fade",
+      "type": "number",
+      "default": 2000,
+      "unit": "m",
+      "min": 0,
+      "max": 100000,
+      "help": "Distance over which the cloud thins out to nothing at its sides. Zero draws sharp sides."
+    },
+    {
+      "id": "cloudDensity",
+      "label": "Cloud density",
+      "type": "number",
+      "default": 1,
+      "unit": "",
+      "min": 0,
+      "max": 10,
+      "help": "Multiplies the cloud extinction. Zero is an empty layer that draws the clear sky."
+    },
+    {
+      "id": "cloudExtinction",
+      "label": "Cloud extinction",
+      "type": "number",
+      "default": 0.004,
+      "unit": "1/m",
+      "min": 0,
+      "max": 1,
+      "help": "Fraction of light the cloud removes per metre at density one. The default makes a 1000 m thick cloud let through about 2% of the light behind it."
+    },
+    {
+      "id": "cloudAlbedo",
+      "label": "Cloud albedo",
+      "type": "number",
+      "default": 0.99,
+      "unit": "",
+      "min": 0,
+      "max": 1,
+      "help": "Fraction of removed light that the cloud scatters rather than absorbs. Zero is a dark absorber."
+    },
+    {
+      "id": "cloudForwardScattering",
+      "label": "Cloud forward scattering",
+      "type": "number",
+      "default": 0.6,
+      "unit": "",
+      "min": -0.99,
+      "max": 0.99,
+      "help": "Henyey-Greenstein asymmetry. Zero scatters evenly in every direction; positive values brighten the cloud around the Sun."
     }
   ]
 }

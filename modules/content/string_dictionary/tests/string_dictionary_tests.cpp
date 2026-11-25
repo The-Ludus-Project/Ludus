@@ -134,13 +134,13 @@ StringDictionaryStatus Read(const Array<uint8>& bytes, const RevisionDigest& rev
 uint32 GetWord(const Array<uint8>& bytes, usize offset)
 {
     uint32 value{};
-    REQUIRE(ludus::foundation::TryReadLittleEndian(std::span<const uint8>{bytes.GetData() + offset, 4}, value) == true);
+    REQUIRE(ludus::foundation::TryReadLittleEndian({bytes.GetData() + offset, 4}, value) == true);
     return value;
 }
 
 void SetWord(Array<uint8>& inoutBytes, usize offset, uint32 value)
 {
-    REQUIRE(ludus::foundation::TryWriteLittleEndian(value, std::span<uint8>{inoutBytes.GetData() + offset, 4}) == true);
+    REQUIRE(ludus::foundation::TryWriteLittleEndian(value, {inoutBytes.GetData() + offset, 4}) == true);
 }
 
 usize GetEntryField(usize index, usize field)

@@ -43,6 +43,7 @@
 #include <QPointF>
 #include <cmath>
 #include <ludus/foundation/base/compiler.h>
+#include <ludus/gameplay/world/celestial_transform.hpp>
 
 #include "internal/workspace_style.h"
 #include <QAction>
@@ -2630,6 +2631,398 @@ TEST_CASE("World viewport interaction shares hierarchy selection inspector valid
     CHECK(workspace.findChild<QLineEdit*>(QStringLiteral("worldEntityName")) == nullptr);
     CHECK(workspace.Document().Draft() == accepted);
 }
+namespace
+{
+namespace math = ludus::foundation::math;
+namespace camera = ludus::gameplay::camera;
+using ludus::foundation::float32;
+using ludus::foundation::float64;
+
+constexpr math::Vector3 NESTED_ROTATE_POSITION_PARENT{2, 3, 4};
+constexpr math::Vector3 NESTED_ROTATE_PARENT_POSITION_WORLD{-2, 1, 3};
+constexpr math::Vector3 NESTED_ROTATE_SCALE{1.4F, 0.8F, 1.1F};
+constexpr math::Vector3 NESTED_ROTATE_EULER_DEGREES{19, -24, 31};
+constexpr float32 PARENT_ROTATION_DEGREES = 90;
+constexpr float32 ROTATE_RING_RADIUS_PIXELS = 80;
+constexpr float32 ROTATE_TEST_VERTICAL_SPAN = 6;
+constexpr float32 ROTATE_TEST_CAMERA_DISTANCE_WORLD = 10;
+constexpr int WORLD_ROTATE_TIMEOUT_MILLISECONDS = 15000;
+
+math::Quaternion MakeAxisRotation(math::Vector3 axis, float32 degrees)
+{
+    math::Quaternion rotation;
+    REQUIRE(math::TryFromAxisAngle(axis, math::DegreesToRadians(degrees), rotation) == math::MathStatus::Success);
+    return rotation;
+}
+
+math::Vector3 TransformRotateFixturePointToWorld(math::Vector3 pointMesh, math::Vector3 eulerDegrees)
+{
+    // Apply the documented scale, X, Y, Z, translation and parent transform in sequence.
+    // The imported child basis is identity. No gizmo axes or placement-composition code are used here.
+    const math::Vector3 scaledMesh{pointMesh.X * NESTED_ROTATE_SCALE.X,
+                                   pointMesh.Y * NESTED_ROTATE_SCALE.Y,
+                                   pointMesh.Z * NESTED_ROTATE_SCALE.Z};
+    const math::Vector3 rotatedX = math::Rotate(MakeAxisRotation({1, 0, 0}, eulerDegrees.X), scaledMesh);
+    const math::Vector3 rotatedXY = math::Rotate(MakeAxisRotation({0, 1, 0}, eulerDegrees.Y), rotatedX);
+    const math::Vector3 rotatedXYZ = math::Rotate(MakeAxisRotation({0, 0, 1}, eulerDegrees.Z), rotatedXY);
+    return math::Rotate(MakeAxisRotation({0, 1, 0}, PARENT_ROTATION_DEGREES),
+                        rotatedXYZ + NESTED_ROTATE_POSITION_PARENT) +
+           NESTED_ROTATE_PARENT_POSITION_WORLD;
+}
+
+QPointF
+ProjectRotateFixturePoint(math::Vector3 pointWorld, const camera::CameraSample& cameraSample, const QRectF& frame)
+{
+    const math::Vector3 relativeWorld = pointWorld - math::Vector3{static_cast<float32>(cameraSample.Pose.Position.X),
+                                                                   static_cast<float32>(cameraSample.Pose.Position.Y),
+                                                                   static_cast<float32>(cameraSample.Pose.Position.Z)};
+    const float64 pixelsPerMetre = frame.height() / static_cast<float64>(cameraSample.Lens.VerticalSpan);
+    const math::Vector3 rightWorld = math::Rotate(cameraSample.Pose.Orientation, {1, 0, 0});
+    const math::Vector3 upWorld = math::Rotate(cameraSample.Pose.Orientation, {0, 1, 0});
+    return frame.center() + QPointF(static_cast<float64>(math::Dot(relativeWorld, rightWorld)),
+                                    -static_cast<float64>(math::Dot(relativeWorld, upWorld))) *
+                                pixelsPerMetre;
+}
+
+PreviewCamera MakeRotateFixtureCamera(float32 yawDegrees, float32 pitchDegrees)
+{
+    const math::Vector3 pivotWorld = TransformRotateFixturePointToWorld({}, NESTED_ROTATE_EULER_DEGREES);
+    const math::Quaternion yawFrameToWorld = MakeAxisRotation({0, 1, 0}, PARENT_ROTATION_DEGREES) *
+                                             MakeAxisRotation({0, 0, 1}, NESTED_ROTATE_EULER_DEGREES.Z);
+    PreviewCamera view;
+    view.Id = QStringLiteral("nested-rotation-camera");
+    view.Sample.Lens.VerticalSpan = ROTATE_TEST_VERTICAL_SPAN;
+    view.Sample.Pose.Orientation =
+        yawFrameToWorld * MakeAxisRotation({0, 1, 0}, yawDegrees) * MakeAxisRotation({1, 0, 0}, pitchDegrees);
+    const math::Vector3 eyeWorld =
+        pivotWorld + math::Rotate(view.Sample.Pose.Orientation, {0, 0, ROTATE_TEST_CAMERA_DISTANCE_WORLD});
+    view.Sample.Pose.Position = {static_cast<float64>(eyeWorld.X),
+                                 static_cast<float64>(eyeWorld.Y),
+                                 static_cast<float64>(eyeWorld.Z)};
+    return view;
+}
+
+enum class RotateFixtureAxis : ludus::foundation::uint8
+{
+    X = 0,
+    Z = 2,
+};
+
+math::Vector3 MakeRotateFixtureProbe(RotateFixtureAxis axis, float32 arcDegrees, const QRectF& frame)
+{
+    // Construct a probe fixed in the asymmetric mesh's coordinates. For the X arc, its scaled
+    // coordinates are in YZ. For the Z arc, apply inverse Y and X so the point is in XY just before Rz.
+    const float32 radiusWorld =
+        ROTATE_RING_RADIUS_PIXELS * ROTATE_TEST_VERTICAL_SPAN / static_cast<float32>(frame.height());
+    const float32 angle = math::DegreesToRadians(arcDegrees);
+    const float32 cosine = math::Cos(angle) * radiusWorld;
+    const float32 sine = math::Sin(angle) * radiusWorld;
+    math::Vector3 scaledProbeMesh{0, cosine, sine};
+    if (axis == RotateFixtureAxis::Z)
+    {
+        const math::Vector3 undoneY =
+            math::Rotate(MakeAxisRotation({0, 1, 0}, -NESTED_ROTATE_EULER_DEGREES.Y), {cosine, sine, 0});
+        scaledProbeMesh = math::Rotate(MakeAxisRotation({1, 0, 0}, -NESTED_ROTATE_EULER_DEGREES.X), undoneY);
+    }
+    return {scaledProbeMesh.X / NESTED_ROTATE_SCALE.X,
+            scaledProbeMesh.Y / NESTED_ROTATE_SCALE.Y,
+            scaledProbeMesh.Z / NESTED_ROTATE_SCALE.Z};
+}
+
+QString WriteNestedRotateWorld(const QTemporaryDir& directory, const QString& path)
+{
+    const QString external = directory.filePath(QStringLiteral("external"));
+    const QString levelPath = QStringLiteral("scenes/nested.lulevel");
+    QString error;
+    REQUIRE(tests::CreateFixtureSource(external) == true);
+    REQUIRE(tests::PrepareImportedLevel(directory.path(), levelPath, external, error) == true);
+    QJsonObject level = QJsonDocument::fromJson(Read(directory.filePath(levelPath))).object();
+    QJsonArray objects = level.value(QStringLiteral("objects")).toArray();
+    REQUIRE(objects.size() == 1);
+    QJsonObject child = objects[0].toObject();
+    const QString childId = child.value(QStringLiteral("id")).toString();
+    const QString parentId = QStringLiteral("b8517f65-8127-4bf4-99c2-e53b1a6d9701");
+    child.insert(QStringLiteral("parent"), parentId);
+    child.insert(QStringLiteral("transform"),
+                 QJsonArray{1,
+                            0,
+                            0,
+                            0,
+                            1,
+                            0,
+                            0,
+                            0,
+                            1,
+                            static_cast<float64>(NESTED_ROTATE_POSITION_PARENT.X),
+                            static_cast<float64>(NESTED_ROTATE_POSITION_PARENT.Y),
+                            static_cast<float64>(NESTED_ROTATE_POSITION_PARENT.Z)});
+    QJsonObject parent = child;
+    parent.insert(QStringLiteral("parent"), QStringLiteral(""));
+    parent.insert(QStringLiteral("id"), parentId);
+    parent.insert(QStringLiteral("name"), QStringLiteral("Rotate Fixture Parent"));
+    parent.insert(QStringLiteral("transform"),
+                  QJsonArray{0,
+                             0,
+                             -1,
+                             0,
+                             1,
+                             0,
+                             1,
+                             0,
+                             0,
+                             static_cast<float64>(NESTED_ROTATE_PARENT_POSITION_WORLD.X),
+                             static_cast<float64>(NESTED_ROTATE_PARENT_POSITION_WORLD.Y),
+                             static_cast<float64>(NESTED_ROTATE_PARENT_POSITION_WORLD.Z)});
+    objects[0] = child;
+    objects.append(parent);
+    level.insert(QStringLiteral("objects"), objects);
+
+    WorldDocument document = Document();
+    const bool isImported = document.ImportScene(level, error);
+    INFO(error.toStdString());
+    REQUIRE(isImported == true);
+    const QJsonObject entity = document.Entity(childId);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
+    transform.insert(QStringLiteral("rx"), static_cast<float64>(NESTED_ROTATE_EULER_DEGREES.X));
+    transform.insert(QStringLiteral("ry"), static_cast<float64>(NESTED_ROTATE_EULER_DEGREES.Y));
+    transform.insert(QStringLiteral("rz"), static_cast<float64>(NESTED_ROTATE_EULER_DEGREES.Z));
+    transform.insert(QStringLiteral("sx"), static_cast<float64>(NESTED_ROTATE_SCALE.X));
+    transform.insert(QStringLiteral("sy"), static_cast<float64>(NESTED_ROTATE_SCALE.Y));
+    transform.insert(QStringLiteral("sz"), static_cast<float64>(NESTED_ROTATE_SCALE.Z));
+    components.insert(QStringLiteral("transform"), transform);
+    REQUIRE(document.Edit(childId, components, entity.value(QStringLiteral("name")).toString(), error) == true);
+    Write(path, document.Encode());
+    return childId;
+}
+
+math::Affine3 FindRotateFixtureTransform(const RenderScene& scene, const QString& childId)
+{
+    for (const PreviewObject& object : scene.Objects)
+    {
+        if (object.Id == childId)
+        {
+            return object.Transform;
+        }
+    }
+    FAIL("Nested child did not reach the viewport scene");
+    return {};
+}
+
+void CheckRotateFixtureTransforms(const math::Affine3& actual, const math::Affine3& expected)
+{
+    // The gizmo composes in float32, and the cook composes the hierarchy in float64 before narrowing.
+    constexpr float32 COOK_ROUNDING_TOLERANCE = 0.00001F;
+    CHECK(math::Length(actual.Translation - expected.Translation) < COOK_ROUNDING_TOLERANCE);
+    for (ludus::foundation::int32 axis = 0; axis < ViewportObjectInteraction::AXIS_COUNT; ++axis)
+    {
+        CHECK(math::Length(actual.Columns[axis] - expected.Columns[axis]) < COOK_ROUNDING_TOLERANCE);
+    }
+}
+} // namespace
+
+TEST_CASE("Nested World rotate rings follow projected mesh motion and preserve placement history",
+          "[editor][world][object-interaction][gizmo][nested-rotate]")
+{
+    // Thanks to Britton, Lipscomb and Pique, Making Nested Rotations Convenient for the User (SIGGRAPH '78),
+    // https://doi.org/10.1145/800248.807394, for judging nested rotation by agreement with hand motion.
+    // Thanks to Nielson and Olsen, Direct Manipulation Techniques for 3D Objects Using 2D Locator Devices
+    // (I3D '86), for exercising the loss of precision when the 3D motion projects to almost no screen motion.
+    enum class GestureEnd : ludus::foundation::uint8
+    {
+        Commit,
+        Escape,
+        Collapsed,
+    };
+    struct RotateGesture final
+    {
+        const char* Name;
+        float32 YawDegrees;
+        float32 PitchDegrees;
+        float32 ArcDegrees;
+        RotateFixtureAxis Axis;
+        bool IsPositive;
+        GestureEnd End;
+    };
+    const QList<RotateGesture> gestures{
+        {"first view X positive", 27, 22, 135, RotateFixtureAxis::X, true, GestureEnd::Commit},
+        {"first view Z negative", 27, 22, 39, RotateFixtureAxis::Z, false, GestureEnd::Commit},
+        {"second view X negative", -32, -25, 45, RotateFixtureAxis::X, false, GestureEnd::Commit},
+        {"second view Z positive", -32, -25, 50, RotateFixtureAxis::Z, true, GestureEnd::Commit},
+        {"five degrees before edge-on", 85, 0, 45, RotateFixtureAxis::Z, true, GestureEnd::Commit},
+        {"five degrees past edge-on with Escape", 95, 0, 45, RotateFixtureAxis::Z, false, GestureEnd::Escape},
+        {"edge-on at the collapsed Z tangent", 90, 0, 90, RotateFixtureAxis::Z, false, GestureEnd::Collapsed},
+    };
+    for (const RotateGesture& gesture : gestures)
+    {
+        DYNAMIC_SECTION(gesture.Name)
+        {
+            QTemporaryDir directory;
+            const QString path = Fixture(directory);
+            const QString childId = WriteNestedRotateWorld(directory, path);
+            WorldWorkspace workspace;
+            workspace.SetProject(directory.path(), 1);
+            REQUIRE(workspace.Open(path) == true);
+            REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave(); },
+                                    WORLD_ROTATE_TIMEOUT_MILLISECONDS) == true);
+            LevelWorkspace* levelOrNull = workspace.findChild<LevelWorkspace*>();
+            REQUIRE(levelOrNull != nullptr);
+            QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+            REQUIRE(propertiesOrNull != nullptr);
+            propertiesOrNull->hide();
+            REQUIRE(propertiesOrNull->isHidden() == true);
+
+            const QRectF frame{0, 0, 800, 600};
+            const PreviewCamera view = MakeRotateFixtureCamera(gesture.YawDegrees, gesture.PitchDegrees);
+            RenderPreview& preview = levelOrNull->GetRenderPreview();
+            RenderScene scene = preview.Scene();
+            const math::Affine3 original = FindRotateFixtureTransform(scene, childId);
+            scene.Identity += QByteArrayLiteral("-nested-rotation-camera");
+            scene.Cameras = {view};
+            ConfigureInteractionPreview(preview, scene);
+            REQUIRE(workspace.SelectEntity(childId) == true);
+
+            PreviewViewport& viewport = levelOrNull->GetViewport();
+            ViewportObjectInteraction& interaction = viewport.GetObjectInteraction();
+            interaction.SetActive(true);
+            interaction.ClearPresentedView();
+            interaction.SetImageSize({});
+            interaction.SetGpuOutlineEnabled(true);
+            interaction.SetTool(ViewportObjectInteraction::Tool::Rotate);
+            QSignalSpy committed(&interaction, &ViewportObjectInteraction::PlacementCommitted);
+
+            const math::Vector3 probeMesh = MakeRotateFixtureProbe(gesture.Axis, gesture.ArcDegrees, frame);
+            const auto projectAuthored = [&](float32 deltaDegrees) {
+                math::Vector3 eulerDegrees = NESTED_ROTATE_EULER_DEGREES;
+                (gesture.Axis == RotateFixtureAxis::X ? eulerDegrees.X : eulerDegrees.Z) += deltaDegrees;
+                return ProjectRotateFixturePoint(TransformRotateFixturePointToWorld(probeMesh, eulerDegrees),
+                                                 view.Sample,
+                                                 frame);
+            };
+            const QPointF pressPixel = projectAuthored(0);
+            const QPointF positiveTangentPixel = projectAuthored(1) - projectAuthored(-1);
+            const QJsonObject before = workspace.Document().Draft();
+            const WorldDocument::History& history = workspace.Document().GetHistory();
+            const ludus::foundation::usize cursorBefore = history.GetCursor();
+            const ludus::foundation::usize countBefore = history.GetCount();
+            REQUIRE(interaction.Hover(pressPixel, frame) == true);
+            const ludus::foundation::int32 axis = static_cast<ludus::foundation::int32>(gesture.Axis);
+            REQUIRE(interaction.GetHoveredAxis() == axis);
+            REQUIRE(interaction.Press(pressPixel, frame) == true);
+
+            constexpr float64 DRAG_PIXELS = 6;
+            const float64 tangentLengthPixels = QLineF(QPointF{}, positiveTangentPixel).length();
+            if (gesture.End == GestureEnd::Collapsed)
+            {
+                constexpr float64 COLLAPSED_TANGENT_TOLERANCE_PIXELS = 0.01;
+                REQUIRE(tangentLengthPixels < COLLAPSED_TANGENT_TOLERANCE_PIXELS);
+                CHECK(interaction.IsDragging() == false);
+                static_cast<void>(interaction.Move(pressPixel + QPointF(0, DRAG_PIXELS), false));
+                CHECK(interaction.Release() == false);
+                CHECK(committed.count() == 0);
+                CHECK(workspace.Document().Draft() == before);
+                CHECK(history.GetCursor() == cursorBefore);
+                CHECK(history.GetCount() == countBefore);
+                return;
+            }
+
+            REQUIRE(tangentLengthPixels > 1);
+            const float64 dragSign = gesture.IsPositive == true ? 1 : -1;
+            const QPointF motionPixel = positiveTangentPixel * (dragSign * DRAG_PIXELS / tangentLengthPixels);
+            REQUIRE(interaction.IsDragging() == true);
+            REQUIRE(interaction.Move(pressPixel + motionPixel, false) == true);
+            CHECK(workspace.Document().Draft() == before);
+            CHECK(history.GetCursor() == cursorBefore);
+            ViewportObjectOverlay overlay;
+            interaction.BuildOverlay(frame, overlay);
+            const QString axisName = gesture.Axis == RotateFixtureAxis::X ? QStringLiteral("X") : QStringLiteral("Z");
+            const QString sign = gesture.IsPositive == true ? QStringLiteral(" +") : QStringLiteral(" -");
+            INFO(overlay.ReadoutText.toStdString());
+            REQUIRE(overlay.ReadoutText.startsWith(axisName + sign) == true);
+            bool isReadoutNumeric = false;
+            const float64 readoutDegrees = overlay.ReadoutText.mid(2).chopped(1).toDouble(&isReadoutNumeric);
+            REQUIRE(isReadoutNumeric == true);
+            constexpr float64 MAXIMUM_SMALL_DRAG_DEGREES = 6;
+            CHECK(math::IsFinite(readoutDegrees) == true);
+            CHECK(math::Abs(readoutDegrees) <= MAXIMUM_SMALL_DRAG_DEGREES);
+
+            SelectionOutlineRequest outline;
+            REQUIRE(interaction.TryGetGpuOutlineRequest(outline) == true);
+            const math::Affine3 candidate = outline.MeshToWorld;
+            const QPointF candidatePixel =
+                ProjectRotateFixturePoint(math::TransformPoint(candidate, probeMesh), view.Sample, frame);
+            CHECK(QPointF::dotProduct(candidatePixel - pressPixel, motionPixel) > 0);
+            CHECK(candidate.Translation == original.Translation);
+
+            if (gesture.End == GestureEnd::Escape)
+            {
+                QTest::keyClick(&viewport, Qt::Key_Escape);
+                REQUIRE(interaction.IsDragging() == false);
+                CHECK(interaction.Release() == false);
+                CHECK(committed.count() == 0);
+                CHECK(workspace.Document().Draft() == before);
+                CHECK(history.GetCount() == countBefore);
+                CHECK(history.GetCursor() == cursorBefore);
+                interaction.BuildOverlay(frame, overlay);
+                CHECK(overlay.ReadoutText.isEmpty() == true);
+                REQUIRE(interaction.TryGetGpuOutlineRequest(outline) == true);
+                CheckRotateFixtureTransforms(outline.MeshToWorld, original);
+                return;
+            }
+
+            const QJsonObject initialPlacement =
+                workspace.Document().ScenePlacement(workspace.Document().Entity(childId));
+            REQUIRE(interaction.Release() == true);
+            REQUIRE(committed.count() == 1);
+            CHECK(history.GetCursor() == cursorBefore + 1);
+            CHECK(history.GetCount() == countBefore + 1);
+            const QJsonObject acceptedPlacement =
+                workspace.Document().ScenePlacement(workspace.Document().Entity(childId));
+            const QString rotationKey = QStringLiteral("rotation");
+            QJsonArray rotation = acceptedPlacement.value(rotationKey).toArray();
+            const float64 value = rotation[axis].toDouble();
+            const QJsonArray initialRotation = initialPlacement.value(rotationKey).toArray();
+            const float64 change = value - initialRotation[axis].toDouble();
+            CHECK(change * dragSign > 0);
+            CHECK(math::IsFinite(change) == true);
+            CHECK(math::Abs(change) <= MAXIMUM_SMALL_DRAG_DEGREES);
+            CHECK(change == Catch::Approx(readoutDegrees).margin(0.051));
+            constexpr float64 CANDIDATE_PIXEL_TOLERANCE = 0.005;
+            const QPointF expectedCandidatePixel = projectAuthored(static_cast<float32>(change));
+            CHECK(QLineF(candidatePixel, expectedCandidatePixel).length() < CANDIDATE_PIXEL_TOLERANCE);
+            rotation[axis] = initialRotation[axis];
+            QJsonObject restoredPlacement = acceptedPlacement;
+            restoredPlacement.insert(rotationKey, rotation);
+            CHECK(restoredPlacement == initialPlacement);
+            REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave(); },
+                                    WORLD_ROTATE_TIMEOUT_MILLISECONDS) == true);
+            CheckRotateFixtureTransforms(FindRotateFixtureTransform(levelOrNull->PreviewScene(), childId), candidate);
+
+            REQUIRE(workspace.Save() == true);
+            REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave() && workspace.Dirty() == false; },
+                                    WORLD_ROTATE_TIMEOUT_MILLISECONDS) == true);
+            WorldWorkspace reopened;
+            reopened.SetProject(directory.path(), 2);
+            REQUIRE(reopened.Open(path) == true);
+            REQUIRE(QTest::qWaitFor([&reopened]() { return reopened.CanSave(); }, WORLD_ROTATE_TIMEOUT_MILLISECONDS) ==
+                    true);
+            CHECK(reopened.Document().ScenePlacement(reopened.Document().Entity(childId)) == acceptedPlacement);
+            const LevelWorkspace* reopenedLevelOrNull = reopened.findChild<LevelWorkspace*>();
+            REQUIRE(reopenedLevelOrNull != nullptr);
+            CheckRotateFixtureTransforms(FindRotateFixtureTransform(reopenedLevelOrNull->PreviewScene(), childId),
+                                         candidate);
+
+            REQUIRE(workspace.CanUndo() == true);
+            workspace.Undo();
+            CHECK(workspace.Document().Draft() == before);
+            CHECK(history.GetCursor() == cursorBefore);
+            REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave(); },
+                                    WORLD_ROTATE_TIMEOUT_MILLISECONDS) == true);
+            CheckRotateFixtureTransforms(FindRotateFixtureTransform(levelOrNull->PreviewScene(), childId), original);
+        }
+    }
+}
+
 TEST_CASE("World viewport mouse events select objects while Alt keeps camera navigation",
           "[editor][world][object-interaction]")
 {
@@ -3552,6 +3945,79 @@ TEST_CASE("Earth lights share one World date, time and location that starts at t
     CHECK(radiusOrNull->isVisibleTo(&workspace) == false);
     CHECK(skyOrNull->isVisibleTo(&workspace) == true);
     CHECK(skyOrNull->text().contains(QStringLiteral("2000-01-02 00:00:00 UTC")) == true);
+    workspace.StopPreview();
+}
+
+TEST_CASE("The Atmosphere shows enabled layer fields and extracts their settings", "[editor][world][atmosphere]")
+{
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("clouds.world.json"))) == true);
+    QAction* sunActionOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    QAction* atmosphereActionOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateAtmosphere"));
+    REQUIRE(sunActionOrNull != nullptr);
+    REQUIRE(atmosphereActionOrNull != nullptr);
+    sunActionOrNull->trigger();
+    const QString sunId = workspace.Document().GetEntityKey(
+        workspace.Document().Draft().value(QStringLiteral("entities")).toArray().last().toObject());
+    atmosphereActionOrNull->trigger();
+    const QString atmosphereId = workspace.Document().GetEntityKey(
+        workspace.Document().Draft().value(QStringLiteral("entities")).toArray().last().toObject());
+    REQUIRE(workspace.SelectEntity(atmosphereId) == true);
+    QComboBox* atmosphereSunOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:atmosphere/sun"));
+    REQUIRE(atmosphereSunOrNull != nullptr);
+    atmosphereSunOrNull->setCurrentIndex(atmosphereSunOrNull->findData(sunId));
+    REQUIRE(workspace.Apply() == true);
+    RenderScene scene;
+    QString error;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
+    REQUIRE(scene.Atmosphere.IsEnabled == true);
+    CHECK(scene.Atmosphere.Clouds.IsEnabled == false);
+    CHECK(scene.Atmosphere.Aurora.IsEnabled == false);
+    const QJsonObject beforeLayers = workspace.Document().Draft();
+
+    // The layer's fields stay hidden until the layer is ticked.
+    QCheckBox* cloudsOrNull = workspace.findChild<QCheckBox*>(QStringLiteral("worldField:atmosphere/clouds"));
+    QLineEdit* baseOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:atmosphere/cloudBase"));
+    QLineEdit* extinctionOrNull =
+        workspace.findChild<QLineEdit*>(QStringLiteral("worldField:atmosphere/cloudExtinction"));
+    REQUIRE(cloudsOrNull != nullptr);
+    REQUIRE(baseOrNull != nullptr);
+    REQUIRE(extinctionOrNull != nullptr);
+    CHECK(cloudsOrNull->isVisibleTo(&workspace) == true);
+    CHECK(baseOrNull->isVisibleTo(&workspace) == false);
+    cloudsOrNull->setChecked(true);
+    CHECK(baseOrNull->isVisibleTo(&workspace) == true);
+    CHECK(extinctionOrNull->isVisibleTo(&workspace) == true);
+    baseOrNull->setText(QStringLiteral("2500"));
+    extinctionOrNull->setText(QStringLiteral("0.002"));
+    QCheckBox* auroraOrNull = workspace.findChild<QCheckBox*>(QStringLiteral("worldField:atmosphere/aurora"));
+    QLineEdit* auroraTimeOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:atmosphere/auroraTime"));
+    REQUIRE(auroraOrNull != nullptr);
+    REQUIRE(auroraTimeOrNull != nullptr);
+    CHECK(auroraTimeOrNull->isVisibleTo(&workspace) == false);
+    auroraOrNull->setChecked(true);
+    CHECK(auroraTimeOrNull->isVisibleTo(&workspace) == true);
+    auroraTimeOrNull->setText(QStringLiteral("23"));
+    REQUIRE(workspace.Apply() == true);
+    REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
+    const ludus::graphics::renderer::CloudLayerDescription& clouds = scene.Atmosphere.Clouds;
+    CHECK(clouds.IsEnabled == true);
+    CHECK(clouds.BaseHeightMetres == Catch::Approx(2500));
+    CHECK(clouds.ExtinctionPerMetre == Catch::Approx(0.002));
+    CHECK(clouds.ThicknessMetres == ludus::graphics::renderer::CloudLayerDescription::DEFAULT_THICKNESS_METRES);
+    CHECK(clouds.AxisXWorld.X == Catch::Approx(1));
+    CHECK(scene.Atmosphere.Aurora.IsEnabled == true);
+    CHECK(scene.Atmosphere.Aurora.TimeSeconds == 23);
+
+    // Undo restores the clear sky in one step.
+    workspace.Undo();
+    CHECK(workspace.Document().Draft() == beforeLayers);
+    REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
+    CHECK(scene.Atmosphere.Clouds.IsEnabled == false);
+    CHECK(scene.Atmosphere.Aurora.IsEnabled == false);
     workspace.StopPreview();
 }
 
@@ -5116,6 +5582,47 @@ ludus::foundation::float32 GetPresentedX(const WorldWorkspace& workspace, const 
     return GetPresentedObject(workspace, id).Transform.Translation.X;
 }
 } // namespace
+
+TEST_CASE("Undo republishes the saved Light Court Sun after its live inspector preview", "[editor][world][light-court]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QDir root(QFileInfo(directory.path()).canonicalFilePath());
+    const QString worldPath = root.filePath(QStringLiteral("light-court.world.json"));
+    const QDir sample(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/examples/light-court"));
+    REQUIRE(QFile::copy(sample.filePath(QStringLiteral("authoring/light-court.world.json")), worldPath) == true);
+    REQUIRE(ludus::editor::tests::CopyTree(sample.filePath(QStringLiteral("assets")),
+                                           root.filePath(QStringLiteral("assets"))) == true);
+    WorldWorkspace workspace;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        workspace.show();
+    }
+    workspace.SetProject(root.path(), 1);
+    REQUIRE(workspace.Open(worldPath) == true);
+    WaitForValidatedScene(workspace);
+    LevelWorkspace& scene = GetLevel(workspace);
+    const QByteArray originalIdentity = scene.GetPresentedScene().Identity;
+    REQUIRE(originalIdentity.isEmpty() == false);
+
+    REQUIRE(workspace.SelectEntity(QStringLiteral("light.sun")) == true);
+    QLineEdit* const rotationOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:transform/ry"));
+    REQUIRE(rotationOrNull != nullptr);
+    rotationOrNull->selectAll();
+    QTest::keyClicks(rotationOrNull, QStringLiteral("75"));
+    REQUIRE(QTest::qWaitFor(
+                [&scene, &originalIdentity]() { return scene.GetPresentedScene().Identity != originalIdentity; },
+                MAX_SCENE_WAIT_MILLISECONDS) == true);
+    WaitForValidatedScene(workspace);
+
+    REQUIRE(workspace.Apply() == true);
+    WaitForValidatedScene(workspace);
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    CHECK(workspace.Dirty() == false);
+    CHECK(scene.GetPresentedScene().Identity == originalIdentity);
+}
 
 TEST_CASE("An open World publishes newly imported diffuse conductor Mix geometry", "[editor][world][mix]")
 {
@@ -6846,6 +7353,219 @@ Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "integer indices" [0 1 2]
     reopened.StopPreview();
 }
 
+TEST_CASE("World creates a varnish-over-wood layered material from a slot and edits its coat",
+          "[editor][world][coating]")
+{
+    namespace format = ludus::content::scene_format;
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    const QString external = directory.filePath(QStringLiteral("external"));
+    REQUIRE(QDir().mkpath(external) == true);
+    // A matte wood substrate the author coats with varnish. Two slots share the imported material.
+    Write(QDir(external).filePath(QStringLiteral("wood.pbrt")), QByteArrayLiteral(R"(LookAt 0 0 3 0 0 0 0 1 0
+Camera "perspective" "float fov" 45
+WorldBegin
+MakeNamedMaterial "Wood" "string type" "diffuse" "rgb reflectance" [0.32 0.17 0.08]
+NamedMaterial "Wood"
+Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "integer indices" [0 1 2]
+)"));
+    QString error;
+    const QString relativeLevel = QStringLiteral("scenes/wood.lulevel");
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(directory.path(), relativeLevel, external, error, "wood.pbrt") ==
+            true);
+    const QJsonObject level = QJsonDocument::fromJson(Read(directory.filePath(relativeLevel))).object();
+    WorldDocument document = Document();
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QString selected =
+        level.value(QStringLiteral("objects")).toArray().first().toObject().value(QStringLiteral("id")).toString();
+    QString sibling;
+    REQUIRE(document.DuplicateEntity(ludus::platform::GetSystemEntropySource(), error, selected, sibling) == true);
+    Write(path, document.Encode());
+
+    WorldWorkspace workspace;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        workspace.show();
+    }
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    WaitForValidatedScene(workspace);
+    REQUIRE(workspace.SelectEntity(selected) == true);
+    const auto getMaterial = [](const WorldWorkspace& source, const QString& id) {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(source).PreviewScene(), id);
+        REQUIRE(materialOrNull != nullptr);
+        return *materialOrNull;
+    };
+    const ludus::resources::SceneMaterial wood = getMaterial(workspace, selected);
+    REQUIRE(wood.Scattering.Model == format::MaterialModel::Diffuse);
+    const auto readSwatch = [](const WorldWorkspace& source, const ludus::resources::SceneMaterial& material) {
+        const RenderScene& scene = GetLevel(source).PreviewScene();
+        REQUIRE(scene.Definition != nullptr);
+        REQUIRE(material.Texture < scene.Definition->Textures.GetSize());
+        const ludus::resources::SceneTexture& texture = scene.Definition->Textures[material.Texture];
+        return QByteArray(reinterpret_cast<const char*>(texture.Pixels.GetData()),
+                          static_cast<qsizetype>(texture.Pixels.GetSize()));
+    };
+    // This PBRT import stores the wood colour in a swatch and uses a separate linear reflectance factor.
+    const QByteArray woodSwatch = readSwatch(workspace, wood);
+    REQUIRE(woodSwatch.isEmpty() == false);
+
+    // Make Coated Diffuse opens the creation dialog pre-set to the layered model for the shared source material.
+    QPushButton* makeOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldMakeCoatedDiffuse"));
+    REQUIRE(makeOrNull != nullptr);
+    REQUIRE(makeOrNull->isEnabled() == true);
+    // The callback runs inside the dialog's exec(). A thrown REQUIRE cannot leave a Windows event
+    // handler (batch 45273484047 hung for 600 s), so it only records failures, and it closes a
+    // dialog that stays open so the failure reports instead of blocking exec().
+    QTimer::singleShot(0, []() {
+        QDialog* creationOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        CHECK(creationOrNull != nullptr);
+        if (creationOrNull == nullptr)
+        {
+            return;
+        }
+        CHECK(creationOrNull->objectName() == QStringLiteral("worldMaterialCreation"));
+        const QComboBox* modelOrNull =
+            creationOrNull->findChild<QComboBox*>(QStringLiteral("worldMaterialCreationModel"));
+        CHECK(modelOrNull != nullptr);
+        if (modelOrNull != nullptr)
+        {
+            CHECK(modelOrNull->currentData().toString() == QStringLiteral("coated_diffuse"));
+        }
+        const auto setInput = [creationOrNull](const QString& name, const QString& text) {
+            QLineEdit* inputOrNull = creationOrNull->findChild<QLineEdit*>(name);
+            CHECK(inputOrNull != nullptr);
+            if (inputOrNull != nullptr)
+            {
+                inputOrNull->setText(text);
+            }
+        };
+        setInput(QStringLiteral("worldMaterialCreationCoatingAlpha"), QStringLiteral("0.2"));
+        setInput(QStringLiteral("worldMaterialCreationCoatingEta"), QStringLiteral("1.5"));
+        setInput(QStringLiteral("worldMaterialCreationCoatingThickness"), QStringLiteral("0.05"));
+        QPushButton* confirmOrNull =
+            creationOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmMaterialCreation"));
+        CHECK(confirmOrNull != nullptr);
+        if (confirmOrNull != nullptr)
+        {
+            confirmOrNull->click();
+        }
+        if (creationOrNull->isVisible() == true)
+        {
+            const QLabel* errorOrNull =
+                creationOrNull->findChild<QLabel*>(QStringLiteral("worldMaterialCreationError"));
+            const QString reason = errorOrNull != nullptr ? errorOrNull->text() : QString();
+            FAIL_CHECK("The creation dialog stayed open after Create: " << reason.toUtf8().constData());
+            creationOrNull->reject();
+        }
+    });
+    makeOrNull->click();
+    WaitForValidatedScene(workspace);
+
+    // Both slots now resolve to the ordered coat over the wood substrate.
+    const auto checkCreated = [&](const WorldWorkspace& source, const QString& id) {
+        const ludus::resources::SceneMaterial material = getMaterial(source, id);
+        CHECK(material.Scattering.Model == format::MaterialModel::CoatedDiffuse);
+        CHECK(material.Reflectance.X == wood.Reflectance.X);
+        CHECK(material.Reflectance.Y == wood.Reflectance.Y);
+        CHECK(material.Reflectance.Z == wood.Reflectance.Z);
+        CHECK(readSwatch(source, material) == woodSwatch);
+        CHECK(material.Scattering.CoatingEta == 1.5F);
+        CHECK(material.Scattering.CoatingThickness == 0.05F);
+        // The coat runs an internal walk, so a fixed-dimension profile cannot consume it.
+        CHECK(format::SupportsFixedDimensionReflection(material.Scattering) == false);
+    };
+    checkCreated(workspace, selected);
+    checkCreated(workspace, sibling);
+
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    QPushButton* editOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldEditMaterial"));
+    REQUIRE(editOrNull != nullptr);
+    REQUIRE(editOrNull->isEnabled() == true);
+    editOrNull->click();
+    QDialog* view = workspace.findChild<QDialog*>(QStringLiteral("worldMaterialDocument"));
+    REQUIRE(view != nullptr);
+    REQUIRE(view->isVisible() == true);
+    const auto getInput = [&](const QString& key) {
+        QLineEdit* inputOrNull = view->findChild<QLineEdit*>(QStringLiteral("materialCoating:") + key);
+        REQUIRE(inputOrNull != nullptr);
+        return inputOrNull;
+    };
+    const auto click = [&](const QString& name) {
+        QPushButton* buttonOrNull = view->findChild<QPushButton*>(name);
+        REQUIRE(buttonOrNull != nullptr);
+        REQUIRE(buttonOrNull->isEnabled() == true);
+        buttonOrNull->click();
+    };
+    const auto getLabel = [&](const QString& name) {
+        const QLabel* labelOrNull = view->findChild<QLabel*>(name);
+        REQUIRE(labelOrNull != nullptr);
+        return labelOrNull->text();
+    };
+    // The document labels the ordered layers of the coat over the substrate.
+    CHECK(getLabel(QStringLiteral("materialIdentity"))
+              .contains(QStringLiteral("dielectric coat over a diffuse "
+                                       "substrate")) == true);
+    const QString status = QStringLiteral("materialStatus");
+    const QString apply = QStringLiteral("materialApply");
+    const QString alpha = QStringLiteral("alpha");
+    const QString eta = QStringLiteral("eta");
+    const QString thickness = QStringLiteral("thickness");
+
+    // A rejected coat value keeps the draft and the last drawable material.
+    Type(getInput(alpha), QStringLiteral("0"));
+    click(apply);
+    CHECK(getLabel(status).contains(QStringLiteral("enter a finite value")) == true);
+    CHECK(getInput(alpha)->text() == QStringLiteral("0"));
+    CHECK(getMaterial(workspace, selected).Scattering.AlphaU == 0.2F);
+
+    // A valid slot-override coat edit changes only this slot; the sibling keeps the shared coat.
+    Type(getInput(alpha), QStringLiteral("0.3"));
+    Type(getInput(eta), QStringLiteral("1.6"));
+    Type(getInput(thickness), QStringLiteral("0.08"));
+    click(apply);
+    WaitForValidatedScene(workspace);
+    const auto checkOverride = [&](const WorldWorkspace& source) {
+        const ludus::resources::SceneMaterial material = getMaterial(source, selected);
+        CHECK(material.Scattering.AlphaU == 0.3F);
+        CHECK(material.Scattering.CoatingEta == 1.6F);
+        CHECK(material.Scattering.CoatingThickness == 0.08F);
+        CHECK(getMaterial(source, sibling).Scattering.CoatingEta == 1.5F);
+    };
+    checkOverride(workspace);
+
+    click(QStringLiteral("materialUndo"));
+    WaitForValidatedScene(workspace);
+    CHECK(getMaterial(workspace, selected).Scattering.CoatingEta == 1.5F);
+    click(QStringLiteral("materialRedo"));
+    WaitForValidatedScene(workspace);
+    checkOverride(workspace);
+
+    click(QStringLiteral("materialSave"));
+    WaitForValidatedScene(workspace);
+    REQUIRE(workspace.Dirty() == false);
+    REQUIRE(view->close() == true);
+    workspace.StopPreview();
+    workspace.hide();
+
+    // Save and reopen: the created layered material and its slot override persist.
+    WorldWorkspace reopened;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        reopened.show();
+    }
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    REQUIRE(reopened.SelectEntity(selected) == true);
+    checkOverride(reopened);
+    checkCreated(reopened, sibling);
+    reopened.StopPreview();
+}
+
 TEST_CASE("Placement-only World edits derive the presented scene and keep everything else assembled",
           "[editor][world][placement]")
 {
@@ -7355,13 +8075,22 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     QJsonObject components = atmosphere.value(QStringLiteral("components")).toObject();
     QJsonObject values = components.value(atmosphereComponent).toObject();
     values.insert(QStringLiteral("sun"), sunId);
-    // An A1 world omits the A2 fields and keeps their defaults after loading.
+    // An A1 world omits the A2 fields, and a World saved before the aurora layer omits its
+    // fields; both keep the defaults after loading.
     values.remove(QStringLiteral("stars"));
     values.remove(QStringLiteral("moon"));
+    values.remove(QStringLiteral("aurora"));
+    values.remove(QStringLiteral("auroraEmission"));
+    values.remove(QStringLiteral("auroraTime"));
     components.insert(atmosphereComponent, values);
     REQUIRE(document.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==
             true);
+    // Open validates the saved bytes, not the edited draft (examples/light-court before the fix).
+    WorldDocument savedWithoutAurora;
+    REQUIRE(savedWithoutAurora.LoadSchema(schema, error) == true);
+    REQUIRE(savedWithoutAurora.Load(QJsonDocument(document.Draft()).toJson(), error) == true);
     REQUIRE(RenderScene::Load(directory.path(), document, scene, error) == true);
+    CHECK(scene.Atmosphere.Aurora.IsEnabled == false);
     CHECK(scene.Atmosphere.IsEnabled == true);
     CHECK(scene.Atmosphere.DirectionToSunWorld.Y == Catch::Approx(1));
     CHECK(scene.Atmosphere.SolarIlluminance.X == Catch::Approx(10));
@@ -7406,11 +8135,23 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     CHECK(scene.Atmosphere.Celestial.MilkyWayRadiance > 0);
     CHECK(scene.Atmosphere.Celestial.Planets[0].Illuminance.X > 0);
     const math::Vector3 midnightCenterWorld = scene.Atmosphere.Celestial.GalacticCenterWorld;
+    const QByteArray authoredWorld = reopened.Encode();
+    RenderScene sampled = scene;
+    REQUIRE(sampled.TrySampleEarthTime(0, error) == true);
+    CHECK(sampled.Atmosphere.Celestial.GalacticCenterWorld != midnightCenterWorld);
+    CHECK(reopened.Encode() == authoredWorld);
+    CHECK(scene.Atmosphere.Celestial.GalacticCenterWorld == midnightCenterWorld);
+    const float64 invalidTime = ludus::gameplay::world::MAX_EARTH_CELESTIAL_DAYS + 1;
+    CHECK(sampled.TrySampleEarthTime(invalidTime, error) == false);
+
     earthMoon.insert(QString(WORLD_CELESTIAL_TIME), 0);
     moonComponents.insert(lightComponent, earthMoon);
     REQUIRE(reopened.Edit(moonId, moonComponents, moonName, error) == true);
     REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
     CHECK(scene.Atmosphere.Celestial.GalacticCenterWorld != midnightCenterWorld);
+    CHECK(sampled.Atmosphere.Celestial.GalacticCenterWorld == scene.Atmosphere.Celestial.GalacticCenterWorld);
+    CHECK(sampled.Atmosphere.Celestial.DirectionToMoonWorld == scene.Atmosphere.Celestial.DirectionToMoonWorld);
+    CHECK(sampled.Atmosphere.Celestial.LunarPeakRadiance == scene.Atmosphere.Celestial.LunarPeakRadiance);
     values.insert(QStringLiteral("stars"), false);
     components.insert(atmosphereComponent, values);
     REQUIRE(reopened.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==

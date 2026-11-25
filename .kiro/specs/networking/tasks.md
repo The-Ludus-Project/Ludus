@@ -10,9 +10,9 @@ The architecture is authoritative for contracts and exit gates.
 - [x] N1: bounded owned queues, complete-snapshot replacement, lane fairness.
 - [x] N1: caller-clock seeded delay/jitter/loss/duplication simulator.
 - [x] N1: public SDK target and integrated regression/installed-consumer coverage.
-- [ ] N2: audited/pinned native backend spike and explicit session lifecycle.
-- [ ] N2: compatibility/admission, connection generations, quotas and timeouts.
-- [ ] N2: real endpoints, loss/backpressure/reconnect/security tests.
+- [x] N2: audited/pinned native backend spike and explicit session lifecycle.
+- [x] N2: compatibility/admission, connection generations, quotas and timeouts.
+- [x] N2: real endpoints, loss/backpressure/reconnect/security tests.
 - [ ] N3: explicit schema registry and network object generations.
 - [ ] N3: reliable lifecycle metadata, relevance and baseline/keyframe state.
 - [ ] N3: headless multi-client replication demo and fuzz/soak harness.

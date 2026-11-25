@@ -1,14 +1,20 @@
 #include "conformance_mask.h"
 #include "conformance_sample.h"
+#include "conformance_sample_slots.h"
 #include "conformance_write.h"
+#include "conformance_write_slots.h"
 #include "indirect_draw.h"
+#include "indirect_draw_slots.h"
 #include "indirect_mark.h"
+#include "indirect_mark_slots.h"
 #include "indirect_prepare.h"
+#include "indirect_prepare_slots.h"
 #include "internal/readback.h"
 #include "ordered_advance.h"
 #include "ordered_draw.h"
 #include "ordered_prepare.h"
 #include "raster.h"
+#include "raster_slots.h"
 #include "raster_storage_compute.h"
 #include "raster_storage_sample.h"
 #include "raster_storage_write.h"
@@ -173,9 +179,9 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
     REQUIRE(rhi::CreateTextureView(owner.Device, texture, view) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::CreateSampler(owner.Device, {}, sampler) == rhi::RasterStatus::Ready);
     StaticArray<rhi::RasterBindingResource, BINDING_COUNT> bindings{};
-    bindings[0] = { .Binding = 0, .Buffer = uniform, .Size = sizeof(tint) };
-    bindings[1] = { .Binding = 1, .Texture = view };
-    bindings[2] = { .Binding = 2, .Sampler = sampler };
+    bindings[0] = { .Binding = ludus::shaders::raster::slots::TINT, .Buffer = uniform, .Size = sizeof(tint) };
+    bindings[1] = { .Binding = ludus::shaders::raster::slots::IMAGE, .Texture = view };
+    bindings[2] = { .Binding = ludus::shaders::raster::slots::IMAGE_SAMPLER, .Sampler = sampler };
     rhi::BindingSetHandle set;
     rhi::BindingSetHandle darkSet;
     REQUIRE(rhi::CreateBindingSet(owner.Device, layout, {bindings.GetData(), bindings.GetSize()}, set) ==
@@ -185,9 +191,9 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
             rhi::RasterStatus::Ready);
     const StaticArray<rhi::RasterVertexStream, STREAM_COUNT> streams{{{20, false}, {8, true}}};
     const StaticArray<rhi::RasterVertexAttribute, ATTRIBUTE_COUNT> attributes{
-        {{0, 0, 0, rhi::RasterVertexFormat::Float3},
-         {1, 0, 12, rhi::RasterVertexFormat::Float2},
-         {2, 1, 0, rhi::RasterVertexFormat::Float2}}};
+        {{ludus::shaders::raster::locations::INPUT_POSITION, 0, 0, rhi::RasterVertexFormat::Float3},
+         {ludus::shaders::raster::locations::INPUT_UV, 0, 12, rhi::RasterVertexFormat::Float2},
+         {ludus::shaders::raster::locations::INPUT_OFFSET, 1, 0, rhi::RasterVertexFormat::Float2}}};
     rhi::RasterPipelineDescription pipelineDescription{vertexShader,
                                                        fragmentShader,
                                                        layout,
@@ -399,17 +405,17 @@ TEST_CASE("Portable line fill draws triangle edges and leaves interiors clear", 
     REQUIRE(rhi::CreateTextureView(owner.Device, texture, view) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::CreateSampler(owner.Device, {}, sampler) == rhi::RasterStatus::Ready);
     StaticArray<rhi::RasterBindingResource, BINDING_COUNT> bindings{};
-    bindings[0] = { .Binding = 0, .Buffer = uniform, .Size = sizeof(tint) };
-    bindings[1] = { .Binding = 1, .Texture = view };
-    bindings[2] = { .Binding = 2, .Sampler = sampler };
+    bindings[0] = { .Binding = ludus::shaders::raster::slots::TINT, .Buffer = uniform, .Size = sizeof(tint) };
+    bindings[1] = { .Binding = ludus::shaders::raster::slots::IMAGE, .Texture = view };
+    bindings[2] = { .Binding = ludus::shaders::raster::slots::IMAGE_SAMPLER, .Sampler = sampler };
     rhi::BindingSetHandle set;
     REQUIRE(rhi::CreateBindingSet(owner.Device, layout, {bindings.GetData(), bindings.GetSize()}, set) ==
             rhi::RasterStatus::Ready);
     const StaticArray<rhi::RasterVertexStream, STREAM_COUNT> streams{{{20, false}, {8, true}}};
     const StaticArray<rhi::RasterVertexAttribute, ATTRIBUTE_COUNT> attributes{
-        {{0, 0, 0, rhi::RasterVertexFormat::Float3},
-         {1, 0, 12, rhi::RasterVertexFormat::Float2},
-         {2, 1, 0, rhi::RasterVertexFormat::Float2}}};
+        {{ludus::shaders::raster::locations::INPUT_POSITION, 0, 0, rhi::RasterVertexFormat::Float3},
+         {ludus::shaders::raster::locations::INPUT_UV, 0, 12, rhi::RasterVertexFormat::Float2},
+         {ludus::shaders::raster::locations::INPUT_OFFSET, 1, 0, rhi::RasterVertexFormat::Float2}}};
     rhi::RasterPipelineDescription description{vertexShader,
                                                fragmentShader,
                                                layout,
@@ -522,7 +528,8 @@ TEST_CASE("Portable attachment passes preserve MRT stencil and selected mip cont
     REQUIRE(rhi::CreateBindingSet(owner.Device, emptyLayout, {}, emptySet) == rhi::RasterStatus::Ready);
     const StaticArray<rhi::RasterVertexStream, SINGLE_STREAM_COUNT> streams{{{16, false}}};
     const StaticArray<rhi::RasterVertexAttribute, MESH_ATTRIBUTES> attributes{
-        {{0, 0, 0, rhi::RasterVertexFormat::Float2}, {1, 0, 8, rhi::RasterVertexFormat::Float2}}};
+        {{ludus::shaders::conformance_write::locations::INPUT_POSITION, 0, 0, rhi::RasterVertexFormat::Float2},
+         {ludus::shaders::conformance_write::locations::INPUT_UV, 0, 8, rhi::RasterVertexFormat::Float2}}};
     const StaticArray<rhi::RasterFormat, TARGETS> formats{rhi::RasterFormat::Rgba8Unorm, rhi::RasterFormat::Rgba8Unorm};
     rhi::RasterPipelineDescription pipelineDescription{vertex,
                                                        fragment,
@@ -583,7 +590,8 @@ TEST_CASE("Portable attachment passes preserve MRT stencil and selected mip cont
                                        { .BaseMip = SELECTED_MIP, .MipCount = 1 },
                                        sampled[target]) == rhi::RasterStatus::Ready);
         const StaticArray<rhi::RasterBindingResource, TARGETS> resources{
-            {{ .Binding = 0, .Texture = sampled[target] }, { .Binding = 1, .Sampler = sampler }}};
+            {{ .Binding = ludus::shaders::conformance_sample::slots::COLOR_IMAGE, .Texture = sampled[target] },
+             { .Binding = ludus::shaders::conformance_sample::slots::COLOR_SAMPLER, .Sampler = sampler }}};
         REQUIRE(rhi::CreateBindingSet(owner.Device,
                                       sampleLayout,
                                       {resources.GetData(), resources.GetSize()},
@@ -995,7 +1003,7 @@ TEST_CASE("Portable R12a indirect commands honor offsets, counts, strides and di
         SKIP("The enabled device profile does not admit every R12a indirect operation");
     }
 
-    // Byte layout written by indirect_commands.slang.
+    // Byte layout written by indirect_commands.lusl.
     constexpr usize ARGUMENT_BYTES = 112;
     constexpr usize INDEXED_STRIDE = 40;
     constexpr uint32 INDEXED_COMMANDS = 2;
@@ -1054,13 +1062,14 @@ TEST_CASE("Portable R12a indirect commands honor offsets, counts, strides and di
         rhi::RasterStatus::Ready);
 
     const auto makeDispatch = [&](const rhi::RasterShaderDescription& description,
+                                  uint32 slot,
                                   rhi::BufferHandle buffer,
                                   usize size) {
         rhi::RasterShaderHandle shader;
         rhi::BindingLayoutHandle layout;
         rhi::ComputeDispatch dispatch;
         REQUIRE(description.Bindings.GetSize() == 1);
-        const rhi::RasterBindingResource resource{description.Bindings[0].Binding, buffer, 0, size};
+        const rhi::RasterBindingResource resource{slot, buffer, 0, size};
         REQUIRE(rhi::CreateRasterShader(device, description, shader) == rhi::RasterStatus::Ready);
         REQUIRE(rhi::CreateBindingLayout(device, description.Bindings, layout) == rhi::RasterStatus::Ready);
         REQUIRE(rhi::CreateBindingSet(device, layout, {&resource, 1}, dispatch.Bindings) == rhi::RasterStatus::Ready);
@@ -1069,10 +1078,18 @@ TEST_CASE("Portable R12a indirect commands honor offsets, counts, strides and di
         REQUIRE(rhi::Destroy(device, layout) == rhi::RasterStatus::Ready);
         return dispatch;
     };
-    const rhi::ComputeDispatch prepare =
-        makeDispatch(ludus::shaders::indirect_prepare::Compute(), arguments, ARGUMENT_BYTES);
-    rhi::ComputeDispatch mark = makeDispatch(ludus::shaders::indirect_mark::Compute(), marks, MARK_BYTES);
-    rhi::ComputeDispatch emptyMark = makeDispatch(ludus::shaders::indirect_mark::Compute(), emptyMarks, MARK_BYTES);
+    const rhi::ComputeDispatch prepare = makeDispatch(ludus::shaders::indirect_prepare::Compute(),
+                                                      ludus::shaders::indirect_prepare::slots::ARGUMENTS,
+                                                      arguments,
+                                                      ARGUMENT_BYTES);
+    rhi::ComputeDispatch mark = makeDispatch(ludus::shaders::indirect_mark::Compute(),
+                                             ludus::shaders::indirect_mark::slots::MARKS,
+                                             marks,
+                                             MARK_BYTES);
+    rhi::ComputeDispatch emptyMark = makeDispatch(ludus::shaders::indirect_mark::Compute(),
+                                                  ludus::shaders::indirect_mark::slots::MARKS,
+                                                  emptyMarks,
+                                                  MARK_BYTES);
     for (rhi::ComputeDispatch* dispatch : {&mark, &emptyMark})
     {
         dispatch->Groups[0] = MARK_COUNT;
@@ -1096,7 +1113,8 @@ TEST_CASE("Portable R12a indirect commands honor offsets, counts, strides and di
     constexpr uint32 COLOR_STRIDE = sizeof(float32) * CHANNELS;
     const StaticArray<rhi::RasterVertexStream, STREAM_COUNT> streams{{{POSITION_STRIDE, false}, {COLOR_STRIDE, true}}};
     const StaticArray<rhi::RasterVertexAttribute, STREAM_COUNT> attributes{
-        {{0, 0, 0, rhi::RasterVertexFormat::Float2}, {1, 1, 0, rhi::RasterVertexFormat::Float4}}};
+        {{ludus::shaders::indirect_draw::locations::INPUT_POSITION_CLIP, 0, 0, rhi::RasterVertexFormat::Float2},
+         {ludus::shaders::indirect_draw::locations::INPUT_COLOR, 1, 0, rhi::RasterVertexFormat::Float4}}};
     REQUIRE(rhi::CreateRasterPipeline(device,
                                       {vertex,
                                        fragment,
@@ -1406,6 +1424,8 @@ TEST_CASE("Portable raster storage buffers and textures follow declared graph wr
     const auto makePipeline = [&](const rhi::RasterShaderDescription& vertexDescription,
                                   const rhi::RasterShaderDescription& fragmentDescription,
                                   rhi::BindingLayoutHandle& outLayout) {
+        // Elements use their default member initializers; the check misreports them as zero enums.
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
         StaticArray<rhi::RasterBinding, STORAGE_LAYOUT_CAPACITY> bindings{};
         const usize count = MergeStageBindings(vertexDescription, fragmentDescription, bindings);
         rhi::RasterShaderHandle vertex;

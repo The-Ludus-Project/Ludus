@@ -6,6 +6,7 @@
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_shader_creation.h"
+#include "internal/render_graph_shader_edits.h"
 #include "internal/render_graph_upscale_node.h"
 #include "internal/render_graph_wire_routes.h"
 
@@ -19,6 +20,7 @@
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QLockFile>
+#include <QRegularExpression>
 #include <QSaveFile>
 
 #include <cmath>
@@ -37,7 +39,7 @@ const QString LOCK_NAME = QStringLiteral(".ludus-editor-render-graph.lock");
 bool IsAuthoredSource(const QString& path)
 {
     return path.endsWith(QStringLiteral(".lurender.json")) || path.endsWith(QStringLiteral(".lushader.json")) ||
-           path.endsWith(QStringLiteral(".slang"));
+           IsRenderGraphShaderSource(path);
 }
 
 void AppendString(const QString& text, QByteArray& inoutBytes)
@@ -1084,11 +1086,12 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
 RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
                                                            const QString& configuration,
                                                            const QJsonObject& node,
-                                                           QString* outErrorOrNull)
+                                                           QString* outErrorOrNull,
+                                                           RenderGraphShaderLanguage newShaderLanguage)
 {
     if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
     {
-        return ApplyPipeline(file, configuration, node, outErrorOrNull);
+        return ApplyPipeline(file, configuration, node, outErrorOrNull, newShaderLanguage);
     }
     if (node.value(QStringLiteral("kind")) == QStringLiteral("Subgraph"))
     {
@@ -1156,7 +1159,8 @@ RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
 RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file,
                                                              const QString& configuration,
                                                              const QJsonObject& node,
-                                                             QString* outErrorOrNull)
+                                                             QString* outErrorOrNull,
+                                                             RenderGraphShaderLanguage newShaderLanguage)
 {
     if (outErrorOrNull != nullptr)
     {
@@ -1192,8 +1196,13 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
             previousNode = value.toObject();
         }
     }
-    const RenderGraphDocumentStatus status =
-        PreparePipelineShaders(candidate, pipeline, previousNode, manifest, mPackageRoot, outErrorOrNull);
+    const RenderGraphDocumentStatus status = PreparePipelineShaders(candidate,
+                                                                    pipeline,
+                                                                    previousNode,
+                                                                    manifest,
+                                                                    mPackageRoot,
+                                                                    newShaderLanguage,
+                                                                    outErrorOrNull);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         return status;
@@ -1755,6 +1764,49 @@ CodeEditStatus RenderGraphDocument::ApplyTextEdit(const QString& file,
     return status == RenderGraphDocumentStatus::Capacity ? CodeEditStatus::Capacity : CodeEditStatus::Conflict;
 }
 
+CodeEditStatus RenderGraphDocument::ReplaceTexts(uint64 expectedRevision,
+                                                 const QMap<QString, QByteArray>& files,
+                                                 const char* name,
+                                                 const RenderGraphTextState& before,
+                                                 const RenderGraphTextState& after)
+{
+    if (expectedRevision != GetRevision())
+    {
+        return CodeEditStatus::Conflict;
+    }
+    RenderGraphSnapshot candidate = mDraft;
+    for (QMap<QString, QByteArray>::const_iterator file = files.constBegin(); file != files.constEnd(); ++file)
+    {
+        if (mDraft.Files.contains(file.key()) == false)
+        {
+            return CodeEditStatus::Unavailable;
+        }
+        if (file.value().size() > MAX_FILE_BYTES)
+        {
+            return CodeEditStatus::Capacity;
+        }
+        Utf8View proof;
+        usize errorOffset = 0;
+        if (ValidateUtf8({file.value().constData(), static_cast<usize>(file.value().size())}, proof, errorOffset) !=
+            StringStatus::Ok)
+        {
+            return CodeEditStatus::InvalidText;
+        }
+        candidate.Files.insert(file.key(), file.value());
+    }
+    if (candidate.Files == mDraft.Files)
+    {
+        return CodeEditStatus::Ok;
+    }
+    const RenderGraphDocumentStatus status = commit(candidate, name, false, before, after, {}, {}, CommitKind::Source);
+    if (status == RenderGraphDocumentStatus::Ok)
+    {
+        mLastMove.clear();
+        return CodeEditStatus::Ok;
+    }
+    return status == RenderGraphDocumentStatus::Capacity ? CodeEditStatus::Capacity : CodeEditStatus::Conflict;
+}
+
 void RenderGraphDocument::BreakTextGroup() noexcept
 {
     mLastTextFile.clear();
@@ -1860,6 +1912,144 @@ bool IsRecoverySourcePath(const QString& path)
         }
     }
     return true;
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::CreateSharedShaderSource(const QString& file,
+                                                                        RenderGraphShaderLanguage language,
+                                                                        QString& outError,
+                                                                        const QByteArray& initialSource,
+                                                                        const QString& includeTarget)
+{
+    static const QRegularExpression PATH_WITHOUT_SUFFIX(
+        QStringLiteral("\\A(?:[A-Za-z0-9_][A-Za-z0-9_.-]*/)*[A-Za-z0-9_][A-Za-z0-9_.-]*\\z"));
+    const QString suffix = GetShaderIncludeSuffix(language);
+    if (IsLoaded() == false || IsRecoverySourcePath(file) == false || file.endsWith(suffix) == false ||
+        PATH_WITHOUT_SUFFIX.match(file.chopped(suffix.size())).hasMatch() == false)
+    {
+        outError =
+            QStringLiteral("Enter a package-relative path ending with %1. Use letters, digits, underscores, dots "
+                           "and hyphens in names, with '/' between directories.")
+                .arg(suffix);
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+
+    for (const RenderGraphSource version : {RenderGraphSource::Draft, RenderGraphSource::Saved})
+    {
+        for (const QString& existing : GetFiles(version))
+        {
+            if (existing.compare(file, Qt::CaseInsensitive) == 0)
+            {
+                outError =
+                    QStringLiteral("'%1' already exists in the package. Open it in Source or choose another path.")
+                        .arg(existing);
+                return RenderGraphDocumentStatus::Conflict;
+            }
+        }
+    }
+
+    const QDir package(mPackageRoot);
+    QString relative;
+    for (const QString& component : file.split(QLatin1Char('/')))
+    {
+        relative = relative.isEmpty() == true ? component : relative + QLatin1Char('/') + component;
+        const QFileInfo entry(package.filePath(relative));
+        if (entry.isSymLink() == true || (entry.exists() == true && (relative == file || entry.isDir() == false)))
+        {
+            outError = QStringLiteral("'%1' is already in use. Choose a different package-local path.").arg(relative);
+            return RenderGraphDocumentStatus::Conflict;
+        }
+    }
+
+    RenderGraphSnapshot candidate = mDraft;
+    if (includeTarget.isEmpty() == false)
+    {
+        const QString include = GetSharedShaderIncludePath(includeTarget, file);
+        if (include.isEmpty() == true || candidate.Files.contains(includeTarget) == false)
+        {
+            outError = QStringLiteral("Choose a compatible header path for '%1', or clear the include checkbox.")
+                           .arg(includeTarget);
+            return RenderGraphDocumentStatus::InvalidEdit;
+        }
+        const QByteArray target = candidate.Files.value(includeTarget);
+        candidate.Files.insert(includeTarget, InsertShaderInclude(target, include));
+    }
+    candidate.Files.insert(
+        file,
+        initialSource.isNull() == true
+            ? QByteArrayLiteral("#pragma once\n\n// Declare shared shader structs and helpers here.\n")
+            : initialSource);
+    const RenderGraphDocumentStatus status =
+        commit(candidate, "Create Shared Shader File", false, {}, {}, {}, {}, CommitKind::Source);
+    outError = status == RenderGraphDocumentStatus::Ok ? QString()
+               : status == RenderGraphDocumentStatus::Capacity
+                   ? DescribePackageCapacity()
+                   : QStringLiteral("Could not add the file to the draft. Reopen the graph and try again.");
+    return status;
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::AddShaderBufferAccess(const QString& manifest,
+                                                                     const QString& file,
+                                                                     const QString& function,
+                                                                     QString& outError)
+{
+    const QByteArray manifestBytes = GetDraft(manifest);
+    QStringList callbackPrograms;
+    for (const QJsonValueConstRef entry : FindShaderBufferCallbacks(manifestBytes, file))
+    {
+        const QJsonObject program = entry.toObject();
+        if (program.value(QStringLiteral("function")).toString() == function)
+        {
+            callbackPrograms.append(program.value(QStringLiteral("id")).toString());
+        }
+    }
+    if (callbackPrograms.isEmpty() == true || mDraft.Files.contains(file) == false)
+    {
+        outError = QStringLiteral("This callback is no longer assigned. Reopen the shader and try again.");
+        return RenderGraphDocumentStatus::NotFound;
+    }
+    const QByteArray source = GetDraft(file);
+    const QByteArray updated =
+        AddShaderBufferParameter(source, function, file.endsWith(QStringLiteral(".lusl")), outError);
+    if (updated.isNull() == true)
+    {
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+
+    QJsonObject manifestObject = QJsonDocument::fromJson(manifestBytes).object();
+    QJsonArray programs = manifestObject.value(QStringLiteral("programs")).toArray();
+    bool hasLegacyOptOut = false;
+    for (qsizetype index = 0; index < programs.size(); ++index)
+    {
+        QJsonObject program = programs.at(index).toObject();
+        if (callbackPrograms.contains(program.value(QStringLiteral("id")).toString()) == true &&
+            program.value(QStringLiteral("graph_resources")) == QJsonValue(false))
+        {
+            program.remove(QStringLiteral("graph_resources"));
+            programs.replace(index, program);
+            hasLegacyOptOut = true;
+        }
+    }
+    if (updated == source && hasLegacyOptOut == false)
+    {
+        outError = QStringLiteral("%1 already has the named Buffer interface.").arg(function);
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    RenderGraphSnapshot candidate = mDraft;
+    candidate.Files.insert(file, updated);
+    if (hasLegacyOptOut == true)
+    {
+        manifestObject.insert(QStringLiteral("programs"), programs);
+        candidate.Files.insert(manifest, QJsonDocument(manifestObject).toJson());
+    }
+    const RenderGraphDocumentStatus status =
+        commit(candidate, "Add Resource Access", false, {}, {}, {}, {}, CommitKind::Source);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        outError = status == RenderGraphDocumentStatus::Capacity
+                       ? DescribePackageCapacity()
+                       : QStringLiteral("Could not add Buffer access. Reopen the shader and try again.");
+    }
+    return status;
 }
 
 RenderGraphSnapshot RenderGraphDocument::CaptureRecoverySnapshot(RenderGraphSource source) const

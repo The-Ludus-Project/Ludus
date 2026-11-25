@@ -100,7 +100,7 @@ bool CollectDependencies(const RenderGraphDocument& document,
             }
             for (const QString& file : document.GetFiles())
             {
-                if (file == manifest || file.endsWith(QStringLiteral(".slang")) == true)
+                if (file == manifest || IsRenderGraphShaderSource(file) == true)
                 {
                     inoutDependencies.insert(file, QString::fromLatin1(ComputeDigest(document.GetDraft(file))));
                 }

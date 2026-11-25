@@ -2,6 +2,7 @@
 
 #include <ludus/content/terrain/terrain_noise.h>
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/math/scalar.hpp>
 
 namespace ludus::content::terrain
@@ -31,6 +32,31 @@ struct LatticeOffset final
     float64 Z = 0;
 };
 
+/// Coefficients of the quintic fade t^3 (t (6t - 15) + 10), in Horner order.
+constexpr float64 QUINTIC_FIFTH_ORDER = 6;
+constexpr float64 QUINTIC_FOURTH_ORDER = 15;
+constexpr float64 QUINTIC_THIRD_ORDER = 10;
+
+// Layout 2: Perlin's quintic fade. The evaluation order is part of the layout, so it is never contracted into fused
+// multiply-adds; t is a cell offset in [0, 1).
+[[nodiscard]] float64 ComputeQuinticFade(float64 t) noexcept
+{
+#if LUDUS_TARGET_COMPILER == LUDUS_CXX_CLANG
+#    pragma clang fp contract(off)
+#endif
+    return t * t * t * (t * (t * QUINTIC_FIFTH_ORDER - QUINTIC_FOURTH_ORDER) + QUINTIC_THIRD_ORDER);
+}
+
+[[nodiscard]] float64 ComputeFade(TerrainNoiseLayout layout, float64 t) noexcept
+{
+    return layout == TerrainNoiseLayout::QuinticFade ? ComputeQuinticFade(t) : math::SmoothStep01(t);
+}
+
+[[nodiscard]] bool IsKnownLayout(TerrainNoiseLayout layout) noexcept
+{
+    return layout == TerrainNoiseLayout::CubicFade || layout == TerrainNoiseLayout::QuinticFade;
+}
+
 // Pack the two signed lattice coordinates as their unsigned bit patterns.
 [[nodiscard]] float64
 ComputeGradient(math::RandomKey key, uint32 octave, LatticePoint point, LatticeOffset offset) noexcept
@@ -43,10 +69,25 @@ ComputeGradient(math::RandomKey key, uint32 octave, LatticePoint point, LatticeO
 }
 } // namespace
 
+bool TryGetTerrainNoiseLayout(uint32 version, TerrainNoiseLayout& outLayout) noexcept
+{
+    switch (version)
+    {
+        case static_cast<uint32>(TerrainNoiseLayout::CubicFade):
+            outLayout = TerrainNoiseLayout::CubicFade;
+            return true;
+        case static_cast<uint32>(TerrainNoiseLayout::QuinticFade):
+            outLayout = TerrainNoiseLayout::QuinticFade;
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool CanSampleTerrainNoise(const TerrainNoiseShape& shape, float64 halfExtentMetres) noexcept
 {
     constexpr float64 HIGHEST_OCTAVE_MULTIPLIER = static_cast<float64>(1U << (TERRAIN_NOISE_OCTAVES - 1));
-    if (math::IsFinite(shape.MinimumElevationMetres) == false ||
+    if (IsKnownLayout(shape.Layout) == false || math::IsFinite(shape.MinimumElevationMetres) == false ||
         math::IsFinite(shape.MaximumElevationMetres) == false || math::IsFinite(shape.FeatureSizeMetres) == false ||
         math::IsFinite(shape.Roughness) == false || math::IsFinite(halfExtentMetres) == false)
     {
@@ -58,15 +99,20 @@ bool CanSampleTerrainNoise(const TerrainNoiseShape& shape, float64 halfExtentMet
            halfExtentMetres / shape.FeatureSizeMetres * HIGHEST_OCTAVE_MULTIPLIER <= MAX_TERRAIN_LATTICE_POSITION;
 }
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the octave ordinal and the X then Z position are distinct.
-float64 SampleTerrainNoise(math::RandomKey key, uint32 octave, float64 positionX, float64 positionZ) noexcept
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): the octave ordinal and the X then Z position are distinct.
+float64 SampleTerrainNoise(math::RandomKey key,
+                           TerrainNoiseLayout layout,
+                           uint32 octave,
+                           float64 positionX,
+                           float64 positionZ) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     const int32 x = static_cast<int32>(math::Floor(positionX));
     const int32 z = static_cast<int32>(math::Floor(positionZ));
     const float64 offsetX = positionX - x;
     const float64 offsetZ = positionZ - z;
-    const float64 fadeX = math::SmoothStep01(offsetX);
-    const float64 fadeZ = math::SmoothStep01(offsetZ);
+    const float64 fadeX = ComputeFade(layout, offsetX);
+    const float64 fadeZ = ComputeFade(layout, offsetZ);
     const float64 near = math::Lerp(ComputeGradient(key, octave, {x, z}, {offsetX, offsetZ}),
                                     ComputeGradient(key, octave, {x + 1, z}, {offsetX - 1, offsetZ}),
                                     fadeX);
@@ -91,7 +137,8 @@ float64 ComputeTerrainElevation(const TerrainNoiseShape& shape,
     float64 elevation = 0;
     for (uint32 octave = 0; octave < TERRAIN_NOISE_OCTAVES; ++octave)
     {
-        const float64 noise = SampleTerrainNoise(key, octave, positionX * frequency, positionZ * frequency);
+        const float64 noise =
+            SampleTerrainNoise(key, shape.Layout, octave, positionX * frequency, positionZ * frequency);
         elevation +=
             amplitude * (shape.Profile == TerrainNoiseProfile::Ridges ? 1 - math::Abs(noise) : (noise + 1) * 0.5);
         totalWeight += amplitude;

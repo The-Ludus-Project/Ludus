@@ -131,12 +131,14 @@ void CopyRgb(math::Vector3d value, float64 (&outRgb)[IR_RGB_CHANNEL_COUNT]) noex
 /// Append one polygon as a fan from its first corner, with its own vertices and flat normal.
 [[nodiscard]] Status AddPolygon(const SourceObject& object, std::span<const uint32> corners, IrMesh& inoutMesh) noexcept
 {
-    // Newell's method gives the normal of the front face (counterclockwise corners).
+    // Use the first corner as the origin of the oriented area sum, as in SceneSource validation.
+    const math::Vector3d originWorld = object.PositionsWorld[corners[0]];
     math::Vector3d normal{};
-    for (usize i = 0; i < corners.size(); ++i)
+    for (usize i = 1; i + 1 < corners.size(); ++i)
     {
-        normal = normal + math::Cross(object.PositionsWorld[corners[i]],
-                                      object.PositionsWorld[corners[(i + 1) % corners.size()]]);
+        const math::Vector3d firstEdgeWorld = object.PositionsWorld[corners[i]] - originWorld;
+        const math::Vector3d secondEdgeWorld = object.PositionsWorld[corners[i + 1]] - originWorld;
+        normal = normal + math::Cross(firstEdgeWorld, secondEdgeWorld);
     }
     // SceneSource admits only polygons with nonzero area.
     normal = normal * (1.0 / math::Length(normal));

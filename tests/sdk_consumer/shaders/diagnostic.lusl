@@ -1,0 +1,59 @@
+// Fullscreen diagnostic in LUSL, the port of diagnostic.slang (issue 1735). The RHI render tests,
+// the generic SDK render consumer and the Direct3D 12 tests draw it; the RHI parity test draws
+// both and requires identical pixels. diagnostic.slang stays as the Slang input of the installed
+// shader helper's contract scripts and as this port's differential oracle
+// (config/lusl_migration.json).
+//
+// Uniform layout, as in diagnostic.slang and its 12-float host mirrors:
+//   Resolution  float32x2  offset 0  size 8
+//   ElapsedTime float32    offset 8  size 4
+//   Direction   float32x3  offset 16 size 12
+//   Tint        float32x4  offset 32 size 16
+// Total 48 bytes, alignment 16.
+//
+// diagnostic.slang's optional DIAGNOSTIC_SCALE (default 1.0) is a knob of the helper contract
+// scripts. LUSL has no optional macros (testing an unsupplied name is LUSL0220), so the port draws
+// the default.
+
+struct DiagnosticUniforms
+{
+    float32x2 Resolution;
+    float32 ElapsedTime;
+    float32x3 Direction;
+    float32x4 Tint;
+};
+ConstantBuffer<DiagnosticUniforms> settings;
+
+struct FullscreenVarying
+{
+    float32x4 Position : ClipPosition;
+};
+
+// Vertex indices 0, 1, 2 give clip corners (-1, -1), (3, -1), (-1, 3). The vertex index lowers to
+// plain VertexIndex / vertex_index / gl_VertexID without base-vertex draw parameters, which the
+// WebGL 2 (GLSL ES) backend cannot express, and to DXIL SV_VertexID. Values are identical for the
+// non-indexed, zero-base-vertex fullscreen draw on every backend.
+[stage(vertex)]
+FullscreenVarying VertexMain(in uint32 vertexIndex : VertexIndex)
+{
+    float32x2 p = float32x2(float32((vertexIndex << 1) & 2), float32(vertexIndex & 2));
+    FullscreenVarying output = { .Position = float32x4(p * 2.0 - 1.0, 0.0, 1.0) };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in FullscreenVarying input)
+{
+    // A fragment reads the ClipPosition field as its pixel position, top-left origin.
+    float32x2 positionPixel = input.Position.xy;
+#if LUDUS_GLSL_ES
+    // WebGL fragment coordinates start at the bottom; the authored scene uses top-left pixels.
+    positionPixel.y = settings.Resolution.y - positionPixel.y;
+#endif
+    float32x2 uv = positionPixel / settings.Resolution;
+    float32x2 centered = (positionPixel - settings.Resolution * 0.5) / settings.Resolution.y;
+    float32 circle = dot(centered, centered) < 0.04 ? 1.0 : 0.0;
+    return float32x4(settings.Tint.rgb * float32x3(uv.x, uv.y, circle) +
+                     settings.Direction * settings.ElapsedTime * 0.05,
+                     settings.Tint.a);
+}

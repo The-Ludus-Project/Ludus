@@ -2,6 +2,7 @@
 // section 2.1, pp. 121-124: the representation discussion motivates the signed
 // zero/subnormal bit-pattern checks below. These original tests do not set FP
 // execution policy. Review: docs/architecture/primitive-types.md.
+#include <ludus/foundation/base/borrowed_view.hpp>
 #include <ludus/foundation/base/byte_order.hpp>
 
 #include <bit>
@@ -25,8 +26,8 @@ static_assert(std::bit_cast<uint64>(std::numeric_limits<float64>::denorm_min()) 
 static_assert(UnsignedInteger<int32> == false && UnsignedInteger<bool> == false && UnsignedInteger<float32> == false);
 
 template <typename ValueType>
-concept HasByteCodec = requires(ValueType value, ValueType& out, std::span<uint8> bytes) {
-    TryReadLittleEndian(bytes, out);
+concept HasByteCodec = requires(ValueType value, ValueType& outValue, BorrowedView<uint8> bytes) {
+    TryReadLittleEndian(bytes, outValue);
     TryWriteBigEndian(value, bytes);
 };
 static_assert(HasByteCodec<int32> == false && HasByteCodec<bool> == false && HasByteCodec<float32> == false);
@@ -41,7 +42,7 @@ constexpr bool VerifyConstexprBytes() noexcept
     {
         return false;
     }
-    const std::span<uint8> shortBytes{bytes, 3};
+    const BorrowedView<uint8> shortBytes{bytes, 3};
     return TryReadLittleEndian(shortBytes, out) == false && out == 0x12345678 &&
            TryWriteLittleEndian(uint32{0}, shortBytes) == false && bytes[0] == 0x12 && bytes[3] == 0x78;
 }
@@ -65,7 +66,7 @@ TEMPLATE_TEST_CASE("byte codecs match fixed byte vectors at unaligned offsets",
     uint8 bytes[10]{};
     bytes[0] = 0xA5;
     bytes[9] = 0x5A;
-    std::span<uint8> buffer{bytes + 1, 8};
+    BorrowedView<uint8> buffer{bytes + 1, 8};
     REQUIRE(TryWriteLittleEndian(value, buffer));
     for (usize i = 0; i < sizeof(TestType); ++i)
     {
@@ -83,13 +84,13 @@ TEMPLATE_TEST_CASE("byte codecs match fixed byte vectors at unaligned offsets",
     REQUIRE(decoded == value);
     REQUIRE(bytes[0] == 0xA5);
     REQUIRE(bytes[9] == 0x5A);
-    for (usize i = sizeof(TestType); i < buffer.size(); ++i)
+    for (usize i = sizeof(TestType); i < buffer.GetSize(); ++i)
     {
         REQUIRE(buffer[i] == 0);
     }
 }
 
-TEMPLATE_TEST_CASE("truncated byte spans preserve the entire buffer and output",
+TEMPLATE_TEST_CASE("truncated byte views preserve the entire buffer and output",
                    "[primitive][bytes]",
                    uint8,
                    uint16,
@@ -100,7 +101,7 @@ TEMPLATE_TEST_CASE("truncated byte spans preserve the entire buffer and output",
     for (usize size = 0; size < sizeof(TestType); ++size)
     {
         uint8 bytes[8] = {1, 2, 3, 4, 5, 6, 7, 8};
-        const std::span<uint8> buffer{bytes, size};
+        const BorrowedView<uint8> buffer{bytes, size};
         TestType decoded = 42;
         REQUIRE_FALSE(TryReadLittleEndian(buffer, decoded));
         REQUIRE_FALSE(TryReadBigEndian(buffer, decoded));
@@ -139,4 +140,15 @@ TEMPLATE_TEST_CASE("zero and maximum bytes are encoded exactly",
     }
     REQUIRE(TryReadLittleEndian(bytes, decoded));
     REQUIRE(decoded == std::numeric_limits<TestType>::max());
+}
+
+TEST_CASE("invalid byte views preserve read outputs and reject writes", "[primitive][bytes]")
+{
+    const BorrowedView<uint8> invalid{nullptr, sizeof(uint32)};
+    uint32 decoded = 42;
+    REQUIRE_FALSE(TryReadLittleEndian(invalid, decoded));
+    REQUIRE_FALSE(TryReadBigEndian(invalid, decoded));
+    REQUIRE(decoded == 42);
+    REQUIRE_FALSE(TryWriteLittleEndian(uint32{0}, invalid));
+    REQUIRE_FALSE(TryWriteBigEndian(uint32{0}, invalid));
 }

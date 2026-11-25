@@ -10,11 +10,13 @@ from pathlib import Path
 
 from authored_lines import authored_lines
 from formatting import TOKENS, format_source
+from lusl_migration import check_migration
 from naming_rules import (
     abbreviation_findings,
     pointer_findings,
     reference_and_boolean_findings,
 )
+from preprocessor_rules import conditional_use_findings, constant_condition_findings
 
 CPP = {".cpp", ".cc", ".cxx", ".h", ".hpp", ".mm"}
 ROOTS = {"modules", "apps", "examples", "tests", "tools", "cmake"}
@@ -364,6 +366,15 @@ def violations(path: str, source: str, changed: set[int]) -> list[tuple[int, str
         for match in re.finditer(json_value + r"\s*(static_cast<\s*(?:foundation::)?u?int64\s*>)",
                                  code if uses_qt_json else ""):
             report(match.start(1), "convert JSON integers with static_cast<qint64>; int64 is ambiguous for QJsonValue on Linux")
+        # Warnings that only the batch-only MSVC and Emscripten builds report
+        # (docs/development/continuous-integration.md#platform-only-warnings). A
+        # conditional use is reported at its declaration when the declaration or any
+        # use changed, since either edit can leave one build without a use.
+        for line, uses, message in conditional_use_findings(path, source, code):
+            if changed.intersection([line, *uses]):
+                found.append((line, message))
+        for offset, message in constant_condition_findings(source, code):
+            report(offset, message)
         for offset, _, message in pointer_findings(code):
             report(offset, message)
         for offset, _, message in reference_and_boolean_findings(code):
@@ -612,6 +623,8 @@ def check(
             found = violations(name, source, changed & authored_lines(root, base, name, head))
         for line, message in found:
             failures.append(f"{name}:{line}: {message}")
+    # Migrated shader directories admit no Slang outside the retained list (lusl_migration.py).
+    failures += check_migration(root, head)
     return failures
 
 

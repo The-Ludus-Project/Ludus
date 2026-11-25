@@ -6,6 +6,7 @@
 #include "internal/hosted_profiling_session.h"
 #include "internal/viewport_trace.h"
 
+#include <QJsonArray>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -104,6 +105,7 @@ private:
     foundation::Array<foundation::uint8> mSnapshot;
     foundation::profiling::GpuTraceCoverage mCoverage;
     ViewportTraceSnapshot mViewportSnapshot;
+    QJsonArray mGraphFrames;
     foundation::usize mCompletedSampleCount = 0;
     foundation::uint64 mStartedTicks = 0;
     foundation::uint64 mStoppedTicks = 0;

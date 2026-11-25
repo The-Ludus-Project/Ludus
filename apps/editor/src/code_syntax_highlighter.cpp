@@ -10,6 +10,8 @@
 
 #include <QColor>
 #include <QElapsedTimer>
+#include <QFont>
+#include <QFontMetricsF>
 #include <QPalette>
 #include <QStringView>
 #include <QTextDocument>
@@ -186,6 +188,18 @@ bool IsLuslKeyword(QStringView word)
 }
 } // namespace
 
+QString GetCodeInlayHintText(const CodeInlayHint& hint)
+{
+    return (hint.HasPaddingLeft == true ? QStringLiteral(" ") : QString()) + hint.Label +
+           (hint.HasPaddingRight == true ? QStringLiteral(" ") : QString());
+}
+
+float64 MeasureCodeInlayHint(const QFontMetricsF& metrics, const CodeInlayHint& hint)
+{
+    // A quarter of a space on each side separates the drawn background from the text.
+    return metrics.horizontalAdvance(GetCodeInlayHintText(hint)) + metrics.horizontalAdvance(QLatin1Char(' ')) * 0.5;
+}
+
 bool IsLightCodePalette(const QPalette& palette)
 {
     return palette.color(QPalette::Base).lightness() >= LIGHT_PALETTE_THRESHOLD;
@@ -206,11 +220,13 @@ CodeSyntaxHighlighter::CodeSyntaxHighlighter(QTextDocument* document, const Code
     QObject::disconnect(document, &QTextDocument::contentsChange, this, nullptr);
     rehighlight(); // Complete Qt's queued initial highlight while the document is empty.
     mDocumentRevision = document->revision();
-    connect(document, &QTextDocument::contentsChange, this, [this](int32 position, int32, int32 added) {
+    connect(document, &QTextDocument::contentsChange, this, [this](int32 position, int32 removed, int32 added) {
         const int32 revision = this->document()->revision();
         if (revision != mDocumentRevision)
         {
             mDocumentRevision = revision;
+            moveSemanticTokens(position, removed, added);
+            moveInlayHints(position, removed, added);
             rehighlightEdit(position, added);
         }
     });
@@ -223,6 +239,8 @@ void CodeSyntaxHighlighter::SetLanguage(CodeLanguage language)
     if (mLanguage != language)
     {
         mLanguage = language;
+        mSemanticTokens.clear();
+        mInlayHints.clear();
         ScheduleReapply();
     }
 }
@@ -361,10 +379,84 @@ void CodeSyntaxHighlighter::reapplySlice()
     }
 }
 
-void CodeSyntaxHighlighter::applySyntaxTokens()
+void CodeSyntaxHighlighter::SetSemanticTokens(const QList<CodeSyntaxToken>& tokens)
 {
-    const CodeSyntaxResult* resultOrNull = mSyntax.GetCurrentResultOrNull();
-    if (resultOrNull == nullptr)
+    if (tokens == mSemanticTokens)
+    {
+        return;
+    }
+    mSemanticTokens = tokens;
+    ScheduleReapply();
+}
+
+void CodeSyntaxHighlighter::moveSemanticTokens(int32 position, int32 removed, int32 added)
+{
+    if (mSemanticTokens.isEmpty() == true)
+    {
+        return;
+    }
+    // A token the edit touches no longer names what the server classified; later
+    // tokens move with the text so colors stay put until the next result.
+    const int32 removedEnd = position + removed;
+    const int32 delta = added - removed;
+    // An insertion at a token's start moves it; one at its end leaves it as it was.
+    mSemanticTokens.removeIf([position, removedEnd](const CodeSyntaxToken& token) {
+        return token.GetStart() < removedEnd && token.GetEnd() > position;
+    });
+    for (CodeSyntaxToken& token : mSemanticTokens)
+    {
+        if (token.GetStart() >= removedEnd)
+        {
+            token = CodeSyntaxToken({token.GetStart() + delta, token.GetEnd() + delta}, token.GetRole());
+        }
+    }
+}
+
+void CodeSyntaxHighlighter::SetInlayHints(const QList<CodeInlayHint>& hints)
+{
+    if (hints == mInlayHints)
+    {
+        return;
+    }
+    mInlayHints = hints;
+    ScheduleReapply();
+}
+
+void CodeSyntaxHighlighter::SetInlayHintsShown(bool isShown)
+{
+    if (mAreInlayHintsShown != isShown)
+    {
+        mAreInlayHintsShown = isShown;
+        if (mInlayHints.isEmpty() == false)
+        {
+            ScheduleReapply();
+        }
+    }
+}
+
+void CodeSyntaxHighlighter::moveInlayHints(int32 position, int32 removed, int32 added)
+{
+    if (mInlayHints.isEmpty() == true)
+    {
+        return;
+    }
+    // A hint at the edit no longer describes the text beside it.
+    const int32 removedEnd = position + removed;
+    mInlayHints.removeIf([position, removedEnd](const CodeInlayHint& hint) {
+        return hint.Position >= position && hint.Position <= removedEnd;
+    });
+    for (CodeInlayHint& hint : mInlayHints)
+    {
+        if (hint.Position > removedEnd)
+        {
+            hint.Position += added - removed;
+        }
+    }
+}
+
+void CodeSyntaxHighlighter::applyInlayHints()
+{
+    if (mAreInlayHintsShown == false || mInlayHints.isEmpty() == true)
     {
         return;
     }
@@ -372,11 +464,11 @@ void CodeSyntaxHighlighter::applySyntaxTokens()
     const int32 start = block.position();
     const int32 end = start + block.length() - 1;
     qsizetype first = 0;
-    qsizetype last = resultOrNull->Tokens.size();
+    qsizetype last = mInlayHints.size();
     while (first < last)
     {
         const qsizetype middle = first + (last - first) / 2;
-        if (resultOrNull->Tokens.at(middle).GetEnd() <= start)
+        if (mInlayHints.at(middle).Position <= start)
         {
             first = middle + 1;
         }
@@ -385,9 +477,59 @@ void CodeSyntaxHighlighter::applySyntaxTokens()
             last = middle;
         }
     }
-    for (qsizetype index = first; index < resultOrNull->Tokens.size(); ++index)
+    const QFontMetricsF metrics(document()->defaultFont());
+    qsizetype index = first;
+    while (index < mInlayHints.size() && mInlayHints.at(index).Position <= end)
     {
-        const CodeSyntaxToken& token = resultOrNull->Tokens.at(index);
+        // Hints sharing a position share one gap after the character before it.
+        const int32 position = mInlayHints.at(index).Position;
+        float64 width = 0;
+        while (index < mInlayHints.size() && mInlayHints.at(index).Position == position)
+        {
+            width += MeasureCodeInlayHint(metrics, mInlayHints.at(index));
+            ++index;
+        }
+        const int32 column = position - start - 1;
+        QTextCharFormat reserved = format(column);
+        reserved.setFontLetterSpacingType(QFont::AbsoluteSpacing);
+        reserved.setFontLetterSpacing(width);
+        setFormat(column, 1, reserved);
+    }
+}
+
+void CodeSyntaxHighlighter::applySyntaxTokens()
+{
+    const CodeSyntaxResult* resultOrNull = mSyntax.GetCurrentResultOrNull();
+    if (resultOrNull != nullptr)
+    {
+        applyTokens(resultOrNull->Tokens);
+    }
+    applyTokens(mSemanticTokens);
+    applyInlayHints();
+}
+
+void CodeSyntaxHighlighter::applyTokens(const QList<CodeSyntaxToken>& tokens)
+{
+    const QTextBlock block = currentBlock();
+    const int32 start = block.position();
+    const int32 end = start + block.length() - 1;
+    qsizetype first = 0;
+    qsizetype last = tokens.size();
+    while (first < last)
+    {
+        const qsizetype middle = first + (last - first) / 2;
+        if (tokens.at(middle).GetEnd() <= start)
+        {
+            first = middle + 1;
+        }
+        else
+        {
+            last = middle;
+        }
+    }
+    for (qsizetype index = first; index < tokens.size(); ++index)
+    {
+        const CodeSyntaxToken& token = tokens.at(index);
         if (token.GetStart() >= end)
         {
             break;

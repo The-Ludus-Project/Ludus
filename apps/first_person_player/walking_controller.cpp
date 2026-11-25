@@ -87,10 +87,12 @@ WalkingController::StartStatus CookPartition(BorrowedView<const math::Vector3> p
         return StartStatus::Ready;
     }
     // Leave degenerate triangles out instead of failing the walk, as the preview always has:
-    // imported meshes often carry zero-area slivers.
+    // imported meshes often carry zero-area slivers. The walk uses casts only, which do not read
+    // the edge classification that contact generation needs, so the cook skips it.
     constexpr collision::TriangleMeshCookSettings SETTINGS
     {
         .DegeneratePolicy = collision::DegenerateTrianglePolicy::Skip,
+        .EdgePolicy = collision::InternalEdgePolicy::KeepAll,
     };
     const collision::TriangleMeshSource source{ .PositionsMesh = positionsWorld, .Indices = indices };
     switch (collision::TriangleMesh::TryCook(source, SETTINGS, outMesh).Result)

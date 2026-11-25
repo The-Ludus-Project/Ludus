@@ -118,4 +118,8 @@ foreach(variable CMAKE_MAKE_PROGRAM CMAKE_C_COMPILER CMAKE_CXX_COMPILER)
     endif()
 endforeach()
 
-ludus_check_setup()
+# The luslc-only host tree (scripts/bootstrap-luslc) links no initialized dependencies; it passes
+# the pinned host compilers directly, without a Conan toolchain.
+if(NOT LUDUS_LUSLC_ONLY)
+    ludus_check_setup()
+endif()

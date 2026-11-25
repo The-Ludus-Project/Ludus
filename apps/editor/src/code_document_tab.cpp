@@ -1,6 +1,7 @@
 #include "internal/code_document_tab.h"
 
 #include "internal/code_conflict_banner.h"
+#include "internal/code_editor_panel.h"
 #include "internal/code_file_document.h"
 #include "internal/code_language_registry.h"
 #include "internal/code_structure_view.h"
@@ -123,6 +124,45 @@ void CodeDocumentTab::MakePermanent()
     }
 }
 
+void CodeDocumentTab::SetSessionKey(const QString& key)
+{
+    mSessionKey = key;
+}
+
+const QString& CodeDocumentTab::GetSessionKey() const noexcept
+{
+    return mSessionKey;
+}
+
+void CodeDocumentTab::BindSessionHost(CodeDocumentHost* hostOrNull)
+{
+    mSessionHostOrNull = hostOrNull;
+    mController->Bind(hostOrNull);
+    RefreshHistoryAvailability();
+}
+
+void CodeDocumentTab::SetReadOnlySource(const QString& text, const QString& explanation)
+{
+    mEditor->setReadOnly(true);
+    mEditor->setPlainText(text);
+    mBanner->ShowExplanation(explanation);
+}
+
+void CodeDocumentTab::AddSessionControls(QWidget& inoutControls, QWidget& inoutStatus)
+{
+    QVBoxLayout* column = static_cast<QVBoxLayout*>(layout());
+    column->insertWidget(1, &inoutControls);
+    column->addWidget(&inoutStatus);
+}
+
+void CodeDocumentTab::ShowEditorControls()
+{
+    QVBoxLayout* column = static_cast<QVBoxLayout*>(layout());
+    const int32 index = column->indexOf(mEditor);
+    column->removeWidget(mEditor);
+    column->insertWidget(index, new CodeEditorPanel(mEditor, mController, this), 1);
+}
+
 void CodeDocumentTab::MirrorFromHost()
 {
     // Re-read the shared host into this view's projection. Synchronize keeps the
@@ -148,6 +188,10 @@ void CodeDocumentTab::RefreshHistoryAvailability()
     {
         mEditor->SetHistoryAvailability(mHostOrNull->CanUndo(), mHostOrNull->CanRedo());
     }
+    else if (mSessionHostOrNull != nullptr)
+    {
+        mEditor->SetHistoryAvailability(mSessionHostOrNull->CanUndo(), mSessionHostOrNull->CanRedo());
+    }
     else
     {
         mEditor->SetHistoryAvailability(false, false);
@@ -156,12 +200,13 @@ void CodeDocumentTab::RefreshHistoryAvailability()
 
 bool CodeDocumentTab::IsDirty() const
 {
-    return mHostOrNull != nullptr && mHostOrNull->IsDirty();
+    return mHostOrNull != nullptr ? mHostOrNull->IsDirty()
+                                  : mSessionHostOrNull != nullptr && mSessionHostOrNull->GetSnapshot().IsDirty;
 }
 
 bool CodeDocumentTab::IsReadOnly() const
 {
-    return mHostOrNull != nullptr && mHostOrNull->IsReadOnly();
+    return mEditor->isReadOnly();
 }
 
 QJsonObject CodeDocumentTab::SaveViewState() const

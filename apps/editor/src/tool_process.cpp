@@ -97,6 +97,11 @@ bool ToolProcess::Start(const ToolLaunch& launch)
     // shell is involved and argument boundaries are preserved end to end.
     QStringList args;
     args << launch.AdapterPath << QStringLiteral("--stdio") << QStringLiteral("--tooling-root") << launch.ToolingRoot;
+    if (launch.Operation == ToolOperation::PlayWorld)
+    {
+        args << QStringLiteral("--editor-executable") << launch.EditorExecutable << QStringLiteral("--builtin-player")
+             << launch.BuiltInPlayer;
+    }
     Process_.setProgram(launch.PythonPath);
     Process_.setArguments(args);
     ReadyTimer_.start();
@@ -146,7 +151,13 @@ void ToolProcess::SendRequest()
         request.insert(QStringLiteral("platform"), Launch_.ReleasePlatform);
         request.insert(QStringLiteral("itch_target"), Launch_.ItchTarget);
     }
-    if (Launch_.Operation == ToolOperation::BuildRun && Launch_.HostedWindowAddress.isEmpty() == false)
+    if (Launch_.Operation == ToolOperation::PlayWorld)
+    {
+        request.insert(QStringLiteral("world"), Launch_.WorldPath);
+        request.insert(QStringLiteral("spawn"), Launch_.SpawnEntity);
+    }
+    if ((Launch_.Operation == ToolOperation::BuildRun || Launch_.Operation == ToolOperation::PlayWorld) &&
+        Launch_.HostedWindowAddress.isEmpty() == false)
     {
         request.insert(QStringLiteral("hosted_window"), Launch_.HostedWindowAddress);
     }

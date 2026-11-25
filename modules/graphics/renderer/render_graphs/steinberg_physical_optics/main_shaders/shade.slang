@@ -992,7 +992,7 @@ float3 TracePath(SceneContext scene, RayLaunch launch, bool isWave, inout RayQue
     if (settings.HasPolarizer == true)
         radiance *= 0.5;
     float3 polarizerAxisWorld = ComputePolarizerAxisWorld(launch);
-    float wavelengthRandom = SampleSceneRandom(launch, SHADE_WAVELENGTH_DIMENSION);
+    float wavelengthRandom = SampleUniformFloat01(launch, SHADE_WAVELENGTH_DIMENSION);
     float samplingWavelength = SampleWavelengthNanometers(wavelengthRandom, 0);
     uint vertexLimit = min(PO_PATH_VERTICES, PATH_VERTEX_CAPACITY);
     CameraPath path = (CameraPath)0;
@@ -1006,7 +1006,7 @@ float3 TracePath(SceneContext scene, RayLaunch launch, bool isWave, inout RayQue
         ShadingVertex vertex;
         if (TryMakeShadingVertex(hit, material, normalWorld, outgoingWorld, vertex) == false)
             break;
-        float lobeRandom = SampleSceneRandom(launch, GetShadeVertexDimension(index, SHADE_VERTEX_LOBE_DIMENSION));
+        float lobeRandom = SampleUniformFloat01(launch, GetShadeVertexDimension(index, SHADE_VERTEX_LOBE_DIMENSION));
         vertex.Lobe =
             SelectLobe(vertex.Material, dot(outgoingWorld, normalWorld), isWave, lobeRandom, vertex.LobeProbability);
         if (vertex.Lobe == OpticalLobe::None)
@@ -1031,8 +1031,8 @@ float3 TracePath(SceneContext scene, RayLaunch launch, bool isWave, inout RayQue
         float3 incidentWorld = float3(0);
         uint directionFirst = GetShadeVertexDimension(index, SHADE_VERTEX_DIRECTION_DIMENSION_FIRST);
         // The grating's order is drawn with the lobe selection's number, unused there because a grating has one lobe.
-        float3 directionRandom = float3(SampleSceneRandom(launch, directionFirst),
-                                        SampleSceneRandom(launch, directionFirst + 1),
+        float3 directionRandom = float3(SampleUniformFloat01(launch, directionFirst),
+                                        SampleUniformFloat01(launch, directionFirst + 1),
                                         lobeRandom);
         bool isDelta = IsDeltaLobe(vertex.Lobe);
         float lobeDensity = 0;
@@ -1077,7 +1077,8 @@ float3 TracePath(SceneContext scene, RayLaunch launch, bool isWave, inout RayQue
         }
 
         // Both lights through one evaluation, so the kernel inlines the beam transport once.
-        float windowOffset = SampleSceneRandom(launch, GetShadeVertexDimension(index, SHADE_VERTEX_WINDOW_DIMENSION));
+        float windowOffset =
+            SampleUniformFloat01(launch, GetShadeVertexDimension(index, SHADE_VERTEX_WINDOW_DIMENSION));
         [loop] for (uint endpointIndex = 0; endpointIndex < 2; ++endpointIndex)
         {
             bool isConnection = endpointIndex == 0;

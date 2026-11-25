@@ -179,8 +179,8 @@ Every pass is seeded from `SourceGeneration`, and `RayQueryContext` starts at
 automatic dimensions therefore see the same values for each pixel. C0 measured
 this on Metal (section 3.2).
 
-**Decision.** Each template pass draws from explicit dimensions with the
-existing address overloads `SampleSceneRandom(RayLaunch, uint dimension)` and
+**Decision.** Each template pass draws from explicit dimensions with
+`SampleUniformFloat01(RayLaunch, uint dimension)` and
 `SelectLight(SceneContext, RayLaunch, uint dimension)`. They do not advance
 or reset `RayQueryContext`, which keeps its "do not reset or copy this state"
 contract. The dimension ranges are documented constants beside the hit record
@@ -196,9 +196,7 @@ shading passes draws from `[2, 9)`: the same four, then the `SampleStandardBsdf`
 lobe, radius and angle.
 
 Neither pass uses the automatic stream, so neither depends on how many automatic
-draws the other made. (The baseline text named `SampleSceneRandom(queries,
-dimension)`; that overload is the bounded-integer draw. The explicit-address
-overload takes a `RayLaunch`.)
+draws the other made. The explicit-address helper takes a `RayLaunch`.
 
 ReSTIR already solves the same problem differently. Its reuse passes address
 `(pixel, GetGraphPassIndex())` instead of the scene API's `(pixel, 0)` scope

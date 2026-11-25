@@ -245,6 +245,24 @@ private:
 
 /// Overlay text: GPU and editor CPU frame times (two decimals, milliseconds), then image size and draws.
 /// Unavailable GPU timing reads "GPU: n/a"; a pending first sample reads "GPU: …". Per-pass lines
-/// from FormatViewportPassLines follow once measured.
+/// from FormatViewportPassLines follow once measured. Values include p95 and max; use the compact
+/// formatter for the on-screen panel and keep this full text for the tooltip.
 [[nodiscard]] QString FormatViewportStatistics(const ViewportStatistics& statistics);
+/// The same rows as FormatViewportStatistics, with only the mean times, so the overlay stays compact.
+[[nodiscard]] QString FormatCompactViewportStatistics(const ViewportStatistics& statistics);
+/// One-line readout for the collapsed statistics chip, naming the editor CPU time.
+[[nodiscard]] QString FormatViewportStatisticsSummary(const ViewportStatistics& statistics);
+/// Compact form of FormatGraphViewportStatistics: mean times only.
+[[nodiscard]] QString FormatCompactGraphViewportStatistics(const GraphViewportStatistics& statistics,
+                                                           const ViewportStatistics& deviceStatistics,
+                                                           foundation::uint64 nowNanoseconds);
+/// One-line readout for a collapsed graph-viewport statistics chip: the update rate, or "Idle".
+[[nodiscard]] QString FormatGraphViewportStatisticsSummary(const GraphViewportStatistics& statistics,
+                                                           foundation::uint64 nowNanoseconds);
+/// QSettings key that remembers whether the statistics overlay is collapsed.
+inline constexpr QLatin1StringView VIEWPORT_STATISTICS_COLLAPSED_SETTINGS_KEY{"viewport/statisticsOverlayCollapsed"};
+/// True when the statistics overlay should paint as a one-line chip. Reads the process QSettings.
+[[nodiscard]] bool IsViewportStatisticsOverlayCollapsed();
+/// Remember whether the statistics overlay is collapsed. GUI thread only.
+void SetViewportStatisticsOverlayCollapsed(bool isCollapsed);
 } // namespace ludus::editor

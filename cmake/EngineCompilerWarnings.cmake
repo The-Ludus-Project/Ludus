@@ -18,11 +18,28 @@ function(ludus_configure_project_warnings target_name)
         -Woverloaded-virtual
         -Wnon-virtual-dtor
     )
+    # Clang's reachability warnings. MSVC /W4 reports unreachable code as C4702, an error
+    # under /WX, and only batch validation builds with MSVC; these let the Linux pull
+    # request build reject the cases Clang can see. MSVC also follows calls it inlines,
+    # which Clang does not, so they cannot catch every C4702. Linux only: web and Apple
+    # code that MSVC never compiles (an `#if` early return for the browser, say) would
+    # otherwise fail only in batch builds, the failure these warnings exist to prevent.
+    # Implicit double-to-float conversions that lose precision, which MSVC reports as
+    # C4305/C4244 errors under /WX (batch 45234893860: a float64 constant passed to
+    # QColor::setAlphaF). Linux only, for the same reason as the reachability warnings.
+    # The group also enables integer-to-float warnings, which MSVC does not report.
+    set(clang_warnings
+        -Wunreachable-code
+        -Wunreachable-code-loop-increment
+        -Wimplicit-float-conversion
+        -Wno-implicit-int-float-conversion
+    )
 
     target_compile_options(
         ${target_name}
         INTERFACE
             $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:${clang_like_warnings}>
+            $<$<AND:$<CXX_COMPILER_ID:Clang>,$<PLATFORM_ID:Linux>>:${clang_warnings}>
             $<$<CXX_COMPILER_ID:MSVC>:/W4>
             $<$<AND:$<BOOL:${LUDUS_WARNINGS_AS_ERRORS}>,$<CXX_COMPILER_ID:MSVC>>:/WX>
             # Emit after the warning groups so Clang does not re-enable it.

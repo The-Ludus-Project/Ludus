@@ -17,8 +17,14 @@ import threading
 import unittest
 from unittest.mock import patch
 
+import ci_checks
 import engine
 import web_build
+
+
+def load_macos_native_plan() -> list:
+    """The macOS native batch job's checks (scripts/ci/macos_native.py), in run order."""
+    return ci_checks.load_plan(Path(__file__).resolve().parents[2] / "scripts/ci/macos_native.py")
 
 LLVM_MAJOR = engine.pinned_llvm_major(engine.repo_root())
 CLANG_TIDY = engine.pinned_llvm_tool(engine.repo_root(), "clang-tidy")
@@ -323,6 +329,8 @@ class ToolchainBootstrapTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/ci.yml").read_text()
         jobs = re.split(r"(?m)^  [a-z][a-z0-9_-]*:\n", workflow)[1:]
+        # The macOS native job runs its commands from its check plan.
+        jobs.append("runs-on: macos-15\n" + (root / "scripts/ci/macos_native.py").read_text())
         checked = 0
         for job in jobs:
             if re.search(r"runs-on: macos-", job) and "-DCMAKE_CXX_COMPILER=" in job:
@@ -1055,7 +1063,11 @@ class AnalysisTests(unittest.TestCase):
                 # Read the job until the next two-space job key, preserving step indentation.
                 section = re.split(r"\n  [a-z][a-z0-9-]*:\n", workflow.split(f"\n  {job}:\n", 1)[1], 1)[0]
                 self.assertIn(f'LUDUS_TIDY_JOBS: "{workers}"', section)
-                command = section.split(f"- name: {step}\n", 1)[1].split("\n      - ", 1)[0]
+                if job == "macos-compile":
+                    # This job's commands live in its candidate-owned check plan.
+                    command = next(check.run for check in load_macos_native_plan() if check.title == step)
+                else:
+                    command = section.split(f"- name: {step}\n", 1)[1].split("\n      - ", 1)[0]
                 self.assertIn(f"./scripts/check {preset} --tidy-sources", command)
                 self.assertNotIn("out/host-tools/bin/clang-tidy", command)
 
@@ -1340,53 +1352,45 @@ class BatchWorkflowDefinitionTests(unittest.TestCase):
             self.assertTrue((self.ROOT / "tests/sdk_consumer" / script).is_file(), script)
             self.assertNotIn(f"tests/sdk_consumer/{script}", workflows)
 
-    def test_renderer_matrix_runs_each_candidate_renderer_suite(self):
+    def test_one_browser_job_runs_every_candidate_renderer_suite(self):
+        # The packaged tests and the renderer suites share one job and one runner; the job
+        # names only the 'renderer-*' prefix, so a new suite in browser-suites.json needs
+        # no workflow change (and no promotion).
         suites = json.loads((self.ROOT / "tests/sdk_consumer/browser-suites.json").read_text())
         workflow = (self.ROOT / ".github/workflows/webgpu-probe.yml").read_text()
-        job = workflow.split("\n  renderer-browser:\n", 1)[1].split("\n\n  ", 1)[0]
-        matrix = re.search(r"(?m)^        suite: \[([^\]]*)\]$", job)
-        self.assertIsNotNone(matrix)
-        renderer = sorted(f"renderer-{name.strip()}" for name in matrix.group(1).split(","))
-        self.assertEqual(renderer, sorted(name for name in suites if name.startswith("renderer-")))
-        self.assertIn('run-browser-suite.mjs "renderer-${{ matrix.suite }}"', job)
-        self.assertIn("run-browser-suite.mjs raster out/raster-web-sdk-consumer", workflow)
+        self.assertNotIn("\n  renderer-browser:\n", workflow)
+        self.assertNotIn("matrix.suite", workflow)
+        job = workflow.split("\n  browser-software-gpu:\n", 1)[1]
+        self.assertIn("run-browser-suite.mjs 'renderer-*' out/renderer-web-sdk-consumer", job)
+        self.assertIn("run-browser-suite.mjs raster out/raster-web-sdk-consumer", job)
+        self.assertTrue(any(name.startswith("renderer-") for name in suites))
+        # Each test step still runs after an earlier one fails, once the runner installed.
+        steps = re.split(r"\n      - ", job.split("\n    steps:\n", 1)[1])
+        tests = [step for step in steps if step.startswith("name: Test") or step.startswith("name: Check")
+                 or step.startswith("name: Qualify")]
+        self.assertGreaterEqual(len(tests), 6)
+        for step in tests:
+            with self.subTest(step=step.splitlines()[0]):
+                self.assertIn("if: ${{ !cancelled() && steps.runner.outcome == 'success' }}", step)
 
 
 class MacosAnalysisOrderTests(unittest.TestCase):
-    """The macOS job analyzes the development build before its long test steps.
+    """The macOS job analyzes the development build before its long test checks.
 
     Batch 44661689378 reached its two-second Metal analysis after 51 minutes of
     tests, so a clang-tidy error failed the batch nearly an hour later than needed.
     """
 
-    ROOT = Path(__file__).resolve().parents[2]
-
-    def macos_steps(self) -> list[tuple[str, str]]:
-        lines = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8").splitlines()
-        start = lines.index("  macos-compile:")
-        end = next(i for i in range(start + 1, len(lines)) if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[i]))
-        steps: list[list[str]] = []
-        for line in lines[start:end]:
-            if line.startswith("      - "):
-                steps.append([])
-            if steps:
-                steps[-1].append(line)
-        named = []
-        for step in steps:
-            name = next((m.group(1) for line in step if (m := re.match(r"\s+(?:- )?name: (.*)", line))), "")
-            named.append((name.strip(), "\n".join(step)))
-        return named
-
-    def test_development_analysis_precedes_the_first_test_step(self):
-        steps = self.macos_steps()
-        first_test = next(i for i, (_, body) in enumerate(steps) if "ctest " in body)
-        # Analyze steps that read only the development build; the Debug helper's analysis
-        # follows the step that configures macos-clang-debug.
-        analyses = [(i, name) for i, (name, body) in enumerate(steps) if name.startswith("Analyze ")
-                    and "macos-clang-debug" not in body]
+    def test_development_analysis_precedes_the_first_test_check(self):
+        checks = load_macos_native_plan()
+        first_test = next(i for i, check in enumerate(checks) if "ctest " in check.run)
+        # Analyze checks that read only the development build; the Debug helper's analysis
+        # follows the check that configures macos-clang-debug.
+        analyses = [(i, check.title) for i, check in enumerate(checks) if check.title.startswith("Analyze ")
+                    and "macos-clang-debug" not in check.run]
         self.assertGreaterEqual(len(analyses), 6)
-        late = [name for i, name in analyses if i > first_test]
-        self.assertEqual(late, [], "run development-build analysis before the macOS test steps")
+        late = [title for i, title in analyses if i > first_test]
+        self.assertEqual(late, [], "run development-build analysis before the macOS test checks")
 
 
 class BoundedAptInstallTests(unittest.TestCase):
@@ -1437,6 +1441,69 @@ class MacosCrashReportTests(unittest.TestCase):
                 upload = body.split("      - name: Upload macOS crash reports\n", 1)
                 self.assertEqual(len(upload), 2)
                 self.assertTrue(upload[1].startswith("        if: failure()\n"))
+
+
+class BatchJobCheckPlanTests(unittest.TestCase):
+    """The macOS native batch job keeps its commands in a candidate-owned check plan.
+
+    Batches run main's workflow definitions, and a failed step skipped every later
+    one: for weeks each batch reached one more macOS step, as hidden failures queued
+    behind the last. The runner reports every failure of one run.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def test_macos_native_job_runs_only_its_plan(self):
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job = re.split(r"\n  [A-Za-z0-9_-]+:\n", workflow.split("\n  macos-compile:\n", 1)[1], maxsplit=1)[0]
+        steps = re.split(r"\n      - ", job.split("\n    steps:\n", 1)[1])
+        # Besides setup and the plan runner, only artifact, cache and report steps may run here.
+        commands = [step for step in steps if "\n        run:" in step or step.startswith("name:") and " run:" in step]
+        runners = [step for step in commands if "scripts/python/ci_checks.py scripts/ci/macos_native.py" in step]
+        self.assertEqual(len(runners), 1)
+        others = [step.splitlines()[0] for step in commands if step not in runners
+                  and "if: always()" not in step and "if: failure()" not in step]
+        self.assertEqual(others, [], "put macOS native commands in scripts/ci/macos_native.py")
+        self.assertIn("steps.checks.outputs.build == 'success'", job)
+
+    def test_every_check_follows_the_build(self):
+        checks = load_macos_native_plan()
+        self.assertEqual(checks[0].id, "build")
+        reaches = {"build"}
+        for check in checks[1:]:
+            with self.subTest(check=check.id):
+                self.assertTrue(set(check.needs) & reaches, "a check that does not need the build runs without one")
+                reaches.add(check.id)
+
+
+class MacosReferencePlanTests(unittest.TestCase):
+    """The CPU/GPU reference oracle cases run in their own macOS job, exactly once."""
+
+    ROOT = Path(__file__).resolve().parents[2]
+    PREFIX = "'^ludus_renderer_reference: '"
+
+    def test_reference_cases_move_from_the_native_plan_to_the_reference_plan(self):
+        native = {check.id: check for check in load_macos_native_plan()}
+        reference = {check.id: check for check in
+                     ci_checks.load_plan(self.ROOT / "scripts/ci/macos_reference.py")}
+        self.assertIn(f"--exclude-regex {self.PREFIX}", native["native-tests"].run)
+        self.assertIn(f"--tests-regex {self.PREFIX}", reference["reference-tests"].run)
+        self.assertEqual(list(reference)[0], "build")
+        self.assertIn("--target ludus_renderer_render_tests", reference["build"].run)
+        # Same configure as the native job, so both use one compiler cache.
+        configure = native["build"].run.split("out/host-tools/venv/bin/cmake --build", 1)[0]
+        self.assertTrue(reference["build"].run.startswith(configure))
+
+    def test_reference_job_runs_its_plan_and_never_saves_the_shared_cache(self):
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job = re.split(r"\n  [A-Za-z0-9_-]+:\n", workflow.split("\n  macos-reference:\n", 1)[1], maxsplit=1)[0]
+        self.assertIn("scripts/python/ci_checks.py scripts/ci/macos_reference.py", job)
+        self.assertIn("cache-variant: native", job)
+        self.assertNotIn("actions/cache/save", job)
+        gate = re.split(r"\n  [A-Za-z0-9_-]+:\n", workflow.split("\n  linux:\n", 1)[1], maxsplit=1)[0]
+        needs = re.search(r"(?m)^    needs: \[(.*)\]$", gate)
+        self.assertIsNotNone(needs)
+        self.assertIn("macos-reference", [name.strip() for name in needs.group(1).split(",")])
 
 
 if __name__ == "__main__":

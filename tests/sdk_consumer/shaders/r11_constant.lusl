@@ -1,0 +1,47 @@
+// R11 binding-array fixture: four 2D images in one fixed binding array, each sampled with a
+// constant index in its quarter of the target. Host code binds the slots and vertex input
+// location in r11constant_slots.h; the array reserves IMAGE_COUNT consecutive slots.
+struct Settings
+{
+    float32x4 Selection;
+};
+ConstantBuffer<Settings> settingsBuffer;
+
+static const uint32 IMAGE_COUNT = 4;
+Texture2D<float32x4> images[IMAGE_COUNT];
+SamplerState imageSampler;
+
+// The four images cover the target in quarters from left to right.
+static const float32 QUARTER_WIDTH = 0.25;
+
+struct R11Input
+{
+    float32x2 PositionClip;
+};
+
+struct R11Varying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x2 Uv;
+};
+
+[stage(vertex)]
+R11Varying VertexMain(in R11Input input)
+{
+    R11Varying output =
+    {
+        .PositionClip = float32x4(input.PositionClip, 0, 1),
+        .Uv = input.PositionClip * float32x2(0.5, -0.5) + 0.5,
+    };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 ConstantArrayMain(in R11Varying input)
+{
+    float32x4 color = input.Uv.x < QUARTER_WIDTH ? images[0].SampleLevel(imageSampler, input.Uv, 0)
+        : input.Uv.x < 0.5 ? images[1].SampleLevel(imageSampler, input.Uv, 0)
+        : input.Uv.x < 1 - QUARTER_WIDTH ? images[2].SampleLevel(imageSampler, input.Uv, 0)
+        : images[3].SampleLevel(imageSampler, input.Uv, 0);
+    return color * settingsBuffer.Selection;
+}

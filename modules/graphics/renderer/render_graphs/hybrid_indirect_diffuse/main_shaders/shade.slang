@@ -116,8 +116,8 @@ float3 SampleOneDiffuseBounce(SceneContext scene,
     if (HasDiffuseLobe(material) == false || inoutQueries.HasFailed == true)
         return 0;
 
-    const float radiusSample = SampleSceneRandom(launch, BOUNCE_RADIUS_DIMENSION);
-    const float angleSample = SampleSceneRandom(launch, BOUNCE_ANGLE_DIMENSION);
+    const float radiusSample = SampleUniformFloat01(launch, BOUNCE_RADIUS_DIMENSION);
+    const float angleSample = SampleUniformFloat01(launch, BOUNCE_ANGLE_DIMENSION);
     // Probability zero selects the cosine hemisphere branch of the shared sampler.
     const float3 directionWorld = SampleScatteringBsdf(material.ShadingNormalWorld,
                                                        viewDirectionWorld,

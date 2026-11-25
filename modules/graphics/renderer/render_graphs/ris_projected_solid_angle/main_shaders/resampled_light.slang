@@ -231,7 +231,7 @@ bool TryResampleEmissiveTriangle(SceneContext scene,
         bool isSelected;
         if (TryAddReservoirCandidate(reservoir,
                                      target / candidate.SelectionPmf,
-                                     SampleSceneRandom(launch, dimension + 1),
+                                     SampleUniformFloat01(launch, dimension + 1),
                                      isSelected) == false)
             return false;
         if (isSelected == true)

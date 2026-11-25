@@ -229,20 +229,66 @@ checks the cooked dependency closure and verifies the recorded local source inpu
 publication. Restore or reimport an input if it moved or changed. Preparation consumes
 existing artifacts. A failed or cancelled candidate leaves the previous output usable.
 
-A version-1 `.luplay` file starts with a compact UTF-8 JSON manifest terminated by LF.
+A version-2 `.luplay` file starts with a compact UTF-8 JSON manifest terminated by LF.
 The remaining bytes are the composed LUSCN payload, identified by `sceneSha256`.
 The manifest carries the applied World's digest, stable entity keys, spawn eye positions
 in metres, orientation quaternions (x, y, z, w), speeds in metres per second, light and
-Atmosphere inputs, and the logical asset IDs with their exact artifact keys. World identity
+Atmosphere inputs, the World's [cooked climate](../modules/gameplay/weather.md#author-a-world-climate)
+(`climate`: `null`, or LUWTH `bytes` as lowercase hex with their `sha256`), and the logical
+asset IDs with their exact artifact keys. World identity
 uses the v2 document UUID, the v1 imported level UUID, or the project-relative path for a
 v1 World without a level. Object bindings follow the decoded LUSCN object order.
 `DecodePlayableSnapshot` reads the file in memory without Qt, an asset catalog, or raw sources.
-It replaces a previous runtime snapshot only after validating the new candidate.
+It replaces a previous runtime snapshot only after validating the new candidate. It separates an
+unsupported renderer from an unreadable file: when the manifest is well-formed but its `renderer`
+is a renderer the player cannot draw (the player draws only `raster`), the decoder reports the
+rejected renderer by name so the player can tell the author to select Raster in the Editor and
+prepare the World again, rather than emitting the generic "Cannot read the cooked World" message.
 
 The redistributable acceptance fixture uses SceneCook's CC0 `gltf/maps` source. It checks a
 moved instance, mapped material textures, lighting, spawn identity and collider membership
 through the runtime decoder. The installed-SDK game and relocated Release qualification
 use the separate [cooked glTF acceptance issue](https://github.com/The-Ludus-Project/Ludus/issues/1399).
+
+## Play a saved World on macOS
+
+Add a **First Person Player** and mark the floor and walls that should block
+movement with **Static Collider**. Save the World, select the spawn in the
+hierarchy, and choose **Play saved World**. Play uses the sole spawn automatically
+when the World has one. Save changes before starting another session.
+
+The Editor prepares a private runtime snapshot and starts its bundled first-person
+player through the supervised launch path. The game opens in the chosen viewport
+or in its own window. Both use the same Qt-free player with the engine Raster
+graph, including supported material maps, analytic lights, shadows and static
+Atmosphere. A project using this built-in path can launch with the Editor and
+its tools alone.
+
+Use **WASD** to walk and **Space** to jump. In a separate window, **Enter**
+captures the mouse and **Escape** releases it. In an editor-hosted viewport,
+click to capture the pointer and use **Shift+F1** to return it to the Editor.
+**Stop** releases input and closes the game. If viewport hosting is unavailable,
+the Editor offers **Play in a separate window**. If preparation or launch
+fails, **Output** names the content or spawn to repair.
+
+To run a previously prepared snapshot directly, use the spawn entity key from
+its manifest.
+
+```sh
+./ludus_first_person_player /path/to/walk.luplay SPAWN_ENTITY_KEY
+```
+
+If the snapshot was prepared for a renderer the player cannot draw, the player names that
+renderer and asks the author to select Raster in the Editor and prepare the World again; an
+otherwise unreadable snapshot asks for a fresh preparation instead.
+
+The macOS desktop fixture exercises the native player with an authored textured
+wall, a floor collider, directional shadows and static Atmosphere. It verifies
+presented frames, a blocked walk, an unobstructed strafe, jump and look.
+
+```sh
+python3 apps/first_person_player/tests/native_fixture.py /path/to/ludus_first_person_player
+```
 
 ## Delivery and acceptance
 

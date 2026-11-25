@@ -75,9 +75,9 @@ float3 ReadVertexChord(SceneContext scene, RayLaunch launch, inout RayQueryConte
         return float3(0);
     }
     SelectedLight selected = SelectLight(scene, launch, POINT_DIMENSION_FIRST);
-    float3 shapeSample = float3(SampleSceneRandom(launch, POINT_DIMENSION_FIRST + 1),
-                                SampleSceneRandom(launch, POINT_DIMENSION_FIRST + 2),
-                                SampleSceneRandom(launch, POINT_DIMENSION_FIRST + 3));
+    float3 shapeSample = float3(SampleUniformFloat01(launch, POINT_DIMENSION_FIRST + 1),
+                                SampleUniformFloat01(launch, POINT_DIMENSION_FIRST + 2),
+                                SampleUniformFloat01(launch, POINT_DIMENSION_FIRST + 3));
     LightSample light = SampleIncidentLight(scene, selected, receiver, shapeSample);
     if (light.HasSample == false || light.TriangleIndex == SCENE_INVALID_INDEX)
     {
@@ -135,9 +135,9 @@ float3 ReadPointLineDensities(SceneContext scene, RayLaunch launch, inout RayQue
         receiver.EmitterIndex < GetEmitterCount(scene))
         return EncodeFixed24(SKIPPED);
     SelectedLight selected = SelectLight(scene, launch, POINT_DIMENSION_FIRST);
-    float3 shapeSample = float3(SampleSceneRandom(launch, POINT_DIMENSION_FIRST + 1),
-                                SampleSceneRandom(launch, POINT_DIMENSION_FIRST + 2),
-                                SampleSceneRandom(launch, POINT_DIMENSION_FIRST + 3));
+    float3 shapeSample = float3(SampleUniformFloat01(launch, POINT_DIMENSION_FIRST + 1),
+                                SampleUniformFloat01(launch, POINT_DIMENSION_FIRST + 2),
+                                SampleUniformFloat01(launch, POINT_DIMENSION_FIRST + 3));
     LightSample light = SampleIncidentLight(scene, selected, receiver, shapeSample);
     if (light.HasSample == false || light.TriangleIndex == SCENE_INVALID_INDEX)
     {

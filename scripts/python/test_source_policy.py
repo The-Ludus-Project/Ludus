@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ from unittest.mock import patch
 
 import engine
 from formatting import format_source
+from lusl_migration import check_migration
 from source_policy import added_lines, check, check_formatting, violations
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -508,6 +510,236 @@ target_sources(example PRIVATE extra.cpp)
             self.assertEqual(len(check(root, base, head=git("rev-parse", "HEAD"))), 1)
 
 
+class PlatformOnlyWarningTests(unittest.TestCase):
+    """Warnings that only batch-only MSVC and Emscripten builds report, from batch failures."""
+
+    def diagnose(self, text, path="tests/example/source.cpp", changed=None):
+        lines = set(range(1, text.count("\n") + 2)) if changed is None else changed
+        return [(line, message) for line, message in violations(path, text, lines)
+                if "preprocessor branch" in message or "C4127" in message or "inside LUDUS_ASSERT" in message]
+
+    def test_symbols_read_only_by_assertions_are_maybe_unused(self):
+        # Develop 1c4b12f09: Profile, Release and web builds compile LUDUS_ASSERT out, so a
+        # constant read only by an assertion became an unused-variable error there.
+        source = """namespace
+{
+constexpr uint32 LAST_BIT = 127;
+}
+uint64 Shift(uint64 value, uint32 shift)
+{
+    LUDUS_ASSERT(shift >= 1 && shift <= LAST_BIT);
+    return value << shift;
+}
+void Check(uint32 count)
+{
+    LUDUS_ASSERT_F(count > 0, "count {}", count);
+}
+"""
+        findings = sorted(self.diagnose(source))
+        self.assertEqual([line for line, _ in findings], [3, 10], findings)
+        self.assertIn("LAST_BIT is used only inside LUDUS_ASSERT", findings[0][1])
+        self.assertIn("count is used only inside LUDUS_ASSERT", findings[1][1])
+        waived = source.replace("constexpr uint32 LAST_BIT", "[[maybe_unused]] constexpr uint32 LAST_BIT").replace(
+            "void Check(uint32 count)", "void Check([[maybe_unused]] uint32 count)")
+        self.assertEqual(self.diagnose(waived), [])
+        # REQUIRE and CHECK stay in every build, and a use outside the assertion counts.
+        kept = source.replace("LUDUS_ASSERT(", "LUDUS_REQUIRE(").replace(
+            "LUDUS_ASSERT_F(count > 0, \"count {}\", count);", "LUDUS_ASSERT(count > 0);\n    Store(count);")
+        self.assertEqual(self.diagnose(kept), [])
+
+    def test_locals_read_only_by_assertions_are_maybe_unused(self):
+        # Batch 45234893860: the browser editor (Release) rejected a sort result that
+        # only LUDUS_ASSERT read, declared over several lines.
+        source = """QList<Hint> Sort(QList<Hint> decoded)
+{
+    QList<Hint> scratch = decoded;
+    const bool isSorted = StableSort(
+        decoded.data(),
+        scratch.data());
+    LUDUS_ASSERT(isSorted == true || decoded.isEmpty() == true);
+    Item* itemOrNull{Find()};
+    LUDUS_ASSERT_F(itemOrNull != nullptr, "item {}", 1);
+    int32 total = 0;
+    total += Count();
+    LUDUS_ASSERT(total > 0);
+    return decoded;
+}
+"""
+        findings = sorted(self.diagnose(source))
+        self.assertEqual([line for line, _ in findings], [4, 8], findings)
+        self.assertIn("isSorted is used only inside LUDUS_ASSERT", findings[0][1])
+        self.assertIn("itemOrNull is used only inside LUDUS_ASSERT", findings[1][1])
+        waived = source.replace("const bool isSorted", "[[maybe_unused]] const bool isSorted").replace(
+            "Item* itemOrNull", "[[maybe_unused]] Item* itemOrNull")
+        self.assertEqual(self.diagnose(waived), [])
+        # Statements that are not declarations name no local.
+        statements = """bool Compare(int32 value)
+{
+    return value == 1;
+    else value = 2;
+}
+void Use()
+{
+    LUDUS_ASSERT(Compare(1));
+}
+"""
+        self.assertEqual(self.diagnose(statements), [])
+
+    def test_constants_used_only_under_a_branch_are_declared_there(self):
+        # Batch 44900782876: the web build rejected a native-only tick limit.
+        source = """namespace
+{
+constexpr int64 TIME_LIMIT_SECONDS = 20;
+}
+int Run()
+{
+#if defined(LUDUS_PLATFORM_WEB)
+    return 0;
+#else
+    return Tick(TIME_LIMIT_SECONDS);
+#endif
+}
+"""
+        findings = self.diagnose(source)
+        self.assertEqual(len(findings), 1, findings)
+        self.assertEqual(findings[0][0], 3)
+        self.assertIn("TIME_LIMIT_SECONDS is used only under a preprocessor branch", findings[0][1])
+        moved = source.replace("constexpr int64 TIME_LIMIT_SECONDS = 20;\n",
+                               "#if !defined(LUDUS_PLATFORM_WEB)\nconstexpr int64 TIME_LIMIT_SECONDS = 20;\n#endif\n")
+        self.assertEqual(self.diagnose(moved), [])
+
+    def test_uses_in_every_branch_or_complementary_blocks_are_unconditional(self):
+        source = """static void Run(State& state)
+{
+}
+void Start()
+{
+#if !defined(COOPERATIVE)
+    Run(gState);
+#endif
+}
+void Finish()
+{
+#if defined(COOPERATIVE)
+    Run(gState);
+#else
+    Wait(gState);
+#endif
+}
+"""
+        self.assertEqual(self.diagnose(source), [])
+        self.assertEqual(len(self.diagnose(source.replace("#if defined(COOPERATIVE)", "#if defined(OTHER)"))), 1)
+        everywhere = """constexpr int32 LIMIT = 4;
+int32 Read()
+{
+#if defined(A)
+    return LIMIT;
+#elif defined(B)
+    return LIMIT + 1;
+#else
+    return LIMIT - 1;
+#endif
+}
+"""
+        self.assertEqual(self.diagnose(everywhere), [])
+
+    def test_static_and_anonymous_functions_are_checked_in_main_files_only(self):
+        source = """namespace
+{
+void SetControlVisible(Widget& widget)
+{
+    widget.Show();
+}
+}
+void Use(Widget& widget)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    SetControlVisible(widget);
+#endif
+}
+"""
+        def functions(path="tests/example/source.cpp", text=source):
+            return [line for line, message in self.diagnose(text, path) if "SetControlVisible" in message]
+
+        self.assertEqual(functions(), [3])
+        self.assertEqual(functions("tests/example/source.h"), [])
+        self.assertEqual(functions(text=source.replace("namespace\n{\n", "namespace detail\n{\n")), [])
+        self.assertEqual(functions(text=source.replace("void SetControlVisible", "static void SetControlVisible")
+                                   .replace("namespace\n{\n", "namespace detail\n{\n")), [3])
+
+    def test_parameters_are_discarded_in_branches_that_do_not_read_them(self):
+        # Batch 41110487152: the browser editor never read isSignature.
+        source = """void Assistance::Request(bool isSignature)
+{
+#if !defined(Q_OS_WASM)
+    mIsSignature = isSignature;
+#endif
+}
+"""
+        findings = self.diagnose(source, "apps/example/source.h")
+        self.assertEqual(len(findings), 1, findings)
+        self.assertIn("discard it in the other branches with static_cast<void>(isSignature)", findings[0][1])
+        discarded = source.replace("#endif", "#else\n    static_cast<void>(isSignature);\n#endif")
+        self.assertEqual(self.diagnose(discarded, "apps/example/source.h"), [])
+        unnamed = "void Request(const Options&, [[maybe_unused]] bool isSignature)\n{\n#if defined(A)\n    Use(isSignature);\n#endif\n}\n"
+        self.assertEqual(self.diagnose(unnamed), [])
+
+    def test_a_branch_that_stops_the_build_compiles_no_configuration(self):
+        source = """bool Initialize(const Info& info) noexcept
+{
+#if defined(A)
+    return a::Initialize(info);
+#elif defined(B)
+    return b::Initialize(info);
+#else
+#    error "No platform backend"
+#endif
+}
+"""
+        self.assertEqual(self.diagnose(source), [])
+        self.assertEqual(len(self.diagnose(source.replace('#else\n#    error "No platform backend"\n', ""))), 1)
+
+    def test_conditional_uses_report_when_the_declaration_or_a_use_changed(self):
+        source = """constexpr int32 POLL_MILLISECONDS = 4;
+void Wait()
+{
+#if !defined(Q_OS_WASM)
+    Sleep(POLL_MILLISECONDS);
+#endif
+}
+"""
+        self.assertEqual(len(self.diagnose(source, changed={1})), 1)
+        self.assertEqual(len(self.diagnose(source, changed={5})), 1)
+        self.assertEqual(self.diagnose(source, changed={3}), [])
+
+    def test_waivers_and_maybe_unused_accept_a_deliberate_conditional_use(self):
+        source = """constexpr int32 LIMIT = 4; // ludus-style: conditional-use only the probe build reads it
+[[maybe_unused]] constexpr int32 OTHER = 4;
+int32 Read()
+{
+#if defined(PROBE)
+    return LIMIT + OTHER;
+#endif
+}
+"""
+        self.assertEqual(self.diagnose(source), [])
+
+    def test_conditions_naming_only_constants_use_if_constexpr(self):
+        # Batch 44900782876: MSVC C4127 in world_demo's --startup-report check.
+        for condition in ("LUDUS_COMPILED_LOG_LEVEL > LUDUS_LOG_LEVEL_INFO", "LUDUS_ENABLE_ASSERTS == 0",
+                          "!(MAXIMUM_ITEMS < 4)", "base::MAXIMUM_ITEMS != 0"):
+            with self.subTest(condition=condition):
+                findings = self.diagnose(f"void F()\n{{\n    if ({condition})\n    {{\n    }}\n}}\n")
+                self.assertEqual(len(findings), 1, findings)
+                self.assertIn("use if constexpr", findings[0][1])
+        for condition in ("constexpr (LUDUS_ENABLE_ASSERTS == 0)", "(count < MAXIMUM_ITEMS)", "(LUDUS_UNLIKELY(value))",
+                          "(Mode::Fast == MODE)", "(true)", "(item.IsReady())"):
+            with self.subTest(condition=condition):
+                self.assertEqual(self.diagnose(f"void F()\n{{\n    if {condition}\n    {{\n    }}\n}}\n"), [])
+        waived = "void F()\n{\n    if (A_FLAG) // ludus-style: constant-condition a runtime-patched flag\n    {\n    }\n}\n"
+        self.assertEqual(self.diagnose(waived), [])
+
+
 @unittest.skipUnless(CLANG_FORMAT, f"requires pinned {engine.pinned_llvm_tool(ROOT, 'clang-format')}")
 class ChangedFormattingTests(unittest.TestCase):
     """Local ``./scripts/check --format-changed`` must agree with CI's source policy."""
@@ -598,6 +830,93 @@ class ChangedFormattingTests(unittest.TestCase):
             self.assertEqual(engine.command_check(arguments), 0)
         format_changed.assert_called_once_with(ROOT, "origin/main", fix=True)
         format_all.assert_not_called()
+
+
+class LuslMigrationGateTests(unittest.TestCase):
+    """The migrated-scope gate (lusl_migration.py), through source_policy's changed-source check."""
+
+    def make_repository(self, directory, retained):
+        root = Path(directory)
+
+        def git(*arguments):
+            return subprocess.run(
+                ["git", *arguments], cwd=root, check=True, text=True, capture_output=True
+            ).stdout.strip()
+
+        git("init", "-q")
+        git("config", "user.name", "Policy test")
+        git("config", "user.email", "policy@example.invalid")
+        (root / "config").mkdir()
+        (root / "apps/game/shaders").mkdir(parents=True)
+        (root / "apps/game/shaders/oracle.slang").write_text("float4 Oracle() { return 0; }\n")
+        (root / "apps/game/shaders/shade.lusl").write_text("float32 Shade() { return 0; }\n")
+        (root / "config/lusl_migration.json").write_text(
+            json.dumps({"migrated": [{"path": "apps/game/shaders"}], "retained": retained}),
+            encoding="utf-8",
+        )
+        git("add", ".")
+        git("commit", "-qm", "fixture")
+        return root, git
+
+    ORACLE = [{"path": "apps/game/shaders/oracle.slang", "reason": "Differential oracle of shade.lusl"}]
+
+    def test_retained_slang_file_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, git = self.make_repository(directory, self.ORACLE)
+            self.assertEqual(check(root, git("rev-parse", "HEAD")), [])
+            self.assertEqual(check_migration(root, git("rev-parse", "HEAD")), [])
+
+    def test_new_slang_files_in_migrated_directories_are_rejected(self):
+        for name in ["apps/game/shaders/added.slang", "apps/game/shaders/nested/added.slangh"]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root, git = self.make_repository(directory, self.ORACLE)
+                base = git("rev-parse", "HEAD")
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text("float4 Added() { return 0; }\n")
+                failures = check(root, base)
+                self.assertEqual(len(failures), 1, failures)
+                self.assertIn(f"{name}: Slang source in the LUSL-migrated directory", failures[0])
+                # A committed PR head is rejected too, and so is a move into the directory.
+                git("add", ".")
+                git("commit", "-qm", "add Slang")
+                self.assertEqual(len(check_migration(root, git("rev-parse", "HEAD"))), 1)
+
+    def test_unretained_existing_slang_and_moves_into_scope_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, git = self.make_repository(directory, [])
+            failures = check_migration(root)
+            self.assertEqual(len(failures), 1, failures)
+            self.assertIn("apps/game/shaders/oracle.slang", failures[0])
+        with tempfile.TemporaryDirectory() as directory:
+            root, git = self.make_repository(directory, self.ORACLE)
+            (root / "tools").mkdir()
+            (root / "tools/outside.slang").write_text("float4 Outside() { return 0; }\n")
+            self.assertEqual(check_migration(root), [])
+            git("add", ".")
+            git("commit", "-qm", "outside the scope")
+            git("mv", "tools/outside.slang", "apps/game/shaders/outside.slang")
+            self.assertEqual(len(check_migration(root)), 1)
+
+    def test_retained_entries_need_an_existing_slang_path_and_a_reason(self):
+        cases = {
+            "stale": ([{"path": "apps/game/shaders/gone.slang", "reason": "Kept for a removed test"}],
+                      "does not exist"),
+            "reason": ([{"path": "apps/game/shaders/oracle.slang", "reason": "oracle"}],
+                       "needs a reason"),
+            "kind": ([{"path": "apps/game/shaders/shade.lusl", "reason": "Not a Slang source at all"}],
+                     "is not a Slang source"),
+            "duplicate": (self.ORACLE + self.ORACLE, "listed twice"),
+            "normalized": ([{"path": "apps/game/shaders/", "reason": "A directory with a slash"}],
+                           "normalized"),
+        }
+        for case, (retained, message) in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root, _ = self.make_repository(directory, retained)
+                failures = check_migration(root)
+                self.assertTrue(any(message in failure for failure in failures), failures)
+
+    def test_repository_migration_list_is_valid(self):
+        self.assertEqual(check_migration(ROOT), [])
 
 
 if __name__ == "__main__":

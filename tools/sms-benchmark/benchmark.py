@@ -6,12 +6,10 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 
 import numpy as np
 
 from scene import SOURCE, Scene, normalize, read_gold_ior, verify_assets
-from layout import write_shader_layout
 
 ROOT = Path(__file__).resolve().parents[2]
 OWNER = Path(__file__).parent
@@ -48,23 +46,13 @@ def prepare(upstream, output):
     return report
 
 
-def validate(upstream, output, compiler, count):
+def validate(upstream, output, compiler, luslc, count):
     """Compare raw scene intersections, shading normals and cos-weighted BSDFs."""
     scene = Scene(upstream / SOURCE['directory'])
     eta, extinction = read_gold_ior(upstream)
     output.mkdir(parents=True, exist_ok=False)
-    source_directory = output / 'source'
-    source_directory.mkdir()
-    for source in [ROOT / 'modules/foundation/math/shaders/math.slang',
-                   ROOT / 'modules/graphics/rhi/shaders/raster_bindings.slang',
-                   OWNER / 'shaders/figure17.slang']:
-        shutil.copyfile(source, source_directory / source.name)
-    write_shader_layout(source_directory)
-    subprocess.run([sys.executable, str(ROOT / 'cmake/shaders/compile_shader.py'),
-                    '--source', str(source_directory / 'figure17.slang'), '--output', str(output / 'compile'),
-                    '--name', 'ValidateFigure17', '--compiler', str(compiler),
-                    '--lock', str(ROOT / 'config/shader_toolchain.json'),
-                    '--graph-stage', 'compute', '--graph-target', 'wgsl'], check=True)
+    from gpu import compile_entry  # gpu imports this module's ROOT and OWNER.
+    shader, slots = compile_entry(output, compiler, luslc, 'figure17.lusl', 'ValidateFigure17')
     random = np.random.default_rng(92026)
     inputs = np.zeros((count, 5, 4), dtype=np.float32)
     inputs[:, 0, :2] = random.uniform(0, 1, (count, 2))
@@ -100,10 +88,10 @@ def validate(upstream, output, compiler, count):
     adapter = dict(device.adapter.info)
     if adapter['adapter_type'] == 'CPU':
         raise ValueError('A physical GPU is required; no software fallback is accepted.')
-    shader = (output / 'compile/artifact.wgsl').read_text().replace('fn ValidateFigure17(', 'fn main(')
-    result = compute_with_buffers({0: inputs, 2: slopes, 3: packed_scene}, {1: count*3*4*4}, shader,
-                                  n=((count+31)//32, 1, 1))
-    observed = np.frombuffer(result[1], dtype=np.float32).reshape(count, 3, 4)
+    shader = shader.replace('fn ValidateFigure17(', 'fn main(')
+    result = compute_with_buffers({slots['INPUTS']: inputs, slots['SLOPES']: slopes, slots['SCENE_DATA']: packed_scene},
+                                  {slots['RESULTS']: count*3*4*4}, shader, n=((count+31)//32, 1, 1))
+    observed = np.frombuffer(result[slots['RESULTS']], dtype=np.float32).reshape(count, 3, 4)
     np.savez(output / 'parity.npz', inputs=inputs, expected=expected, observed=observed)
     tolerances = [(2e-5, 2e-6), (5e-4, 2e-5), (2e-5, 2e-5)]
     checks = [bool(np.allclose(observed[:, index], expected[:, index], rtol=relative, atol=absolute))
@@ -129,6 +117,8 @@ def main():
         command.add_argument('--output', type=Path, required=True)
         if name == 'validate':
             command.add_argument('--compiler', type=Path, required=True)
+            command.add_argument('--luslc', type=Path,
+                                 help='luslc that lowers the shaders (default: ./scripts/bootstrap-luslc)')
             command.add_argument('--count', type=int, default=1024)
     arguments = parser.parse_args()
     if arguments.command == 'prepare':
@@ -136,7 +126,8 @@ def main():
     else:
         if arguments.count < 1:
             parser.error('--count must be positive')
-        report = validate(arguments.upstream.resolve(), arguments.output, arguments.compiler, arguments.count)
+        report = validate(arguments.upstream.resolve(), arguments.output, arguments.compiler, arguments.luslc,
+                          arguments.count)
     print(json.dumps(report, indent=2))
 
 

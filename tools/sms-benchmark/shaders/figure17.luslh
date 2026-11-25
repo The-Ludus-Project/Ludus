@@ -1,0 +1,146 @@
+// Shared scene buffers, material and geometry of the SMS Figure 17 kernels
+// (docs/development/benchmark-scenes.md). layout.luslh is generated beside the copied sources by
+// layout.py, the single owner of the buffer layout.
+#pragma once
+
+#include "layout.luslh"
+#include "math.luslh"
+
+// Thanks to Tizian Zeltner, Iliyan Georgiev and Wenzel Jakob, "Specular Manifold Sampling for Rendering
+// High-Frequency Caustics and Glints", SIGGRAPH 2020, sections 4.5/5.5 and Figure 17,
+// https://doi.org/10.1145/3386569.3392408. Port their level-zero slope interpolation, shading frame,
+// Beckmann NDF and rational Smith masking approximation. This is a material/geometry parity kernel;
+// it does not implement SMS or establish path-tracing throughput.
+StructuredBuffer<float32x4> inputs;
+RWStructuredBuffer<float32x4> results;
+StructuredBuffer<float32x4> slopes;
+StructuredBuffer<float32x4> sceneData;
+
+static const float32 RAY_PARALLEL_COSINE = 1e-12;
+static const float32 RAY_MINIMUM_DISTANCE_WORLD = 1e-5;
+static const float32 MAXIMUM_DISTANCE_WORLD = 1e30;
+static const float32 SMITH_NO_MASKING_THRESHOLD = 1.6;
+static const float32 SMITH_NUMERATOR_LINEAR = 3.535;
+static const float32 SMITH_NUMERATOR_QUADRATIC = 2.181;
+static const float32 SMITH_DENOMINATOR_LINEAR = 2.276;
+static const float32 SMITH_DENOMINATOR_QUADRATIC = 2.577;
+static const float32 FRESNEL_COMPLEX_MULTIPLIER = 4;
+static const float32 MICROFACET_REFLECTION_MULTIPLIER = 4;
+
+float32x2 EvaluateSlopes(in float32x2 coordinates)
+{
+    uint32 resolution = uint32(sceneData[BASE_TANGENT_RECORD].w);
+    float32x2 positionTexel = clamp(frac(coordinates) * float32(resolution) - 0.5, 0, float32(resolution - 1));
+    uint32x2 lowerTexel = uint32x2(floor(positionTexel));
+    uint32x2 upperTexel = min(lowerTexel + 1, resolution - 1);
+    float32x2 weight = positionTexel - float32x2(lowerTexel);
+    float32x2 first = lerp(slopes[lowerTexel.y * resolution + lowerTexel.x].xy,
+                           slopes[lowerTexel.y * resolution + upperTexel.x].xy,
+                           weight.x);
+    float32x2 second = lerp(slopes[upperTexel.y * resolution + lowerTexel.x].xy,
+                            slopes[upperTexel.y * resolution + upperTexel.x].xy,
+                            weight.x);
+    return lerp(first, second, weight.y);
+}
+
+float32 ComputeSmithBeckmann(in float32 cosine, in float32 alpha)
+{
+    float32 sine = sqrt(max(0, 1 - cosine * cosine));
+    if (sine == 0)
+    {
+        return 1;
+    }
+    float32 a = abs(cosine) / (alpha * sine);
+    if (a >= SMITH_NO_MASKING_THRESHOLD)
+    {
+        return 1;
+    }
+    float32 square = a * a;
+    return (SMITH_NUMERATOR_LINEAR * a + SMITH_NUMERATOR_QUADRATIC * square) /
+        (1 + SMITH_DENOMINATOR_LINEAR * a + SMITH_DENOMINATOR_QUADRATIC * square);
+}
+
+float32x3 ComputeConductorFresnel(in float32 cosine)
+{
+    float32x3 eta = sceneData[IOR_ETA_RECORD].xyz;
+    float32x3 extinction = sceneData[IOR_EXTINCTION_RECORD].xyz;
+    float32 sineSquared = 1 - cosine * cosine;
+    float32x3 difference = eta * eta - extinction * extinction - sineSquared;
+    float32x3 magnitude =
+        sqrt(difference * difference + FRESNEL_COMPLEX_MULTIPLIER * eta * eta * extinction * extinction);
+    float32x3 realPart = sqrt(max(0, (magnitude + difference) * 0.5));
+    float32x3 first = magnitude + cosine * cosine;
+    float32x3 second = 2 * cosine * realPart;
+    float32x3 perpendicular = (first - second) / (first + second);
+    float32x3 third = cosine * cosine * magnitude + sineSquared * sineSquared;
+    float32x3 fourth = second * sineSquared;
+    return 0.5 * perpendicular * (1 + (third - fourth) / (third + fourth));
+}
+
+float32x3 EvaluateBeckmann(in float32x2 coordinates,
+                           in float32x3 viewWorld,
+                           in float32x3 lightWorld,
+                           in float32 alpha,
+                           out float32x3 outNormalWorld)
+{
+    float32x2 slope = EvaluateSlopes(coordinates);
+    float32x3 baseTangentWorld = sceneData[BASE_TANGENT_RECORD].xyz;
+    float32x3 baseBitangentWorld = sceneData[BASE_BITANGENT_RECORD].xyz;
+    float32x3 baseNormalWorld = sceneData[BASE_NORMAL_RECORD].xyz;
+    float32x3 normalWorld =
+        NormalizeOrZero(baseNormalWorld - slope.x * baseTangentWorld - slope.y * baseBitangentWorld);
+    float32x3 tangentWorld = NormalizeOrZero(baseTangentWorld - normalWorld * dot(normalWorld, baseTangentWorld));
+    float32x3 bitangentWorld = cross(normalWorld, tangentWorld);
+    outNormalWorld = normalWorld;
+    float32x3 viewShading =
+        float32x3(dot(viewWorld, tangentWorld), dot(viewWorld, bitangentWorld), dot(viewWorld, normalWorld));
+    float32x3 lightShading =
+        float32x3(dot(lightWorld, tangentWorld), dot(lightWorld, bitangentWorld), dot(lightWorld, normalWorld));
+    if (viewShading.z <= 0 || lightShading.z <= 0 || dot(viewWorld, baseNormalWorld) <= 0 ||
+        dot(lightWorld, baseNormalWorld) <= 0)
+    {
+        return float32x3(0);
+    }
+    float32x3 halfwayShading = NormalizeOrZero(viewShading + lightShading);
+    if (halfwayShading.z <= 0)
+    {
+        return float32x3(0);
+    }
+    float32 cosineSquared = halfwayShading.z * halfwayShading.z;
+    float32 exponent = -dot(halfwayShading.xy, halfwayShading.xy) / (alpha * alpha * cosineSquared);
+    float32 distribution = exp(exponent) / (PI * alpha * alpha * cosineSquared * cosineSquared);
+    float32 masking = ComputeSmithBeckmann(viewShading.z, alpha) * ComputeSmithBeckmann(lightShading.z, alpha);
+    return ComputeConductorFresnel(abs(dot(viewShading, halfwayShading))) *
+        (distribution * masking / (MICROFACET_REFLECTION_MULTIPLIER * viewShading.z));
+}
+
+float32x4 IntersectRectangles(in float32x3 originWorld, in float32x3 directionWorld)
+{
+    float32 distanceWorld = MAXIMUM_DISTANCE_WORLD;
+    float32 identity = -1;
+    float32x2 coordinates = 0;
+    for (uint32 rectangle = 0; rectangle < RECTANGLE_COUNT; ++rectangle)
+    {
+        uint32 record = INVERSE_TRANSFORM_RECORD + rectangle * INVERSE_TRANSFORM_STRIDE;
+        float32x3 originRectangle = float32x3(dot(sceneData[record], float32x4(originWorld, 1)),
+                                              dot(sceneData[record + 1], float32x4(originWorld, 1)),
+                                              dot(sceneData[record + 2], float32x4(originWorld, 1)));
+        float32x3 directionRectangle = float32x3(dot(sceneData[record].xyz, directionWorld),
+                                                 dot(sceneData[record + 1].xyz, directionWorld),
+                                                 dot(sceneData[record + 2].xyz, directionWorld));
+        if (abs(directionRectangle.z) <= RAY_PARALLEL_COSINE)
+        {
+            continue;
+        }
+        float32 candidateDistanceWorld = -originRectangle.z / directionRectangle.z;
+        float32x2 positionRectangle = originRectangle.xy + candidateDistanceWorld * directionRectangle.xy;
+        if (candidateDistanceWorld > RAY_MINIMUM_DISTANCE_WORLD && candidateDistanceWorld < distanceWorld &&
+            all(abs(positionRectangle) <= float32x2(1)) == true)
+        {
+            distanceWorld = candidateDistanceWorld;
+            identity = float32(rectangle);
+            coordinates = (positionRectangle + 1) * 0.5;
+        }
+    }
+    return float32x4(distanceWorld, identity, coordinates);
+}

@@ -42,9 +42,7 @@ struct CaptureBytes final
     }
     void SetWord(usize word, uint32 value)
     {
-        REQUIRE(
-            TryWriteLittleEndian(value, std::span<uint8>{Bytes.GetData() + word * sizeof(uint32), sizeof(uint32)}) ==
-            true);
+        REQUIRE(TryWriteLittleEndian(value, {Bytes.GetData() + word * sizeof(uint32), sizeof(uint32)}) == true);
     }
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): word index, then its value
     void SetFloat(usize word, float32 value)

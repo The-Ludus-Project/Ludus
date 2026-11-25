@@ -70,8 +70,10 @@ bool UsesTechnique(const QJsonObject& technique, const QJsonObject& program)
                : technique.value(stage).toString() == program.value(QStringLiteral("id")).toString();
 }
 
-QString
-DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, const QMap<QString, QByteArray>& sources)
+QString DescribeRayInterface(const QJsonObject& program,
+                             const QJsonArray& techniques,
+                             const QMap<QString, QByteArray>& sources,
+                             const QJsonArray& resources)
 {
     const QString stage = program.value(QStringLiteral("stage")).toString();
     const QString input = program.value(QStringLiteral("input")).toString();
@@ -107,21 +109,122 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
         lines.append(
             stage == QStringLiteral("compute")
                 ? QStringLiteral("// Scene compute pass: one invocation per launch pixel in the ordered ray sequence.\n"
-                                 "// Trace with TraceClosest or TestVisibility; return linear radiance.\n"
-                                 "// There are no hit or miss callbacks: TraceAndShade latches queries.HasFailed.")
+                                 "// Trace with TraceClosest or TestVisibility.\n"
+                                 "// There are no hit or miss callbacks: TraceAndShade latches queries.HasFailed.\n"
+                                 "// Sample earlier scene passes through read-only ColorTexture members in resources.\n"
+                                 "// For example, port diffraction is resources.Diffraction.")
                 : QStringLiteral(
                       "// Scene materials enabled.\n"
                       "// Closest-hit material access: MaterialSample material = EvaluateMaterial(scene, hit);\n"
                       "// Author lighting and bounce policy in your callbacks."));
-        lines.append(
-            QStringLiteral("%1 %2(\n    SceneContext scene,\n    %3 %4,\n    inout RayQueryContext queries%5);")
-                .arg(isLaunch == true ? QStringLiteral("float3") : QStringLiteral("void"),
-                     function,
-                     input,
-                     isLaunch == true                  ? QStringLiteral("launch")
-                     : stage == QStringLiteral("miss") ? QStringLiteral("ray")
-                                                       : QStringLiteral("hit"),
-                     isLaunch == true ? QString{} : QStringLiteral(",\n    inout ScenePayload payload")));
+        if (isLaunch == true)
+        {
+            lines.append(QStringLiteral(
+                "// Return linear RGB for automatic color output, or zero for shader-only output.\n"
+                "// Shader read/write textures appear by input port name in resources.\n"
+                "// PositionPixel and ExtentPixel describe the dispatch. Query GetDimensions for the texture size."));
+        }
+        QString trailingParameters = isLaunch == true ? QString{} : QStringLiteral(",\n    inout ScenePayload payload");
+        const QString source = program.value(QStringLiteral("source")).toString();
+        const bool isLusl = source.endsWith(QStringLiteral(".lusl"));
+        QJsonObject resourceContract;
+        for (const QJsonValueConstRef item : resources)
+        {
+            if (item.toObject().value(QStringLiteral("program")) == program.value(QStringLiteral("id")))
+            {
+                resourceContract = item.toObject();
+                break;
+            }
+        }
+        const bool hasResources =
+            resourceContract.isEmpty() == false || program.value(QStringLiteral("graph_resources")).toBool() == true ||
+            (program.contains(QStringLiteral("graph_resources")) == false &&
+             sources.value(source).contains((function + QStringLiteral("Resources")).toUtf8()) == true);
+        if (isLaunch == true && hasResources == true)
+        {
+            trailingParameters = QStringLiteral(",\n    %1%2Resources resources")
+                                     .arg(isLusl == true ? QStringLiteral("in ") : QString(), function);
+            if (resourceContract.isEmpty() == false)
+            {
+                if (resourceContract.value(QStringLiteral("needs_upgrade")).toBool() == true)
+                {
+                    lines.append(QStringLiteral("// Choose Add Resource Access to use these connected resources."));
+                }
+                const QJsonArray fields = resourceContract.value(QStringLiteral("fields")).toArray();
+                if (fields.isEmpty() == true)
+                {
+                    lines.append(QStringLiteral("// No connected named resources."));
+                }
+                for (const QJsonValueConstRef fieldValue : fields)
+                {
+                    const QJsonObject field = fieldValue.toObject();
+                    const bool isWritable = field.value(QStringLiteral("writable")).toBool();
+                    const QString type = field.value(QStringLiteral("type")).toString();
+                    const bool isLegacyRaw = field.value(QStringLiteral("legacy_raw")).toBool();
+                    const bool isTexture = field.value(QStringLiteral("texture")).toBool();
+                    const bool isNativeStructured = field.value(QStringLiteral("native_structured")).toBool();
+                    const QString operations =
+                        isTexture == true
+                            ? (isLusl == true
+                                   ? (isWritable == true
+                                          ? QStringLiteral(
+                                                "Load(positionPixel), Store(positionPixel, value), GetDimensions()")
+                                          : QStringLiteral("Load(positionPixel), GetDimensions()"))
+                                   : (isWritable == true
+                                          ? QStringLiteral("[positionPixel], GetDimensions(width, height)")
+                                          : QStringLiteral(
+                                                "Load(int3(positionPixel, 0)), GetDimensions(width, height)")))
+                        : isNativeStructured == true ? QStringLiteral("[recordIndex].Field")
+                        : isLegacyRaw == true
+                            ? QStringLiteral("[index], GetDimensions(count, stride)")
+                            : (isWritable == true ? QStringLiteral("GetCount(), Load(index), Store(index, value)")
+                                                  : QStringLiteral("GetCount(), Load(index)"));
+                    lines.append(
+                        QStringLiteral("// resources.%1 · %2 · %3\n"
+                                       "// %4")
+                            .arg(field.value(QStringLiteral("name")).toString(),
+                                 isLusl == true && type == QStringLiteral("uint4") ? QStringLiteral("uint32x4") : type,
+                                 isWritable == true ? QStringLiteral("read/write") : QStringLiteral("read-only"),
+                                 operations));
+                    if (field.value(QStringLiteral("byte_access")).toBool() == true)
+                    {
+                        lines.append(
+                            isWritable == true
+                                ? QStringLiteral("// GetByteSize(), LoadWord(byteOffset), StoreWord(byteOffset, word)")
+                                : QStringLiteral("// GetByteSize(), LoadWord(byteOffset)"));
+                    }
+                    const QJsonArray recordArrays = field.value(QStringLiteral("record_arrays")).toArray();
+                    for (const QJsonValueConstRef arrayValue : recordArrays)
+                    {
+                        const QJsonObject array = arrayValue.toObject();
+                        const QString name = array.value(QStringLiteral("name")).toString();
+                        lines.append(QStringLiteral("// %1 %2[%3] · Load%2(recordIndex, elementIndex)")
+                                         .arg(array.value(QStringLiteral("element_type")).toString(), name)
+                                         .arg(array.value(QStringLiteral("capacity")).toInt()));
+                        if (isWritable == true)
+                        {
+                            lines.append(QStringLiteral("// Store%1(recordIndex, elementIndex, element)").arg(name));
+                        }
+                    }
+                }
+            }
+            else
+            {
+                lines.append(QStringLiteral("// Connected Buffer and texture ports supply the Resources members."));
+            }
+        }
+        lines.append(QStringLiteral("%1 %2(\n    %6SceneContext scene,\n    %6%3 %4,\n    inout RayQueryContext %7%5);")
+                         .arg(isLaunch == true
+                                  ? (isLusl == true ? QStringLiteral("float32x3") : QStringLiteral("float3"))
+                                  : QStringLiteral("void"),
+                              function,
+                              input,
+                              isLaunch == true                  ? QStringLiteral("launch")
+                              : stage == QStringLiteral("miss") ? QStringLiteral("ray")
+                                                                : QStringLiteral("hit"),
+                              trailingParameters,
+                              isLusl == true ? QStringLiteral("in ") : QString(),
+                              isLusl == true ? QStringLiteral("inoutQueries") : QStringLiteral("queries")));
     }
     else
     {
@@ -255,8 +358,10 @@ QString DescribeSchema(const QJsonArray& schemas, const QString& identity)
 }
 } // namespace
 
-QString
-DescribeShaderInterface(const QByteArray& manifest, const QString& sourceFile, const QMap<QString, QByteArray>& sources)
+QString DescribeShaderInterface(const QByteArray& manifest,
+                                const QString& sourceFile,
+                                const QMap<QString, QByteArray>& sources,
+                                const QJsonArray& resources)
 {
     const QJsonDocument document = QJsonDocument::fromJson(manifest);
     if (document.isObject() == false)
@@ -281,7 +386,7 @@ DescribeShaderInterface(const QByteArray& manifest, const QString& sourceFile, c
             (stage == QStringLiteral("compute") && output == QStringLiteral("Radiance")))
         {
             descriptions.append(
-                DescribeRayInterface(program, root.value(QStringLiteral("techniques")).toArray(), sources));
+                DescribeRayInterface(program, root.value(QStringLiteral("techniques")).toArray(), sources, resources));
             continue;
         }
         if (stage != QStringLiteral("vertex") && stage != QStringLiteral("fragment"))

@@ -11,6 +11,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
+#include <ludus/graphics/rhi/measurement.h>
 #include <ludus/platform/hosted_recording.h>
 #include <ludus/platform/native_window.h>
 
@@ -33,6 +34,13 @@ inline constexpr foundation::uint32 HOSTED_RECORDING_STOP_FRAMES = 8;
 /// pass inside a named GpuScope becomes one sample carrying the scope's name and the
 /// recorder's frame number; frames count the game's submitted frames from one.
 ///
+/// A device without per-pass timestamp counters (ArmGpuPassTimings returns Unsupported)
+/// still records: Start is acknowledged with IsPassTimingSupported false, and the
+/// recorder then owns the device's frame probe (ArmGpuTiming) instead, sending one
+/// whole-frame sample (HostedRecordingSample::IsFrame) per measured frame. Neither
+/// probe is ever substituted silently; the acknowledgement names which one the
+/// recording uses.
+///
 /// Recording messages travel without taking the window's surface send room, so a
 /// recording never delays a Present or holds a presented image; a sample that does not
 /// fit is dropped and counted. Ticks are the game's foundation::time::NowTicks clock
@@ -41,8 +49,9 @@ inline constexpr foundation::uint32 HOSTED_RECORDING_STOP_FRAMES = 8;
 /// Call order per frame, on the thread that pumps the window and owns the device:
 /// pump the window, BeginFrame(device), the game's rhi::BeginFrame ... rhi::EndFrame,
 /// then EndFrame(isSubmitted). Not synchronized. The device needs
-/// DeviceDescription::EnableGpuTiming for Start to succeed; otherwise every Start is
-/// answered Unsupported and rendering is unaffected.
+/// DeviceDescription::EnableGpuTiming for Start to succeed; otherwise, or when the
+/// device can measure neither passes nor frames, every Start is answered Unsupported
+/// and rendering is unaffected.
 class HostedGpuRecorder final
 {
 public:
@@ -119,6 +128,9 @@ private:
     void startRecording(DeviceHandle device, const platform::HostedRecordingRequest& request) noexcept;
     void collectBatch(DeviceHandle device) noexcept;
     void deliverBatch(const GpuPassTimings& batch) noexcept;
+    void deliverFrame(const GpuTiming& timing) noexcept;
+    void sendSample(const platform::HostedRecordingSample& sample) noexcept;
+    [[nodiscard]] RasterStatus armBatch(DeviceHandle device) const noexcept;
     void finishStop() noexcept;
     [[nodiscard]] bool hasBatch() const noexcept;
 
@@ -133,6 +145,9 @@ private:
     platform::HostedRecordingCoverage mCoverage{};
     /// Armed and waiting for a submitted frame.
     bool mIsBatchArmed = false;
+    /// Batches measure whole frames (ArmGpuTiming) because the device has no per-pass
+    /// counters; set when a Start arms a fresh batch and kept while one is in flight.
+    bool mIsFrameTiming = false;
     /// Submitted frame the in-flight batch measures; zero without one.
     foundation::uint64 mBatchFrame = 0;
     /// Recording the batch was armed for; zero for a batch armed before a Stop that no

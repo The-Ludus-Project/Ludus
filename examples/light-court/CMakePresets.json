@@ -1,0 +1,18 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "linux-clang-development",
+      "displayName": "Light Court sample data",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/light-court"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux-clang-development",
+      "configurePreset": "linux-clang-development",
+      "targets": ["light_court"]
+    }
+  ]
+}

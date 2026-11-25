@@ -1,0 +1,70 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 29,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "native-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{LUDUS_SDK_PREFIX}",
+        "LUDUS_SLANG_COMPILER": "$env{LUDUS_SLANG_COMPILER}",
+        "LUDUS_SPIRV_CROSS": "$env{LUDUS_SPIRV_CROSS}"
+      }
+    },
+    {
+      "name": "macos-base",
+      "hidden": true,
+      "inherits": "native-base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_OSX_SYSROOT": "$env{LUDUS_OSX_SYSROOT}",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "14.0",
+        "CMAKE_CXX_FLAGS": "-stdlib=libc++ -nostdinc++ -isystem \"$env{LUDUS_LIBCXX_INCLUDE}\""
+      }
+    },
+    {
+      "name": "macos-clang-development",
+      "inherits": "macos-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "macos-clang-release",
+      "inherits": "macos-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "linux-clang-development",
+      "inherits": "native-base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++-23",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LUDUS_SPIRV_VALIDATOR": "$env{LUDUS_SPIRV_VALIDATOR}"
+      }
+    }
+  ],
+  "buildPresets": [
+    {"name": "macos-clang-development", "configurePreset": "macos-clang-development"},
+    {"name": "macos-clang-release", "configurePreset": "macos-clang-release"},
+    {"name": "linux-clang-development", "configurePreset": "linux-clang-development"}
+  ]
+}

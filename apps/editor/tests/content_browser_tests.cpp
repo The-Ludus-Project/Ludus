@@ -5,11 +5,36 @@
 #include "internal/state_view.h"
 #include "wav_fixture.h"
 
+#if !defined(LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS) && !defined(Q_OS_WASM)
+#    include "internal/activity_chip.h"
+#    include "internal/audio_workspace.h"
+#    include "internal/code_document_tab.h"
+#    include "internal/code_editor.h"
+#    include "internal/code_editor_area.h"
+#    include "internal/controller.h"
+#    include "internal/main_window.h"
+#    include "internal/project_explorer.h"
+
+#    include <QAccessible>
+#    include <QDockWidget>
+#    include <QFileDialog>
+#    include <QFileInfo>
+#    include <QFormLayout>
+#    include <QHash>
+#    include <QMetaObject>
+#    include <QRect>
+#    include <QScopeGuard>
+#    include <QTextCursor>
+#    include <QTimer>
+#endif
+
 #include <ludus/audio/content/definitions.h>
+#include <ludus/foundation/containers/array.hpp>
 
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -71,11 +96,21 @@ MakeRow(const QString& id, const QString& path, ContentType type, const QString&
     row.Label = label;
     return row;
 }
-QString Wav(QTemporaryDir& directory, uint32 frames)
+void WriteFixtureWav(const QString& path, uint32 frames)
 {
-    const auto data = audio::test::MakeSineWav(44100, 1, frames);
-    const auto path = directory.filePath(QStringLiteral("export.wav"));
+    const Array<uint8> data = audio::test::MakeSineWav(44100, 1, frames);
     Write(path, QByteArray(reinterpret_cast<const char*>(data.data()), static_cast<qsizetype>(data.size())));
+}
+QString WriteExportedWav(const QTemporaryDir& directory, uint32 frames)
+{
+    const QString path = directory.filePath(QStringLiteral("export.wav"));
+    WriteFixtureWav(path, frames);
+    return path;
+}
+QString WriteBrokenWav(const QTemporaryDir& directory)
+{
+    const QString path = directory.filePath(QStringLiteral("broken.wav"));
+    Write(path, QByteArrayLiteral("RIFF this is not audio"));
     return path;
 }
 content::Catalog ReadCatalog(const QString& root)
@@ -88,6 +123,28 @@ content::Catalog ReadCatalog(const QString& root)
             content::Status::Ok);
     REQUIRE(catalog.Read(bytes.String(), diagnostic) == content::Status::Ok);
     return catalog;
+}
+audio::content::Music WriteSavedLoop(const QString& contentRoot)
+{
+    content::Catalog catalog = ReadCatalog(contentRoot);
+    audio::content::Music music;
+    REQUIRE(music.Id.Set("music/theme"));
+    REQUIRE(music.Source.Set("source/hit"));
+    REQUIRE(music.Bus.Set("music"));
+    music.Region = {true, 10, 400};
+    content::Bytes bytes;
+    REQUIRE(audio::content::WriteMusic(music, bytes) == content::Status::Ok);
+    Write(QDir(contentRoot).filePath(QStringLiteral("theme.json")),
+          QByteArray(bytes.String().data(), static_cast<qsizetype>(bytes.String().size())));
+    content::Resource entry;
+    REQUIRE(entry.Id.Set("music/theme"));
+    REQUIRE(entry.Path.Set("theme.json"));
+    entry.Type = content::Kind::Music;
+    REQUIRE(catalog.Put(entry) == content::Status::Ok);
+    REQUIRE(catalog.Write(bytes) == content::Status::Ok);
+    Write(QDir(contentRoot).filePath(QStringLiteral("catalog.json")),
+          QByteArray(bytes.String().data(), static_cast<qsizetype>(bytes.String().size())));
+    return music;
 }
 void Wait(ContentWorkspace& workspace)
 {
@@ -115,7 +172,7 @@ void Mutate(void* input) noexcept
 TEST_CASE("Content import switches immutable versions and preserves IDs and old bytes", "[editor][content]")
 {
     QTemporaryDir root, exported;
-    const auto file = Wav(exported, 500);
+    const QString file = WriteExportedWav(exported, 500);
     ContentImportGate first;
     REQUIRE(ImportAudioSource(
                 {
@@ -131,7 +188,7 @@ TEST_CASE("Content import switches immutable versions and preserves IDs and old 
     QFile oldFile(root.filePath(oldPath));
     REQUIRE(oldFile.open(QIODevice::ReadOnly));
     const auto oldBytes = oldFile.readAll();
-    (void)Wav(exported, 700);
+    (void)WriteExportedWav(exported, 700);
     ContentImportGate second;
     const auto result =
         ImportAudioSource({ .Root = root.path(), .File = file, .Id = QStringLiteral("source/hit") }, second);
@@ -154,7 +211,7 @@ TEST_CASE("Content import switches immutable versions and preserves IDs and old 
 TEST_CASE("Cancellation and catalog conflicts never publish a broken active catalog", "[editor][content]")
 {
     QTemporaryDir root, exported;
-    const auto file = Wav(exported, 500);
+    const QString file = WriteExportedWav(exported, 500);
     ContentImportGate cancelled;
     HookContext cancelContext;
     cancelContext.Gate = &cancelled;
@@ -191,7 +248,7 @@ TEST_CASE("Cancellation and catalog conflicts never publish a broken active cata
 TEST_CASE("Reimport checks saved loop constraints and changing dependencies", "[editor][content]")
 {
     QTemporaryDir root, exported;
-    const auto file = Wav(exported, 500);
+    const QString file = WriteExportedWav(exported, 500);
     ContentImportGate first;
     REQUIRE(ImportAudioSource(
                 {
@@ -203,31 +260,18 @@ TEST_CASE("Reimport checks saved loop constraints and changing dependencies", "[
                 .Status == content::Status::Ok);
     auto catalog = ReadCatalog(root.path());
     const auto oldPath = QString::fromUtf8(catalog.Find("source/hit")->Path.Data);
-    audio::content::Music music;
-    REQUIRE(music.Id.Set("music/theme"));
-    REQUIRE(music.Source.Set("source/hit"));
-    REQUIRE(music.Bus.Set("music"));
-    music.Region = {true, 10, 400};
+    audio::content::Music music = WriteSavedLoop(root.path());
     content::Bytes bytes;
-    REQUIRE(audio::content::WriteMusic(music, bytes) == content::Status::Ok);
-    Write(root.filePath(QStringLiteral("theme.json")),
-          QByteArray(bytes.String().data(), static_cast<qsizetype>(bytes.String().size())));
-    content::Resource entry;
-    REQUIRE(entry.Id.Set("music/theme"));
-    REQUIRE(entry.Path.Set("theme.json"));
-    entry.Type = content::Kind::Music;
-    REQUIRE(catalog.Put(entry) == content::Status::Ok);
-    REQUIRE(catalog.Write(bytes) == content::Status::Ok);
-    Write(root.filePath(QStringLiteral("catalog.json")),
-          QByteArray(bytes.String().data(), static_cast<qsizetype>(bytes.String().size())));
-    (void)Wav(exported, 100);
+    (void)WriteExportedWav(exported, 100);
     ContentImportGate shortSource;
     const auto shortResult =
         ImportAudioSource({ .Root = root.path(), .File = file, .Id = QStringLiteral("source/hit") }, shortSource);
     CHECK(shortResult.Status == content::Status::Invalid);
-    CHECK(shortResult.Message.contains(QStringLiteral("saved loop")));
+    CHECK(shortResult.Message.contains(QStringLiteral("100 frames at 44100 Hz")) == true);
+    CHECK(shortResult.Message.contains(QStringLiteral("ends at frame 400")) == true);
+    CHECK(shortResult.ReplacementGuidance.contains(QStringLiteral("at least 400 frames")) == true);
     CHECK(QString::fromUtf8(ReadCatalog(root.path()).Find("source/hit")->Path.Data) == oldPath);
-    (void)Wav(exported, 600);
+    (void)WriteExportedWav(exported, 600);
     music.Region.End = 550;
     REQUIRE(audio::content::WriteMusic(music, bytes) == content::Status::Ok);
     HookContext changed;
@@ -273,7 +317,7 @@ TEST_CASE("Content workspace preserves focused search and selection and rejects 
           "[editor][content][widget]")
 {
     QTemporaryDir root, exported;
-    const auto file = Wav(exported, 500);
+    const QString file = WriteExportedWav(exported, 500);
     ContentImportGate gate;
     REQUIRE(ImportAudioSource({ .Root = root.path(), .File = file, .Id = QStringLiteral("source/hit") }, gate).Status ==
             content::Status::Ok);
@@ -372,7 +416,7 @@ TEST_CASE("Browser content cancellation before dispatch publishes no source or c
 {
     QTemporaryDir root;
     QTemporaryDir exported;
-    const QString file = Wav(exported, 500);
+    const QString file = WriteExportedWav(exported, 500);
     ContentJobs jobs;
     ContentRequest request;
     request.Root = root.path();
@@ -428,7 +472,7 @@ TEST_CASE("Browser imports acknowledge publication and refresh the selected stab
     workspace.SetProject(root.path(), 9);
     CHECK_FALSE(workspace.Importing());
     Wait(workspace);
-    const auto file = Wav(exported, 500);
+    const QString file = WriteExportedWav(exported, 500);
     REQUIRE(workspace.Import(file, QStringLiteral("source/hit")));
     CHECK(workspace.Importing());
     CHECK_FALSE(workspace.Import(file, QStringLiteral("source/other")));
@@ -438,7 +482,7 @@ TEST_CASE("Browser imports acknowledge publication and refresh the selected stab
     REQUIRE(table != nullptr);
     CHECK(table->model()->rowCount() == 1);
     const QString path = table->model()->index(0, static_cast<int>(ContentColumn::Path)).data().toString();
-    (void)Wav(exported, 700);
+    (void)WriteExportedWav(exported, 700);
     REQUIRE(workspace.Import(file, QStringLiteral("source/hit")));
     Wait(workspace);
     CHECK(workspace.SelectedId() == QStringLiteral("source/hit"));
@@ -500,7 +544,7 @@ TEST_CASE("Mesh catalog entries retain identity during audio import and never ac
     REQUIRE(catalog.Write(bytes) == content::Status::Ok);
     Write(root.filePath(QStringLiteral("catalog.json")),
           QByteArray(bytes.String().data(), static_cast<qsizetype>(bytes.String().size())));
-    const auto file = Wav(exported, 500);
+    const QString file = WriteExportedWav(exported, 500);
     ContentImportGate gate;
     REQUIRE(ImportAudioSource({ .Root = root.path(), .File = file, .Id = QStringLiteral("source/hit") }, gate).Status ==
             content::Status::Ok);
@@ -549,7 +593,7 @@ TEST_CASE("Content keeps a selected group by identity through search sorting and
 {
     QTemporaryDir root;
     QTemporaryDir exported;
-    const QString file = Wav(exported, 500);
+    const QString file = WriteExportedWav(exported, 500);
     for (const QString& id : {QStringLiteral("source/first"), QStringLiteral("source/second")})
     {
         ContentImportGate gate;
@@ -644,6 +688,24 @@ void WriteSceneProject(const QString& root, // NOLINT(bugprone-easily-swappable-
     resources.insert(QStringLiteral("scene/main"),
                      MakeRecord(QStringLiteral("scene"), QStringLiteral("main1"), {QStringLiteral("material/brick")}));
     resources.insert(QStringLiteral("license/cc0"), MakeRecord(QStringLiteral("license"), QStringLiteral("cc01")));
+    for (QJsonObject::iterator item = resources.begin(); item != resources.end(); ++item)
+    {
+        QJsonObject record = item.value().toObject();
+        QFile file(QDir(root).filePath(record.value(QStringLiteral("path")).toString()));
+        REQUIRE(file.open(QIODevice::ReadOnly));
+        const QByteArray bytes = file.readAll();
+        record.insert(QStringLiteral("bytes"), bytes.size());
+        record.insert(QStringLiteral("sha256"),
+                      QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()));
+        QJsonObject bindings;
+        for (const QJsonValue dependency : record.value(QStringLiteral("dependencies")).toArray())
+        {
+            const QString id = dependency.toString();
+            bindings.insert(id, resources.value(id).toObject().value(QStringLiteral("key")));
+        }
+        record.insert(QStringLiteral("dependency_keys"), bindings);
+        item.value() = record;
+    }
     QJsonObject catalog;
     catalog.insert(QStringLiteral("resources"), resources);
     catalog.insert(QStringLiteral("version"), 1);
@@ -1043,9 +1105,10 @@ TEST_CASE("Import progress advances through every stage and finishes at one", "[
     QTemporaryDir exported;
     ContentImportGate gate;
     CHECK(gate.GetProgress().Stage == ContentImportStage::Waiting);
-    REQUIRE(
-        ImportAudioSource({ .Root = root.path(), .File = Wav(exported, 500), .Id = QStringLiteral("source/hit") }, gate)
-            .Status == content::Status::Ok);
+    REQUIRE(ImportAudioSource(
+                { .Root = root.path(), .File = WriteExportedWav(exported, 500), .Id = QStringLiteral("source/hit") },
+                gate)
+                .Status == content::Status::Ok);
     CHECK(gate.GetProgress().Stage == ContentImportStage::Publishing);
     CHECK(GetContentImportFraction(gate.GetProgress()) == 1.0);
 }
@@ -1058,9 +1121,8 @@ TEST_CASE("Queued imports show overall progress, keep failures readable and retr
     ContentWorkspace workspace;
     workspace.SetProject(root.path(), 3);
     Wait(workspace);
-    const QString good = Wav(exported, 500);
-    const QString bad = exported.filePath(QStringLiteral("broken.wav"));
-    Write(bad, QByteArrayLiteral("RIFF this is not audio"));
+    const QString good = WriteExportedWav(exported, 500);
+    const QString bad = WriteBrokenWav(exported);
     QWidget* progress = workspace.findChild<QWidget*>(QStringLiteral("contentProgress"));
     QLabel* progressLabel = workspace.findChild<QLabel*>(QStringLiteral("contentProgressLabel"));
     QProgressBar* progressBar = workspace.findChild<QProgressBar*>(QStringLiteral("contentProgressBar"));
@@ -1105,8 +1167,7 @@ TEST_CASE("Queued imports show overall progress, keep failures readable and retr
     table->setCurrentIndex(table->model()->index(badRow, 0));
     REQUIRE(workspace.SelectedId() == QStringLiteral("source/bad"));
     CHECK(retry->isEnabled() == true);
-    const Array<uint8> fixed = audio::test::MakeSineWav(44100, 1, 300);
-    Write(bad, QByteArray(reinterpret_cast<const char*>(fixed.data()), static_cast<qsizetype>(fixed.size())));
+    WriteFixtureWav(bad, 300);
     retry->click();
     CHECK(workspace.Importing() == true);
     Wait(workspace);
@@ -1320,3 +1381,335 @@ TEST_CASE("A short Content dock keeps the list above one action row", "[editor][
     CHECK(rowTops.size() == 1);
     workspace.Shutdown();
 }
+#if !defined(LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS) && !defined(Q_OS_WASM)
+namespace
+{
+QString WriteContentProject(const QTemporaryDir& project)
+{
+    const QString descriptor = project.filePath(QStringLiteral("ludus.project.json"));
+    Write(descriptor, QByteArrayLiteral(R"json({"version":1,"name":"Content acceptance","provider":"cmake",
+"source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json"));
+    REQUIRE(QDir(project.path()).mkdir(QStringLiteral("content")) == true);
+    return descriptor;
+}
+
+void SelectContentResource(ContentWorkspace& inoutWorkspace, const QString& id)
+{
+    QTableView* tableOrNull = inoutWorkspace.findChild<QTableView*>(QStringLiteral("contentTable"));
+    REQUIRE(tableOrNull != nullptr);
+    const qsizetype row = GetVisibleIds(*tableOrNull).indexOf(id);
+    REQUIRE(row >= 0);
+    tableOrNull->setFocus();
+    tableOrNull->setCurrentIndex(tableOrNull->model()->index(static_cast<int>(row), 0));
+    REQUIRE(inoutWorkspace.SelectedId() == id);
+}
+
+QString GetArtifactPath(const QString& root, std::string_view id)
+{
+    const content::Catalog catalog = ReadCatalog(root);
+    const content::Resource* entryOrNull = catalog.Find(id);
+    REQUIRE(entryOrNull != nullptr);
+    return QDir(root).filePath(QString::fromUtf8(entryOrNull->Path.Data));
+}
+
+QByteArray ReadContentFixtureFile(const QString& path)
+{
+    QFile file(path);
+    REQUIRE(file.open(QIODevice::ReadOnly) == true);
+    return file.readAll();
+}
+
+void ChooseFixtureFile(QPushButton& inoutButton, const QString& path)
+{
+    // Automate the real file-picker callback on offscreen runners. The native acceptance
+    // journey uses the OS dialog and its keyboard navigation.
+    const bool hasNonNativeDialogs = QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+    const QScopeGuard restoreDialogs(
+        [hasNonNativeDialogs]() { QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, hasNonNativeDialogs); });
+    constexpr int PICKER_TIMEOUT_MILLISECONDS = 5000;
+    bool isDialogFound = false;
+    bool hasTimedOut = false;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QObject::connect(&timeout, &QTimer::timeout, &inoutButton, [&hasTimedOut]() {
+        hasTimedOut = true;
+        QFileDialog* dialogOrNull = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        if (dialogOrNull != nullptr)
+        {
+            dialogOrNull->reject();
+        }
+    });
+    QTimer::singleShot(0, &timeout, [&path, &isDialogFound]() {
+        QFileDialog* dialogOrNull = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        if (dialogOrNull != nullptr)
+        {
+            isDialogFound = true;
+            if (path.isEmpty() == true)
+            {
+                dialogOrNull->reject();
+            }
+            else
+            {
+                dialogOrNull->selectFile(path);
+                (void)QMetaObject::invokeMethod(dialogOrNull, "accept");
+            }
+        }
+    });
+    timeout.start(PICKER_TIMEOUT_MILLISECONDS);
+    inoutButton.setFocus();
+    QTest::keyClick(&inoutButton, Qt::Key_Space);
+    REQUIRE(isDialogFound == true);
+    REQUIRE(hasTimedOut == false);
+}
+} // namespace
+
+TEST_CASE("MainWindow content queue leaves keyboard input in the code document and recovers a failed row",
+          "[editor][content][shell][content-lifecycle]")
+{
+    QTemporaryDir project;
+    QTemporaryDir exported;
+    QTemporaryDir settings;
+    const QString descriptor = WriteContentProject(project);
+    const QString script = QDir(QFileInfo(project.path()).canonicalFilePath()).filePath(QStringLiteral("door.luau"));
+    Write(script, QByteArrayLiteral("return 1\n"));
+    const QString good = WriteExportedWav(exported, 500);
+    const QString bad = WriteBrokenWav(exported);
+    const QString contentRoot = project.filePath(QStringLiteral("content"));
+    const QString adapter = settings.filePath(QStringLiteral("configure.py"));
+    const ToolingPaths tooling =
+    {
+        .PythonPath = QStringLiteral(LUDUS_TEST_PYTHON),
+        .AdapterPath = adapter,
+        .ToolingRoot = settings.path(),
+    };
+    EditorController controller(tooling, nullptr, settings.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, settings.filePath(QStringLiteral("workspace.json")));
+    window.show();
+    controller.OpenProject(descriptor);
+
+    ContentWorkspace* workspaceOrNull = window.findChild<ContentWorkspace*>();
+    QDockWidget* dockOrNull = window.findChild<QDockWidget*>(QStringLiteral("contentDock"));
+    ProjectExplorer* explorerOrNull = window.findChild<ProjectExplorer*>();
+    CodeEditorArea* codeAreaOrNull = window.findChild<CodeEditorArea*>();
+    StatusActivityBar* barOrNull = window.findChild<StatusActivityBar*>();
+    REQUIRE(workspaceOrNull != nullptr);
+    REQUIRE(dockOrNull != nullptr);
+    REQUIRE(explorerOrNull != nullptr);
+    REQUIRE(codeAreaOrNull != nullptr);
+    REQUIRE(barOrNull != nullptr);
+    dockOrNull->show();
+    dockOrNull->raise();
+    Wait(*workspaceOrNull);
+
+    ContentJobs* jobsOrNull = workspaceOrNull->findChild<ContentJobs*>();
+    StateView* problemOrNull = workspaceOrNull->findChild<StateView*>(QStringLiteral("contentProblem"));
+    REQUIRE(jobsOrNull != nullptr);
+    REQUIRE(problemOrNull != nullptr);
+    REQUIRE(explorerOrNull->ActivateItem(ProjectItemKind::Scripts, script) == true);
+    CodeDocumentTab* tabOrNull = codeAreaOrNull->GetActiveTabOrNull();
+    REQUIRE(tabOrNull != nullptr);
+    CodeEditor& editor = tabOrNull->GetEditor();
+    window.activateWindow();
+    QApplication::processEvents();
+    QTableView* tableOrNull = workspaceOrNull->findChild<QTableView*>(QStringLiteral("contentTable"));
+    REQUIRE(tableOrNull != nullptr);
+    tableOrNull->setFocus();
+    REQUIRE(workspaceOrNull->QueueImport(good, QStringLiteral("source/good")) == true);
+    REQUIRE(workspaceOrNull->QueueImport(bad, QStringLiteral("source/bad")) == true);
+    // Return to the document before processing events, so the real worker's
+    // progress and completion all arrive while the Editor is handling typing.
+    REQUIRE(explorerOrNull->ActivateItem(ProjectItemKind::Scripts, script) == true);
+    editor.setFocus();
+    REQUIRE(QApplication::focusWidget() == &editor);
+
+    QTextCursor selection = editor.textCursor();
+    selection.movePosition(QTextCursor::Start);
+    selection.movePosition(QTextCursor::NextWord, QTextCursor::KeepAnchor);
+    editor.setTextCursor(selection);
+    const QRect dockGeometry = dockOrNull->geometry();
+    const QRect documentGeometry = window.centralWidget()->geometry();
+    REQUIRE(workspaceOrNull->Importing() == true);
+    barOrNull->Flush();
+    CHECK(barOrNull->GetActivityText() == QStringLiteral("Importing content"));
+    Write(adapter, QByteArrayLiteral(R"py(import json, sys
+print(json.dumps(dict(protocol=1, type='ready')), flush=True)
+request = json.loads(sys.stdin.readline())
+print(json.dumps(dict(protocol=1, type='phase', job=request['job'], stage='configuring')), flush=True)
+print(json.dumps(dict(protocol=1, type='result', job=request['job'], outcome='success',
+    stage='configuring', code='Ok', message='Configured', cleanup_confirmed=True,
+    exit_code=None, signal=None)), flush=True)
+)py"));
+
+    int progressEvents = 0;
+    const QMetaObject::Connection progressConnection =
+        QObject::connect(jobsOrNull, &ContentJobs::ProgressChanged, &window, [&](const ContentImportProgress&) {
+            if (workspaceOrNull->Importing() == true)
+            {
+                ++progressEvents;
+                CHECK(QApplication::focusWidget() == &editor);
+                CHECK(dockOrNull->geometry() == dockGeometry);
+                CHECK(window.centralWidget()->geometry() == documentGeometry);
+            }
+        });
+    int completedImports = 0;
+    const QMetaObject::Connection completionConnection =
+        QObject::connect(jobsOrNull, &ContentJobs::Completed, &window, [&](const ContentResult& result) {
+            if (result.Request.Id.isEmpty() == true || completedImports >= 2)
+            {
+                return;
+            }
+            ++completedImports;
+            CHECK(QApplication::focusWidget() == &editor);
+            CHECK(dockOrNull->geometry() == dockGeometry);
+            CHECK(window.centralWidget()->geometry() == documentGeometry);
+            if (completedImports == 1)
+            {
+                CHECK(editor.textCursor() == selection);
+            }
+            if (QApplication::focusWidget() == &editor)
+            {
+                QTest::keyClicks(&editor, completedImports == 1 ? QStringLiteral("local") : QStringLiteral(" x"));
+            }
+        });
+    const QScopeGuard disconnectJobs([&]() {
+        QObject::disconnect(progressConnection);
+        QObject::disconnect(completionConnection);
+    });
+    controller.Configure();
+    REQUIRE(controller.State().OperationPhase == Phase::Starting);
+    REQUIRE(workspaceOrNull->Importing() == true);
+    barOrNull->Flush();
+    CHECK(barOrNull->GetActivityText() == QStringLiteral("Starting"));
+    Wait(*workspaceOrNull);
+    QObject::disconnect(progressConnection);
+    QObject::disconnect(completionConnection);
+    CHECK(progressEvents > 0);
+    CHECK(completedImports == 2);
+    CHECK(editor.toPlainText().startsWith(QStringLiteral("local x")) == true);
+    CHECK(QApplication::focusWidget() == &editor);
+    CHECK(dockOrNull->geometry() == dockGeometry);
+    CHECK(window.centralWidget()->geometry() == documentGeometry);
+    REQUIRE(QTest::qWaitFor([&controller]() { return controller.State().OperationPhase == Phase::Idle; }) == true);
+    barOrNull->Flush();
+    CHECK(barOrNull->IsActivityShown() == false);
+
+    REQUIRE(problemOrNull->isVisibleTo(workspaceOrNull) == true);
+    CHECK(problemOrNull->GetContent().Message.contains(QStringLiteral("source/bad")) == true);
+    CHECK(problemOrNull->GetContent().ActionLabel == QStringLiteral("Retry import"));
+    const QString goodPath = GetArtifactPath(contentRoot, "source/good");
+    CHECK(ReadContentFixtureFile(goodPath) == ReadContentFixtureFile(good));
+    REQUIRE(ReadCatalog(contentRoot).Find("source/bad") == nullptr);
+    SelectContentResource(*workspaceOrNull, QStringLiteral("source/bad"));
+    WriteFixtureWav(bad, 300);
+    QPushButton* retryOrNull = workspaceOrNull->findChild<QPushButton*>(QStringLiteral("contentRetry"));
+    REQUIRE(retryOrNull != nullptr);
+    REQUIRE(retryOrNull->isEnabled() == true);
+    QTest::keyClick(retryOrNull, Qt::Key_Space);
+    Wait(*workspaceOrNull);
+    CHECK(workspaceOrNull->SelectedId() == QStringLiteral("source/bad"));
+    CHECK(problemOrNull->isVisibleTo(workspaceOrNull) == false);
+    CHECK(GetArtifactPath(contentRoot, "source/good") == goodPath);
+    CHECK(ReadContentFixtureFile(GetArtifactPath(contentRoot, "source/bad")) == ReadContentFixtureFile(bad));
+}
+
+TEST_CASE("MainWindow reimport exposes saved loop rejection and opens the repaired project in Audio",
+          "[editor][content][shell][content-lifecycle]")
+{
+    QTemporaryDir project;
+    QTemporaryDir settings;
+    QTemporaryDir original;
+    QTemporaryDir shortExport;
+    QTemporaryDir correctExport;
+    const QString descriptor = WriteContentProject(project);
+    const QString contentRoot = project.filePath(QStringLiteral("content"));
+    ContentImportGate gate;
+    REQUIRE(ImportAudioSource(
+                { .Root = contentRoot, .File = WriteExportedWav(original, 500), .Id = QStringLiteral("source/hit") },
+                gate)
+                .Status == content::Status::Ok);
+    (void)WriteSavedLoop(contentRoot);
+    const QString originalPath = GetArtifactPath(contentRoot, "source/hit");
+    const QByteArray originalBytes = ReadContentFixtureFile(originalPath);
+    const QString musicPath = GetArtifactPath(contentRoot, "music/theme");
+    const QByteArray musicBytes = ReadContentFixtureFile(musicPath);
+    const QString tooShort = WriteExportedWav(shortExport, 100);
+    const QString corrected = WriteExportedWav(correctExport, 600);
+
+    EditorController controller(ToolingPaths{}, nullptr, settings.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, settings.filePath(QStringLiteral("workspace.json")));
+    window.show();
+    controller.OpenProject(descriptor);
+    QDockWidget* dockOrNull = window.findChild<QDockWidget*>(QStringLiteral("contentDock"));
+    ContentWorkspace* workspaceOrNull = window.findChild<ContentWorkspace*>();
+    REQUIRE(dockOrNull != nullptr);
+    REQUIRE(workspaceOrNull != nullptr);
+    dockOrNull->show();
+    dockOrNull->raise();
+    Wait(*workspaceOrNull);
+    SelectContentResource(*workspaceOrNull, QStringLiteral("source/hit"));
+    QPushButton* reimportOrNull = workspaceOrNull->findChild<QPushButton*>(QStringLiteral("contentReimport"));
+    StateView* problemOrNull = workspaceOrNull->findChild<StateView*>(QStringLiteral("contentProblem"));
+    REQUIRE(reimportOrNull != nullptr);
+    REQUIRE(problemOrNull != nullptr);
+    REQUIRE(reimportOrNull->isEnabled() == true);
+    ChooseFixtureFile(*reimportOrNull, tooShort);
+    Wait(*workspaceOrNull);
+    CHECK(workspaceOrNull->SelectedId() == QStringLiteral("source/hit"));
+    CHECK(GetArtifactPath(contentRoot, "source/hit") == originalPath);
+    CHECK(ReadContentFixtureFile(originalPath) == originalBytes);
+    CHECK(ReadContentFixtureFile(musicPath) == musicBytes);
+    REQUIRE(problemOrNull->isVisibleTo(workspaceOrNull) == true);
+    QAccessibleInterface* accessibleOrNull = QAccessible::queryAccessibleInterface(problemOrNull);
+    REQUIRE(accessibleOrNull != nullptr);
+    const QString description = accessibleOrNull->text(QAccessible::Description);
+    CHECK(description.contains(QStringLiteral("Dependency validation failed for source/hit")) == true);
+    CHECK(description.contains(QStringLiteral("100 frames at 44100 Hz")) == true);
+    CHECK(description.contains(QStringLiteral("music/theme ends at frame 400")) == true);
+    CHECK(description.contains(QStringLiteral("at least 400 frames")) == true);
+    CHECK(description.contains(QStringLiteral("The active source stays in use.")) == true);
+    QPushButton* actionOrNull = problemOrNull->findChild<QPushButton*>(QStringLiteral("stateAction"));
+    REQUIRE(actionOrNull != nullptr);
+    CHECK(actionOrNull->text() == QStringLiteral("Choose corrected file…"));
+    ChooseFixtureFile(*actionOrNull, QString());
+    CHECK(problemOrNull->isVisibleTo(workspaceOrNull) == true);
+    CHECK(GetArtifactPath(contentRoot, "source/hit") == originalPath);
+    ChooseFixtureFile(*actionOrNull, corrected);
+    Wait(*workspaceOrNull);
+    CHECK(problemOrNull->isVisibleTo(workspaceOrNull) == false);
+    CHECK(workspaceOrNull->SelectedId() == QStringLiteral("source/hit"));
+    CHECK(window.focusWidget() == workspaceOrNull->findChild<QTableView*>(QStringLiteral("contentTable")));
+    const QString repairedPath = GetArtifactPath(contentRoot, "source/hit");
+    CHECK(repairedPath != originalPath);
+    CHECK(ReadContentFixtureFile(repairedPath) == ReadContentFixtureFile(corrected));
+    CHECK(ReadContentFixtureFile(musicPath) == musicBytes);
+
+    SelectContentResource(*workspaceOrNull, QStringLiteral("music/theme"));
+    QTableView* tableOrNull = workspaceOrNull->findChild<QTableView*>(QStringLiteral("contentTable"));
+    REQUIRE(tableOrNull != nullptr);
+    QTest::keyClick(tableOrNull, Qt::Key_Return);
+    AudioWorkspace* audioOrNull = window.findChild<AudioWorkspace*>();
+    REQUIRE(audioOrNull != nullptr);
+    CHECK(audioOrNull->isVisible() == true);
+    CHECK(audioOrNull->CanSave() == true);
+    CHECK(audioOrNull->IsDirty() == false);
+    const QLineEdit* idOrNull = audioOrNull->findChild<QLineEdit*>(QStringLiteral("audio-id"));
+    REQUIRE(idOrNull != nullptr);
+    CHECK(idOrNull->text() == QStringLiteral("music/theme"));
+    QHash<QString, QString> audioFields;
+    for (const QFormLayout* form : audioOrNull->findChildren<QFormLayout*>())
+    {
+        for (QLineEdit* field : audioOrNull->findChildren<QLineEdit*>())
+        {
+            const QLabel* labelOrNull = qobject_cast<QLabel*>(form->labelForField(field));
+            if (labelOrNull != nullptr)
+            {
+                audioFields.insert(labelOrNull->text(), field->text());
+            }
+        }
+    }
+    CHECK(audioFields.value(QStringLiteral("Source IDs (comma separated)")) == QStringLiteral("source/hit"));
+    CHECK(audioFields.value(QStringLiteral("Loop begin source frame")) == QStringLiteral("10"));
+    CHECK(audioFields.value(QStringLiteral("Loop end source frame")) == QStringLiteral("400"));
+}
+#endif
