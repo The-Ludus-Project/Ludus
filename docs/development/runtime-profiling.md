@@ -328,6 +328,82 @@ Then on the head commit:
 A notable change there is a prompt to repeat the pair, not a verdict; fanless
 laptops throttle under sustained load.
 
+## Weekly performance review
+
+Reserve one investigation or optimization slot each week. The reviewer, a
+developer or an agent, reads the nightly evidence, checks open performance work
+in [Ludus Kanban](https://github.com/orgs/The-Ludus-Project/projects/1), and
+advances the highest-priority actionable item within the available slot. Carry
+forward an active investigation before starting a new one. Pick new work in
+[board order](../wiki/contribute/index.md#prioritize-roadmap-work).
+
+Start with these measurements from `report.json`. Each reported median of a
+p95 metric is the median across repetitions of their individual p95 values.
+
+| Workflow | Scenario and metric | Use |
+| --- | --- | --- |
+| Editor camera navigation | `editor-viewport-navigation`, `EDVIEW/workload=<workload>/latency_p95_ns` | Review analytic-light and mesh-light workloads individually. Inspect `cpu_p95_ns`, `gpu_p95_ns` and the trace to attribute a change. The latency metric reaches the test's new-presentation and GPU-sample observation. |
+| Engine frame pacing | `world-presented`, `frames/interval_p95_ns` and `frames/interval_max_ns` | Look for recurring slow frames and isolated hitches. The marker intervals include pacing and scheduling. Use `scope=WorldFrame/p95_ns` and the trace to inspect frame work. |
+| Engine simulation | `world-headless`, `scope=WorldTick/p95_ns` | Track the fixed simulation fixture. Inspect tick phase scopes when the total moves. |
+
+Use `renderer-view-preparation`, `editor-texture-display`, and the other module
+benchmarks to investigate affected paths. Keep build and iteration costs in
+[Build Profiling](build-profiling.md). The nightly runtime suite does not yet
+measure launch to usable Editor, project open to first usable viewport, or
+import to asset ready. Add coverage in that order unless current user impact
+justifies moving another journey ahead. Keep cold and warm runs distinct and
+time the point at which the user can act. Record the fixture, timing endpoints,
+and capability requirements before setting a budget.
+
+### Turn a nightly signal into work
+
+1. **Gather the last seven completed scheduled runs on `main`.** Open the
+   `performance` workflow and use the per-lane job summaries and artifacts.
+   From a repository checkout with authenticated GitHub CLI access:
+
+   ```bash
+   gh run list --workflow performance.yml --branch main --event schedule --status completed \
+       --limit 7 --json databaseId,createdAt,headSha,conclusion,url
+   gh run download RUN_ID --pattern 'runtime-profile-*' --dir out/performance-review/RUN_ID
+   ```
+
+   Record failed or missing reports and skipped capabilities. A setup or sample
+   failure is a measurement gap. A successful job with no physical-device lane
+   provides hosted signals only.
+2. **Check whether a change persists.** Compare successful repetitions of the
+   same scenario and workload, using the same preset, compiler, host CPU, OS,
+   runner image, percentile method and, where applicable, adapter and driver.
+   Check the fixture and its measured endpoints when commits differ. Use the
+   runner's [notable-change rule](#output) to screen changes. Compare two recent
+   runs against the same earlier comparable report to see whether a step change
+   persisted after the workflow adopted it as the previous-night baseline.
+   Compare physical measurements with their declared budgets as well, so a
+   consistently slow workload can still enter the queue. If evidence is sparse
+   or the host changed, record the gap and specify the rerun needed.
+3. **Track the user impact.** Reuse an existing issue when its acceptance
+   covers the finding. Otherwise file a focused issue for the owning module
+   or Editor workflow. Include the scenario and metric, run links and SHAs,
+   absolute values and deltas, sample counts and ranges, trace evidence,
+   reproduction command, and the next measurement or improvement to verify.
+   Keep a recurring hosted signal provisional pending controlled reproduction.
+   Add the issue to Kanban with an owner, priority and rationale following the
+   contributor guide. Rank by user impact and frequency, then by the strength
+   of the evidence. Track recurring measurement failures as coverage work.
+4. **Validate the selected fix.** Reproduce the issue using an isolated base
+   and candidate build on the same device. Alternate their repetitions, keep
+   the scene, quality, build profile and input route fixed, and report the
+   same metric with ranges and sample counts. For a change in one phase,
+   measure the end-to-end journey too. Keep the scenario's correctness checks
+   and link before and after reports from the PR and issue. Close the item
+   after integration and acceptance evidence, and check the next comparable
+   nightly report for recurrence.
+
+Record meaningful changes, measurement gaps, and the selected action in the
+weekly review. When all monitored metrics lack an actionable signal, carry
+forward existing work or advance the next coverage item. Leave timing checks
+advisory until the [controlled-device calibration](#toward-a-timing-gate) is
+complete.
+
 ## Controlled device lane
 
 The `device` job runs the same command on self-hosted machines with a physical
@@ -558,15 +634,15 @@ On a desktop with a GPU class and identity, add the viewport scenario:
 ```
 
 The viewport workload runs the editor's actual Qt presentation, World extraction,
-graph service and default raster renderer on the live-edit fixture with extra
-casters and twelve authored lamps. Five warmup navigation steps precede 30
-measured steps at a 640×480 logical widget size. GPU output must remain on the
+graph service and raster renderer on the analytic-light and emissive-mesh
+fixtures. Five warmup navigation steps precede 30 measured steps per workload at
+a 640×480 logical widget size. GPU output must remain on the
 shared-device path, output readback must remain zero, and an unchanged graph must
 retain its view without producing more timed GPU frames. Each row reports active
 GUI service CPU work, a completed device-clock GPU frame duration, and wall-clock
-orbit-to-present latency. The last includes event-loop/presentation scheduling;
-it must not be interpreted as CPU execution time. GPU timestamps are not
-calibrated to the CPU clock. The report records the engine-selected adapter and
+latency from issuing the orbit through observing the new presentation, graph
+revision, and GPU sample. That latency includes event-loop and presentation
+scheduling. GPU timestamps use the device clock. The report records the adapter and
 retains a CPU Perfetto trace for diagnosing preparation and scheduling delays.
 
 These workloads participate in the existing baseline comparison, notable-change
