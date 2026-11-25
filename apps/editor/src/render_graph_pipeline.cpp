@@ -522,7 +522,8 @@ void RenderGraphPipelineEditor::addShadersHelp()
     // One line people read, with the rules for program IDs and signatures a click away rather than a paragraph.
     QWidget* panel = mShaders->parentWidget();
     QLabel* summary =
-        new QLabel(QStringLiteral("Each row runs one program at a stage. Add creates a LUSL or Slang source."), panel);
+        new QLabel(QStringLiteral("Each row runs one program at a stage. New programs get a LUSL or Slang source."),
+                   panel);
     summary->setObjectName(QStringLiteral("renderGraphShadersHelp"));
     summary->setWordWrap(true);
     QToolButton* more = new QToolButton(panel);
