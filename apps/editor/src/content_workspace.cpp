@@ -1,9 +1,9 @@
 #include "design_tokens.h"
+#include "internal/action_strip.h"
 #include "internal/chip_strip.h"
 #include "internal/content_browser.h"
 #include "internal/editor_files.h"
 #include "internal/editor_icons.h"
-#include "internal/flow_layout.h"
 #include "internal/item_selection.h"
 #include "internal/state_view.h"
 
@@ -51,6 +51,8 @@ constexpr int ROW_PROGRESS_HEIGHT = 3;
 constexpr int PROGRESS_STEPS = 1000;
 /// Quiet period after a catalog folder changes before the list refreshes, so one import's several writes refresh once.
 constexpr int WATCH_DELAY_MILLISECONDS = 250;
+/// Fewest list rows a short dock should keep; the action row never takes this space.
+constexpr int CONTENT_LIST_MINIMUM_ROWS = 6;
 #if !defined(Q_OS_WASM)
 /// Poll interval of the cooked-output watch; the browser editor has no file watcher.
 constexpr int COOKED_WATCH_INTERVAL_MILLISECONDS = 100;
@@ -124,7 +126,7 @@ ContentWorkspace::ContentWorkspace(QWidget* parentOrNull, const foundation::file
     Search_ = new QLineEdit(this);
     Search_->setObjectName(QStringLiteral("contentSearch"));
     Search_->setAccessibleName(QStringLiteral("Search content by name, type or path"));
-    Search_->setPlaceholderText(QStringLiteral("Name, type, path or uses:<ID>"));
+    Search_->setPlaceholderText(QStringLiteral("Search by name or type"));
     const QString searchHelp = QStringLiteral(
         "To find cooked assets that directly use a resource, enter uses: followed by its full, case-sensitive ID.");
     Search_->setToolTip(searchHelp);
@@ -180,6 +182,8 @@ ContentWorkspace::ContentWorkspace(QWidget* parentOrNull, const foundation::file
     Table_->setColumnWidth(static_cast<int>(ContentColumn::Name), NAME_COLUMN_WIDTH);
     Table_->setColumnWidth(static_cast<int>(ContentColumn::Type), TYPE_COLUMN_WIDTH);
     Table_->setColumnWidth(static_cast<int>(ContentColumn::Status), STATUS_COLUMN_WIDTH);
+    Table_->setMinimumHeight(Table_->horizontalHeader()->sizeHint().height() +
+                             CONTENT_LIST_MINIMUM_ROWS * (CONTENT_THUMBNAIL_SIZE + design::SPACING_EXTRA_SMALL));
     layout->addWidget(Table_, 1);
     mNoMatchesOrNull = new QLabel(this);
     mNoMatchesOrNull->setObjectName(QStringLiteral("contentNoMatches"));
@@ -204,19 +208,27 @@ ContentWorkspace::ContentWorkspace(QWidget* parentOrNull, const foundation::file
     progressLayout->addWidget(mProgressBarOrNull, 1);
     mProgressRowOrNull->hide();
     layout->addWidget(mProgressRowOrNull);
-    // The actions wrap onto another row in a narrow dock instead of clipping their labels.
-    FlowLayout* actions = new FlowLayout(nullptr, design::SPACING_SMALL);
-    layout->addLayout(actions);
-    const auto button = [this, actions](const QString& label, const char* name) {
+    // One compact row: actions that do not fit the width move into More, so a short dock
+    // keeps the list instead of stacking a grid of buttons.
+    mActionsOrNull = new ActionStrip(this);
+    mActionsOrNull->setObjectName(QStringLiteral("contentActions"));
+    layout->addWidget(mActionsOrNull);
+    const auto button = [this](const QString& label, const char* name) {
         auto* value = new QPushButton(label, this);
         value->setObjectName(QString::fromLatin1(name));
-        actions->addWidget(value);
+        value->setProperty("density", QStringLiteral("compact"));
+        mActionsOrNull->AddAction(*value);
         return value;
     };
     Refresh_ = button(QStringLiteral("Refresh"), "contentRefresh");
+    Refresh_->setIcon(GetEditorIcon(EditorIcon::Refresh));
+    Refresh_->setToolTip(QStringLiteral("Reload the project's cooked content catalog."));
     Import_ = button(QStringLiteral("Import WAV / FLAC…"), "contentImport");
+    Import_->setToolTip(QStringLiteral("Import a WAV or FLAC audio source into the project."));
     Reimport_ = button(QStringLiteral("Reimport selected…"), "contentReimport");
+    Reimport_->setToolTip(QStringLiteral("Reimport the selected audio source from its original file."));
     mFindUsersOrNull = button(QStringLiteral("Find direct users"), "contentFindUsers");
+    mFindUsersOrNull->setToolTip(QStringLiteral("List cooked assets that directly use the selected resource's ID."));
     connect(mFindUsersOrNull, &QPushButton::clicked, this, [this]() {
         Search_->setText(CONTENT_USES_PREFIX + SelectedId());
         for (QToolButton* chip : mChips)
@@ -225,7 +237,11 @@ ContentWorkspace::ContentWorkspace(QWidget* parentOrNull, const foundation::file
         }
     });
     mRetryOrNull = button(QStringLiteral("Retry import"), "contentRetry");
+    mRetryOrNull->setToolTip(QStringLiteral("Try the failed import again."));
     Cancel_ = button(QStringLiteral("Cancel operation"), "contentCancel");
+    Cancel_->setIcon(GetEditorIcon(EditorIcon::Cancel));
+    Cancel_->setToolTip(QStringLiteral("Cancel the import or catalog operation that is running."));
+    mActionsOrNull->SetActionVisible(*mRetryOrNull, false);
     Status_ = new QLabel(QStringLiteral("Open a project to browse content/catalog.json."), this);
     Status_->setObjectName(QStringLiteral("contentStatus"));
     Status_->setWordWrap(true);
@@ -1005,7 +1021,10 @@ void ContentWorkspace::RenderActions()
                           row->IsPending == false);
     mRetryOrNull->setText(getRetryLabel(SelectedId()));
     mRetryOrNull->setEnabled(canImport && row != nullptr && mFailedImports.contains(row->Id) == true);
-    mRetryOrNull->setVisible(mFailedImports.isEmpty() == false);
+    if (mActionsOrNull != nullptr)
+    {
+        mActionsOrNull->SetActionVisible(*mRetryOrNull, mFailedImports.isEmpty() == false);
+    }
     Cancel_->setEnabled(Busy() && Closing_ == false);
 }
 void ContentWorkspace::Cancel()

@@ -35,6 +35,8 @@
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/core.h>
+
+#include <algorithm>
 #include <ludus/foundation/base/parse_number.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -70,6 +72,7 @@
 #include <QPlainTextEdit>
 #include <QPoint>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QSaveFile>
 #include <QScrollArea>
 #include <QSet>
@@ -84,6 +87,7 @@
 #include <QTabWidget>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 #include <QVector>
 #include <QWidgetAction>
@@ -139,8 +143,12 @@ constexpr foundation::float64 SCENE_SCALE_MINIMUM = 0.000001;
 constexpr foundation::int32 ENTITY_LIST_MINIMUM_HEIGHT = 96;
 /// Narrowest the entity column may be dragged, in logical pixels.
 constexpr foundation::int32 HIERARCHY_MINIMUM_WIDTH = 130;
-constexpr foundation::int32 ENTITY_SECTION_STRETCH = 3;
-constexpr foundation::int32 WORLD_LISTS_SECTION_STRETCH = 2;
+constexpr foundation::int32 ENTITY_SECTION_STRETCH = 0;
+constexpr foundation::int32 WORLD_LISTS_SECTION_STRETCH = 1;
+/// Smallest Lights / Materials pane: tab bar, a short list and its commands.
+constexpr foundation::int32 WORLD_LISTS_MINIMUM_HEIGHT = 180;
+/// Slack added to the entity section so the last row is not flush with the divider.
+constexpr foundation::int32 ENTITY_SECTION_PADDING = design::SPACING_EXTRA_SMALL;
 /// The extension every World file carries; the breadcrumb leaves it out.
 constexpr QLatin1StringView WORLD_FILE_SUFFIX(".world.json");
 /// A project-relative World path as a breadcrumb: "authoring/starter.world.json" reads "authoring › starter".
@@ -955,6 +963,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     hierarchy->setContentsMargins(0, 0, 0, 0);
     // The divider lets the entity hierarchy and the World lists share the column's height.
     QSplitter* sections = new QSplitter(Qt::Vertical, left);
+    mHierarchySectionsOrNull = sections;
     sections->setObjectName(QStringLiteral("worldHierarchySections"));
     sections->setChildrenCollapsible(false);
     hierarchy->addWidget(sections, 1);
@@ -1092,6 +1101,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     connect(mWorldLists, &QTabWidget::currentChanged, this, &WorldWorkspace::updateClimateOverlay);
     sections->setStretchFactor(0, ENTITY_SECTION_STRETCH);
     sections->setStretchFactor(1, WORLD_LISTS_SECTION_STRETCH);
+    connect(sections, &QSplitter::splitterMoved, this, [this]() { mHasUserMovedHierarchySections = true; });
     connect(mMaterialsPanel, &WorldMaterialsPanel::RenderableActivated, this, [this](const QString& id) {
         if (Pending_ == false && SceneBusy() == false && SelectEntity(id) == false)
         {
@@ -2120,7 +2130,88 @@ void WorldWorkspace::Render()
     // The box only configures Play saved World; without the button it would be an unexplained control.
     mPlayModeBox->setVisible(isPlayable == true || canPlayBuiltIn == true);
     updateShownRenderPreview(scene);
+    updateHierarchySectionSizes();
 }
+
+void WorldWorkspace::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    updateHierarchySectionSizes();
+}
+
+foundation::int32 WorldWorkspace::entitySectionContentHeight() const
+{
+    if (mEntities == nullptr)
+    {
+        return ENTITY_LIST_MINIMUM_HEIGHT;
+    }
+    foundation::int32 searchHeight = 0;
+    if (mEntitySearch != nullptr)
+    {
+        searchHeight = mEntitySearch->sizeHint().height();
+        if (QWidget* rowOrNull = mEntitySearch->parentWidget();
+            rowOrNull != nullptr && rowOrNull != mEntities->parentWidget())
+        {
+            searchHeight = std::max(searchHeight, rowOrNull->sizeHint().height());
+        }
+    }
+    const QVBoxLayout* layoutOrNull = mEntities->parentWidget() != nullptr
+                                          ? qobject_cast<QVBoxLayout*>(mEntities->parentWidget()->layout())
+                                          : nullptr;
+    const foundation::int32 spacing = layoutOrNull != nullptr ? layoutOrNull->spacing() : 0;
+    foundation::int32 rowHeight = mEntities->sizeHintForRow(0);
+    if (rowHeight <= 0)
+    {
+        rowHeight = mEntities->fontMetrics().height() + design::SPACING_SMALL;
+    }
+    foundation::int32 rows = 0;
+    QTreeWidgetItemIterator iterator(mEntities);
+    while (*iterator != nullptr)
+    {
+        if ((*iterator)->isHidden() == false)
+        {
+            ++rows;
+        }
+        ++iterator;
+    }
+    const foundation::int32 treeHeight =
+        mEntities->frameWidth() * 2 + std::max(rows * rowHeight, ENTITY_LIST_MINIMUM_HEIGHT);
+    return searchHeight + spacing + treeHeight + ENTITY_SECTION_PADDING;
+}
+
+void WorldWorkspace::updateHierarchySectionSizes()
+{
+    if (mHierarchySectionsOrNull == nullptr || mHasUserMovedHierarchySections == true)
+    {
+        return;
+    }
+    const foundation::int32 total = mHierarchySectionsOrNull->height();
+    if (total <= 0)
+    {
+        return;
+    }
+    const foundation::int32 handle = mHierarchySectionsOrNull->handleWidth();
+    const foundation::int32 entityMinimum =
+        (mEntitySearch != nullptr ? mEntitySearch->sizeHint().height() : 0) + ENTITY_LIST_MINIMUM_HEIGHT;
+    const foundation::int32 entityHint = std::max(entitySectionContentHeight(), entityMinimum);
+    const foundation::int32 listsPreferred =
+        mWorldLists != nullptr ? std::max(mWorldLists->minimumSizeHint().height(), WORLD_LISTS_MINIMUM_HEIGHT)
+                               : WORLD_LISTS_MINIMUM_HEIGHT;
+    foundation::int32 entitySize = entityHint;
+    foundation::int32 listsSize = total - handle - entitySize;
+    if (listsSize < listsPreferred && total - handle - listsPreferred >= entityMinimum)
+    {
+        listsSize = listsPreferred;
+        entitySize = total - handle - listsSize;
+    }
+    if (listsSize < 0)
+    {
+        listsSize = 0;
+        entitySize = std::max(0, total - handle);
+    }
+    mHierarchySectionsOrNull->setSizes({entitySize, listsSize});
+}
+
 void WorldWorkspace::renderLights()
 {
     if (Document_.Loaded() == false)
