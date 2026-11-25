@@ -20,6 +20,7 @@
 #include <QDockWidget>
 #include <QFile>
 #include <QFileInfo>
+#include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -33,6 +34,7 @@
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
@@ -881,4 +883,47 @@ TEST_CASE("World session restoration retains the normal splitter while companion
     INFO(QJsonDocument(world.Session()).toJson().toStdString());
     CHECK(world.Session().value(QStringLiteral("boundCamera")) == first.value(QStringLiteral("boundCamera")));
     CHECK(world.Session().value(QStringLiteral("sceneCamera")) == first.value(QStringLiteral("sceneCamera")));
+}
+
+TEST_CASE("The Error List shows severity as an icon and hides an empty Code column", "[editor][layout][error-list]")
+{
+    ErrorList list;
+    ErrorListEntry message;
+    message.Severity = ErrorListSeverity::Message;
+    message.Producer = ErrorListProducer::Build;
+    message.Description = QStringLiteral("Build finished.");
+    ErrorListEntry warning = message;
+    warning.Severity = ErrorListSeverity::Warning;
+    warning.Description = QStringLiteral("unused variable");
+    warning.File = QStringLiteral("game.cpp");
+    ErrorListEntry error = warning;
+    error.Severity = ErrorListSeverity::Error;
+    error.Description = QStringLiteral("use of undeclared identifier");
+    list.ReplaceEntries(ErrorListProducer::Build, {message, warning, error});
+    list.resize(900, 220);
+    list.show();
+    QApplication::processEvents();
+    QTableWidget* tableOrNull = list.findChild<QTableWidget*>(QStringLiteral("errorListTable"));
+    REQUIRE(tableOrNull != nullptr);
+    constexpr int CODE_COLUMN = 1;
+    CHECK(tableOrNull->isColumnHidden(CODE_COLUMN) == true);
+    REQUIRE(tableOrNull->rowCount() == 3);
+    const QStringList names{QStringLiteral("Message"), QStringLiteral("Warning"), QStringLiteral("Error")};
+    for (int row = 0; row < tableOrNull->rowCount(); ++row)
+    {
+        const QTableWidgetItem* severityOrNull = tableOrNull->item(row, 0);
+        REQUIRE(severityOrNull != nullptr);
+        CHECK(severityOrNull->text().isEmpty() == true);
+        CHECK(severityOrNull->icon().isNull() == false);
+        CHECK(severityOrNull->toolTip() == names.at(row));
+        CHECK(severityOrNull->data(Qt::AccessibleTextRole).toString() == names.at(row));
+    }
+    CHECK(tableOrNull->columnWidth(0) < tableOrNull->fontMetrics().horizontalAdvance(QStringLiteral("Message")));
+
+    error.Code = QStringLiteral("RenderGraphPreviewFailed");
+    list.ReplaceEntries(ErrorListProducer::Build, {error});
+    QApplication::processEvents();
+    CHECK(tableOrNull->isColumnHidden(CODE_COLUMN) == false);
+    REQUIRE(tableOrNull->rowCount() == 1);
+    CHECK(tableOrNull->item(0, CODE_COLUMN)->text() == QStringLiteral("RenderGraphPreviewFailed"));
 }

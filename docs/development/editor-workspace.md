@@ -606,8 +606,10 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   document; double-click a build row to select its line in Output. New errors or
   warnings from either source bring the Error List forward, opening it if it was
   closed, without taking focus; repeating an unchanged result does not, so a list
-  you closed stays closed. A details pane under the table shows the selected
-  description only when its row cannot: multi-line or elided descriptions.
+  you closed stays closed. Severity is an icon with the name in its tooltip, so
+  the column never elides "Message". The Code column is hidden while no visible
+  row has a code. A details pane under the table shows the selected description
+  only when its row cannot: multi-line or elided descriptions.
 - **Toolbars** share the menus' commands in one row that stays the same on every
   document tab, so switching tabs never moves a button. Groups, in workflow order:
   Standard holds File (Open, Save) and History (Undo, Redo). Game holds **Build Game**,
@@ -4228,10 +4230,11 @@ Text that does not fit is cut where it costs the least, and never silently:
   1470 px MacBook Air window gives it about 265 px.
 - **Filter chips** (Content) keep their order; the chips the dock's width cannot
   hold move into a **More** menu at the end of the row, which reads as on while a
-  filter it holds is on. The row of actions under the list wraps instead of
-  clipping a label: once the actions do not fit on one line, they form a grid of
-  equal cells as wide as the widest action and stretched to fill each row, so
-  the wrapped buttons share a straight edge.
+  filter it holds is on. The row of actions under the list stays one line so the
+  list keeps its height in a short dock: actions that do not fit the width move
+  into a **More** menu, and a label is never clipped. The search field's
+  placeholder is a short "Search by name or type"; the `uses:` hint stays in
+  its tooltip.
 - **Recent projects** (Start Page) that share a name are each followed by a
   dimmed qualifier: the one folder, walking up from the project folder, that
   tells them apart ("Dolomites Survival · milestone-2" for worktrees of one

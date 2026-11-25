@@ -80,6 +80,10 @@ leave **Priority** empty so the card appears in **Priority triage**. Resolve
 triage before moving it to **Ready**. Reassess priority when release goals,
 blockers, or validation results change.
 
+Use the [weekly performance review](../../development/runtime-profiling.md#weekly-performance-review)
+to turn engine and Editor benchmark evidence into scoped Kanban work and
+verify improvements after integration.
+
 ## Turn a reference or tip into a Ludus change
 
 Start with a link, PDF, paper, book excerpt, slides, talk, practical tip, coding
