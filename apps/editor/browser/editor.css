@@ -29,6 +29,9 @@
   --ludus-status-danger-surface: #46252a;
   --ludus-grid-minor: #303e49;
   --ludus-grid-major: #4a5a65;
+  --ludus-graph-raster: #1f6f73;
+  --ludus-graph-compute: #933f6e;
+  --ludus-graph-ray-tracing: #5050b8;
   --ludus-axis-x: #e5645c;
   --ludus-axis-y: #6cc27a;
   --ludus-axis-z: #5b8ee6;
@@ -93,6 +96,9 @@
     --ludus-status-danger-surface: #fce9e7;
     --ludus-grid-minor: #303e49;
     --ludus-grid-major: #4a5a65;
+    --ludus-graph-raster: #1f6f73;
+    --ludus-graph-compute: #933f6e;
+    --ludus-graph-ray-tracing: #5050b8;
     --ludus-axis-x: #e5645c;
     --ludus-axis-y: #6cc27a;
     --ludus-axis-z: #5b8ee6;
@@ -142,6 +148,9 @@
     --ludus-status-success-surface: #0b2a18;
     --ludus-status-warning-surface: #2e2400;
     --ludus-status-danger-surface: #3a0f14;
+    --ludus-graph-raster: #145052;
+    --ludus-graph-compute: #702a50;
+    --ludus-graph-ray-tracing: #3a3a8c;
     --ludus-syntax-keyword: #c5a5e8;
     --ludus-syntax-control: #e2a7da;
     --ludus-syntax-type: #78ccd5;
@@ -188,6 +197,9 @@
     --ludus-status-success-surface: #d8f0df;
     --ludus-status-warning-surface: #f8e8bd;
     --ludus-status-danger-surface: #f8d9d5;
+    --ludus-graph-raster: #145052;
+    --ludus-graph-compute: #702a50;
+    --ludus-graph-ray-tracing: #3a3a8c;
     --ludus-syntax-keyword: #7041a0;
     --ludus-syntax-control: #872968;
     --ludus-syntax-type: #00616d;

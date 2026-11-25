@@ -5,6 +5,7 @@
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_resources.h"
 #include "internal/renderer_workspace.h"
+#include "internal/theme_colour.h"
 
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/render_preview.h"
@@ -25,12 +26,16 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QMenu>
 #include <QProcess>
 #include <QSet>
 #include <QStandardPaths>
 #include <QStringView>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QToolButton>
+
+#include <utility>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -38,6 +43,8 @@ namespace
 {
 const QString ROOT_GRAPH = QStringLiteral("main.lurender.json");
 const QString DEFAULT_CONFIGURATION = QStringLiteral("Default");
+/// Viewport pixels between probes when looking for empty canvas.
+constexpr int32 EMPTY_PROBE_STEP = 8;
 QString MakeFeedbackPackage(const QTemporaryDir& project)
 {
     QJsonObject graph = QJsonDocument::fromJson(QByteArrayLiteral(R"JSON({
@@ -860,7 +867,14 @@ TEST_CASE("hovering a card focuses its wires and fades the others", "[editor][re
     QCoreApplication::processEvents();
     CHECK(sizeWire->opacity() == 1);
     CHECK(outputWire->opacity() < 0.5);
-    SendTestMouseMove(*canvas.viewport(), QPoint(2, 2));
+    // Leave the card for empty canvas, wherever the framing put the cards.
+    QPoint empty(2, 2);
+    for (int32 y = 2; y < canvas.viewport()->height() && canvas.items(empty).isEmpty() == false; y += EMPTY_PROBE_STEP)
+    {
+        empty = QPoint(2, y);
+    }
+    REQUIRE(canvas.items(empty).isEmpty() == true);
+    SendTestMouseMove(*canvas.viewport(), empty);
     QCoreApplication::processEvents();
     CHECK(outputWire->opacity() == 1);
 }
@@ -938,4 +952,197 @@ TEST_CASE("a per-pixel buffer is a resource and keeps the draft's activity known
         INFO(entry.key().toStdString());
         CHECK(entry.value().Activity != RenderGraphActivity::Unknown);
     }
+}
+
+namespace
+{
+/// A root graph of Subgraph cards over one library: ray tracing beside compute, compute only, a subgraph nested in
+/// a subgraph, one with no passes and one that refers to itself, plus a raster pass on the root itself.
+QString MakePassQueuePackage(const QTemporaryDir& project)
+{
+    const auto subgraph = [](const QString& identity, const QString& configuration) {
+        return QJsonObject{{QStringLiteral("id"), identity},
+                           {QStringLiteral("kind"), QStringLiteral("Subgraph")},
+                           {QStringLiteral("asset"), QStringLiteral("passes.lurender.json")},
+                           {QStringLiteral("configuration"), configuration}};
+    };
+    const auto configuration = [](const QString& identity, const QJsonArray& nodes) {
+        return QJsonObject{{QStringLiteral("id"), identity},
+                           {QStringLiteral("inputs"), QJsonArray{}},
+                           {QStringLiteral("outputs"), QJsonArray{}},
+                           {QStringLiteral("nodes"), nodes},
+                           {QStringLiteral("edges"), QJsonArray{}}};
+    };
+    const QJsonObject root{
+        {QStringLiteral("version"), 2},
+        {QStringLiteral("id"), QStringLiteral("Main")},
+        {QStringLiteral("default"), DEFAULT_CONFIGURATION},
+        {QStringLiteral("configurations"),
+         QJsonArray{configuration(
+             DEFAULT_CONFIGURATION,
+             QJsonArray{subgraph(QStringLiteral("SliceSamplingLuminaireReference"), QStringLiteral("Rays")),
+                        subgraph(QStringLiteral("compute"), QStringLiteral("Compute")),
+                        subgraph(QStringLiteral("nested"), QStringLiteral("Nested")),
+                        subgraph(QStringLiteral("empty"), QStringLiteral("Empty")),
+                        subgraph(QStringLiteral("cycle"), QStringLiteral("Cycle")),
+                        MakePipelineNode(QStringLiteral("GraphicsPipeline"), QStringLiteral("draw"))})}}};
+    const QJsonObject library{
+        {QStringLiteral("version"), 2},
+        {QStringLiteral("id"), QStringLiteral("Passes")},
+        {QStringLiteral("default"), QStringLiteral("Rays")},
+        {QStringLiteral("configurations"),
+         QJsonArray{
+             configuration(QStringLiteral("Rays"),
+                           QJsonArray{MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("prepare")),
+                                      MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"))}),
+             configuration(QStringLiteral("Compute"),
+                           QJsonArray{MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("resolve"))}),
+             configuration(QStringLiteral("Nested"),
+                           QJsonArray{subgraph(QStringLiteral("inner"), QStringLiteral("Compute"))}),
+             configuration(QStringLiteral("Empty"), QJsonArray{}),
+             configuration(QStringLiteral("Cycle"),
+                           QJsonArray{subgraph(QStringLiteral("again"), QStringLiteral("Cycle"))}),
+         }}};
+    const std::pair<QString, QJsonObject> files[] = {{ROOT_GRAPH, root},
+                                                     {QStringLiteral("passes.lurender.json"), library}};
+    for (const std::pair<QString, QJsonObject>& file : files)
+    {
+        QFile output(QDir(project.path()).filePath(file.first));
+        REQUIRE(output.open(QIODevice::WriteOnly) == true);
+        const QByteArray bytes = EncodeCanonicalJson(file.second);
+        REQUIRE(output.write(bytes) == bytes.size());
+    }
+    return project.path();
+}
+
+/// The colour a card is drawn in: its header strip's colour, which the minimap shares. (A card that cannot run on
+/// this device greys its header on the canvas, so the minimap's copy is the one to compare.)
+QColor GetHeaderColour(const RenderGraphCanvas& canvas, const QString& identity)
+{
+    QGraphicsRectItem* frameOrNull = FindFrame(canvas, identity);
+    REQUIRE(frameOrNull != nullptr);
+    for (const RenderGraphMinimapCard& card : canvas.GetMinimapCards())
+    {
+        if (card.Bounds == frameOrNull->sceneBoundingRect())
+        {
+            return card.Colour;
+        }
+    }
+    return {};
+}
+
+/// The title label inside a card's header.
+QGraphicsSimpleTextItem* FindTitle(const RenderGraphCanvas& canvas, const QString& identity)
+{
+    QGraphicsRectItem* frameOrNull = FindFrame(canvas, identity);
+    REQUIRE(frameOrNull != nullptr);
+    for (QGraphicsItem* child : frameOrNull->childItems())
+    {
+        for (QGraphicsItem* grandchild : child->childItems())
+        {
+            if (QGraphicsSimpleTextItem* titleOrNull = qgraphicsitem_cast<QGraphicsSimpleTextItem*>(grandchild);
+                titleOrNull != nullptr)
+            {
+                return titleOrNull;
+            }
+        }
+    }
+    return nullptr;
+}
+} // namespace
+
+TEST_CASE("pass cards and subgraph cards are coloured by the heaviest work they run, with a legend",
+          "[editor][render-graph][canvas-feedback][overview][design-tokens]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePassQueuePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    canvas.resize(1000, 650);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.show();
+    QCoreApplication::processEvents();
+    const QColor rays = GetCanvasColour(design::ThemeColour::GraphRayTracing);
+    const QColor compute = GetCanvasColour(design::ThemeColour::GraphCompute);
+    const QColor raster = GetCanvasColour(design::ThemeColour::GraphRaster);
+    CHECK(GetHeaderColour(canvas, QStringLiteral("SliceSamplingLuminaireReference")) == rays);
+    CHECK(GetHeaderColour(canvas, QStringLiteral("compute")) == compute);
+    CHECK(GetHeaderColour(canvas, QStringLiteral("nested")) == compute);
+    CHECK(GetHeaderColour(canvas, QStringLiteral("draw")) == raster);
+    // Without passes (or only a cycle back to itself) a subgraph keeps the plain subgraph colour.
+    const QColor plain = GetHeaderColour(canvas, QStringLiteral("empty"));
+    CHECK(plain != rays);
+    CHECK(plain != compute);
+    CHECK(plain != raster);
+    CHECK(GetHeaderColour(canvas, QStringLiteral("cycle")) == plain);
+    CHECK(rays != compute);
+    CHECK(compute != raster);
+    CHECK(FindFrame(canvas, QStringLiteral("compute"))->toolTip().contains(QStringLiteral("compute passes")) == true);
+    // The minimap draws each card in its header colour.
+    QSet<QRgb> mapColours;
+    for (const RenderGraphMinimapCard& card : canvas.GetMinimapCards())
+    {
+        mapColours.insert(card.Colour.rgb());
+    }
+    CHECK(mapColours.contains(rays.rgb()) == true);
+    CHECK(mapColours.contains(compute.rgb()) == true);
+    // The legend in the canvas toolbar names every colour.
+    QToolButton* legend = canvas.findChild<QToolButton*>(QStringLiteral("renderGraphColourLegend"));
+    REQUIRE(legend != nullptr);
+    CHECK(legend->toolTip().isEmpty() == false);
+    REQUIRE(legend->menu() != nullptr);
+    QStringList meanings;
+    for (const QLabel* entry : legend->menu()->findChildren<QLabel*>(QStringLiteral("renderGraphColourLegendEntry")))
+    {
+        meanings.append(entry->text());
+    }
+    CHECK(meanings.contains(QStringLiteral("Ray tracing pass")) == true);
+    CHECK(meanings.contains(QStringLiteral("Compute pass")) == true);
+    CHECK(meanings.contains(QStringLiteral("Raster pass")) == true);
+    CHECK(document.GetRevision() == 0);
+}
+
+TEST_CASE("overview titles stay on one line, shortened at their end, and never leave a blank card",
+          "[editor][render-graph][canvas-feedback][overview][semantic-zoom]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePassQueuePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    canvas.resize(1000, 650);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.show();
+    QCoreApplication::processEvents();
+    const QString longName = QStringLiteral("SliceSamplingLuminaireReference");
+    QGraphicsSimpleTextItem* title = FindTitle(canvas, longName);
+    REQUIRE(title != nullptr);
+    // The overview zooms a MacBook Air fits a large graph at; every card still names itself.
+    for (float64 scale : {0.25, 0.31, 0.41, 0.62, 1.0})
+    {
+        INFO(scale);
+        canvas.setTransform(QTransform::fromScale(scale, scale));
+        canvas.viewport()->repaint();
+        QCoreApplication::processEvents();
+        for (const QString& identity : {longName, QStringLiteral("compute"), QStringLiteral("draw")})
+        {
+            QGraphicsSimpleTextItem* cardTitle = FindTitle(canvas, identity);
+            REQUIRE(cardTitle != nullptr);
+            CHECK(cardTitle->isVisible() == true);
+            CHECK(cardTitle->text().contains(QLatin1Char('\n')) == false);
+            CHECK(cardTitle->text().isEmpty() == false);
+        }
+        // Shortened at its end: the visible part is the start of the name, with the full title in the tooltip.
+        const QString shown = title->text();
+        const QString kept = shown.endsWith(QChar(0x2026)) == true ? shown.chopped(1) : shown;
+        CHECK(kept.isEmpty() == false);
+        CHECK(longName.startsWith(kept) == true);
+        CHECK(title->toolTip().startsWith(longName) == true);
+        // It fits its card.
+        CHECK(title->boundingRect().width() * title->scale() <= FindFrame(canvas, longName)->rect().width());
+    }
+    canvas.setTransform(QTransform::fromScale(0.31, 0.31));
+    canvas.viewport()->repaint();
+    QCoreApplication::processEvents();
+    CHECK(title->text().endsWith(QChar(0x2026)) == true);
+    CHECK(title->text().size() > 3);
 }

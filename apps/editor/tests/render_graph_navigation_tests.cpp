@@ -572,7 +572,7 @@ QGraphicsSimpleTextItem& FindTitle(const RenderGraphCanvas& canvas, const QStrin
 }
 } // namespace
 
-TEST_CASE("a long card title wraps at its words and reads from its start", "[editor][render-graph][navigation][title]")
+TEST_CASE("a long card title stays on one line and reads from its start", "[editor][render-graph][navigation][title]")
 {
     constexpr float64 OVERVIEW_ZOOM = 0.5;
     const QString identity = QStringLiteral("computeRayTracingAccumulatedHistory");
@@ -589,10 +589,12 @@ TEST_CASE("a long card title wraps at its words and reads from its start", "[edi
     QCoreApplication::processEvents();
     const QString overview = FindTitle(canvas, identity).text();
     INFO(overview.toStdString());
-    // Split where a reader would (compute / Ray / Tracing ...), never shortened from the middle.
-    CHECK(overview.contains(QLatin1Char('\n')) == true);
+    // One line, shortened only at its end ("computeRayTr…"): never wrapped into clipped word pieces, never shortened
+    // from the middle.
+    CHECK(overview.contains(QLatin1Char('\n')) == false);
     CHECK(overview.startsWith(QStringLiteral("compute")) == true);
-    CHECK(overview.section(QLatin1Char('\n'), 0, 0).contains(QChar(0x2026)) == false);
+    CHECK(overview.endsWith(QChar(0x2026)) == true);
+    CHECK(identity.startsWith(overview.chopped(1)) == true);
     REQUIRE(canvas.RestoreViewState({{}, canvas.GetNodePosition(identity), 1, {}, {}}) == true);
     QCoreApplication::processEvents();
     const QString detailed = FindTitle(canvas, identity).text();

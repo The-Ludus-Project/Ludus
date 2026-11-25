@@ -9719,7 +9719,10 @@ Its shortcuts apply while the canvas has focus; typing in Properties or a source
 editor does not frame the graph. Framing preserves selection, authored positions,
 draft bytes and undo history. It ignores transient hints and diagnostic labels.
 Fit commands use the current viewport size and keep magnification within the
-same 1%–800% limits as wheel and pinch zoom. An empty graph has nothing to frame;
+same 1%–800% limits as wheel and pinch zoom. **Fit Graph** and Auto Layout leave
+the minimap's corner free, so a fitted graph starts with no card under it. When
+you pan cards under the minimap it turns see-through until you point at it;
+**M** or the minimap button hides it. An empty graph has nothing to frame;
 **Fit Selection** is disabled until an authored node is selected.
 
 The canvas recognizes a touchpad from its scroll phases (macOS and Wayland) or
@@ -9727,9 +9730,15 @@ its reported device type. A driver that sends two-finger scrolling as plain
 wheel steps, as some Windows drivers do, zooms like a mouse wheel; pan there with
 Space+left-drag.
 
-Header colours show the connection domain: blue scene/view (Scene, Camera),
-orange execution (Raster, Present), green resource (Target, Export), purple
-Subgraph and grey for a configuration's `input` ports and outputs. Port colours
+Header colours show what a card does. Pass cards take the colour of their work:
+teal raster (GraphicsPipeline, Raster), raspberry compute (ComputePipeline) and
+indigo ray tracing (RayTracingPipeline). A Subgraph card takes the colour of the
+heaviest work inside it, following nested subgraphs: ray tracing, then compute,
+then raster; one with no passes stays purple. Other processing (tone map,
+accumulation, denoising, Present) is orange, scene and camera blue, resources
+(Target, Export, sizes) green, and a configuration's `input` ports and outputs
+grey. A card that cannot run on this device also turns grey. The swatch button in
+the canvas toolbar lists every colour, and the minimap uses the same colours. Port colours
 show the value type. Nodes without a `layout` position are arranged by
 dependency order for display only; nothing is written until you move them.
 Configuration output links can be selected and deleted, just like pass connections.
@@ -10130,9 +10139,13 @@ targets. At 75% and above, cards show their full identity/kind title, port names
 activity and resource footer. Between 45% and 75%, cards show their identity,
 port names and compact activity. Below 45%, port names disappear, leaving an
 overview of node identities, activity and coloured connections. Small labels are
-kept readable and elided within their cards. When a card becomes narrower than
-60 screen pixels, its text disappears; compact activity also needs 38 pixels of
-card height. Zoom in or hover for full names, resource contracts and explanations.
+kept readable and elided within their cards. A title always stays on one line and
+is shortened at its end (`RaoBlackw…`), never wrapped into clipped word pieces;
+its tooltip holds the full title. A card keeps its title until it is narrower
+than 40 screen pixels (about 21% zoom), so a fitted overview never shows blank
+cards. Badges below a card need 60 pixels, and compact activity also needs 38
+pixels of card height. Zoom in or hover for full names, resource contracts and
+explanations.
 This display choice does not collapse ports or change which nodes execute.
 
 Diagnostic outlines and port rings retain their screen-space line width, even
@@ -10146,7 +10159,10 @@ Select a node to emphasize its incoming and outgoing wires, their ports and the
 connected nodes, while fading unrelated wires. Hovering a port temporarily
 focuses just that port's connections, including every consumer of an output.
 Leaving the canvas restores the selection highlight; clearing selection restores
-normal activity styling. Highlighting never edits the draft or changes undo
+normal activity styling. In a dense configuration (40 or more wires) resting wires
+are drawn fainter, and fainter still in the overview, where the cards are the
+subject; the wires of the hovered or selected card stay at full strength. Long
+wires leave and enter their ports horizontally and bend softly in between. Highlighting never edits the draft or changes undo
 history. It describes connectivity, independently of validation or execution.
 
 Each node has a draft-route label. **Inactive branch** nodes and their incoming

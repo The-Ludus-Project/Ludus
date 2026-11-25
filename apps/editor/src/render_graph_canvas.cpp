@@ -36,7 +36,9 @@
 #include <QGraphicsScene>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsTextItem>
+#include <QGridLayout>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QKeySequence>
@@ -50,6 +52,7 @@
 #include <QPainterPath>
 #include <QPalette>
 #include <QPen>
+#include <QPixmap>
 #include <QPointingDevice>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -61,9 +64,11 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QWheelEvent>
+#include <QWidgetAction>
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <utility>
 
 namespace ludus::editor
@@ -96,7 +101,16 @@ constexpr float64 NODE_PADDING = 8;
 constexpr float64 COLUMN_SPACING = 250;
 constexpr float64 ROW_SPACING = 140;
 constexpr float64 EDGE_HIT_WIDTH = 8;
+/// A wire leaves and enters its ports horizontally for this share of the horizontal gap it spans, so long wires
+/// bend softly into shared horizontal runs instead of cutting across the graph as near-straight diagonals.
+constexpr float64 CURVE_GAP_SHARE = 0.45;
+/// Shortest and longest horizontal pull of a wire's control points.
 constexpr float64 CURVE_OFFSET = 70;
+constexpr float64 MAXIMUM_CURVE_OFFSET = 260;
+/// In the overview (no port labels) of a dense graph the cards are the subject: resting wires recede further, and a
+/// hovered or selected card's wires still come forward at full strength.
+constexpr float64 OVERVIEW_EDGE_OPACITY = 0.32;
+constexpr float64 OVERVIEW_HUB_EDGE_OPACITY = 0.14;
 constexpr float64 ZOOM_STEP = 1.15;
 constexpr float64 WHEEL_NOTCH = 120;
 constexpr float64 SCROLL_PIXELS_PER_ZOOM_STEP = 40;
@@ -108,6 +122,9 @@ constexpr float64 MAX_RESTORED_CENTRE_COORDINATE = static_cast<float64>(INT32_MA
 constexpr float64 DETAIL_VIEW_SCALE = 0.75;
 constexpr float64 PORT_LABEL_VIEW_SCALE = 0.6;
 constexpr float64 MINIMUM_TEXT_CARD_WIDTH = 60;
+/// Card width in screen pixels below which even a shortened title cannot show a few letters. Down to this width a
+/// card always names itself, so the overview is never a field of blank boxes.
+constexpr float64 MINIMUM_TITLE_CARD_WIDTH = 40;
 constexpr float64 MINIMUM_STATUS_CARD_HEIGHT = 38;
 constexpr float64 MINIMUM_TITLE_PIXEL_HEIGHT = 14;
 constexpr float64 MINIMUM_LABEL_PIXEL_HEIGHT = 12;
@@ -115,8 +132,10 @@ constexpr float64 PERCENT_SCALE = 100;
 constexpr float64 SCENE_SCROLL_PADDING = 400;
 constexpr float64 PORT_LABEL_GAP = 4;
 constexpr int32 LABEL_POINT_SIZE = 9;
-/// Overview titles may wrap onto this many lines before the last one is shortened.
-constexpr int32 MAXIMUM_TITLE_LINES = 3;
+/// A Subgraph card takes its colour from the passes inside it; nested subgraphs are followed this deep.
+constexpr int32 MAXIMUM_SUBGRAPH_QUEUE_DEPTH = 8;
+/// Pixel density the colour legend's swatches are drawn at, at least.
+constexpr float64 MINIMUM_SWATCH_PIXEL_RATIO = 2;
 constexpr int32 MAX_CYCLE_SEARCH_STEPS = 1024;
 constexpr float64 INACTIVE_OPACITY = 0.55;
 /// The detailed view's activity caption and resource size share one row at the foot of the card, so a card is only
@@ -194,40 +213,10 @@ protected:
     }
 };
 
-/// Split a node name where a reader would: before a capital that follows a lower-case letter or digit
-/// ("ComputeRayTracing" reads as Compute, Ray, Tracing) and after an underscore, hyphen or space.
-QStringList SplitTitleWords(const QString& name)
-{
-    QStringList words;
-    QString word;
-    for (const QChar character : name)
-    {
-        const bool isWordStart = word.isEmpty() == false && character.isUpper() == true &&
-                                 (word.back().isLower() == true || word.back().isDigit() == true);
-        if (isWordStart == true)
-        {
-            words.append(word);
-            word.clear();
-        }
-        word.append(character);
-        if (character == QLatin1Char('_') || character == QLatin1Char('-') || character == QLatin1Char(' '))
-        {
-            words.append(word);
-            word.clear();
-        }
-    }
-    if (word.isEmpty() == false)
-    {
-        words.append(word);
-    }
-    return words;
-}
-
-/// A node title is "name : kind". When both do not fit, the name stays whole and the kind goes (it is in the tooltip
-/// and the inspector). A name that still does not fit wraps at its word boundaries onto at most maximumLines lines;
-/// only the last line is shortened, at its end, so the name always reads from its start ("ComputeRay…", never
-/// "Compu…acing").
-QString FitNodeTitle(const QFontMetricsF& metrics, const QString& title, float64 availableWidth, int32 maximumLines)
+/// A node title is "name : kind" on one line. When both do not fit, the name stays and the kind goes (it is in the
+/// tooltip and the inspector). A name that still does not fit is shortened at its end, so it always reads from its
+/// start ("RaoBlackw…", never "Rao Blac Mh" wrapped and clipped); the tooltip holds the full title.
+QString FitNodeTitle(const QFontMetricsF& metrics, const QString& title, float64 availableWidth)
 {
     if (metrics.horizontalAdvance(title) <= availableWidth)
     {
@@ -235,30 +224,7 @@ QString FitNodeTitle(const QFontMetricsF& metrics, const QString& title, float64
     }
     const qsizetype separator = title.indexOf(QStringLiteral(" : "));
     const QString name = separator > 0 ? title.left(separator) : title;
-    QStringList lines;
-    for (const QString& word : SplitTitleWords(name))
-    {
-        if (lines.isEmpty() == false && metrics.horizontalAdvance(lines.back() + word) <= availableWidth)
-        {
-            lines.back() += word;
-        }
-        else
-        {
-            lines.append(word);
-        }
-    }
-    const qsizetype lineLimit = math::Max<qsizetype>(1, maximumLines);
-    if (lines.size() > lineLimit)
-    {
-        const QString rest = lines.mid(lineLimit - 1).join(QString());
-        lines.resize(lineLimit - 1);
-        lines.append(rest);
-    }
-    for (QString& line : lines)
-    {
-        line = metrics.elidedText(line.trimmed(), Qt::ElideRight, availableWidth);
-    }
-    return lines.join(QLatin1Char('\n'));
+    return metrics.elidedText(name, Qt::ElideRight, availableWidth);
 }
 
 enum class CanvasLabelRole : uint8
@@ -267,14 +233,12 @@ enum class CanvasLabelRole : uint8
     Annotation,
 };
 
-// Compensate small labels in screen pixels while keeping their node-local geometry stable. A title may wrap onto as
-// many lines as availableHeight holds; annotations stay on one line.
+// Compensate small labels in screen pixels while keeping their node-local geometry stable. Every label is one line.
 void SetScaledLabel(QGraphicsSimpleTextItem& inoutLabel,
                     const QString& text,
                     float64 viewScale,
                     CanvasLabelRole role,
-                    float64 availableWidth,
-                    float64 availableHeight = 0)
+                    float64 availableWidth)
 {
     const float64 minimumPixelHeight =
         role == CanvasLabelRole::Title ? MINIMUM_TITLE_PIXEL_HEIGHT : MINIMUM_LABEL_PIXEL_HEIGHT;
@@ -282,11 +246,8 @@ void SetScaledLabel(QGraphicsSimpleTextItem& inoutLabel,
         math::Max(1.0, minimumPixelHeight / (QFontMetricsF(inoutLabel.font()).height() * viewScale));
     inoutLabel.setScale(labelScale);
     const QFontMetricsF metrics(inoutLabel.font());
-    const int32 maximumLines = static_cast<int32>(
-        math::Min(static_cast<float64>(MAXIMUM_TITLE_LINES),
-                  math::Max(1.0, std::floor(availableHeight / (metrics.lineSpacing() * labelScale)))));
     inoutLabel.setText(role == CanvasLabelRole::Title
-                           ? FitNodeTitle(metrics, text, availableWidth / labelScale, maximumLines)
+                           ? FitNodeTitle(metrics, text, availableWidth / labelScale)
                            : metrics.elidedText(text, Qt::ElideRight, availableWidth / labelScale));
 }
 
@@ -415,6 +376,206 @@ QColor GetTypeColor(const QString& type)
     return {120, 210, 140};
 }
 
+/// The kind of GPU work a pass does, which colours its card header. Ordered by weight: a Subgraph card shows the
+/// heaviest work inside it, so a subgraph that traces any rays reads as ray tracing.
+enum class PassQueue : uint8
+{
+    None,
+    Raster,
+    Compute,
+    RayTracing,
+};
+
+PassQueue GetPassQueue(const QString& kind)
+{
+    if (kind == QStringLiteral("GraphicsPipeline") || kind == QStringLiteral("Raster"))
+    {
+        return PassQueue::Raster;
+    }
+    if (kind == QStringLiteral("ComputePipeline"))
+    {
+        return PassQueue::Compute;
+    }
+    if (kind == QStringLiteral("RayTracingPipeline"))
+    {
+        return PassQueue::RayTracing;
+    }
+    return PassQueue::None;
+}
+
+PassQueue GetHeavierQueue(PassQueue first, PassQueue second)
+{
+    return static_cast<uint8>(first) >= static_cast<uint8>(second) ? first : second;
+}
+
+/// The heaviest pass queue inside a Subgraph node's configuration, following nested subgraphs. inoutCache holds one
+/// answer per asset and configuration for one rebuild, so shared subgraphs are read once and a cycle ends.
+PassQueue FindSubgraphQueue(const RenderGraphDocument& document,
+                            const QJsonObject& node,
+                            int32 depth,
+                            QHash<QString, PassQueue>& inoutCache)
+{
+    const QString asset = node.value(QStringLiteral("asset")).toString();
+    const QString configuration = node.value(QStringLiteral("configuration")).toString();
+    const QString key = asset + QLatin1Char('#') + configuration;
+    if (const QHash<QString, PassQueue>::const_iterator found = inoutCache.constFind(key); found != inoutCache.cend())
+    {
+        return found.value();
+    }
+    inoutCache.insert(key, PassQueue::None);
+    QJsonObject graph;
+    if (depth >= MAXIMUM_SUBGRAPH_QUEUE_DEPTH || document.GetGraph(asset, graph) == false)
+    {
+        return PassQueue::None;
+    }
+    PassQueue queue = PassQueue::None;
+    for (const QJsonValueConstRef value :
+         FindConfiguration(graph, configuration).value(QStringLiteral("nodes")).toArray())
+    {
+        const QJsonObject inner = value.toObject();
+        const QString kind = inner.value(QStringLiteral("kind")).toString();
+        queue = GetHeavierQueue(queue,
+                                kind == QStringLiteral("Subgraph")
+                                    ? FindSubgraphQueue(document, inner, depth + 1, inoutCache)
+                                    : GetPassQueue(kind));
+    }
+    inoutCache.insert(key, queue);
+    return queue;
+}
+
+QColor GetQueueColour(PassQueue queue)
+{
+    switch (queue)
+    {
+        case PassQueue::Raster:
+            return GetCanvasColour(design::ThemeColour::GraphRaster);
+        case PassQueue::Compute:
+            return GetCanvasColour(design::ThemeColour::GraphCompute);
+        case PassQueue::RayTracing:
+            return GetCanvasColour(design::ThemeColour::GraphRayTracing);
+        case PassQueue::None:
+            break;
+    }
+    return {};
+}
+
+QString DescribeQueue(PassQueue queue)
+{
+    switch (queue)
+    {
+        case PassQueue::Raster:
+            return QStringLiteral("raster");
+        case PassQueue::Compute:
+            return QStringLiteral("compute");
+        case PassQueue::RayTracing:
+            return QStringLiteral("ray tracing");
+        case PassQueue::None:
+            break;
+    }
+    return {};
+}
+
+/// One swatch of the card colour legend, at the toolbar icon size and sharp on high-density displays.
+QPixmap MakeSwatch(const QColor& colour, int32 side, float64 devicePixelRatio)
+{
+    QPixmap swatch(QSize(side, side) * devicePixelRatio);
+    swatch.setDevicePixelRatio(devicePixelRatio);
+    swatch.fill(Qt::transparent);
+    QPainter painter(&swatch);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(colour);
+    painter.drawRoundedRect(QRectF(0, 0, side, side), design::RADIUS_CONTROL, design::RADIUS_CONTROL);
+    return swatch;
+}
+
+/// One row of the card colour legend.
+struct LegendEntry final
+{
+    QColor Colour;
+    const char* Meaning;
+};
+
+/// Toolbar button whose menu names what each card header colour means, so the mapping is never a guess.
+QToolButton* MakeColourLegend(QToolBar& inoutToolbar)
+{
+    // Drawn before the toolbar knows its screen, so at least at Retina density; Qt scales it down elsewhere.
+    const float64 devicePixelRatio = math::Max(MINIMUM_SWATCH_PIXEL_RATIO, inoutToolbar.devicePixelRatioF());
+    // The icon is four of the colours it explains, in a two by two grid.
+    QPixmap icon(QSize(EDITOR_ICON_SIZE, EDITOR_ICON_SIZE) * devicePixelRatio);
+    icon.setDevicePixelRatio(devicePixelRatio);
+    icon.fill(Qt::transparent);
+    {
+        QPainter painter(&icon);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        const float64 cell = static_cast<float64>(EDITOR_ICON_SIZE - design::SPACING_EXTRA_SMALL) / 2;
+        const QColor colours[] = {GetQueueColour(PassQueue::RayTracing),
+                                  GetQueueColour(PassQueue::Compute),
+                                  GetQueueColour(PassQueue::Raster),
+                                  GetDomainColor(RenderGraphDomain::SceneView)};
+        for (int32 index = 0; index < static_cast<int32>(std::size(colours)); ++index)
+        {
+            painter.setBrush(colours[index]);
+            painter.drawRoundedRect(QRectF((index % 2) * (cell + design::SPACING_EXTRA_SMALL),
+                                           (index / 2) * (cell + design::SPACING_EXTRA_SMALL),
+                                           cell,
+                                           cell),
+                                    design::RADIUS_CONTROL,
+                                    design::RADIUS_CONTROL);
+        }
+    }
+    QToolButton* button = new QToolButton(&inoutToolbar);
+    button->setObjectName(QStringLiteral("renderGraphColourLegend"));
+    button->setAccessibleName(QStringLiteral("Card colours"));
+    button->setToolTip(QStringLiteral("What the card colours mean"));
+    button->setIcon(QIcon(icon));
+    button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    button->setPopupMode(QToolButton::InstantPopup);
+    QMenu* menu = new QMenu(button);
+    menu->setObjectName(QStringLiteral("renderGraphColourLegendMenu"));
+    QWidget* panel = new QWidget(menu);
+    panel->setObjectName(QStringLiteral("renderGraphColourLegendPanel"));
+    QGridLayout* grid = new QGridLayout(panel);
+    grid->setContentsMargins(design::SPACING_MEDIUM,
+                             design::SPACING_SMALL,
+                             design::SPACING_MEDIUM,
+                             design::SPACING_SMALL);
+    grid->setHorizontalSpacing(design::SPACING_SMALL);
+    grid->setVerticalSpacing(design::SPACING_EXTRA_SMALL);
+    const LegendEntry entries[] = {
+        {GetQueueColour(PassQueue::RayTracing), "Ray tracing pass"},
+        {GetQueueColour(PassQueue::Compute), "Compute pass"},
+        {GetQueueColour(PassQueue::Raster), "Raster pass"},
+        {GetDomainColor(RenderGraphDomain::Execution), "Other processing: tone map, accumulate, denoise"},
+        {GetDomainColor(RenderGraphDomain::SceneView), "Scene and camera"},
+        {GetDomainColor(RenderGraphDomain::Resource), "Resource: target, buffer, size, export"},
+        {GetDomainColor(RenderGraphDomain::Subgraph), "Subgraph with no passes"},
+        {GetDomainColor(RenderGraphDomain::Interface), "Configuration inputs and outputs, or unavailable here"},
+    };
+    const int32 swatchSide = panel->fontMetrics().height();
+    int32 row = 0;
+    for (const LegendEntry& entry : entries)
+    {
+        QLabel* swatch = new QLabel(panel);
+        swatch->setPixmap(MakeSwatch(entry.Colour, swatchSide, devicePixelRatio));
+        grid->addWidget(swatch, row, 0);
+        QLabel* meaning = new QLabel(QString::fromUtf8(entry.Meaning), panel);
+        meaning->setObjectName(QStringLiteral("renderGraphColourLegendEntry"));
+        grid->addWidget(meaning, row, 1);
+        ++row;
+    }
+    QLabel* note = new QLabel(QStringLiteral("A subgraph shows the heaviest work inside it."), panel);
+    note->setObjectName(QStringLiteral("renderGraphColourLegendNote"));
+    note->setForegroundRole(QPalette::PlaceholderText);
+    grid->addWidget(note, row, 0, 1, 2);
+    QWidgetAction* content = new QWidgetAction(menu);
+    content->setDefaultWidget(panel);
+    menu->addAction(content);
+    button->setMenu(menu);
+    return button;
+}
+
 QString DescribeDomain(RenderGraphDomain domain)
 {
     switch (domain)
@@ -437,7 +598,10 @@ QPainterPath MakeCurve(QPointF from, QPointF to)
 {
     // Keep forward control points ordered across short gaps; backward links retain their routing.
     const float64 horizontalGap = to.x() - from.x();
-    const float64 curveOffset = horizontalGap >= 0 ? math::Min(CURVE_OFFSET, horizontalGap * 0.5) : CURVE_OFFSET;
+    const float64 curveOffset =
+        horizontalGap >= 0 ? math::Min(horizontalGap * 0.5,
+                                       math::Clamp(horizontalGap * CURVE_GAP_SHARE, CURVE_OFFSET, MAXIMUM_CURVE_OFFSET))
+                           : CURVE_OFFSET;
     QPainterPath path(from);
     path.cubicTo(from + QPointF(curveOffset, 0), to - QPointF(curveOffset, 0), to);
     return path;
@@ -726,6 +890,8 @@ struct RenderGraphCanvas::NodeView final
     /// Scene-owned header strip; its brush greys out when the node cannot run here.
     QGraphicsRectItem* HeaderOrNull = nullptr;
     QColor HeaderColour;
+    /// "compute", "raster" or "ray tracing" when the header shows a pass queue; empty for other cards.
+    QString QueueDescription;
     /// Badge below the card naming why the node cannot run here; hidden when it can.
     QGraphicsRectItem* AvailabilityBadgeOrNull = nullptr;
     QGraphicsSimpleTextItem* AvailabilityLabelOrNull = nullptr;
@@ -860,6 +1026,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     {
         minimapButtonOrNull->setToolButtonStyle(Qt::ToolButtonIconOnly);
     }
+    mFramingToolbar->addWidget(MakeColourLegend(*mFramingToolbar));
     mAvailabilityNotice->setObjectName(QStringLiteral("renderGraphAvailabilityNotice"));
     mAvailabilityNotice->setAccessibleName(QStringLiteral("Render graph availability"));
     mAvailabilityNotice->setWordWrap(true);
@@ -1163,7 +1330,7 @@ QVector<RenderGraphMinimapCard> RenderGraphCanvas::GetMinimapCards() const
             cards.append(
             {
                 .Bounds = view->Frame->sceneBoundingRect(),
-                .Colour = GetDomainColor(view->Domain),
+                .Colour = view->HeaderColour,
                 .IsSelected = selected.contains(view->Id),
             });
         }
@@ -1214,7 +1381,7 @@ void RenderGraphCanvas::FitGraph()
         }
     }
     bounds = bounds.united(mCommentsOrNull->GetBounds()).united(mReroutesOrNull->GetBounds());
-    fitBounds(bounds);
+    fitBounds(bounds, true);
     mShouldFitOnShow = false;
 }
 
@@ -1230,18 +1397,43 @@ void RenderGraphCanvas::FitSelection()
     fitBounds(bounds);
 }
 
-void RenderGraphCanvas::fitBounds(const QRectF& bounds)
+void RenderGraphCanvas::fitBounds(const QRectF& bounds, bool shouldClearMinimap)
 {
     if (bounds.isEmpty() == true || viewport()->width() <= 1 || viewport()->height() <= 1)
     {
         return;
     }
-    fitInView(bounds.adjusted(-FRAME_PADDING, -FRAME_PADDING, FRAME_PADDING, FRAME_PADDING), Qt::KeepAspectRatio);
-    const float64 current = transform().m11();
-    const float64 target = math::Clamp(current, MINIMUM_VIEW_SCALE, MAXIMUM_VIEW_SCALE);
-    scale(target / current, target / current);
-    centerOn(bounds.center());
-    updateSemanticZoom();
+    const QRectF padded = bounds.adjusted(-FRAME_PADDING, -FRAME_PADDING, FRAME_PADDING, FRAME_PADDING);
+    const auto getScale = [&padded](const QRectF& area) {
+        return math::Min(area.width() / padded.width(), area.height() / padded.height());
+    };
+    const QRectF whole(viewport()->rect());
+    QRectF available = whole;
+    if (shouldClearMinimap == true && mMinimapAction->isChecked() == true && mNodes.isEmpty() == false)
+    {
+        // The minimap sits in the bottom-right corner. Give up either the band beside it or the band above it,
+        // whichever costs less magnification; a graph that already leaves the corner empty loses nothing.
+        const QSizeF map(mMinimapOrNull->size());
+        const QRectF beside(whole.topLeft(),
+                            QSizeF(whole.width() - map.width() - 2 * design::SPACING_MEDIUM, whole.height()));
+        const QRectF above(whole.topLeft(),
+                           QSizeF(whole.width(), whole.height() - map.height() - 2 * design::SPACING_MEDIUM));
+        if (beside.width() > 0 && above.height() > 0)
+        {
+            available = getScale(beside) >= getScale(above) ? beside : above;
+        }
+    }
+    const float64 target = math::Clamp(getScale(available), MINIMUM_VIEW_SCALE, MAXIMUM_VIEW_SCALE);
+    // Centre the bounds in the available area: shift the view centre by the area's offset from the viewport's.
+    const QPointF offset = (whole.center() - available.center()) / target;
+    applyViewTransform(
+    {
+        .Selection = {},
+        .CentreScene = bounds.center() + offset,
+        .Zoom = target,
+        .Trace = RenderGraphTraceDirection::None,
+        .RevealedFrames = {},
+    });
 }
 
 void RenderGraphCanvas::ResetZoom()
@@ -1346,6 +1538,13 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
     const bool hasDetails = viewScale >= DETAIL_VIEW_SCALE;
     const bool hasPortLabels = viewScale >= PORT_LABEL_VIEW_SCALE;
     const bool hasReadableCards = NODE_WIDTH * viewScale >= MINIMUM_TEXT_CARD_WIDTH;
+    const bool hasTitles = NODE_WIDTH * viewScale >= MINIMUM_TITLE_CARD_WIDTH;
+    const bool isOverview = hasPortLabels == false;
+    if (isOverview != mIsOverview)
+    {
+        mIsOverview = isOverview;
+        updateConnectionHighlight();
+    }
     mZoomLabel->setToolTip(hasDetails == true ? QStringLiteral("Detailed view: ports, activity and resource metadata")
                            : hasPortLabels == true ? QStringLiteral("Working view: ports and compact activity")
                                                    : QStringLiteral("Overview: node titles only; hover for details"));
@@ -1384,17 +1583,16 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
         if (view->TitleLabelOrNull != nullptr)
         {
             QGraphicsSimpleTextItem& title = *view->TitleLabelOrNull;
-            title.setVisible(hasReadableCards);
+            title.setVisible(hasTitles);
             // Without port labels the card body has nothing to show, so in the overview the coloured header fills
-            // the whole card and its title wraps and centres in it, rather than leaving an empty box under a title
-            // strip; with port rows showing, the title keeps to the one-line header.
+            // the whole card and its one-line title centres in it, shortened at its end when it is too long; with
+            // port rows showing, the title keeps to the header strip.
             SetScaledLabel(title,
                            hasDetails == true ? view->Title
                                               : (view->Id == GetOutputsNode() ? QStringLiteral("outputs") : view->Id),
                            viewScale,
                            CanvasLabelRole::Title,
-                           NODE_WIDTH - 2 * NODE_PADDING,
-                           hasPortLabels == true ? 0 : view->Frame->rect().height() - NODE_PADDING);
+                           NODE_WIDTH - 2 * NODE_PADDING);
             const float64 titleHeight = title.boundingRect().height() * title.scale();
             const float64 headerHeight = hasPortLabels == true ? HEADER_HEIGHT : view->Frame->rect().height();
             if (view->HeaderOrNull != nullptr)
@@ -1557,6 +1755,7 @@ void RenderGraphCanvas::Rebuild()
         }
     }
     QHash<int32, float64> rows;
+    QHash<QString, PassQueue> queues;
     int32 lastColumn = 0;
     // Identity and display title are distinct named strings.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
@@ -1604,7 +1803,7 @@ void RenderGraphCanvas::Rebuild()
         QFont font = label->font();
         font.setBold(true);
         label->setFont(font);
-        label->setText(FitNodeTitle(QFontMetricsF(font), title, NODE_WIDTH - 2 * NODE_PADDING, 1));
+        label->setText(FitNodeTitle(QFontMetricsF(font), title, NODE_WIDTH - 2 * NODE_PADDING));
         label->setToolTip(title);
         label->setBrush(Qt::white);
         label->setPos(NODE_PADDING, (HEADER_HEIGHT - label->boundingRect().height()) / 2);
@@ -1698,6 +1897,14 @@ void RenderGraphCanvas::Rebuild()
                     position,
                     IsPipelineNode(kind) == true ? node.value(QStringLiteral("outputs")).toArray() : QJsonArray{});
         view->Kind = kind;
+        const PassQueue queue =
+            kind == QStringLiteral("Subgraph") ? FindSubgraphQueue(mDocument, node, 0, queues) : GetPassQueue(kind);
+        if (queue != PassQueue::None && view->HeaderOrNull != nullptr)
+        {
+            view->HeaderColour = GetQueueColour(queue);
+            view->HeaderOrNull->setBrush(view->HeaderColour);
+            view->QueueDescription = DescribeQueue(queue);
+        }
         rows.insert(column, row + qMax(ROW_SPACING, view->Frame->rect().height() + NODE_ROW_GAP));
     }
     const QVector<RenderGraphPort> inputs =
@@ -1949,7 +2156,8 @@ void RenderGraphCanvas::refreshFeedback()
         }
         if (sizes.size() > 1)
         {
-            sizeLabel = QStringLiteral("Mixed sizes (hover ports)");
+            // Short enough to fit beside the activity caption; the label's tooltip lists each port's size.
+            sizeLabel = QStringLiteral("Mixed sizes");
         }
         if (view->Kind == QStringLiteral("Accumulate"))
         {
@@ -1981,8 +2189,14 @@ void RenderGraphCanvas::refreshFeedback()
         {
             resources.prepend(availability.Explanation);
         }
-        view->Frame->setToolTip(view->Id + QStringLiteral(" : ") + view->Kind + QStringLiteral("\n") + explanation +
-                                QLatin1Char('\n') + resources.join(QLatin1Char('\n')));
+        const QString queue =
+            view->QueueDescription.isEmpty() == true
+                ? QString()
+                : (view->Kind == QStringLiteral("Subgraph") ? QStringLiteral(" · heaviest work: %1 passes")
+                                                            : QStringLiteral(" · %1 pass"))
+                      .arg(view->QueueDescription);
+        view->Frame->setToolTip(view->Id + QStringLiteral(" : ") + view->Kind + queue + QStringLiteral("\n") +
+                                explanation + QLatin1Char('\n') + resources.join(QLatin1Char('\n')));
         if (view->SizeLabelOrNull != nullptr)
         {
             view->SizeText = sizeLabel;
@@ -2416,7 +2630,11 @@ void RenderGraphCanvas::updateConnectionHighlight()
         }
     }
     const QHash<QString, qsizetype>& wireCounts = mWireCounts;
-    const float64 restingOpacity = mEdges.size() >= DENSE_GRAPH_EDGE_COUNT ? DENSE_EDGE_OPACITY : 1;
+    const bool isDense = mEdges.size() >= DENSE_GRAPH_EDGE_COUNT;
+    const float64 restingOpacity = isDense == false      ? 1
+                                   : mIsOverview == true ? OVERVIEW_EDGE_OPACITY
+                                                         : DENSE_EDGE_OPACITY;
+    const float64 hubOpacity = mIsOverview == true ? OVERVIEW_HUB_EDGE_OPACITY : HUB_EDGE_OPACITY;
     for (qsizetype index = 0; index < mEdges.size(); ++index)
     {
         EdgeView* edge = mEdges.at(index);
@@ -2444,7 +2662,7 @@ void RenderGraphCanvas::updateConnectionHighlight()
             wireCounts.value(source) >= HUB_EDGE_COUNT || wireCounts.value(destination) >= HUB_EDGE_COUNT;
         edge->Path->setOpacity(isHighlighted == true || isSelected == true ? 1
                                : hasFocus == true                          ? UNRELATED_EDGE_OPACITY
-                               : isHubWire == true ? math::Min(activityOpacity, HUB_EDGE_OPACITY)
+                               : isHubWire == true ? math::Min(activityOpacity, hubOpacity)
                                                    : math::Min(activityOpacity, restingOpacity));
         QPen pen(isHighlighted == true || isSelected == true ? GetSelectionColour() : GetEdgeColour(),
                  isHighlighted == true || isSelected == true ? FOCUSED_EDGE_WIDTH : RESTING_EDGE_WIDTH);
@@ -2722,7 +2940,7 @@ bool RenderGraphCanvas::ApplyLayout(RenderGraphLayoutOperation operation, bool s
                 bounds = bounds.united(QRectF(viewOrNull->Frame->pos(), viewOrNull->Frame->rect().size()));
             }
         }
-        fitBounds(bounds);
+        fitBounds(bounds, true);
     }
     return true;
 }
