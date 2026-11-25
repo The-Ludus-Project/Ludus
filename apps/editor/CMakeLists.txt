@@ -1254,6 +1254,11 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         # The instrumented content scan took 57 seconds on the hosted runner;
         # keep the process deadlines distinct from the tests' own assertions.
         set(content_editor_timeout 120)
+        # Hosted Windows MSVC ASan ran render graph configuration shard 0 for 278.6 s
+        # (batch 45442382423), then exceeded 300 s (batch 45488434151); shard 1 took
+        # 198.6 s and 223.5 s. A third shard needs main's Windows workflow to stop
+        # listing shard names, so match the 600 s editor shards until then.
+        set(graph_configuration_timeout 600)
     endif()
     add_executable(ludus_editor_texture_benchmark EXCLUDE_FROM_ALL
         tests/texture_display_benchmark.cpp src/texture_inspection.cpp)
