@@ -17,7 +17,6 @@ namespace
 // A partial draft may contain cycles/import recursion; inference must stay bounded.
 constexpr int32 MAX_INFERENCE_STEPS = 4096;
 constexpr int32 MAX_INFERENCE_DEPTH = 64;
-constexpr int32 RAY_LAUNCH_DIMENSION_COUNT = 3;
 
 struct ResourceContext final
 {
@@ -38,6 +37,7 @@ struct ResourceDescription final
     int32 Stride = 0;
     QString Count{};
     bool IsPersistent = false;
+    QString StructType{};
 };
 
 QJsonObject FindRecord(const QJsonArray& records, const QString& identity)
@@ -127,6 +127,13 @@ ResolveResource(const ResourceContext& context, const QString& endpoint, int32& 
         result.Type = QStringLiteral("Buffer");
         result.Format = QStringLiteral("Bytes");
         result.IsPersistent = true;
+        const QJsonObject record = node.value(QStringLiteral("shader_struct")).toObject();
+        if (record.isEmpty() == false)
+        {
+            result.StructType = record.value(QStringLiteral("type")).toString();
+            result.Count = QString::number(record.value(QStringLiteral("count")).toInteger());
+            return result;
+        }
         result.Stride = node.contains(QStringLiteral("bytes_per_pixel")) == true
                             ? node.value(QStringLiteral("bytes_per_pixel")).toInt()
                             : static_cast<int32>(content::render_graph_format::RAY_BUFFER_WORD_BYTES);
@@ -410,29 +417,6 @@ void CollectProblems(const ResourceContext& context,
                                "Connect both targets to the same RenderSize, or use matching fixed sizes.")
                     .arg(where, DescribeTexture(colorPort, color), DescribeTexture(depthPort, depth)));
         }
-        const QJsonArray launch =
-            node.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).toArray();
-        if (UsesRayLaunch(node) == true && color.ViewPolicy.isEmpty() == false &&
-            launch.size() == RAY_LAUNCH_DIMENSION_COUNT)
-        {
-            inoutProblems.append(where +
-                                 QStringLiteral(": view-relative color requires Match color target in Invocation."));
-        }
-        if (UsesRayLaunch(node) == true && HasKnownExtent(color.Extent) == true &&
-            launch.size() == RAY_LAUNCH_DIMENSION_COUNT &&
-            launch != QJsonArray{color.Extent.at(0), color.Extent.at(1), 1})
-        {
-            inoutProblems.append(
-                QStringLiteral(
-                    "%1: explicit ray launch %2 x %3 x %4 differs from the color target's %5 x %6 x 1 extent. "
-                    "Choose Match color target in Invocation or update the explicit launch dimensions.")
-                    .arg(where)
-                    .arg(launch.at(0).toInteger())
-                    .arg(launch.at(1).toInteger())
-                    .arg(launch.at(2).toInteger())
-                    .arg(color.Extent.at(0).toInteger())
-                    .arg(color.Extent.at(1).toInteger()));
-        }
     }
 }
 } // namespace
@@ -456,6 +440,11 @@ RenderGraphResourceFeedback DescribeRenderGraphResource(const RenderGraphDocumen
     const ResourceDescription resource = ResolveResource(context, endpoint, remainingSteps);
     if (resource.Type == QStringLiteral("Buffer"))
     {
+        if (resource.StructType.isEmpty() == false)
+        {
+            return {QStringLiteral("%1 × %2").arg(resource.Count, resource.StructType),
+                    QStringLiteral("Build Graph resolves the byte capacity from the shared Slang struct.")};
+        }
         const QString count = resource.Count == QStringLiteral("ColorTarget") ? QStringLiteral("one per output pixel")
                               : resource.Count == QStringLiteral("RenderSize")
                                   ? QStringLiteral("connected RenderSize pixels")

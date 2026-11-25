@@ -4,19 +4,21 @@
 #include "internal/code_document_tab.h"
 #include "internal/code_editor.h"
 #include "internal/code_file_document.h"
+#include "internal/code_navigation.h"
 
 #include <QApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFileInfo>
 #include <QGridLayout>
-#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSplitter>
 #include <QStringList>
 #include <QTabWidget>
+#include <QVBoxLayout>
 
 // The central code-tab area (CE01, CE02): per-file tabs in up to two editor
 // groups over the shared CodeDocumentRegistry, with preview tabs and mirroring.
@@ -47,8 +49,13 @@ constexpr const char* STATE_ACTIVE = "active";
 CodeEditorArea::CodeEditorArea(QWidget* parentOrNull) : QWidget(parentOrNull), mRegistry(this)
 {
     setObjectName(QStringLiteral("codeEditorArea"));
-    QHBoxLayout* layout = new QHBoxLayout(this);
+    QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
+    mSessionAction = new QPushButton(this);
+    mSessionAction->setObjectName(QStringLiteral("codeEditorSessionAction"));
+    mSessionAction->hide();
+    layout->addWidget(mSessionAction, 0, Qt::AlignLeft);
+    connect(mSessionAction, &QPushButton::clicked, this, &CodeEditorArea::SessionActionRequested);
     mSplitter = new QSplitter(Qt::Horizontal, this);
     mSplitter->setObjectName(QStringLiteral("codeEditorAreaSplitter"));
     layout->addWidget(mSplitter);
@@ -233,7 +240,8 @@ CodeDocumentTab* CodeEditorArea::findTabInGroup(int32 group, const QString& path
     for (int index = 0; index < tabs->count(); ++index)
     {
         CodeDocumentTab* tab = qobject_cast<CodeDocumentTab*>(tabs->widget(index));
-        if (tab != nullptr && QFileInfo(tab->GetPath()).canonicalFilePath() == canonical)
+        if (tab != nullptr && tab->GetSessionKey().isEmpty() == true &&
+            QFileInfo(tab->GetPath()).canonicalFilePath() == canonical)
         {
             return tab;
         }
@@ -311,6 +319,12 @@ void CodeEditorArea::removeTab(CodeDocumentTab* tab)
     }
     CodeFileDocument* host = mTabHosts.value(tab, nullptr);
     mTabHosts.remove(tab);
+    if (tab->GetSessionKey().isEmpty() == false)
+    {
+        tab->BindSessionHost(nullptr);
+        tab->GetEditor().GetNavigation().SetViewHost(nullptr);
+        Q_EMIT tab->SessionClosed();
+    }
     tab->deleteLater();
     if (host != nullptr)
     {
@@ -365,6 +379,7 @@ void CodeEditorArea::updateTabDecoration(CodeDocumentTab* tab)
             title.append(QStringLiteral(" \u2013"));
         }
         group.Tabs->setTabText(index, title);
+        group.Tabs->setTabToolTip(index, tab->GetPath());
         return;
     }
 }
@@ -423,6 +438,102 @@ CodeDocumentTab* CodeEditorArea::openIn(int32 group, const QString& absolutePath
 bool CodeEditorArea::OpenFile(const QString& absolutePath, bool isPreview)
 {
     return openIn(activeGroupIndex(), absolutePath, isPreview) != nullptr;
+}
+
+CodeDocumentTab& CodeEditorArea::OpenSessionTab(const QString& key, const QString& path, bool isPreview)
+{
+    for (CodeDocumentTab* tab : GetTabs())
+    {
+        if (tab->GetSessionKey() == key)
+        {
+            if (isPreview == false)
+            {
+                tab->MakePermanent();
+            }
+            static_cast<void>(ActivateTab(*tab));
+            return *tab;
+        }
+    }
+
+    const int32 group = activeGroupIndex();
+    if (isPreview == true && mGroups.at(group).PreviewOrNull != nullptr)
+    {
+        removeTab(mGroups.at(group).PreviewOrNull);
+    }
+    CodeDocumentTab* tab = new CodeDocumentTab(nullptr, path, this);
+    tab->SetSessionKey(key);
+    addTabToGroup(group, tab, isPreview);
+    tab->GetEditor().setFocus();
+    Q_EMIT TabsChanged();
+    onCurrentChanged();
+    return *tab;
+}
+
+bool CodeEditorArea::ActivateTab(CodeDocumentTab& inoutTab)
+{
+    for (const Group& group : mGroups)
+    {
+        if (group.Tabs->indexOf(&inoutTab) >= 0)
+        {
+            group.Tabs->setCurrentWidget(&inoutTab);
+            inoutTab.GetEditor().setFocus();
+            onCurrentChanged();
+            return true;
+        }
+    }
+    return false;
+}
+
+void CodeEditorArea::CloseSessionTab(CodeDocumentTab& inoutTab)
+{
+    removeTab(&inoutTab);
+}
+
+void CodeEditorArea::CloseSessionTabs()
+{
+    for (CodeDocumentTab* tab : GetTabs())
+    {
+        if (tab->GetSessionKey().isEmpty() == false)
+        {
+            removeTab(tab);
+        }
+    }
+}
+
+void CodeEditorArea::RefreshSessionTabs()
+{
+    for (CodeDocumentTab* tab : GetTabs())
+    {
+        if (tab->GetSessionKey().isEmpty() == false)
+        {
+            updateTabDecoration(tab);
+        }
+    }
+    Q_EMIT TabsChanged();
+}
+
+void CodeEditorArea::SetSessionAction(const QString& label)
+{
+    mSessionAction->setText(label);
+    mSessionAction->setVisible(label.isEmpty() == false);
+}
+
+QSplitter& CodeEditorArea::InstallSessionWidgets(QWidget& inoutHeader, QWidget& inoutCompanion)
+{
+    QVBoxLayout* column = static_cast<QVBoxLayout*>(layout());
+    column->removeWidget(mSplitter);
+    inoutHeader.hide();
+    column->addWidget(&inoutHeader);
+    QSplitter* content = new QSplitter(Qt::Horizontal, this);
+    content->setObjectName(QStringLiteral("codeEditorSessionSplitter"));
+    content->addWidget(mSplitter);
+    content->addWidget(&inoutCompanion);
+    inoutCompanion.hide();
+    content->setCollapsible(0, false);
+    content->setStretchFactor(0, 2);
+    content->setStretchFactor(1, 1);
+    column->addWidget(content, 1);
+    return *content;
 }
 
 bool CodeEditorArea::OpenFileInSecondGroup(const QString& absolutePath)
@@ -502,7 +613,7 @@ bool CodeEditorArea::HasDirtyBuffers() const
 {
     for (CodeDocumentTab* tab : GetTabs())
     {
-        if (tab->IsDirty() == true)
+        if (hostOf(tab) != nullptr && tab->IsDirty() == true)
         {
             return true;
         }
@@ -515,7 +626,7 @@ bool CodeEditorArea::ConfirmDiscardAll()
     QList<CodeDocumentTab*> dirty;
     for (CodeDocumentTab* tab : GetTabs())
     {
-        if (tab->IsDirty() == true)
+        if (hostOf(tab) != nullptr && tab->IsDirty() == true)
         {
             dirty.append(tab);
         }
@@ -665,12 +776,8 @@ QList<CodeDocumentTab*> CodeEditorArea::viewsOf(CodeFileDocument* host) const
 
 bool CodeEditorArea::isLastDirtyView(CodeDocumentTab* tab) const
 {
-    if (tab->IsDirty() == false)
-    {
-        return false;
-    }
-    CodeFileDocument* host = hostOf(tab);
-    return host == nullptr || viewsOf(host).size() == 1;
+    CodeFileDocument* hostOrNull = hostOf(tab);
+    return hostOrNull != nullptr && tab->IsDirty() == true && viewsOf(hostOrNull).size() == 1;
 }
 
 void CodeEditorArea::refreshViewsOf(CodeFileDocument* host)
@@ -827,7 +934,7 @@ QJsonObject CodeEditorArea::SaveState() const
         for (int index = 0; index < groupTabs->count(); ++index)
         {
             CodeDocumentTab* tab = qobject_cast<CodeDocumentTab*>(groupTabs->widget(index));
-            if (tab == nullptr)
+            if (tab == nullptr || tab->GetSessionKey().isEmpty() == false)
             {
                 continue;
             }

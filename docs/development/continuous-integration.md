@@ -155,15 +155,67 @@ pattern or by a candidate-side runner:
 - `tests/sdk_consumer/browser-suites.json` lists the browser tests of each
   suite, and `tests/sdk_consumer/run-browser-suite.mjs <suite> <artifacts>
   <results>` runs them all, reporting every failure. Add a browser test to a
-  suite there; the workflow names only the suite. A new renderer suite also
-  needs a matrix entry, which takes effect after promotion.
+  suite there; the workflow names only the suite, or a prefix such as
+  `'renderer-*'` that runs every matching suite. A new renderer suite therefore
+  needs no workflow change. The packaged tests and every renderer suite run in
+  one **Packaged browser tests (software GPU)** job: as four jobs they each ran
+  2-7 minutes but held a runner and repeated setup, while pull requests waited
+  for runners behind the batch.
 - `BatchWorkflowDefinitionTests` in `scripts/python/test_ci.py` rejects listed
   consumer files in uploads, a consumer browser test named in a workflow, and a
-  renderer matrix that differs from the candidate's suites.
+  browser job that does not run every candidate renderer suite.
 
 A workflow change that the candidate's sources depend on still reaches batches
 only after promotion. Land it in a `develop` change before the sources that need
 it, or keep both working with either definition.
+
+#### Batch job check plans
+
+A job whose commands live in workflow YAML has two problems in a batch. Its
+commands change only after a promotion, and its first failed step skips every
+later step, so a batch reports one failure per job. Until 2026-11-20 the
+**macOS native backends and diagnostics** job did this: each batch reached one
+more step, and failures in steps that had not run for weeks queued behind the
+last one.
+
+That job now has one command step:
+
+```bash
+out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_native.py
+```
+
+`scripts/ci/macos_native.py` (and `scripts/ci/macos_reference.py` for the macOS GPU
+reference oracle job) lists the job's checks in order, as `Check` records
+with an id, a title, the bash commands, the checks each one needs, environment
+and an optional timeout. `scripts/python/ci_checks.py` runs them from the
+candidate:
+
+- Each check runs in its own log group with the `bash -eo pipefail` shell that
+  workflow `run:` steps use, in a process group its timeout stops completely.
+- A check runs when every check it needs succeeded; a failure skips only its
+  dependents, so later independent checks still run.
+- Each check's result is a step output named by its id (`steps.checks.outputs.build`),
+  and the job summary lists every result. The job fails once, at the end, if any
+  check failed.
+
+Add or change a macOS native command in the plan, not in `ci.yml`; the change
+takes effect in the next batch. Give it the narrowest `needs`: most checks need
+`build`, installed-SDK checks need `sdk-install`, and consumer checks need the
+check that builds their consumer. Plans see only environment variables, never
+`${{ }}` expressions; use `$GITHUB_WORKSPACE` and similar names in `env` values.
+Artifact uploads and caches stay in the workflow and read the check outputs.
+
+Run one check locally with `--only` (its needs are assumed to have succeeded), or
+list the plan with `--list`:
+
+```bash
+out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_native.py --only cocoa-analysis
+```
+
+`BatchJobCheckPlanTests` in `scripts/python/test_ci.py` rejects other command
+steps in that job and checks that every check follows the build;
+`scripts/python/test_ci_checks.py` covers the runner. Changing the runner step
+itself still needs a promotion.
 
 Only one batch is active. New `develop` commits do not cancel it or change its input.
 Concurrent scheduler ticks coalesce into at most one pending run. A tick captured
@@ -182,6 +234,40 @@ merge to `develop`. For qualification time, use the capture step completion and
 the promotion completion or the first failed required job. Report time spent
 collecting diagnostics after a rejection separately.
 
+### Read the batch outcome report
+
+From the coordinator's **Summary**, follow **Batch outcome reports** and open
+the entry titled `Batch RUN_ID · attempt ATTEMPT`. The reporting workflow
+runs after the attempt completes, including after an early stop. If a run was
+cancelled before the capture job started, find it by run ID and attempt in the
+[Batch outcome reports](https://github.com/The-Ludus-Project/Ludus/actions/workflows/batch-outcome.yml)
+workflow list.
+
+The report reads attempt-specific Actions job metadata and the trusted
+coordinator logs. It shows the candidate and base, the validation or promotion
+outcome, and a separate documentation publication result. Promotion timing
+uses the successful push step's completion. The latest completed validation
+jobs and the longest recorded runtimes show where to look for delays.
+Submission time uses the workflow's creation timestamp for the first attempt.
+A partial rerun can reuse an earlier capture. Elapsed time measured from that
+capture can span multiple attempts, and rerun submission time is unknown.
+
+For an early stop, the first failure's completion time records when the signal
+was available in Actions metadata. The watcher records when its poll first saw
+that job's failure. The stop log records when GitHub CLI confirmed that it
+submitted the cancellation request. The report reconstructs results and running
+jobs at that point from job timestamps, and labels queue state from the last
+watcher poll. Artifacts are linked at run scope. Missing timestamps and expired
+logs can leave individual fields unknown. Historical bot dispatches used the
+same actor for the protected-develop wake and stale-request handoff, so the
+actor alone cannot distinguish those triggers.
+
+Replay the three historical runs and the rerun fixtures with
+`PYTHONPATH=scripts/python python3 -m unittest test_batch_outcome`. After the
+reporting workflow reaches `main`, compare the next promoted and rejected
+attempts with their Actions job timelines, including documentation publication
+on promotion and the watcher and cancellation logs on rejection.
+
 ### Stop a failed batch early
 
 Any failed suite job rejects the candidate, so the batch's remaining jobs only add
@@ -189,7 +275,9 @@ diagnostics. The **Watch for failed suites** job runs trusted `main` code beside
 suites and polls the run's jobs every minute. When a suite job (`native / ...`,
 `windows / ...` and so on) fails, times out or fails to start, the jobs still
 running get 30 minutes from that first failure to report (`STOP_GRACE_SECONDS` in
-`scripts/python/batch_ci.py`). Then **Cancel failed batch** cancels the run, so the
+`scripts/python/batch_ci.py`). The native **Ubuntu Clang** aggregate gate does not
+start that period by itself: every real failure it reports is a failed job of its
+own, and a job that only found no runner is [retried](#retry-jobs-that-found-no-runner). Then **Cancel failed batch** cancels the run, so the
 next tick can validate a candidate containing the fix instead of waiting for the
 longest sanitizer and macOS jobs. In measured batches, deterministic failures
 appeared within 3-13 minutes and every job except the sanitizers and macOS native
@@ -368,6 +456,13 @@ To submit a fix while develop is red:
    `threading-windows` use `threading-platforms.yml`. The `windows` workflow is
    `windows-direct3d12.yml` and `recovery` is `filesystem-recovery.yml`.
    Branch dispatches never deploy the wiki or promote.
+
+   Batches use `main`'s job names. When `develop` has merged a batch job into
+   another one that runs the same tests, a branch dispatch runs only the new
+   job. The gate accepts that job as evidence until promotion: for example,
+   **Packaged browser tests (software GPU)** proves the old **Renderer browser
+   tests** suites. `develop_health.py` lists each pair in
+   `PENDING_PROMOTION_SUCCESSORS`. Remove an entry once `main` defines the new job.
 4. When each declared job has succeeded on the PR's exact head commit, re-run
    the **Develop health** check. Editing the description re-runs only that check.
 
@@ -629,23 +724,56 @@ Native jobs use `macos-15` arm64. Host and documentation tooling separately chec
 not establish macOS 14 runtime qualification. See GitHub's
 [macOS 14 deprecation notice](https://github.com/actions/runner-images/issues/13518).
 
-The long ARM jobs run in order: sanitizers, native/SDK acceptance, then the nightly
-analyzer. This limits simultaneous runner demand after hosted ARM capacity left
-parallel jobs unacquired until GitHub cancelled them. Later jobs use an explicit
-status condition so a test failure does not suppress independent evidence;
-cancelling the workflow still stops the chain. All required results remain part
-of the promotion gate. The batch also admits ARM-owning workflows in order:
-native, macOS threading, installed host tooling, then ARM documentation tools. This
-prevents short ARM jobs from expiring behind native work in a different reusable
-workflow. The Linux wiki call, Intel documentation tools and Windows threading
+Native/SDK acceptance and the sanitizers start together. Strictly ordered, the
+native job, which fails most often, reported about 45 minutes after the sanitizers
+and made macOS the slowest path in the batch. The nightly analyzer starts after the
+sanitizers. The CPU/GPU reference oracle cases (`ludus_renderer_reference: …`) run in
+their own **macOS GPU reference oracle** job beside them: in one job they were 30 of
+its 89 minutes, one at a time on one GPU (batch 44859003421). That job configures the
+same tree, restores the native job's compiler cache without saving it, and builds
+only `ludus_renderer_render_tests`, so `ci.yml` holds at most three ARM runners. A new
+native job reaches batches only after promotion, so `ci_scope.py` lists it in
+`PENDING_PROMOTION_JOBS` until `main` defines it; a test reports when to remove it.
+The nightly analyzer uses an explicit status
+condition so a sanitizer failure does not suppress its evidence; cancelling the
+workflow still stops it. All required results remain part of the promotion gate.
+Hosted ARM capacity can still run out; see
+[retry jobs that found no runner](#retry-jobs-that-found-no-runner). The short ARM-owning workflows run in order beside
+native: macOS threading, installed host tooling, then ARM documentation tools, so
+the batch holds at most three ARM runners. They used to wait for native, which put
+their ten minutes after the longest job (batch 44859003421 ended at 147 minutes,
+136 of them on the macOS chain). The Linux wiki call, Intel documentation tools and Windows threading
 start at candidate capture alongside the browser, Windows and recovery
 workflows. The Linux call builds and verifies the public API
 and the browser editor, checks sample playback and uploads the Pages artifact.
 Promotion waits for all three wiki calls and both threading checks. Only the
 post-promotion job deploys the candidate wiki.
-The ARM sequence can increase total batch duration. A platform-wide shortage
-can still require retrying a job whose annotations show that it failed to acquire
-a runner.
+
+#### Retry jobs that found no runner
+
+When no hosted runner accepts a queued job, GitHub cancels it with the annotation
+"The job was not acquired by Runner of type hosted even after multiple attempts".
+On 2026-11-02 this cancelled native, sanitizer, analyzer and macOS documentation
+jobs that were queued together. `.github/workflows/batch-runner-retry.yml` runs
+trusted `main` code after a batch run completes without success. It re-runs only
+a job that was cancelled without a runner and carries that annotation, with the
+jobs that depend on it; the others keep their results. GitHub re-runs jobs only in
+a completed run, so the retried job asks for one runner after everything else has
+finished. A re-run attempt copies each job it does not run under a new id without
+the original's annotations, so a later round still retries a copy whose name and
+completion time match a job already found without a runner.
+
+The retry waits five minutes, re-runs one job per round and stops after two
+rounds (`MAX_ACQUISITION_RETRIES` in `scripts/python/batch_ci.py`), so an outage
+cannot hold the promotion slot indefinitely. It does not retry when another job
+failed, when **Cancel failed batch** stopped the run, or when a newer batch is
+already validating a later `develop` commit. The native **Ubuntu Clang** gate
+fails whenever a job it reads did not succeed, so neither the retry nor the
+[early stop](#stop-a-failed-batch-early) treats that aggregate failure alone as
+rejecting the candidate. When both rounds find no runner, **Retry jobs that found
+no runner** fails with a capacity error; dispatch the coordinator with **retry**
+once capacity returns. Like every coordinator edit, the retry starts only after
+it reaches `main`.
 
 In a timing replay of [batch 43134442495](https://github.com/The-Ludus-Project/Ludus/actions/runs/43134442495),
 early Linux wiki alone brings capture-to-promotion from 2h 38m 11s to 2h 22m 35s.
@@ -957,6 +1085,58 @@ parameters, which `bugprone-easily-swappable-parameters` rejects. The check does
 not cover changed lines' naming rules in `.mm` sources (`source_policy.py`
 still applies) or Apple-only `.cpp` sources such as `hosted_mach.cpp`. Those
 remain analyzed only in macOS batch jobs.
+
+### Platform-only warnings
+
+Pull requests compile on Linux. The MSVC and Emscripten builds run only in
+batch validation, so a warning that only they report reaches `develop` and
+fails the next batch. From October to November 2026 at least 16 such build
+errors had one of the causes below, and these checks catch them before review:
+
+- **A symbol used only inside an `#if` branch.** A build that compiles another
+  branch reports it as unused (`-Wunused-const-variable`, `-Wunused-function`,
+  `-Wunused-parameter`, MSVC C4100). `source_policy.py` reports an
+  internal-linkage constant or function, or a parameter, whose every use sits
+  in a preprocessor branch that does not enclose its declaration. It checks
+  each combination of the conditions around those uses, so uses in every arm
+  of an `#if`/`#else`, or in separate blocks under complementary conditions,
+  count as unconditional. An arm that stops the build with `#error` selects no
+  configuration. Declare the symbol under the same condition as its uses, or
+  discard a parameter in the other arms with `static_cast<void>(name)`.
+- **A symbol read only by an assertion.** `LUDUS_ASSERT` and `LUDUS_ASSERT_F`
+  compile to nothing when assertions are off, as in Profile, Release and the
+  browser builds, so their arguments are unused there. The same rule reports a
+  constant, internal function, parameter or local variable whose only uses are
+  inside those macros. Mark it `[[maybe_unused]]`. `LUDUS_REQUIRE` and `LUDUS_CHECK` stay in
+  every build and count as ordinary uses.
+- **Constant conditions and unreachable code.** MSVC reports a run-time `if`
+  or `while` whose condition is constant as C4127, and unreachable code as
+  C4702. `source_policy.py` reports a condition that names only UPPER_CASE
+  constants; use `if constexpr`, with an `else` when the true arm returns, so
+  that the code after it stays reachable. Linux Clang builds, including the
+  pull request build, also enable `-Wunreachable-code` and
+  `-Wunreachable-code-loop-increment` (`cmake/EngineCompilerWarnings.cmake`),
+  which reject unreachable code that Clang can see. Browser and Apple builds
+  leave them off: code that only those builds compile never reaches MSVC, and
+  the warnings there would fail only batches. MSVC also follows calls that it
+  inlines, such as one to a function that never returns, so declare such
+  functions `[[noreturn]]`.
+- **Floating-point truncation.** MSVC reports a `float64` value passed or
+  assigned to a `float` as C4305 or C4244, an error under `/WX`; Qt's `F`
+  colour setters such as `QColor::setAlphaF` take `float`. Linux Clang builds
+  enable `-Wimplicit-float-conversion` for the same reason as the reachability
+  warnings. Spell such a value as `float32`.
+
+Both source rules apply to changed lines; a conditional use is reported at
+its declaration when the declaration or any use changed. They do not
+evaluate the preprocessor: a branch counts as selectable even if no supported
+build selects it, as in a file that only Linux compiles. For such a deliberate
+case, append `// ludus-style: conditional-use <reason>` or
+`// ludus-style: constant-condition <reason>` to the reported line, or mark
+the declaration `[[maybe_unused]]`. A local counts only when it is declared
+with `=` or `{` at the start of a statement. Neither rule covers private
+fields, or code that compiles only in another build, such as a stale name in
+a browser-only `#else` branch. Those still need the browser or MSVC build.
 
 ### GPU correctness test boundaries
 

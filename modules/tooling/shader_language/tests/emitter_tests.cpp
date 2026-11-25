@@ -139,6 +139,39 @@ float32 Read()
     CHECK(Contains(lowered.Text, "typealias _luslArray"));
 }
 
+TEST_CASE("LUSL lowering evaluates a runtime const local at its declaration", "[shader-language][emitter]")
+{
+    const Lowered lowered = Lower(R"(struct LightSample
+{
+    float32x3 Radiance;
+    float32 Pdf;
+};
+LightSample SampleIncidentLight(in float32x3 receiver)
+{
+    return { .Radiance = receiver, .Pdf = 1.0 };
+}
+float32 Gather(in float32x3 receiver, in uint32 count)
+{
+    float32 total = 0;
+    for (uint32 i = 0; i < count; i++)
+    {
+        const LightSample sample = SampleIncidentLight(receiver * float32(i));
+        total += sample.Radiance.x / sample.Pdf;
+    }
+    return total;
+}
+)");
+    INFO(lowered.Diagnostics << lowered.Text);
+    REQUIRE(lowered.Outcome == language::Status::Ready);
+    // One local per pass through the loop body, initialized by a single call that later reads reuse.
+    const std::string declaration = "LightSample sample = SampleIncidentLight(";
+    const std::string::size_type at = lowered.Text.find(declaration);
+    REQUIRE(at != std::string::npos);
+    CHECK(lowered.Text.find(declaration, at + 1) == std::string::npos);
+    CHECK(lowered.Text.find("SampleIncidentLight(", at + declaration.size()) == std::string::npos);
+    CHECK(Contains(lowered.Text, "sample.Radiance.x / sample.Pdf"));
+}
+
 TEST_CASE("LUSL lowering builds designated initializers with defaults and zeros", "[shader-language][emitter]")
 {
     const Lowered lowered = Lower(R"(struct Surface

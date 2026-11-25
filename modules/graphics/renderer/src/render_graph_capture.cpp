@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/graphics/rhi/lifetime.h>
 
 #include <cstring>
@@ -110,11 +111,15 @@ struct CaptureRoute final
 
 void WriteUint32(std::span<uint8> bytes, usize offset, uint32 value) noexcept
 {
-    static_cast<void>(foundation::TryWriteLittleEndian(value, bytes.subspan(offset, sizeof(uint32))));
+    static_cast<void>(
+        foundation::TryWriteLittleEndian(value,
+                                         ludus::foundation::MakeBorrowedView(bytes.subspan(offset, sizeof(uint32)))));
 }
 void WriteUint64(std::span<uint8> bytes, usize offset, uint64 value) noexcept
 {
-    static_cast<void>(foundation::TryWriteLittleEndian(value, bytes.subspan(offset, sizeof(uint64))));
+    static_cast<void>(
+        foundation::TryWriteLittleEndian(value,
+                                         ludus::foundation::MakeBorrowedView(bytes.subspan(offset, sizeof(uint64)))));
 }
 /// Write consecutive float32 values from offset and return the offset after them.
 [[nodiscard]] usize WriteFloats(std::span<uint8> bytes, usize offset, std::initializer_list<float32> values) noexcept

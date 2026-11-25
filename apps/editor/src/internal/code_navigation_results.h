@@ -1,6 +1,7 @@
 #pragma once
 
 #include "internal/code_navigation.h"
+#include "internal/language_positions.h"
 
 #include <QJsonObject>
 #include <QJsonValue>
@@ -20,15 +21,17 @@ using CodeNavigationSources = QMap<QString, CodeNavigationSource>;
 /// Parse bounded LSP navigation results without disk access or editor mutation.
 /// Unknown URIs, invalid ranges and generated symbols outside the editable span are
 /// excluded from Go to Symbol. Definitions/references can inspect generated text read-only.
-[[nodiscard]] QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
-                                                                    const QJsonValue& value,
-                                                                    const QString& uri,
-                                                                    const QString& unit,
-                                                                    const QString& prefix,
-                                                                    const QString& source,
-                                                                    const QString& file,
-                                                                    const CodeNavigationSources& sources,
-                                                                    QString& outMessage);
+[[nodiscard]] QList<CodeNavigationTarget>
+ReadCodeNavigationResults(CodeNavigationKind kind,
+                          const QJsonValue& value,
+                          const QString& uri,
+                          const QString& unit,
+                          const QString& prefix,
+                          const QString& source,
+                          const QString& file,
+                          const CodeNavigationSources& sources,
+                          QString& outMessage,
+                          LanguagePositionEncoding encoding = LanguagePositionEncoding::Utf16);
 /// Strict zero-based UTF-16 protocol position, preserving outOffset on failure.
 [[nodiscard]] bool
 GetCodeProtocolOffset(const QString& text, const QJsonObject& position, foundation::int32& outOffset);

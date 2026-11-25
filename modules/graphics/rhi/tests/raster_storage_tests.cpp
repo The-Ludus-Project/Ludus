@@ -422,9 +422,17 @@ TEST_CASE("R12b storage textures validate allocation, views and binding format",
         description = StorageImage();
         description.RetainCpuContent = true;
         CHECK(TryStorageTexture(session.Device, description, texture) == RasterStatus::InvalidDescription);
-        description = StorageImage();
+        // Only RGBA8Unorm attachments without stencil may also enable storage (cleared before use).
+        description = StorageImage(RasterFormat::Rgba16Float);
         description.Attachment = true;
         CHECK(CreateTexture(session.Device, description, {}, texture) == RasterStatus::InvalidDescription);
+        description = StorageImage();
+        description.Attachment = true;
+        description.Stencil = true;
+        CHECK(CreateTexture(session.Device, description, {}, texture) == RasterStatus::InvalidDescription);
+        description.Stencil = false;
+        TextureHandle attachment;
+        CHECK(CreateTexture(session.Device, description, {}, attachment) == RasterStatus::Ready);
         description = StorageImage();
         description.Dimension = TextureDimension::D2Array;
         description.DepthOrLayers = 2;

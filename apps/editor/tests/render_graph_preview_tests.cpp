@@ -16,6 +16,7 @@
 #include "internal/main_window.h"
 #include "internal/material_inspection.h"
 #include "internal/offscreen_frame_reader.h"
+#include "internal/playable_world.h"
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
 #include "internal/reference_capture_window.h"
@@ -34,6 +35,7 @@
 #include "internal/viewport_device_description.h"
 #include "internal/viewport_graph_capture.h"
 #include "internal/viewport_raster_capture.h"
+#include "internal/viewport_render_recovery.h"
 #include "internal/viewport_trace.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_graph_view.h"
@@ -70,6 +72,7 @@
 #include <ludus/runtime/resources/scene.h>
 
 #if defined(Q_OS_MACOS)
+#    include "internal/lifecycle.h"
 #    include "internal/readback.h"
 #endif
 
@@ -84,12 +87,14 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QColor>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDateTimeEdit>
+#include <QDialog>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
@@ -1329,6 +1334,11 @@ TEST_CASE("asynchronous activation failure reaches the shell Error List and reco
     CHECK(workspaceOrNull->GetActivationProblem().contains(QString::number(preview.GetReport().CandidateGeneration)) ==
           true);
     CHECK(workspaceOrNull->GetStatusText() == workspaceOrNull->GetActivationProblem());
+    const ViewportRenderRecovery recovery = workspaceOrNull->GetViewportRenderRecovery();
+    CHECK(recovery.Action == ViewportRenderAction::RebuildGraph);
+    CHECK(recovery.Message.contains(QStringLiteral("last rendered image")) == true);
+    CHECK(recovery.Diagnostics.contains(QStringLiteral("broken.lurgrt")) == true);
+    CHECK(recovery.Diagnostics.contains(QStringLiteral("Displayed generation: %1").arg(retainedGeneration)) == true);
     REQUIRE(errorsOrNull->GetCount(ErrorListSeverity::Error) == 1);
     CHECK(errorsOrNull->GetCount(ErrorListSeverity::Message) == 0);
     CHECK(errorsOrNull->GetEntries().first().Description == preview.GetDisplayStatus());
@@ -1351,6 +1361,7 @@ TEST_CASE("asynchronous activation failure reaches the shell Error List and reco
     REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() > retainedGeneration; }) == true);
     CHECK(workspaceOrNull->GetActivationProblem().isEmpty() == true);
     CHECK(workspaceOrNull->GetRenderProblem().isEmpty() == true);
+    CHECK(workspaceOrNull->GetViewportRenderRecovery().Message.isEmpty() == true);
     CHECK(preview.GetDisplayStatus().isEmpty() == true);
     CHECK(errorsOrNull->GetCount(ErrorListSeverity::Message) == 1);
     workspaceOrNull->SetProject({}, 2);
@@ -1501,6 +1512,11 @@ TEST_CASE("a graph that omits World features names them, the functions that draw
     CHECK(SummarizeUnrenderedWorldFeatures(both) ==
           QStringLiteral("Atmosphere sky and aerial perspective not rendered by this graph"));
     CHECK(SummarizeUnrenderedWorldFeatures(0).isEmpty() == true);
+    const renderer::WorldFeatureMask aurora = renderer::GetWorldFeatureBit(renderer::WorldFeature::Aurora);
+    const QString omittedAurora = DescribeUnrenderedWorldFeatures(QStringLiteral("main"), aurora);
+    CHECK(omittedAurora.contains(QStringLiteral("Force raster")) == true);
+    CHECK(omittedAurora.contains(QStringLiteral("turn off Northern lights")) == true);
+    CHECK(omittedAurora.contains(QStringLiteral("ray callback")) == false);
     CHECK(line.contains(QLatin1Char('\n')) == false);
 }
 
@@ -2181,6 +2197,22 @@ TEST_CASE("canvas resource inspection opens the existing viewer and shares its G
     inspectorOrNull->close();
 }
 
+namespace
+{
+QString CopyShaderHelperFixture(const QTemporaryDir& project)
+{
+    const QString helper = QDir(project.path()).filePath(QStringLiteral("shader-helper"));
+    REQUIRE(QDir().mkpath(helper) == true);
+    const QDir originalHelper(QDir(QFileInfo(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)).absolutePath())
+                                  .filePath(QStringLiteral("helper")));
+    for (const QString& file : originalHelper.entryList(QDir::Files))
+    {
+        REQUIRE(QFile::copy(originalHelper.filePath(file), QDir(helper).filePath(file)) == true);
+    }
+    return helper;
+}
+} // namespace
+
 TEST_CASE("Cold project shader timeout keeps the default rendering the current World",
           "[editor][render-graph][world-graph][fallback]")
 {
@@ -2200,14 +2232,7 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
         seed.SetProject(project.path(), 1);
         REQUIRE(seed.CustomizeBuiltIn() == true);
     }
-    const QString helper = QDir(project.path()).filePath(QStringLiteral("shader-helper"));
-    REQUIRE(QDir().mkpath(helper) == true);
-    const QDir originalHelper(QDir(QFileInfo(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)).absolutePath())
-                                  .filePath(QStringLiteral("helper")));
-    for (const QString& file : originalHelper.entryList(QDir::Files))
-    {
-        REQUIRE(QFile::copy(originalHelper.filePath(file), QDir(helper).filePath(file)) == true);
-    }
+    const QString helper = CopyShaderHelperFixture(project);
     const QString helperScript = QDir(helper).filePath(QStringLiteral("compile_shader.py"));
     QFile originalScript(helperScript);
     REQUIRE(originalScript.open(QIODevice::ReadOnly) == true);
@@ -2269,18 +2294,24 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
     REQUIRE(graphViewOrNull != nullptr);
     QLabel* statusOrNull = viewport.findChild<QLabel*>(QStringLiteral("worldGraphStatus"));
     REQUIRE(statusOrNull != nullptr);
-    // The picture carries a short chip; the compiler's words stay in the tooltip and the Error List.
-    CHECK(statusOrNull->text() == QStringLiteral("Shader build failed, using default renderer. Show in Error List"));
-    CHECK(statusOrNull->toolTip().contains(QStringLiteral("timed out")) == true);
-    CHECK(graphViewOrNull->HasProblemChip() == true);
-    // A real click reaches the view only while it is not transparent to the mouse.
-    CHECK(graphViewOrNull->testAttribute(Qt::WA_TransparentForMouseEvents) == false);
-    QSignalSpy errorListRequested(&workspace, &RendererWorkspace::ErrorListRequested);
-    if (graphViewOrNull->isVisible() == true && statusOrNull->isVisible() == true)
-    {
-        QTest::mouseClick(graphViewOrNull, Qt::LeftButton, Qt::NoModifier, statusOrNull->geometry().center());
-        CHECK(errorListRequested.count() == 1);
-    }
+    QPushButton* detailsOrNull = viewport.findChild<QPushButton*>(QStringLiteral("viewportRenderRecoveryDetails"));
+    REQUIRE(detailsOrNull != nullptr);
+    REQUIRE(detailsOrNull->isVisible() == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Show in Error List")) == false);
+    CHECK(graphViewOrNull->HasProblemChip() == false);
+    detailsOrNull->click();
+    QDialog* diagnosticsOrNull = viewport.findChild<QDialog*>(QStringLiteral("viewportRenderDiagnosticsDialog"));
+    REQUIRE(diagnosticsOrNull != nullptr);
+    const QPlainTextEdit* technicalOrNull = diagnosticsOrNull->findChild<QPlainTextEdit*>();
+    REQUIRE(technicalOrNull != nullptr);
+    CHECK(technicalOrNull->isHidden() == true);
+    QPushButton* copyOrNull =
+        diagnosticsOrNull->findChild<QPushButton*>(QStringLiteral("viewportCopyRenderDiagnostics"));
+    REQUIRE(copyOrNull != nullptr);
+    copyOrNull->click();
+    CHECK(QApplication::clipboard()->text().contains(QStringLiteral("timed out")) == true);
+    CHECK(QApplication::clipboard()->text().contains(QStringLiteral("Configuration:")) == true);
+    diagnosticsOrNull->close();
     REQUIRE(waitFor([&]() { return graphViewOrNull->GetImage().isNull() == false; }) == true);
     CHECK(workspace.IsUsingDefaultRenderer() == true);
     CHECK(source.FrameAvailable() == true);
@@ -2312,6 +2343,124 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
     CHECK(workspace.GetRenderProblem().isEmpty() == true);
     CHECK(workspace.GetScenePreparationProblem().isEmpty() == true);
     CHECK(failed.isEmpty() == true);
+#if defined(Q_OS_MACOS)
+    // Metal keeps the failed session bound after a command-buffer error. A later
+    // successful shader build must reach a new device without a manual restart.
+    workspace.SetLivePreview(false);
+    const uint64 failedDeviceSerial = source.GetDeviceSerial();
+    const uint64 previousBuild = workspace.GetLastResult().Request.Request;
+    const QImage previousFrame = graphViewOrNull->GetImage();
+    rhi::DeviceInfo deviceInformation;
+    REQUIRE(rhi::GetDeviceInfo(source.GetDevice(), deviceInformation) == rhi::DeviceStatus::Ready);
+    rhi::internal::FaultRasterSession();
+    REQUIRE(rhi::GetDeviceInfo(source.GetDevice(), deviceInformation) == rhi::DeviceStatus::Failed);
+    REQUIRE(workspace.BuildAndPreview() == true);
+    CHECK(graphViewOrNull->GetImage() == previousFrame);
+    REQUIRE(waitFor([&]() {
+                return workspace.GetLastResult().Request.Request > previousBuild && workspace.IsJobActive() == false;
+            }) == true);
+    REQUIRE(workspace.GetLastResult().IsSuccessful == true);
+    REQUIRE(source.GetDeviceSerial() != failedDeviceSerial);
+    REQUIRE(waitFor([&]() {
+                return source.FrameAvailable() == true &&
+                       workspace.GetPreviewOrNull()->GetActivePackagePath() == workspace.GetRuntimePackagePath();
+            }) == true);
+    CHECK(workspace.GetRenderProblem().isEmpty() == true);
+#endif
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("Force raster starts a World with a decoded runtime after a project shader build fails",
+          "[editor][render-graph][world-graph][fallback]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 60000;
+    const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
+    const QString python = QString::fromUtf8(LUDUS_TEST_PYTHON);
+    if (QFileInfo(compiler).isExecutable() == false || QFileInfo(python).isExecutable() == false)
+    {
+        SKIP("pinned shader tools are required for the project recovery test");
+    }
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const ToolingPaths tooling{python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)};
+    RendererWorkspace workspace(tooling);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    workspace.EnableWorldRendering();
+    workspace.SetLivePreview(false);
+    const QString helper = CopyShaderHelperFixture(project);
+    QSaveFile shaderCompiler(QDir(helper).filePath(QStringLiteral("compile_shader.py")));
+    const QByteArray diagnostic =
+        QByteArrayLiteral("import sys\nprint('Ludus shader build: invalid replacement shader', file=sys.stderr)\n"
+                          "sys.exit(1)\n");
+    REQUIRE(shaderCompiler.open(QIODevice::WriteOnly) == true);
+    REQUIRE(shaderCompiler.write(diagnostic) == diagnostic.size());
+    REQUIRE(shaderCompiler.commit() == true);
+    workspace.SetBuildTools(helper, compiler);
+    const QString validator = QStringLiteral(LUDUS_EDITOR_TEST_SPIRV_VALIDATOR);
+    if (QFileInfo(validator).isExecutable() == true)
+    {
+        RenderGraphBuildSettings settings = workspace.GetBuildSettings();
+        settings.Tools.Validator = validator;
+        workspace.SetBuildSettings(settings);
+    }
+    // A previously cooked package is valid even though recompiling the current shader will fail.
+    const QString projectRuntime = workspace.GetRuntimePackagePath();
+    REQUIRE(projectRuntime.isEmpty() == false);
+    REQUIRE(QDir().mkpath(QFileInfo(projectRuntime).absolutePath()) == true);
+    REQUIRE(QFile::copy(GetDefaultRenderGraphRuntime(), projectRuntime) == true);
+    REQUIRE(workspace.PreviewRuntime() == true);
+    REQUIRE(workspace.GetPreviewOrNull()->IsAttached() == false);
+    REQUIRE(workspace.GetPreviewOrNull()->GetTargetSize().isEmpty() == false);
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    REQUIRE(workspace.BuildAndPreview() == true);
+    const bool hasFinished = finished.count() != 0 || finished.wait(TIMEOUT_MILLISECONDS) == true;
+    REQUIRE(hasFinished == true);
+    REQUIRE(workspace.GetLastResult().IsSuccessful == false);
+    CHECK(workspace.GetLastResult().Code == QStringLiteral("RenderGraphBuildShader"));
+    CHECK(workspace.GetScenePreparationProblem().isEmpty() == true);
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.resize(800, 600);
+    viewport.show();
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    QSignalSpy failed(&source, &RenderPreview::Failed);
+    QPushButton* rasterOrNull = viewport.findChild<QPushButton*>(QStringLiteral("viewportRenderRecoveryRaster"));
+    REQUIRE(rasterOrNull != nullptr);
+    REQUIRE(rasterOrNull->isVisible() == true);
+    rasterOrNull->click();
+    CHECK(source.ShouldForceRaster() == true);
+    REQUIRE(source.SetScene(MakeScene({0, 0, 1, 1})) == true);
+    REQUIRE(source.Start() == true);
+    QElapsedTimer timer;
+    timer.start();
+    while (source.FrameAvailable() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(1);
+        workspace.ServicePreview();
+    }
+    INFO(source.Status().toStdString());
+    INFO(workspace.GetPreviewOrNull()->GetDisplayStatus().toStdString());
+    REQUIRE(source.FrameAvailable() == true);
+    CHECK(workspace.GetPreviewOrNull()->GetActivePackagePath() == GetDefaultRenderGraphRuntime());
+    CHECK(workspace.GetRenderProblem().contains(QStringLiteral("invalid replacement shader")) == true);
+    CHECK(failed.isEmpty() == true);
+    const uint64 oldDevice = source.GetDeviceSerial();
+    REQUIRE(workspace.RestoreViewportPreview(true) == true);
+    CHECK(source.GetDeviceSerial() > oldDevice);
+    CHECK(source.ShouldForceRaster() == true);
+    timer.restart();
+    while (source.FrameAvailable() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(1);
+        workspace.ServicePreview();
+    }
+    REQUIRE(source.FrameAvailable() == true);
+    CHECK(workspace.GetPreviewOrNull()->GetActivePackagePath() == GetDefaultRenderGraphRuntime());
     source.Stop();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
@@ -2340,10 +2489,19 @@ TEST_CASE("Graph viewport Stats toggle is visible and persists with navigation",
     statistics->click();
     CHECK(source.IsStatisticsVisible() == true);
     CHECK(overlay->isHidden() == false);
-    CHECK(overlay->testAttribute(Qt::WA_TransparentForMouseEvents) == true);
+    CHECK(overlay->testAttribute(Qt::WA_TransparentForMouseEvents) == false);
     CHECK(viewport.GetStatisticsText().contains(QStringLiteral("Updates:")) == true);
     // Output readback has a row only once a readback has been measured.
     CHECK(viewport.GetStatisticsText().contains(QStringLiteral("Editor CPU per frame:")) == true);
+    const QString expanded = overlay->text();
+    CHECK(expanded.startsWith(QStringLiteral("▾ Stats")) == true);
+    QTest::mouseClick(overlay, Qt::LeftButton);
+    CHECK(overlay->text().startsWith(QStringLiteral("▸ ")) == true);
+    CHECK(overlay->text().size() < expanded.size());
+    // The clipboard and status queries still return the full timing text.
+    CHECK(viewport.GetStatisticsText().contains(QStringLiteral("Editor CPU per frame:")) == true);
+    QTest::mouseClick(overlay, Qt::LeftButton);
+    CHECK(overlay->text() == expanded);
     const QJsonObject navigation = source.Navigation();
     statistics->click();
     CHECK(overlay->isHidden() == true);
@@ -2853,6 +3011,169 @@ TEST_CASE("The World viewport draws the character bust through light edits, orbi
     {
         CHECK(previewOrNull->GetActivePackagePath() == QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE));
     }
+    // Optional matched reference capture for the standalone hair/skin qualification (#1400): save the
+    // Editor's bust viewport so tests/sdk_consumer/hair_skin_bust/verify.py can compare it with the
+    // clean SDK package on the same fixture. The driver sets the per-feature path.
+    const QString capture = qEnvironmentVariable(shouldAssignHair == true ? "LUDUS_EDITOR_WORLD_CAPTURE_HAIR"
+                                                                          : "LUDUS_EDITOR_WORLD_CAPTURE_SKIN");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(graphView->GetImage().save(capture) == true);
+    }
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+// Same-World source of truth for the standalone hair/skin SDK qualification (#1400). Unlike the
+// behavioural test above, this imports the bust, assigns the slot, SAVES the World, EXPORTS its cooked
+// scene.luscn (the exact bytes the SDK app's SceneDefinition::Decode consumes) and a manifest with the
+// World and cooked-scene hashes, then captures ONE reference image at the SAVED camera and a fixed
+// extent, with no orbit, light-off or resize. verify.py sets the output paths through the environment
+// and compares this capture with the SDK app rendering the same scene.luscn and the same graph.
+TEST_CASE("The character bust World exports its cooked scene and a matched capture", "[.sdk-hair-skin-bust-export]")
+{
+    namespace format = ludus::content::scene_format;
+    // One saved World carries BOTH slots: Hair gets a hair card, Skin gets skin. The export writes one
+    // scene.luscn the SDK app consumes; the per-feature capture selects the matching graph.
+    const bool shouldCaptureHair = qEnvironmentVariable("LUDUS_BUST_EXPORT_FEATURE") == QStringLiteral("hair");
+    const QString scenePath = qEnvironmentVariable("LUDUS_BUST_EXPORT_SCENE");
+    const QString manifestPath = qEnvironmentVariable("LUDUS_BUST_EXPORT_MANIFEST");
+    const QString capturePath = qEnvironmentVariable("LUDUS_BUST_EXPORT_CAPTURE");
+    REQUIRE(scenePath.isEmpty() == false);
+    REQUIRE(manifestPath.isEmpty() == false);
+    REQUIRE(capturePath.isEmpty() == false);
+    // The SDK app renders a fixed 1600x1080 reverse-Z view; match it here.
+    constexpr int32 CAPTURE_WIDTH = 1600;
+    constexpr int32 CAPTURE_HEIGHT = 1080;
+    constexpr int32 TIMEOUT_MILLISECONDS = 60000;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QDir root(QFileInfo(project.path()).canonicalFilePath());
+    const QDir bust(QDir(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT))
+                        .filePath(QStringLiteral("tests/scenes/characters/infinite-head")));
+    const QDir copy(root.filePath(QStringLiteral("infinite-head")));
+    REQUIRE(QDir().mkpath(copy.path()) == true);
+    for (const QString& file : bust.entryList(QDir::Files))
+    {
+        REQUIRE(QFile::copy(bust.filePath(file), copy.filePath(file)) == true);
+    }
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(root.path(), 1);
+    world.SetProject(root.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    const QString worldPath = root.filePath(QStringLiteral("bust.world.json"));
+    REQUIRE(world.Create(worldPath) == true);
+    // infinite-head-hair.gltf carries both the Skin and Hair material slots under a key and fill light.
+    REQUIRE(world.ImportScene(copy.filePath(QStringLiteral("infinite-head-hair.gltf"))) == true);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    const auto source = [&world]() -> RenderPreview& { return world.GetRenderPreview(); };
+    REQUIRE(waitFor([&]() { return world.CanSave() == true; }) == true);
+    world.ResumePreview();
+    REQUIRE(waitFor([&]() { return source().Scene().Objects.isEmpty() == false; }) == true);
+    const auto findSlot = [&](std::string_view name) {
+        QString slot;
+        for (const PreviewObject& object : source().Scene().Objects)
+        {
+            const ludus::resources::SceneMaterial* materialOrNull =
+                GetSceneObjectMaterialOrNull(source().Scene(), object.Id);
+            if (materialOrNull != nullptr && materialOrNull->Name.View() == name)
+            {
+                slot = object.Id;
+            }
+        }
+        return slot;
+    };
+    const QString hairSlot = findSlot("Hair");
+    const QString skinSlot = findSlot("Skin");
+    REQUIRE(hairSlot.isEmpty() == false);
+    REQUIRE(skinSlot.isEmpty() == false);
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    RenderGraphPreview* previewOrNull = workspace.GetPreviewOrNull();
+    REQUIRE(previewOrNull != nullptr);
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+
+    // Assign both typed materials, exactly as Make Hair Card / Make Skin do.
+    const auto assignSlot = [&](const QString& slot, const QString& button, format::MaterialModel expected) {
+        REQUIRE(source().FrameEntity(slot) == true);
+        REQUIRE(waitFor([&]() { return previewOrNull->HasPendingWork() == false; }) == true);
+        REQUIRE(world.SelectEntity(slot) == true);
+        QPushButton* assignOrNull = world.findChild<QPushButton*>(button);
+        REQUIRE(assignOrNull != nullptr);
+        assignOrNull->click();
+        REQUIRE(waitFor([&]() {
+                    const ludus::resources::SceneMaterial* materialOrNull =
+                        GetSceneObjectMaterialOrNull(source().Scene(), slot);
+                    return materialOrNull != nullptr && materialOrNull->Scattering.Model == expected;
+                }) == true);
+        REQUIRE(waitFor([&]() { return previewOrNull->HasPendingWork() == false; }) == true);
+    };
+    assignSlot(skinSlot, QStringLiteral("worldAssignSkin"), format::MaterialModel::Skin);
+    assignSlot(hairSlot, QStringLiteral("worldAssignHairCard"), format::MaterialModel::HairCard);
+    INFO(workspace.GetRenderProblem().toStdString());
+    CHECK(workspace.GetRenderProblem().isEmpty() == true);
+
+    // Save the World and export its cooked scene (one scene.luscn with both slots) for the SDK app.
+    // A World with a scene level validates assets on a worker first, so Save returns pending; pump
+    // until the document is no longer dirty (the write completed).
+    REQUIRE(world.Save() == true);
+    REQUIRE(waitFor([&]() { return world.Dirty() == false; }) == true);
+    QString exportError;
+    REQUIRE(ExportCookedWorldScene(root.path(), world.Document(), scenePath, manifestPath, exportError) == true);
+    INFO(exportError.toStdString());
+
+    // Select the graph the captured feature uses: forward-lit for hair, the clustered-deferred default
+    // for skin. These are the SDK app's two packaged graphs.
+    if (shouldCaptureHair == true)
+    {
+        const QString forward = QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE);
+        REQUIRE(previewOrNull->Load(forward, GetDefaultRenderGraphRuntime()) == RenderGraphPreviewLoad::Staged);
+        REQUIRE(waitFor([&]() {
+                    return previewOrNull->GetActivePackagePath() == forward && graphView->GetImage().isNull() == false;
+                }) == true);
+    }
+
+    // Capture one matched frame at the SAVED camera and the fixed extent, with no orbit/resize/light edit.
+    renderer::ViewDescription view;
+    QString viewError;
+    REQUIRE(source().DescribeGraphView(CAPTURE_WIDTH, CAPTURE_HEIGHT, view, viewError) == true);
+    INFO(viewError.toStdString());
+    previewOrNull->SetReferenceSize(QSize(CAPTURE_WIDTH, CAPTURE_HEIGHT));
+    const uint64 revision = previewOrNull->GetPresentedRevision();
+    previewOrNull->SetCamera(view, revision + 1);
+    REQUIRE(waitFor([&]() {
+                return previewOrNull->GetPresentedRevision() > revision && previewOrNull->HasPendingWork() == false &&
+                       graphView->GetImage().isNull() == false &&
+                       graphView->GetImage().size() == QSize(CAPTURE_WIDTH, CAPTURE_HEIGHT);
+            }) == true);
+    INFO(workspace.GetRenderProblem().toStdString());
+    CHECK(workspace.GetRenderProblem().isEmpty() == true);
+    if (shouldCaptureHair == true)
+    {
+        CHECK(previewOrNull->GetActivePackagePath() == QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE));
+    }
+    REQUIRE(graphView->GetImage().save(capturePath) == true);
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
@@ -5147,6 +5468,36 @@ TEST_CASE("Force raster draws the engine default graph instead of an authored ra
     CHECK(preview.CanSwitchToRasterFallback() == true);
     preview.Detach();
 }
+TEST_CASE("Raster recovery loads the default package when the project package is missing",
+          "[editor][render-graph][selection][viewport-recovery]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString requested = QDir(project.path()).filePath(QStringLiteral("missing.lurgrt"));
+    const QString raster = GetDefaultRenderGraphRuntime();
+    REQUIRE(raster.isEmpty() == false);
+    RenderGraphPreview preview(
+        {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+        shaders::renderer_composite::Vertex(),
+        shaders::renderer_composite::Fragment());
+    REQUIRE(preview.Load(requested, raster) == RenderGraphPreviewLoad::Unreadable);
+    CHECK(preview.GetAttemptedPackagePath() == requested);
+    CHECK(preview.GetLoadProblem().contains(QStringLiteral("missing.lurgrt")) == true);
+    REQUIRE(preview.HasRasterRecovery() == true);
+    preview.SetForceRaster(true);
+    REQUIRE(preview.Load(requested, raster) == RenderGraphPreviewLoad::Waiting);
+    CHECK(preview.GetLoadProblem().isEmpty() == true);
+    CHECK(preview.GetAttemptedPackagePath() == raster);
+    CHECK(preview.GetRequestedPackagePath() == requested);
+    CHECK(preview.HasRasterRecovery() == false);
+
+    const QString missingFallback = QDir(project.path()).filePath(QStringLiteral("missing-fallback.lurgrt"));
+    REQUIRE(preview.Load(requested, missingFallback) == RenderGraphPreviewLoad::Unreadable);
+    CHECK(preview.GetAttemptedPackagePath() == missingFallback);
+    CHECK(preview.GetLoadProblem().contains(QStringLiteral("missing-fallback.lurgrt")) == true);
+    CHECK(preview.HasRasterRecovery() == false);
+}
+
 TEST_CASE("Force raster switches the live hardware renderer and restores automatic selection",
           "[editor][render-graph][selection]")
 {
@@ -5796,12 +6147,15 @@ TEST_CASE("A viewport graph capture converges an accumulating ray output and sav
     CHECK(info.SubmittedSamples == SAMPLES);
     CHECK(info.MinimumSamples == SAMPLES);
     REQUIRE(capture.GetPixels().GetSize() == static_cast<usize>(extent.width()) * extent.height());
-    const QImage image = capture.MakeDisplayImage();
+    const ViewportDisplayTransform display = capture.GetDisplayTransform();
+    CHECK(display.Exposure == 1);
+    CHECK(display.Curve == renderer::ToneCurve::Reinhard);
+    const QImage image = capture.MakeDisplayImage(display);
     CHECK(image.size() == extent);
 
     QTemporaryDir directory;
     const QString path = QDir(directory.path()).filePath(QStringLiteral("capture.lurgcap"));
-    REQUIRE(capture.Save(path, error) == true);
+    REQUIRE(capture.Save(path, error, display) == true);
     QFile saved(path);
     REQUIRE(saved.open(QIODevice::ReadOnly) == true);
     const QByteArray bytes = saved.readAll();
@@ -5814,7 +6168,8 @@ TEST_CASE("A viewport graph capture converges an accumulating ray output and sav
     REQUIRE(package.open(QIODevice::ReadOnly) == true);
     CHECK(bytes.mid(format::CAPTURE_PACKAGE_IDENTITY_OFFSET, format::CAPTURE_IDENTITY_BYTES) ==
           QCryptographicHash::hash(package.readAll(), QCryptographicHash::Sha256));
-    CHECK(QImage(ViewportGraphCapture::GetDisplayImagePath(path)).size() == extent);
+    const QImage savedImage(ViewportGraphCapture::GetDisplayImagePath(path));
+    CHECK(savedImage.convertToFormat(image.format()) == image);
     capture.Release();
     CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Idle);
 }
@@ -6258,6 +6613,40 @@ TEST_CASE("The selected World viewport renders its authored Atmosphere entity",
     REQUIRE(waitFor([&]() { return graphViewOrNull->GetImage() == nightSky; }) == true);
     RenderGraphPreview* previewOrNull = rendererWorkspace.GetPreviewOrNull();
     REQUIRE(previewOrNull != nullptr);
+
+    RenderPreview& source = world.GetRenderPreview();
+    source.SetExposureMode(ViewportExposureMode::Graph);
+    math::Vector3 forwardWorld;
+    REQUIRE(math::TryNormalize(math::Vector3{0, 0.39F, 1}, forwardWorld) == math::MathStatus::Success);
+    math::Quaternion orientation;
+    REQUIRE(math::TryRotationBetween({0, 0, -1}, forwardWorld, orientation) == math::MathStatus::Success);
+    QJsonObject navigation = source.Navigation();
+    navigation.insert(QStringLiteral("camera"), QString{});
+    navigation.insert(QStringLiteral("eyeX"), 0);
+    navigation.insert(QStringLiteral("eyeY"), 2);
+    navigation.insert(QStringLiteral("eyeZ"), 0);
+    navigation.insert(QStringLiteral("rotationX"), static_cast<float64>(orientation.X));
+    navigation.insert(QStringLiteral("rotationY"), static_cast<float64>(orientation.Y));
+    navigation.insert(QStringLiteral("rotationZ"), static_cast<float64>(orientation.Z));
+    navigation.insert(QStringLiteral("rotationW"), static_cast<float64>(orientation.W));
+    const uint64 priorView = previewOrNull->GetPresentedRevision();
+    source.RestoreNavigation(navigation);
+    REQUIRE(waitFor([&]() { return previewOrNull->GetPresentedRevision() > priorView; }) == true);
+    const QImage withoutAurora = graphViewOrNull->GetImage();
+
+    QCheckBox* auroraOrNull = world.findChild<QCheckBox*>(QStringLiteral("worldField:atmosphere/aurora"));
+    QLineEdit* emissionOrNull = world.findChild<QLineEdit*>(QStringLiteral("worldField:atmosphere/auroraEmission"));
+    REQUIRE(auroraOrNull != nullptr);
+    REQUIRE(emissionOrNull != nullptr);
+    auroraOrNull->setChecked(true);
+    emissionOrNull->setText(QStringLiteral("0.00005"));
+    REQUIRE(world.Apply() == true);
+    REQUIRE(waitFor([&]() {
+                renderer::ViewDescription presented;
+                return previewOrNull->TryGetPresentedView(presented) == true &&
+                       presented.Atmosphere.Aurora.IsEnabled == true && graphViewOrNull->GetImage() != withoutAurora;
+            }) == true);
+
     const uint64 skyRevision = previewOrNull->GetPresentedRevision();
     world.GetRenderPreview().Orbit(2, 0);
     REQUIRE(waitFor([&]() { return previewOrNull->GetPresentedRevision() > skyRevision; }) == true);

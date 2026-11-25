@@ -253,7 +253,7 @@ struct DeviceInfo final
 /// CreateDevice returns InvalidState while it lives. In the browser each owner binds its
 /// own sub-backend and canvas; a selector that names a canvas another owner presents to,
 /// even through a different string, fails startup with StartupError::InvalidWindow.
-/// Device-less facade calls (Start, BeginFrame(), CreateShader without a device, ...)
+/// Device-less facade calls such as Start, BeginFrameStatus and CreateShader
 /// address the owner in the first slot, which is the device created while no other
 /// device was live, so a single-device program behaves as before.
 /// @param application Startup application metadata, consumed during the call.

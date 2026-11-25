@@ -5,6 +5,7 @@
 
 #include "support.hpp"
 
+#include <ludus/tooling/shader_language/preprocessor.hpp>
 #include <ludus/tooling/shader_language/semantic.hpp>
 
 namespace ludus::tools::luslc
@@ -16,6 +17,8 @@ struct LanguageServerOptions final
     std::string_view Root;
     /// Include directories relative to the root, as for `luslc lower`.
     BorrowedView<const BorrowedView<const char>> IncludeDirectories;
+    /// Selected configuration macros, in the same order as for `luslc lower`.
+    BorrowedView<const language::ConfigurationValue> Configuration;
     /// Style setting of the diagnostics.
     language::StyleSetting Style = language::StyleSetting::Strict;
 };

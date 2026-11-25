@@ -4,8 +4,8 @@
 #include <ludus/foundation/base/types.h>
 
 /// @file
-/// World features: optional parts of a World that a render graph may or may not draw. Each feature maps to one
-/// engine-owned scene-interface function. The graph builder records which of those functions the compiled kernels
+/// World features: optional parts of a World that a render graph may draw. Ray-capable features map to
+/// engine-owned scene-interface functions. The graph builder records which of those functions the compiled kernels
 /// call, so a graph's support follows its code, not a manifest flag. This header owns every feature's name, function,
 /// editor text and warning code; the "World features" section of docs/development/render-graph-authoring.md shows the
 /// same table.
@@ -18,9 +18,11 @@ enum class WorldFeature : foundation::uint8
     AtmosphereSky,
     /// Haze between the camera and surfaces: in-scattered sky light and transmittance along the view ray.
     AerialPerspective,
+    /// Auroral curtains in the native clustered deferred atmosphere.
+    Aurora,
 };
 /// Number of WorldFeature values.
-inline constexpr foundation::usize WORLD_FEATURE_COUNT = 2;
+inline constexpr foundation::usize WORLD_FEATURE_COUNT = 3;
 /// One bit per WorldFeature, bit index equal to the enum value.
 using WorldFeatureMask = foundation::uint32;
 
@@ -46,9 +48,10 @@ struct WorldFeatureDescription final
 {
     /// Short name for tables and warnings, such as "Atmosphere sky".
     const char* Name = "";
-    /// Scene-interface function a ray kernel calls to draw the feature, with its parameters.
+    /// Scene-interface function a ray kernel calls to draw the feature, with its parameters. Empty for raster-only
+    /// features.
     const char* Function = "";
-    /// Where in a graph's callbacks to call Function.
+    /// Where in a graph's callbacks to call Function, or how to view a raster-only feature.
     const char* Callback = "";
     /// What the viewport shows instead while the feature is not rendered.
     const char* Omission = "";
@@ -86,12 +89,21 @@ inline constexpr const char* WORLD_FEATURE_WARNING_CODE = "RenderGraphFeatureNot
         .Approximation = "Every segment uses the haze seen from the camera's altitude, read from a table resolved "
                          "when the scene is prepared, up to 32 km.",
     };
+    constexpr WorldFeatureDescription AURORA
+    {
+        .Name = "Northern lights",
+        .Callback =
+            "Use the native clustered deferred raster graph with a perspective camera inside the clear-air shell.",
+        .Omission = "The sky has no auroral curtains.",
+    };
     switch (feature)
     {
         case WorldFeature::AtmosphereSky:
             return ATMOSPHERE_SKY;
         case WorldFeature::AerialPerspective:
             return AERIAL_PERSPECTIVE;
+        case WorldFeature::Aurora:
+            return AURORA;
     }
     return {};
 }

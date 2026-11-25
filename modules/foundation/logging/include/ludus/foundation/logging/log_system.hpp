@@ -144,6 +144,16 @@ public:
     /// Native async-owner allocation failure returns Degraded with Synchronous mode, retaining initialized sinks
     /// and disabling the timed flush worker; explicit and shutdown flushes remain available.
     static LogInitResult Initialize(const LogConfig& config);
+
+    /// @brief Ends the session: closes admission, drains queued records, flushes and closes the sinks, and joins
+    /// the native timed-flush and asynchronous workers. Later records take the emergency path.
+    ///
+    /// Call it before returning from `main`. If the process exits without it (for example through `exit()`),
+    /// native process-lifetime teardown performs the same shutdown, so a running worker never terminates the
+    /// process; a worker that cannot be joined is left running rather than destroyed.
+    /// @return Ok; NotInitialized when no session is active; Incomplete when the asynchronous worker did not stop
+    ///         within its deadline (its queue and sinks stay allocated), or on web when called from a console
+    ///         callback.
     static LogStatus Shutdown();
 
     /// @brief Acknowledged flush: waits (up to timeoutMilliseconds) for all records accepted before the call to

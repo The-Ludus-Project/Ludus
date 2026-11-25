@@ -119,25 +119,32 @@ function(ludus_compile_shader)
     if(source MATCHES "\\.lusl$")
         set(luslc)
         set(luslc_depends)
-        if(TARGET luslc)
+        # The source tree's luslc target, else the host LUDUS_LUSLC (cross builds such as
+        # Emscripten, whose luslc target would be a target binary), else the SDK's bin/luslc.
+        set(sdk_luslc "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../bin/luslc${CMAKE_EXECUTABLE_SUFFIX}")
+        if(TARGET luslc AND NOT CMAKE_CROSSCOMPILING)
             set(luslc "$<TARGET_FILE:luslc>")
             set(luslc_depends luslc)
-        elseif(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../bin/luslc${CMAKE_EXECUTABLE_SUFFIX}")
-            get_filename_component(luslc "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../bin/luslc${CMAKE_EXECUTABLE_SUFFIX}" ABSOLUTE)
-            set(luslc_depends "${luslc}")
+        elseif(LUDUS_LUSLC OR CMAKE_CROSSCOMPILING OR NOT EXISTS "${sdk_luslc}")
+            ludus_require_tool(LUDUS_LUSLC "LUSL shader lowering (${SH_SOURCE})"
+                "From the Ludus source repository root: ./scripts/bootstrap-luslc\n  It builds the host luslc from the same sources; set LUDUS_LUSLC to the path it prints.")
+            set(luslc "${LUDUS_LUSLC}")
+            set(luslc_depends "${LUDUS_LUSLC}")
         else()
-            message(FATAL_ERROR "ludus_compile_shader: ${SH_SOURCE} is LUSL, which needs luslc; build with an SDK that installs bin/luslc")
+            get_filename_component(luslc "${sdk_luslc}" ABSOLUTE)
+            set(luslc_depends "${luslc}")
         endif()
         get_filename_component(lusl_root "${source}" DIRECTORY)
         get_filename_component(lusl_name "${source}" NAME)
         set(lusl_includes)
         foreach(path IN LISTS SH_INCLUDES)
             get_filename_component(path "${path}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-            file(RELATIVE_PATH relative "${lusl_root}" "${path}")
-            if(relative MATCHES "^\\.\\.")
-                message(FATAL_ERROR "ludus_compile_shader: LUSL include ${path} must be below ${lusl_root}")
-            endif()
-            list(APPEND lusl_includes --include-directory "${relative}")
+            list(APPEND lusl_includes --include-directory "${path}")
+        endforeach()
+        # DEFINES reach the LUSL preprocessor, which runs before Slang sees the module.
+        set(lusl_defines)
+        foreach(define IN LISTS SH_DEFINES)
+            list(APPEND lusl_defines --define "${define}")
         endforeach()
         set(lowered "${output}/${SH_NAME}.lusl.slang")
         add_custom_command(
@@ -146,8 +153,8 @@ function(ludus_compile_shader)
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/lower_lusl.py"
                     --luslc "${luslc}" --root "${lusl_root}" --source "${lusl_name}" --name "${SH_NAME}"
                     --output "${lowered}" --slots "${output}/${SH_NAME}_slots.h" --depfile "${output}/lusl.d"
-                    ${lusl_includes}
-            DEPENDS "${source}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/lower_lusl.py" ${luslc_depends}
+                    ${lusl_includes} ${lusl_defines}
+            DEPENDS "${source}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/lower_lusl.py" ${luslc_depends} ${SH_DEPENDS}
             DEPFILE "${output}/lusl.d"
             VERBATIM
         )

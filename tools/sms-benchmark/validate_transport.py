@@ -17,6 +17,7 @@ def main():
     parser.add_argument('--upstream', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--compiler', type=Path, required=True)
+    parser.add_argument('--luslc', type=Path, help='luslc that lowers the shaders (default: ./scripts/bootstrap-luslc)')
     arguments = parser.parse_args()
     arguments.output.mkdir(parents=True, exist_ok=False)
     scene = Scene(arguments.upstream / SOURCE['directory'])
@@ -50,10 +51,12 @@ def main():
     adapter = dict(device.adapter.info)
     if adapter['adapter_type'] == 'CPU':
         raise ValueError('Physical GPU required.')
-    shader = compile_entry(arguments.output / 'transport', arguments.compiler, 'reflection_map.slang', 'ValidateFigure17Transport')
-    result = compute_with_buffers({0: inputs, 2: slopes, 3: packed_scene}, {1: expected.size*4},
+    shader, slots = compile_entry(arguments.output / 'transport', arguments.compiler, arguments.luslc,
+                                  'reflection_map.lusl', 'ValidateFigure17Transport')
+    result = compute_with_buffers({slots['INPUTS']: inputs, slots['SLOPES']: slopes, slots['SCENE_DATA']: packed_scene},
+                                  {slots['RESULTS']: expected.size*4},
                                   shader.replace('fn ValidateFigure17Transport(', 'fn main('), n=((len(inputs)+31)//32, 1, 1))
-    observed = np.frombuffer(result[1], dtype=np.float32).reshape(expected.shape)
+    observed = np.frombuffer(result[slots['RESULTS']], dtype=np.float32).reshape(expected.shape)
     np.savez(arguments.output / 'transport.npz', inputs=inputs, expected=expected, observed=observed, finite_difference=finite)
     checks = dict(analytic_jacobian=derivative_check,
                   reflection_map=bool(np.allclose(observed[:, 0], expected[:, 0], rtol=5e-4, atol=2e-4)),
@@ -71,10 +74,12 @@ def main():
                                values[3, :2], values[3, 2:], smoothing)
         if root is not None:
             expected_solver[index, 0, :3] = [*root, 1]
-    shader = compile_entry(arguments.output / 'solver', arguments.compiler, 'sms.slang', 'ValidateFigure17Solver')
-    result = compute_with_buffers({0: inputs, 2: slopes, 3: packed_scene}, {1: expected_solver.size*4},
+    shader, slots = compile_entry(arguments.output / 'solver', arguments.compiler, arguments.luslc,
+                                  'sms.lusl', 'ValidateFigure17Solver')
+    result = compute_with_buffers({slots['INPUTS']: inputs, slots['SLOPES']: slopes, slots['SCENE_DATA']: packed_scene},
+                                  {slots['RESULTS']: expected_solver.size*4},
                                   shader.replace('fn ValidateFigure17Solver(', 'fn main('), n=((len(inputs)+31)//32, 1, 1))
-    observed_solver = np.frombuffer(result[1], dtype=np.float32).reshape(expected.shape)
+    observed_solver = np.frombuffer(result[slots['RESULTS']], dtype=np.float32).reshape(expected.shape)
     np.savez(arguments.output / 'solver.npz', inputs=inputs, expected=expected_solver, observed=observed_solver)
     is_successful = observed_solver[:, 0, 2] > 0
     values, _ = evaluate_reflection_map(scene, inputs[is_successful, 1, :3], inputs[is_successful, 2, :3],

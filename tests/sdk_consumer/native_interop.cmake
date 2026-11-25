@@ -29,7 +29,7 @@ function(ludus_add_native_interop_fixture target fixture_root)
         target_link_libraries(${target} PRIVATE volk::volk_headers ${CMAKE_DL_LIBS})
     endif()
     ludus_compile_shader(TARGET ${target} NAME native_source RASTER
-        SOURCE "${fixture_root}/shaders/native_interop.slang" VERTEX vertexMain FRAGMENT sourceMain)
+        SOURCE "${fixture_root}/shaders/native_interop.lusl" VERTEX VertexMain FRAGMENT SourceMain)
     ludus_compile_shader(TARGET ${target} NAME native_sample RASTER
-        SOURCE "${fixture_root}/shaders/native_interop.slang" VERTEX vertexMain FRAGMENT sampleMain)
+        SOURCE "${fixture_root}/shaders/native_interop.lusl" VERTEX VertexMain FRAGMENT SampleMain)
 endfunction()

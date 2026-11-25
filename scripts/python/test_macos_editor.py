@@ -107,7 +107,9 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(editor_tool.engine_setup_environment(Path("/tmp"), engine)["SDKROOT"], "/custom/sdk")
 
     def args(self, preset="macos-clang-development", *options):
-        return engine.make_parser().parse_args(["init", "--cli", "--with-editor", preset, *options])
+        # Unset options parse as None so the init GUI can restore a saved selection; init resolves
+        # their defaults (preview on) before editor setup, as these tests must too.
+        return init_ui.apply_defaults(engine.make_parser().parse_args(["init", "--cli", "--with-editor", preset, *options]))
 
     def test_macos_native_options_and_host_mismatch(self):
         for machine in ("arm64", "x86_64"):

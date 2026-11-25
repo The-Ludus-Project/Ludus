@@ -7,6 +7,7 @@
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/world_feature.hpp>
 
+#include "internal/code_navigation.h"
 #include "internal/controller.h"
 #include "internal/external_code_editor.h"
 #include "internal/render_graph_build_settings.h"
@@ -28,6 +29,7 @@
 #include <QByteArray>
 #include <QJsonObject>
 #include <QPointF>
+#include <QPointer>
 #include <QSharedPointer>
 #include <QString>
 #include <QTimer>
@@ -56,14 +58,20 @@ QT_END_NAMESPACE
 namespace ludus::editor
 {
 struct WorldSurfaceBake;
+struct ViewportRenderRecovery;
+class ViewportRenderRecoveryNotice;
 class RenderGraphQuickAdd;
 class RenderGraphRecovery;
 struct RenderGraphTemplate;
 struct RenderGraphResolutionSelection;
 class CodeEditor;
+class CodeEditorArea;
+class CodeReferencesWindow;
+class CodeDocumentTab;
 class CodeDocumentController;
 class CodeFormatter;
 class RenderGraphShaderAssistance;
+struct ErrorListEntry;
 class RayPathInspection;
 class RenderGraphCaptureProfile;
 class RenderGraphLibraryCapture;
@@ -91,7 +99,7 @@ class RenderGraphResourceInspector;
 // docs/development/render-graph-authoring.md#node-canvas-and-preview-rg3b,
 // docs/development/render-graph-authoring.md#start-customizing-the-renderer and
 // docs/development/editor-workspace.md#workspace-layout.
-class RendererWorkspace final : public QWidget
+class RendererWorkspace final : public QWidget, private CodeNavigationViewHost
 {
     Q_OBJECT
 public:
@@ -110,9 +118,6 @@ public:
     /// Select Source without changing its accepted text/history, preferring a selected shader
     /// when opening from the canvas. False when no source is available. GUI thread only.
     [[nodiscard]] bool ShowSourceView();
-    /// Temporarily collapse graph navigation while Source shares the document well with a World.
-    /// Canvas/Plan navigation and the user's Sources visibility preference are preserved.
-    void SetSourceCompanionLayout(bool shouldUseCompactSource);
     /// Local view preferences only: project-relative graph, source selection and selected view.
     /// Never serializes draft bytes. Empty when no graph is loaded.
     [[nodiscard]] QJsonObject GetSourceViewState() const;
@@ -127,6 +132,16 @@ public:
     /// graphs/Main/main.lurender.json, or the engine default when it has none (or it cannot
     /// be loaded; the status line says why). Binding writes nothing.
     void SetProject(const QString& root, foundation::uint64 epoch);
+    /// Attach the application's document tabs for shader editing and navigation.
+    void SetCodeEditorArea(CodeEditorArea& inoutArea);
+    /// Show Find References results from package shaders in `windowOrNull` (the
+    /// References tool window, code editor M4) instead of the chooser beside the
+    /// editor. The window may be destroyed first; null restores the chooser.
+    void SetReferencesWindow(CodeReferencesWindow* windowOrNull);
+    /// Open an exact package-relative source in Code, retaining the current canvas location.
+    [[nodiscard]] bool OpenGraphSource(const QString& file, bool isPreview = false);
+    [[nodiscard]] bool IsGraphCodeActive() const;
+    void SetCodeFocused(bool isFocused);
     /// Open a root .lurender.json inside the project; its directory is the package root.
     [[nodiscard]] bool OpenGraph(const QString& path);
     /// Create and open a built-in raster, ReSTIR DI or visibility offscreen Renderer template in the selected project's
@@ -332,6 +347,14 @@ public:
     /// the same configuration, reveal warning/error ports and open shared field controls. Invalid
     /// graph targets preserve selection/view/history and return false. Never changes document undo.
     [[nodiscard]] bool ActivateDiagnostic(foundation::int32 row);
+    /// Error List rows for the live analysis of every open package shader (code
+    /// editor M4, CE10): each shader Code tab, or the Source pane when this
+    /// workspace has no Code area. One row per marker, File is the package file
+    /// and SourceIndex the marker's index in that file's editor.
+    [[nodiscard]] QList<ErrorListEntry> GetAnalysisEntries() const;
+    /// Show `file`'s editor and select its analysis marker `index`; false when the
+    /// file is no longer open or the marker was replaced.
+    [[nodiscard]] bool ActivateAnalysisDiagnostic(const QString& file, foundation::int32 index);
     [[nodiscard]] QString GetSourceFile() const;
     [[nodiscard]] foundation::int32 GetSourceLine() const;
     /// One-based Unicode scalar column of the Source view caret.
@@ -365,9 +388,18 @@ public:
     {
         return mActivationProblem;
     }
-    /// Failure that prevents scene preparation. Source/build errors are nonfatal while the
-    /// prebuilt default prepares or a previously accepted graph remains active.
+    /// Failure that prevents scene preparation. A decoded, preparing or active runtime may
+    /// render even when a newer source build has failed.
     [[nodiscard]] QString GetScenePreparationProblem() const;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    /// Current viewport failure and its available recovery actions. Empty when the viewport has no error.
+    [[nodiscard]] ViewportRenderRecovery GetViewportRenderRecovery() const;
+    /// Open the diagnostic if it still belongs to the current renderer build and draft.
+    [[nodiscard]] bool OpenViewportRenderDiagnostic(foundation::uint64 request, foundation::int32 row);
+    /// Restart the current World's graphics session, optionally selecting the engine raster renderer.
+    /// False when the World has no preview source or starting the replacement was rejected.
+    [[nodiscard]] bool RestoreViewportPreview(bool shouldUseRaster);
+#endif
     /// Advisory about how the displayed route lights the viewport's World, such as a slice-sampling luminaire panel
     /// placed for another scene. It never blocks preparation or rendering and is empty without one. Refreshed while
     /// the viewport is serviced, when the World, draft or configuration changes; RenderProblemChanged reports it.
@@ -472,6 +504,8 @@ public:
     void ServicePreview();
 
 Q_SIGNALS:
+    void ShaderCodeWorkspaceRequested();
+    void GraphWorkspaceRequested();
     /// Ask the shell to show this Source editor beside the existing World document.
     void CodeViewportRequested();
     /// Request that the shell toggle its reversible focus layout for this document.
@@ -480,6 +514,8 @@ Q_SIGNALS:
     void ErrorListRequested();
     /// A viewport asked to see one listed problem, by its code; the shell shows the Error List with that row selected.
     void ErrorListEntryRequested(const QString& code);
+    /// A shader editor's analysis markers changed or one closed; GetAnalysisEntries has the new rows.
+    void AnalysisDiagnosticsChanged();
     void DocumentChanged();
     /// Node fields changed; the originating surface may retain its active controls.
     /// editOriginOrNull is borrowed during synchronous notification, or null for a full refresh.
@@ -531,6 +567,56 @@ private:
     void renderTree(bool shouldRefreshInspector = true, QWidget* editOriginOrNull = nullptr);
     void renderInspector();
     void populateNodeFields(QFormLayout& outFields, QWidget& inoutParent);
+    struct BufferSizingDraft final
+    {
+        QString File;
+        QString Configuration;
+        QString Node;
+        QString Source;
+        QString Type;
+        foundation::int32 Mode = 1;
+        foundation::int32 Count = 1;
+        foundation::int32 Bytes = 0;
+    };
+    void editBufferSizing(QWidget& inoutParent, const BufferSizingDraft* pendingOrNull = nullptr);
+    void returnToBufferSizing();
+    void clearBufferSizingReturn();
+    [[nodiscard]] CodeDocumentTab* openShaderCodeTab(const QString& file, bool isPreview);
+    [[nodiscard]] CodeNavigation* OpenNavigationTarget(const CodeNavigationTarget& target) override;
+    [[nodiscard]] CodeNavigation* ActivateNavigationView(CodeNavigation* viewOrNull, const QString& file) override;
+    [[nodiscard]] bool ShowReferences(CodeNavigation& inoutOrigin, const CodeReferenceResults& results) override;
+    void revealShaderCodeTab(CodeDocumentTab& inoutTab);
+    void updateGraphCodeContext();
+    void rememberGraphCodeOrigin();
+    void returnToGraph();
+    [[nodiscard]] CodeDocumentTab* activeGraphCodeTab() const;
+    [[nodiscard]] const CodeEditor& activeGraphSourceEditor() const;
+    /// The editor showing package `file` with live analysis, or null when it is not open.
+    [[nodiscard]] CodeEditor* findAnalysisEditorOrNull(const QString& file) const;
+    /// Every package file with an editor that can hold live analysis, in tab order.
+    [[nodiscard]] QStringList getAnalysisFiles() const;
+    [[nodiscard]] RenderGraphShaderAssistance* activeShaderAssistance() const;
+    [[nodiscard]] QString shaderInterfaceFile() const;
+    void setUpGraphCodeFormatting(CodeDocumentTab& inoutTab);
+    void applySourceDiagnostics(CodeEditor& inoutEditor, const QString& file);
+    void refreshGraphCodeDiagnostics();
+    void openGraphCodeLine(const QString& file, foundation::int32 line, foundation::int32 column);
+    void refreshShaderCodeTabs();
+    void resetShaderCodeTabs();
+    void sourceTextEdited(const QString& file);
+    void restoreShaderTabHistory(bool shouldRedo);
+    void restoreGraphCodeSelection(const RenderGraphTextState& state);
+    enum class SharedShaderFilePurpose : foundation::uint8
+    {
+        Include,
+        BufferLayout,
+    };
+    [[nodiscard]] QString
+    stageSharedShaderSource(QWidget& inoutParent, const QString& nearbyFile, SharedShaderFilePurpose purpose);
+    void openNewSharedShaderSource(QWidget& inoutParent, const QString& nearbyFile);
+    [[nodiscard]] QString insertSharedShaderInclude(QWidget& inoutParent, const QString& target);
+    void addShaderBufferAccess();
+    void populateBufferSizing(const QJsonObject& node, QFormLayout& outFields, QWidget& inoutParent);
     void populateNodeNameFields(QFormLayout& outFields, QWidget& inoutParent, QDialog* closeOnRenameOrNull = nullptr);
     [[nodiscard]] bool renameSelectedNode(const QString& name, QString& outError);
     void promptRenameNode();
@@ -545,7 +631,7 @@ private:
     void renderSource();
     /// True when the Source pane's language can be formatted now: LUSL in process, Slang by clang-format.
     [[nodiscard]] bool canFormatSource() const;
-    void restoreSourceHistory();
+    void restoreSourceHistory(bool shouldFocusSource = true);
     void renderStatus();
     void updateActions();
     void documentEdited(RenderGraphDocumentStatus status,
@@ -593,7 +679,10 @@ private:
     void updateResourceInspection();
     void renderPreview();
     void renderSourceStatus();
+    void rememberSourceSplitter();
+    [[nodiscard]] bool isGraphCodeVisible() const;
     void updateSourceInterfaceVisibility();
+    void updateSourceInterfaceContents();
     void updateChromeVisibility();
     void openSubgraph(const QString& asset, const QString& configuration, const QString& instance);
 
@@ -610,7 +699,6 @@ private:
     bool mIsRendering = false;
     bool mIsGraphSettingsSectionExpanded = false;
     bool mIsChromeVisible = true;
-    bool mShouldUseCompactSource = false;
     /// The outline was open when the Source view hid it, and comes back with the next view.
     bool mIsOutlineRestoredAfterSource = false;
     foundation::int32 mFocusRestoreView = 0;
@@ -619,6 +707,11 @@ private:
     RenderGraphDocument mDocument;
     RenderGraphRecovery* mRecovery;
     RenderGraphCodeDocument mSourceDocument;
+    QPointer<CodeEditorArea> mShaderCodeArea;
+    QPointer<CodeReferencesWindow> mReferencesWindow;
+    RenderGraphNodeSelection mGraphCodeOrigin;
+    bool mIsCodeFocused = false;
+    BufferSizingDraft mPendingBufferSizing;
     ExternalCodeEditor mCodeEditor;
     RenderGraphJob mJob;
     RenderGraphCreation mCreation;
@@ -638,6 +731,8 @@ private:
     /// Status panel and the problem chip that replaces it while the Error List shows the problem.
     QWidget* mStatusRow;
     QToolButton* mProblemChip;
+    // Keep the layout shared with the graph authoring library, which is compiled independently of GPU preview.
+    ViewportRenderRecoveryNotice* mPreviewRecoveryOrNull = nullptr;
     QPushButton* mSourcesToggle;
     QTabWidget* mViews;
     QScrollArea* mInspectorPanel;
@@ -657,6 +752,8 @@ private:
     /// The selection's connections, endpoint pickers and Connect/Disconnect; shown only with a selection.
     QWidget* mConnections;
     QLabel* mConnectionsHeading;
+    QWidget* mGraphSourceHeader;
+    QPushButton* mReturnToGraph;
     QComboBox* mSourceFile;
     CodeEditor* mSource;
     CodeDocumentController* mSourceController;
@@ -665,6 +762,7 @@ private:
     QPlainTextEdit* mSourceInterface;
     QSplitter* mSourceSplit;
     QPushButton* mSourceInterfaceToggle;
+    QPushButton* mAddShaderBufferAccess;
     QPushButton* mSourceFocusToggle;
     QLabel* mSourceStatus;
     foundation::uint64 mSourcePresentedGeneration = 0;
@@ -754,6 +852,7 @@ private:
     void queueGraphEditTrace(RenderGraphSource source);
     void appendWorkerSocketArgument(QStringList& inoutArguments);
     /// Shader tool selection shared by graph builds and capture builds.
+    void appendShaderToolArguments(QStringList& inoutArguments) const;
     void appendBuildToolArguments(QStringList& inoutArguments) const;
     QTimer mSourceEditDebounce;
     /// Result, project and file whose diagnostics the Source view marks.

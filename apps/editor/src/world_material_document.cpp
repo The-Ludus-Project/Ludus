@@ -165,6 +165,7 @@ WorldMaterialDocument::WorldMaterialDocument(QWidget* parent,
     setWindowTitle(QStringLiteral("Material"));
     setAttribute(Qt::WA_DeleteOnClose);
     QVBoxLayout* layout = new QVBoxLayout(this);
+    mIdentity->setObjectName(QStringLiteral("materialIdentity"));
     layout->addWidget(mIdentity);
     QFormLayout* fields = new QFormLayout;
     ConfigureInspectorForm(*fields);
@@ -251,7 +252,7 @@ void WorldMaterialDocument::SetState(const MaterialDocumentState& state)
     const bool hasWorldStatusChanged = mState.WorldStatus != state.WorldStatus;
     mState = state;
     mIdentity->setText(
-        QStringLiteral("%1 · Coated diffuse\n%2 · %3\n%4")
+        QStringLiteral("%1 · Coated diffuse\nLayers: dielectric coat over a diffuse substrate\n%2 · %3\n%4")
             .arg(state.MaterialName,
                  state.SlotName,
                  state.HasSlotOverride == true ? QStringLiteral("Slot override") : QStringLiteral("Inherited coating"),

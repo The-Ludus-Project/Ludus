@@ -1,4 +1,5 @@
 #include "internal/code_assistance.h"
+#include "internal/code_completion_sources.h"
 #include "internal/code_document_controller.h"
 #include "internal/code_edit_scope.h"
 #include "internal/code_edit_set.h"
@@ -6,7 +7,11 @@
 #include "internal/code_formatter.h"
 #include "internal/code_language_registry.h"
 #include "internal/code_navigation.h"
+#include "internal/code_snippet.h"
+#include "internal/code_structure_view.h"
+#include "internal/code_syntax_service.h"
 #include "internal/code_text.h"
+#include "internal/code_workspace_edit_preview.h"
 #include "internal/document_history.h"
 #include "internal/lusl_formatting.h"
 
@@ -17,13 +22,19 @@
 #include <QClipboard>
 #include <QColor>
 #include <QCoreApplication>
-#include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QInputMethodEvent>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
+#include <QPushButton>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -32,6 +43,7 @@
 #include <QTextDocument>
 #include <QTextLayout>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QUrl>
 
 using namespace ludus::editor;
@@ -259,6 +271,106 @@ TEST_CASE("Unicode input and CRLF survive document history and formatting", "[ed
     editor.moveCursor(QTextCursor::EndOfBlock);
     QTest::keyClick(&editor, Qt::Key_Return);
     CHECK(document.GetState().Text == QByteArray("\xEF\xBB\xBF") + QString::fromUtf8("文字😀\r\n\r\nnext").toUtf8());
+}
+
+TEST_CASE("Shift Return writes a source newline with the document's line ending", "[editor][text][history]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    QByteArray lineEnding = QByteArrayLiteral("\n");
+    SECTION("LF") {}
+    SECTION("CRLF")
+    {
+        lineEnding = QByteArrayLiteral("\r\n");
+    }
+    const QByteArray firstLine = QByteArrayLiteral("void SamplePointOnEdges()");
+    const QByteArray original = firstLine + "{}" + lineEnding;
+    MemoryCodeDocument document(original);
+    CodeDocumentController controller(editor);
+    controller.Bind(&document);
+    QTextCursor cursor = editor.textCursor();
+    cursor.setPosition(static_cast<int32>(firstLine.size()));
+    editor.setTextCursor(cursor);
+
+    QTest::keyClick(&editor, Qt::Key_Return, Qt::ShiftModifier);
+
+    CHECK(document.GetState().Text == firstLine + lineEnding + "{}" + lineEnding);
+    CHECK(editor.document()->findBlockByNumber(1).text() == QStringLiteral("{}"));
+    REQUIRE(document.Undo() == true);
+    controller.Synchronize();
+    CHECK(document.GetState().Text == original);
+    CHECK(editor.textCursor().blockNumber() == 0);
+    CHECK(document.CanUndo() == false);
+}
+
+TEST_CASE("opening a Slang draft repairs code line separators as one undo step", "[editor][text][history]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    const QString prefix = QStringLiteral("\ufeffString text = \"left\\\"\u2028right\";\r\n"
+                                          "String raw = R\"tag(left\"\r\n\u2028right)tag\";\r\n"
+                                          "/* block \u2028 comment */\r\n"
+                                          "// continued \\\r\n\u2028comment\r\n");
+    const QString signature = QStringLiteral("void SamplePointOnEdges()");
+    const QByteArray original = (prefix + signature + QStringLiteral("\u2028{}\r\n")).toUtf8();
+    const QByteArray repaired = (prefix + signature + QStringLiteral("\r\n{}\r\n")).toUtf8();
+    MemoryCodeDocument document(original);
+    CodeDocumentController controller(editor);
+    QSignalSpy accepted(&controller, &CodeDocumentController::TextAccepted);
+    controller.Bind(&document);
+    editor.moveCursor(QTextCursor::End);
+    const int32 position = editor.textCursor().position();
+    QCoreApplication::processEvents();
+
+    CHECK(document.GetState().Text == repaired);
+    CHECK(editor.textCursor().position() == position);
+    CHECK(accepted.count() == 1);
+    REQUIRE(document.Undo() == true);
+    controller.Synchronize(true);
+    QCoreApplication::processEvents();
+    CHECK(document.GetState().Text == original);
+    CHECK(editor.document()->toRawText().contains(QChar::LineSeparator) == true);
+    CHECK(accepted.count() == 1);
+    CHECK(document.CanUndo() == false);
+}
+
+TEST_CASE("a queued Slang line repair skips a tab that has rebound", "[editor][text][history]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    const QByteArray original = QStringLiteral("void Original()\u2028{}").toUtf8();
+    MemoryCodeDocument originalDocument(original);
+    MemoryCodeDocument currentDocument(QByteArrayLiteral("void Current() {}"));
+    CodeDocumentController controller(editor);
+    controller.Bind(&originalDocument);
+    controller.Bind(&currentDocument);
+    QCoreApplication::processEvents();
+
+    CHECK(originalDocument.GetState().Text == original);
+    CHECK(currentDocument.GetState().Text == QByteArrayLiteral("void Current() {}"));
+    CHECK(currentDocument.CanUndo() == false);
+}
+
+TEST_CASE("Slang paste repairs code separators and keeps separators in strings", "[editor][text][history]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    const QByteArray original = QByteArrayLiteral("void SamplePointOnEdges(){}\r\n");
+    MemoryCodeDocument document(original);
+    CodeDocumentController controller(editor);
+    controller.Bind(&document);
+    QTextCursor cursor = editor.textCursor();
+    cursor.setPosition(static_cast<int32>(original.indexOf('{')));
+    editor.setTextCursor(cursor);
+    QApplication::clipboard()->setText(QStringLiteral("\u2028{ String label = \"left\u2028right\"; }\u2028"));
+    editor.paste();
+
+    CHECK(document.GetState().Text ==
+          QStringLiteral("void SamplePointOnEdges()\r\n{ String label = \"left\u2028right\"; }\r\n{}\r\n").toUtf8());
+    CHECK(editor.textCursor().blockNumber() == 2);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetState().Text == original);
+    CHECK(document.CanUndo() == false);
 }
 
 TEST_CASE("rejected text input preserves owner and view without an undo entry", "[editor][text][history]")
@@ -578,7 +690,7 @@ TEST_CASE("Shader completion maps UTF-16 ranges and additional edits into one dr
     REQUIRE(host.CanUndo() == false);
 }
 
-TEST_CASE("Shader assistance rejects generated edits and unsolicited snippets", "[editor][text][assistance]")
+TEST_CASE("Shader assistance rejects generated edits and expands snippets", "[editor][text][assistance]")
 {
     for (const QByteArray& marker : {QByteArray("generated-edit"), QByteArray("snippet")})
     {
@@ -606,6 +718,15 @@ TEST_CASE("Shader assistance rejects generated edits and unsolicited snippets", 
         REQUIRE(popupOrNull != nullptr);
         REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
         QTest::keyClick(&editor, Qt::Key_Return);
+        if (marker == "snippet")
+        {
+            // `${1:Version}` inserts its placeholder text and selects it as the first stop.
+            REQUIRE(host.GetState().Text.endsWith("scene.Version"));
+            CHECK(host.CanUndo() == true);
+            CHECK(editor.IsInSnippet() == true);
+            CHECK(editor.textCursor().selectedText() == QStringLiteral("Version"));
+            continue;
+        }
         REQUIRE(host.CanUndo() == false);
         REQUIRE(host.GetState().Text.endsWith("scene.Ve"));
         REQUIRE(status.last().at(0).toString().isEmpty() == false);
@@ -725,6 +846,1041 @@ TEST_CASE("Slang protocol failures and crashes preserve text and allow a fresh r
         QTest::keyClick(&editor, Qt::Key_Return);
         REQUIRE(host.GetState().Text.endsWith("scene.Version"));
     }
+}
+
+TEST_CASE("Capability dispatch disables unadvertised assistance and follows server trigger characters",
+          "[editor][text][assistance]")
+{
+    MemoryCodeDocument host("Ite");
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Lusl);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(
+            QString::fromUtf8(LUDUS_TEST_PYTHON),
+            temporary.path(),
+            QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.lusl"))).toString(),
+            {},
+            {},
+            {QString::fromUtf8(LUDUS_LANGUAGE_SERVER_FIXTURE),
+             QStringLiteral("--capabilities"),
+             QStringLiteral(R"({"completionProvider": {"triggerCharacters": [":"]}, "referencesProvider": true})")},
+            {},
+            GetLuslServerProfile());
+    });
+    editor.show();
+    editor.setFocus();
+    editor.moveCursor(QTextCursor::End);
+    assistance.Request(false);
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    // A server without signature help still serves completion (LUSL before M4 failed here).
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    // "Ite" matches the server's item only: no built-in snippet prefix fits it.
+    REQUIRE(popupOrNull->count() == 1);
+    CHECK(popupOrNull->item(0)->text().startsWith(QStringLiteral("Item")) == true);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QAction* signatureOrNull = nullptr;
+    for (QAction* action : editor.actions())
+    {
+        signatureOrNull = action->objectName() == QStringLiteral("codeEditorSignature") ? action : signatureOrNull;
+    }
+    REQUIRE(signatureOrNull != nullptr);
+    CHECK(signatureOrNull->isEnabled() == false);
+    CHECK(signatureOrNull->toolTip() == QStringLiteral("The selected luslc does not support signatureHelp."));
+    for (QAction* action : editor.GetNavigation().GetActions())
+    {
+        if (action->text() == QStringLiteral("Go to Definition"))
+        {
+            CHECK(action->isEnabled() == false);
+            CHECK(action->toolTip().contains(QStringLiteral("does not support definition")) == true);
+        }
+        if (action->text() == QStringLiteral("Find References"))
+        {
+            CHECK(action->isEnabled() == true);
+        }
+    }
+    // The server's trigger character requests completion while typing.
+    QTest::keyClick(&editor, Qt::Key_End);
+    QTest::keyClicks(&editor, QStringLiteral(":"));
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    CHECK(host.CanUndo() == true);
+    // A new context returns to the defaults until its server reports capabilities.
+    assistance.ClearContext();
+    CHECK(signatureOrNull->isEnabled() == true);
+}
+
+namespace
+{
+/// A Slang assistance session against language_server_fixture.py with `options`.
+/// Its context prefix contains the diagnosed word, so generated surroundings
+/// must never produce markers in the authored text.
+struct FakeAssistanceSession final
+{
+    FakeAssistanceSession(const QByteArray& text, const QStringList& options)
+        : Host(text), Document(Editor), Assistance(Editor, Document)
+    {
+        Document.Bind(&Host);
+        Editor.SetLanguage(CodeLanguage::Slang);
+        QStringList arguments{QString::fromUtf8(LUDUS_LANGUAGE_SERVER_FIXTURE)};
+        arguments.append(options);
+        QObject::connect(&Assistance, &CodeAssistance::ContextRequested, &Editor, [this, arguments]() {
+            Assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                                  Temporary.path(),
+                                  QUrl::fromLocalFile(Temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                                  QStringLiteral("// generated missing\n"),
+                                  {},
+                                  arguments);
+        });
+        Editor.resize(800, 400);
+        Editor.show();
+        Editor.setFocus();
+    }
+
+    /// Prepare the context through an ordinary completion intent.
+    void Prepare()
+    {
+        Editor.moveCursor(QTextCursor::End);
+        Assistance.Request(false);
+    }
+
+    MemoryCodeDocument Host;
+    CodeEditor Editor;
+    CodeDocumentController Document;
+    CodeAssistance Assistance;
+    QTemporaryDir Temporary;
+};
+
+const QStringList DIAGNOSING_SERVER{QStringLiteral("--capabilities"),
+                                    QStringLiteral(R"({"completionProvider": {}, "hoverProvider": true})"),
+                                    QStringLiteral("--diagnose"),
+                                    QStringLiteral("missing")};
+} // namespace
+
+TEST_CASE("Analysis diagnostics follow the draft and stay apart from build results", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = missing;\nfloat b = 2;\n", DIAGNOSING_SERVER);
+    session.Prepare();
+    CodeEditor& editor = session.Editor;
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    CHECK(editor.GetAnalysisDiagnosticRange(0).selectedText() == QStringLiteral("missing"));
+    const int32 marked = editor.GetAnalysisDiagnosticRange(0).selectionStart() + 2;
+    CHECK(editor.DescribeDiagnosticsAt(marked) == QStringLiteral("Analysis (slangd) error: unknown name missing"));
+    // Build results stay their own layer and the build report keeps its label.
+    editor.SetDiagnostics({{ .Line = 2, .Column = 7, .Length = 1, .Message = QStringLiteral("build says b") }}, true);
+    CHECK(editor.GetDiagnosticCount() == 1);
+    CHECK(editor.GetAnalysisDiagnosticCount() == 1);
+    CHECK(editor.DescribeLineDiagnostics(1) == QStringLiteral("Error: build says b"));
+    // Typing re-synchronizes after a pause and the next report replaces the markers.
+    editor.moveCursor(QTextCursor::End);
+    QTest::keyClicks(&editor, QStringLiteral("missing"));
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 2; }));
+    CHECK(editor.GetDiagnosticCount() == 1);
+    // A new context clears analysis; the build report is not the client's to clear.
+    session.Assistance.ClearContext();
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+    CHECK(editor.GetDiagnosticCount() == 1);
+}
+
+TEST_CASE("A shader repair drops old analysis while the server is quiet", "[editor][text][assistance]")
+{
+    QTemporaryDir records;
+    const QString record = records.filePath(QStringLiteral("record.jsonl"));
+    FakeAssistanceSession session("float a = unknownSampler;\n",
+                                  {QStringLiteral("--diagnose"),
+                                   QStringLiteral("unknownSampler"),
+                                   QStringLiteral("--omit-empty-diagnostics"),
+                                   QStringLiteral("--record"),
+                                   record});
+    session.Prepare();
+    CodeEditor& editor = session.Editor;
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    editor.SetDiagnostics({{ .Line = 1, .Column = 1, .Length = 1, .Message = QStringLiteral("build report") }}, true);
+
+    QTextCursor cursor = editor.GetAnalysisDiagnosticRange(0);
+    cursor.insertText(QStringLiteral("1"));
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+    // Undo before the debounce returns the virtual unit to the last sent bytes.
+    REQUIRE(session.Host.Undo() == true);
+    session.Document.Synchronize(true);
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+
+    cursor = editor.GetAnalysisDiagnosticRange(0);
+    cursor.insertText(QStringLiteral("1"));
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+    CHECK(editor.GetDiagnosticCount() == 1);
+    REQUIRE(QTest::qWaitFor([&record]() {
+        QFile file(record);
+        return file.open(QIODevice::ReadOnly) == true && file.readAll().contains("float a = 1;") == true;
+    }));
+
+    // A newer report can still add a diagnostic, including after a host-side undo.
+    REQUIRE(session.Host.Undo() == true);
+    session.Document.Synchronize(true);
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    REQUIRE(session.Host.Redo() == true);
+    session.Document.Synchronize(true);
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+    CHECK(editor.GetDiagnosticCount() == 1);
+}
+
+TEST_CASE("Native Slang republishes a surviving warning after a shader edit",
+          "[editor][text][assistance][slang-native]")
+{
+    const QString server = qEnvironmentVariable("LUDUS_TEST_SLANGD");
+    if (server.isEmpty() == true)
+    {
+        SKIP("Set LUDUS_TEST_SLANGD to exercise the installed Slang server.");
+    }
+    const QString source = QStringLiteral("#if MODE == 0\nfloat Probe() { return 0; }\n#endif\n");
+    const QString prefix = QStringLiteral("// generated shader context\n");
+    MemoryCodeDocument host(source.toUtf8());
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    QTemporaryDir temporary;
+    QFile unit(temporary.filePath(QStringLiteral("unit.slang")));
+    REQUIRE(unit.open(QIODevice::WriteOnly) == true);
+    REQUIRE(unit.write((prefix + source).toUtf8()) > 0);
+    unit.close();
+    QFile capturedSource(temporary.filePath(QStringLiteral("source.slang")));
+    REQUIRE(capturedSource.open(QIODevice::WriteOnly) == true);
+    REQUIRE(capturedSource.write(source.toUtf8()) > 0);
+    capturedSource.close();
+    CodeAssistance assistance(editor, document);
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(server,
+                              temporary.path(),
+                              QUrl::fromLocalFile(unit.fileName()).toString(),
+                              prefix,
+                              {},
+                              {},
+                              {},
+                              GetSlangServerProfile(),
+                              QUrl::fromLocalFile(QFileInfo(capturedSource).canonicalFilePath()).toString());
+    });
+    const auto hasMacroWarning = [&editor]() {
+        return editor.GetAnalysisDiagnosticCount() == 1 &&
+               editor.GetAnalysisDiagnostic(0).Message.contains(QStringLiteral("undefined identifier 'MODE'"));
+    };
+    assistance.Request(false);
+    REQUIRE(QTest::qWaitFor(hasMacroWarning));
+    for (const QString& edit : {QStringLiteral("// first edit\n"), QStringLiteral("// second edit\n")})
+    {
+        CAPTURE(edit.toStdString());
+        editor.moveCursor(QTextCursor::End);
+        editor.insertPlainText(edit);
+        CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+        REQUIRE(QTest::qWaitFor(hasMacroWarning));
+    }
+    editor.moveCursor(QTextCursor::Start);
+    editor.insertPlainText(QStringLiteral("#define MODE 1\n#if NEXT_CHECK\n#endif\n"));
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+    REQUIRE(QTest::qWaitFor([&editor]() {
+        return editor.GetAnalysisDiagnosticCount() == 1 &&
+               editor.GetAnalysisDiagnostic(0).Message.contains(QStringLiteral("undefined identifier 'NEXT_CHECK'"));
+    }));
+}
+
+TEST_CASE("Analysis reports for an older version are discarded", "[editor][text][assistance]")
+{
+    QStringList options = DIAGNOSING_SERVER;
+    options.append(QStringLiteral("--stale-diagnostics"));
+    FakeAssistanceSession session("float a = missing;\n", options);
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&status]() { return status.isEmpty() == false; }));
+    QTest::qWait(500);
+    CHECK(session.Editor.GetAnalysisDiagnosticCount() == 0);
+}
+
+TEST_CASE("Hover shows the server's text with diagnostics and never prepares a context", "[editor][text][assistance]")
+{
+    QStringList options = DIAGNOSING_SERVER;
+    options.append({QStringLiteral("--hold"), QStringLiteral("textDocument/hover")});
+    FakeAssistanceSession session("float a = missing;\n", options);
+    CodeEditor& editor = session.Editor;
+    QSignalSpy contexts(&session.Assistance, &CodeAssistance::ContextRequested);
+    QAction* hoverOrNull = nullptr;
+    for (QAction* action : editor.actions())
+    {
+        hoverOrNull = action->objectName() == QStringLiteral("codeEditorHover") ? action : hoverOrNull;
+    }
+    REQUIRE(hoverOrNull != nullptr);
+    // No context yet: hover describes local diagnostics only and starts nothing.
+    hoverOrNull->trigger();
+    QTest::qWait(100);
+    CHECK(contexts.isEmpty() == true);
+    CHECK(editor.GetHoverText().isEmpty() == true);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QTextCursor cursor = editor.textCursor();
+    cursor.setPosition(editor.GetAnalysisDiagnosticRange(0).selectionStart() + 1);
+    editor.setTextCursor(cursor);
+    // The first hover reply is held; an edit makes it stale before it arrives.
+    hoverOrNull->trigger();
+    QTest::qWait(100);
+    editor.moveCursor(QTextCursor::End);
+    QTest::keyClicks(&editor, QStringLiteral("x"));
+    session.Assistance.Request(false); // any request releases the held reply
+    QTest::qWait(300);
+    CHECK(editor.GetHoverText().isEmpty() == true);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    editor.setTextCursor(cursor);
+    hoverOrNull->trigger();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetHoverText().isEmpty() == false; }));
+    CHECK(editor.GetHoverText().startsWith(QStringLiteral("hover ")) == true);
+    CHECK(editor.GetHoverText().contains(QStringLiteral("Analysis (slangd) error: unknown name missing")) == true);
+    // Resting the pointer requests a hover where it rests.
+    QSignalSpy requests(&editor, &CodeEditor::HoverRequested);
+    QTest::mouseMove(editor.viewport(), editor.cursorRect(cursor).center());
+    REQUIRE(QTest::qWaitFor([&requests]() { return requests.isEmpty() == false; }));
+}
+
+TEST_CASE("Go to Declaration, Type Definition and Symbol in Workspace follow the server's capabilities",
+          "[editor][text][assistance][code-navigation]")
+{
+    FakeAssistanceSession session(
+        "struct Target {};\nTarget value;\n",
+        {QStringLiteral("--capabilities"),
+         QStringLiteral(R"({"completionProvider": {}, "declarationProvider": true, "typeDefinitionProvider": true,
+                            "workspaceSymbolProvider": true})"),
+         QStringLiteral("--target"),
+         QStringLiteral("Target")});
+    CodeEditor& editor = session.Editor;
+    const auto findAction = [&editor](const QString& text) {
+        QAction* foundOrNull = nullptr;
+        for (QAction* action : editor.GetNavigation().GetActions())
+        {
+            foundOrNull = action->text() == text ? action : foundOrNull;
+        }
+        REQUIRE(foundOrNull != nullptr);
+        return foundOrNull;
+    };
+    QAction* implementation = findAction(QStringLiteral("Go to Implementation"));
+    session.Prepare();
+    // Capability dispatch: the server advertises no implementation provider.
+    REQUIRE(QTest::qWaitFor([implementation]() { return implementation->isEnabled() == false; }));
+    CHECK(implementation->toolTip().contains(QStringLiteral("does not support implementation")) == true);
+    CHECK(implementation->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_F12));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    const auto placeCaret = [&editor]() {
+        QTextCursor cursor(editor.document());
+        cursor.setPosition(static_cast<int32>(editor.toPlainText().lastIndexOf(QStringLiteral("Target"))) + 2);
+        editor.setTextCursor(cursor);
+    };
+    for (const CodeNavigationKind kind : {CodeNavigationKind::Declaration, CodeNavigationKind::TypeDefinition})
+    {
+        placeCaret();
+        session.Assistance.RequestNavigation(kind);
+        // A single location jumps straight to it, as Go to Definition does.
+        REQUIRE(QTest::qWaitFor([&editor]() { return editor.textCursor().blockNumber() == 0; }));
+        CHECK(editor.textCursor().selectedText() == QStringLiteral("Target"));
+    }
+    placeCaret();
+    session.Assistance.RequestNavigation(CodeNavigationKind::WorkspaceSymbols);
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetNavigation().IsChoosing() == true; }));
+    QListWidget* resultsOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeNavigationResults"));
+    REQUIRE(resultsOrNull != nullptr);
+    REQUIRE(resultsOrNull->count() == 1);
+    CHECK(resultsOrNull->item(0)->text().startsWith(QStringLiteral("Target")) == true);
+    CHECK(session.Host.CanUndo() == false);
+}
+
+TEST_CASE("Semantic tokens and folding ranges follow the draft and drop stale replies", "[editor][text][assistance]")
+{
+    // The context prefix "// generated missing\n" holds a token and the start of a
+    // range on its line 0: generated text must not produce either.
+    FakeAssistanceSession session("float a = missing;\nfloat b = missing;\nfloat c;\n",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {}, "foldingRangeProvider": true,
+                            "semanticTokensProvider": {"legend": {"tokenTypes": ["function"], "tokenModifiers": []},
+                                                       "full": true}})"),
+                                   QStringLiteral("--tokens"),
+                                   QStringLiteral("missing"),
+                                   QStringLiteral("--folding-ranges"),
+                                   QStringLiteral(R"([{"startLine": 1, "endLine": 3, "kind": "imports"},
+                           {"startLine": 0, "endLine": 2, "kind": "imports"}])")});
+    CodeEditor& editor = session.Editor;
+    const auto areTokensOnWord = [&editor]() {
+        const QString text = editor.toPlainText();
+        for (const CodeSyntaxToken& token : editor.GetSemanticTokens())
+        {
+            if (QStringView(text).sliced(token.GetStart(), token.GetEnd() - token.GetStart()) !=
+                    QStringLiteral("missing") ||
+                token.GetRole() != CodeSyntaxRole::Function)
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetSemanticTokens().size() == 2; }));
+    CHECK(areTokensOnWord() == true);
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetStructure().GetServerFolds().size() == 1; }));
+    const CodeSyntaxFold fold = editor.GetStructure().GetServerFolds().constFirst();
+    CHECK(fold.FirstLine == 0);
+    CHECK(fold.LastLine == 2);
+    CHECK(fold.Kind == CodeFoldKind::Imports);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+
+    // Typing moves the shown tokens at once, and the next synchronization asks again.
+    QTextCursor cursor(editor.document());
+    editor.setTextCursor(cursor);
+    QTest::keyClicks(&editor, QStringLiteral("x"));
+    CHECK(editor.GetSemanticTokens().size() == 2);
+    CHECK(areTokensOnWord() == true);
+    editor.moveCursor(QTextCursor::End);
+    QTest::keyClicks(&editor, QStringLiteral("missing"));
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetSemanticTokens().size() == 3; }));
+    CHECK(areTokensOnWord() == true);
+
+    // A new context removes both layers.
+    session.Assistance.ClearContext();
+    CHECK(editor.GetSemanticTokens().isEmpty() == true);
+    CHECK(editor.GetStructure().GetServerFolds().isEmpty() == true);
+}
+
+namespace
+{
+const QString RENAMING_CAPABILITIES =
+    QStringLiteral(R"({"completionProvider": {}, "renameProvider": {"prepareProvider": true}})");
+
+QAction* FindRenameAction(CodeEditor& inoutEditor)
+{
+    QAction* renameOrNull = nullptr;
+    for (QAction* action : inoutEditor.actions())
+    {
+        renameOrNull = action->objectName() == QStringLiteral("codeEditorRename") ? action : renameOrNull;
+    }
+    REQUIRE(renameOrNull != nullptr);
+    return renameOrNull;
+}
+
+/// Put the caret inside the last `word` and run Rename Symbol until the box opens.
+QLineEdit& OpenRenameBox(CodeEditor& inoutEditor, const QString& word)
+{
+    QTextCursor cursor(inoutEditor.document());
+    cursor.setPosition(static_cast<int32>(inoutEditor.toPlainText().lastIndexOf(word)) + 1);
+    inoutEditor.setTextCursor(cursor);
+    FindRenameAction(inoutEditor)->trigger();
+    QLineEdit* boxOrNull = inoutEditor.findChild<QLineEdit*>(QStringLiteral("codeEditorRenameBox"));
+    REQUIRE(boxOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([boxOrNull]() { return boxOrNull->isVisible() == true; }));
+    return *boxOrNull;
+}
+} // namespace
+
+TEST_CASE("Rename Symbol renames every use as one undoable edit", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session(
+        "float value = 1;\nfloat b = value;\n",
+        {QStringLiteral("--capabilities"), RENAMING_CAPABILITIES, QStringLiteral("--rename"), QStringLiteral("value")});
+    CodeEditor& editor = session.Editor;
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    QLineEdit& box = OpenRenameBox(editor, QStringLiteral("value"));
+    CHECK(box.text() == QStringLiteral("value"));
+    CHECK(box.selectedText() == QStringLiteral("value"));
+    QTest::keyClicks(&box, QStringLiteral("amount"));
+    QTest::keyClick(&box, Qt::Key_Return);
+    REQUIRE(QTest::qWaitFor(
+        [&session]() { return session.Host.GetState().Text == "float amount = 1;\nfloat b = amount;\n"; }));
+    CHECK(box.isVisible() == false);
+    CHECK(editor.textCursor().position() ==
+          static_cast<int32>(editor.toPlainText().lastIndexOf(QStringLiteral("amount"))));
+    CHECK(status.last().first().toString().startsWith(QStringLiteral("Renamed 'value' to 'amount'")) == true);
+    // One edit: a single Undo restores both uses.
+    REQUIRE(session.Host.Undo() == true);
+    session.Document.Synchronize(true);
+    CHECK(session.Host.GetState().Text == "float value = 1;\nfloat b = value;\n");
+    CHECK(session.Host.CanUndo() == false);
+
+    // Escape leaves the text alone and sends nothing.
+    QLineEdit& again = OpenRenameBox(editor, QStringLiteral("value"));
+    QTest::keyClicks(&again, QStringLiteral("other"));
+    QTest::keyClick(&again, Qt::Key_Escape);
+    QTest::qWait(200);
+    CHECK(session.Host.GetState().Text == "float value = 1;\nfloat b = value;\n");
+}
+
+TEST_CASE("Shift+Enter previews a rename before applying it", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session(
+        "float value = 1;\nfloat b = value;\n",
+        {QStringLiteral("--capabilities"), RENAMING_CAPABILITIES, QStringLiteral("--rename"), QStringLiteral("value")});
+    CodeEditor& editor = session.Editor;
+    for (const bool shouldApply : {false, true})
+    {
+        QLineEdit& box = OpenRenameBox(editor, QStringLiteral("value"));
+        QTest::keyClicks(&box, QStringLiteral("amount"));
+        QTest::keyClick(&box, Qt::Key_Return, Qt::ShiftModifier);
+        CodeWorkspaceEditPreview* previewOrNull = nullptr;
+        REQUIRE(QTest::qWaitFor([&]() {
+            previewOrNull = editor.findChild<CodeWorkspaceEditPreview*>();
+            return previewOrNull != nullptr && previewOrNull->isVisible() == true;
+        }));
+        CHECK(previewOrNull->GetEditCount() == 2);
+        CHECK(session.Host.GetState().Text == "float value = 1;\nfloat b = value;\n");
+        QTreeWidget* filesOrNull = previewOrNull->findChild<QTreeWidget*>(QStringLiteral("codeWorkspaceEditFiles"));
+        REQUIRE(filesOrNull != nullptr);
+        REQUIRE(filesOrNull->topLevelItemCount() == 1);
+        CHECK(filesOrNull->topLevelItem(0)->child(1)->text(0) ==
+              QStringLiteral("line 2, column 11: 'value' → 'amount'"));
+        if (shouldApply == false)
+        {
+            previewOrNull->reject();
+            QTest::qWait(100);
+            CHECK(session.Host.GetState().Text == "float value = 1;\nfloat b = value;\n");
+            continue;
+        }
+        QPushButton* applyOrNull = previewOrNull->findChild<QPushButton*>(QStringLiteral("codeWorkspaceEditApply"));
+        REQUIRE(applyOrNull != nullptr);
+        applyOrNull->click();
+        CHECK(session.Host.GetState().Text == "float amount = 1;\nfloat b = amount;\n");
+    }
+}
+
+TEST_CASE("A rename that reaches generated text or an older version changes nothing", "[editor][text][assistance]")
+{
+    // The context prefix "// generated missing" holds the name too.
+    for (const bool isStale : {false, true})
+    {
+        QStringList options{QStringLiteral("--capabilities"),
+                            RENAMING_CAPABILITIES,
+                            QStringLiteral("--rename"),
+                            isStale == true ? QStringLiteral("value") : QStringLiteral("missing")};
+        if (isStale == true)
+        {
+            options.append(QStringLiteral("--stale-rename"));
+        }
+        FakeAssistanceSession session("float value = missing;\n", options);
+        CodeEditor& editor = session.Editor;
+        QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+        QLineEdit& box = OpenRenameBox(editor, isStale == true ? QStringLiteral("value") : QStringLiteral("missing"));
+        QTest::keyClicks(&box, QStringLiteral("renamed"));
+        QTest::keyClick(&box, Qt::Key_Return);
+        const QString phrase = isStale == true ? QStringLiteral("earlier version") : QStringLiteral("generated");
+        REQUIRE(QTest::qWaitFor([&status, &phrase]() {
+            return status.isEmpty() == false && status.last().first().toString().contains(phrase) == true;
+        }));
+        CHECK(session.Host.GetState().Text == "float value = missing;\n");
+        CHECK(session.Host.CanUndo() == false);
+    }
+}
+
+TEST_CASE("Rename Symbol is disabled with its reason when the server cannot rename", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float value = 1;\n",
+                                  {QStringLiteral("--capabilities"), QStringLiteral(R"({"completionProvider": {}})")});
+    CodeEditor& editor = session.Editor;
+    QAction* rename = FindRenameAction(editor);
+    CHECK(rename->shortcut() == QKeySequence(Qt::Key_F2));
+    CHECK(rename->isEnabled() == true);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([rename]() { return rename->isEnabled() == false; }));
+    CHECK(rename->toolTip() == QStringLiteral("The selected slangd does not support rename."));
+}
+
+TEST_CASE("Shortcuts of unsupported commands report their reason where they were pressed",
+          "[editor][text][assistance][code-navigation]")
+{
+    // A disabled action's shortcut never reaches its handler, so Cmd+T (Ctrl+T)
+    // against the pinned slangd used to do nothing at all (issue 1263).
+    FakeAssistanceSession session("float value = 1;\n",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {}, "definitionProvider": true})")});
+    CodeEditor& editor = session.Editor;
+    QAction* rename = FindRenameAction(editor);
+    QAction* workspaceOrNull = nullptr;
+    for (QAction* action : editor.GetNavigation().GetActions())
+    {
+        workspaceOrNull = action->text() == QStringLiteral("Go to Symbol in Workspace") ? action : workspaceOrNull;
+    }
+    REQUIRE(workspaceOrNull != nullptr);
+    CHECK(workspaceOrNull->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_T));
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor(
+        [rename, workspaceOrNull]() { return rename->isEnabled() == false && workspaceOrNull->isEnabled() == false; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    const auto hasStatus = [&status](const QString& message) {
+        for (const QList<QVariant>& arguments : status)
+        {
+            if (arguments.first().toString() == message)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    QTest::keyClick(&editor, Qt::Key_T, Qt::ControlModifier);
+    CHECK(hasStatus(QStringLiteral("Go to Symbol in Workspace is unavailable. The selected slangd does not support "
+                                   "workspace/symbol. Use Find for text matches.")) == true);
+    QTest::keyClick(&editor, Qt::Key_F2);
+    CHECK(hasStatus(QStringLiteral("Rename Symbol is unavailable. The selected slangd does not support rename.")) ==
+          true);
+    // The shortcuts change nothing: no text, no undo step and no rename box.
+    CHECK(session.Host.GetState().Text == "float value = 1;\n");
+    CHECK(session.Host.CanUndo() == false);
+    QLineEdit* renameBoxOrNull = editor.findChild<QLineEdit*>(QStringLiteral("codeEditorRenameBox"));
+    REQUIRE(renameBoxOrNull != nullptr);
+    CHECK(renameBoxOrNull->isVisible() == false);
+}
+
+namespace
+{
+// The prefix "// generated missing" is the unit's line 0, so the source starts on line 1.
+const QString CODE_ACTIONS = QStringLiteral(R"([
+    {"title": "Run command", "command": {"title": "Run", "command": "slang.run"}},
+    {"title": "Declare missing", "kind": "quickfix", "isPreferred": true,
+     "edit": {"changes": {"$URI": [{"range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 0}},
+                                    "newText": "float missing;\n"}]}}},
+    {"title": "Not here", "disabled": {"reason": "Select a whole statement."}},
+    {"title": "Resolve me", "data": 3},
+    {"title": "Touch generated",
+     "edit": {"changes": {"$URI": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 2}},
+                                    "newText": "##"}]}}}
+])");
+
+QStringList MakeCodeActionServer(const QString& record)
+{
+    QStringList options = DIAGNOSING_SERVER;
+    options[1] = QStringLiteral(R"({"completionProvider": {}, "codeActionProvider": {"resolveProvider": true}})");
+    options.append({QStringLiteral("--actions"),
+                    CODE_ACTIONS,
+                    QStringLiteral("--resolve-action-edit"),
+                    QStringLiteral(R"({"changes": {"$URI": [{"range": {"start": {"line": 1, "character": 0},
+                        "end": {"line": 1, "character": 0}}, "newText": "// resolved\n"}]}})"),
+                    QStringLiteral("--record"),
+                    record});
+    return options;
+}
+
+/// Run Show Code Actions and return the list once it is open.
+QMenu& OpenCodeActionMenu(CodeEditor& inoutEditor)
+{
+    QAction* actionsOrNull = nullptr;
+    for (QAction* action : inoutEditor.actions())
+    {
+        actionsOrNull = action->objectName() == QStringLiteral("codeEditorCodeActions") ? action : actionsOrNull;
+    }
+    REQUIRE(actionsOrNull != nullptr);
+    actionsOrNull->trigger();
+    QMenu* menuOrNull = nullptr;
+    REQUIRE(QTest::qWaitFor([&]() {
+        for (QMenu* menu : inoutEditor.findChildren<QMenu*>(QStringLiteral("codeEditorCodeActionMenu")))
+        {
+            menuOrNull = menu->isVisible() == true ? menu : menuOrNull;
+        }
+        return menuOrNull != nullptr;
+    }));
+    return *menuOrNull;
+}
+
+void ChooseCodeAction(QMenu& inoutMenu, const QString& title)
+{
+    for (QAction* action : inoutMenu.actions())
+    {
+        if (action->text() == title)
+        {
+            action->trigger();
+            inoutMenu.close();
+            return;
+        }
+    }
+    FAIL("Missing code action");
+}
+} // namespace
+
+TEST_CASE("Code actions show a light bulb and apply the chosen fix as one edit", "[editor][text][assistance]")
+{
+    QTemporaryDir records;
+    const QString record = records.filePath(QStringLiteral("record.jsonl"));
+    FakeAssistanceSession session("float a = missing;\n", MakeCodeActionServer(record));
+    CodeEditor& editor = session.Editor;
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QTextCursor cursor(editor.document());
+    cursor.setPosition(static_cast<int32>(editor.toPlainText().indexOf(QStringLiteral("missing"))) + 2);
+    editor.setTextCursor(cursor);
+    // Resting the caret asks for actions; the light bulb shows when there are some.
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.HasCodeActions() == true; }));
+
+    QMenu& menu = OpenCodeActionMenu(editor);
+    const QList<QAction*> entries = menu.actions();
+    REQUIRE(entries.size() == 5);
+    CHECK(entries.at(0)->text() == QStringLiteral("Declare missing"));
+    CHECK(entries.at(0)->font().bold() == true);
+    CHECK(entries.at(1)->isEnabled() == false);
+    CHECK(entries.at(1)->toolTip().contains(QStringLiteral("server command")) == true);
+    CHECK(entries.at(2)->isEnabled() == false);
+    CHECK(entries.at(2)->toolTip() == QStringLiteral("Select a whole statement."));
+    CHECK(entries.at(3)->isEnabled() == true);
+    ChooseCodeAction(menu, QStringLiteral("Declare missing"));
+    REQUIRE(session.Host.GetState().Text == "float missing;\nfloat a = missing;\n");
+    CHECK(status.last().first().toString().startsWith(QStringLiteral("Applied 'Declare missing'")) == true);
+    CHECK(editor.HasCodeActions() == false);
+    REQUIRE(session.Host.Undo() == true);
+    CHECK(session.Host.CanUndo() == false);
+
+    // The request carried the analysis diagnostic at the caret.
+    QFile file(record);
+    REQUIRE(file.open(QIODevice::ReadOnly) == true);
+    bool hasDiagnostic = false;
+    for (const QByteArray& line : file.readAll().split('\n'))
+    {
+        const QJsonObject message = QJsonDocument::fromJson(line).object();
+        if (message.value(QStringLiteral("method")).toString() == QStringLiteral("textDocument/codeAction"))
+        {
+            const QJsonObject context =
+                message.value(QStringLiteral("params")).toObject().value(QStringLiteral("context")).toObject();
+            hasDiagnostic = hasDiagnostic == true || context.value(QStringLiteral("diagnostics")).toArray().size() == 1;
+        }
+    }
+    CHECK(hasDiagnostic == true);
+}
+
+TEST_CASE("A resolved code action applies its edit; one touching generated text changes nothing",
+          "[editor][text][assistance]")
+{
+    QTemporaryDir records;
+    FakeAssistanceSession session("float a = missing;\n",
+                                  MakeCodeActionServer(records.filePath(QStringLiteral("record.jsonl"))));
+    CodeEditor& editor = session.Editor;
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    ChooseCodeAction(OpenCodeActionMenu(editor), QStringLiteral("Resolve me"));
+    REQUIRE(
+        QTest::qWaitFor([&session]() { return session.Host.GetState().Text == "// resolved\nfloat a = missing;\n"; }));
+    REQUIRE(session.Host.Undo() == true);
+    session.Document.Synchronize(true);
+    ChooseCodeAction(OpenCodeActionMenu(editor), QStringLiteral("Touch generated"));
+    REQUIRE(QTest::qWaitFor([&status]() {
+        return status.isEmpty() == false && status.last().first().toString().contains(QStringLiteral("generated"));
+    }));
+    CHECK(session.Host.GetState().Text == "float a = missing;\n");
+    CHECK(session.Host.CanUndo() == false);
+}
+
+TEST_CASE("Replies for a document the editor no longer shows are discarded", "[editor][text][assistance]")
+{
+    QStringList options{
+        QStringLiteral("--capabilities"),
+        QStringLiteral(R"({"completionProvider": {}, "hoverProvider": true, "codeActionProvider": {}})"),
+        QStringLiteral("--actions"),
+        CODE_ACTIONS,
+    };
+    bool isHover = false;
+    SECTION("code actions") {}
+    SECTION("hover")
+    {
+        isHover = true;
+    }
+    options.append(
+        {QStringLiteral("--hold"),
+         isHover == true ? QStringLiteral("textDocument/hover") : QStringLiteral("textDocument/codeAction")});
+    FakeAssistanceSession session("float a = missing;\n", options);
+    CodeEditor& editor = session.Editor;
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QTextCursor cursor(editor.document());
+    cursor.setPosition(static_cast<int32>(editor.toPlainText().indexOf(QStringLiteral("missing"))) + 2);
+    editor.setTextCursor(cursor);
+    // The reply to this request is held by the server.
+    const QString command =
+        isHover == true ? QStringLiteral("codeEditorHover") : QStringLiteral("codeEditorCodeActions");
+    for (QAction* action : editor.actions())
+    {
+        if (action->objectName() == command)
+        {
+            action->trigger();
+        }
+    }
+    QTest::qWait(200);
+    // The editor now shows another document; the next request releases the held reply.
+    MemoryCodeDocument other("float b = 1;\n");
+    session.Document.Bind(&other);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    QTest::qWait(200);
+    CHECK(editor.GetHoverText().isEmpty() == true);
+    CHECK(editor.HasCodeActions() == false);
+    bool isMenuShown = false;
+    for (const QMenu* menu : editor.findChildren<QMenu*>(QStringLiteral("codeEditorCodeActionMenu")))
+    {
+        isMenuShown = isMenuShown == true || menu->isVisible() == true;
+    }
+    CHECK(isMenuShown == false);
+    CHECK(other.GetState().Text == "float b = 1;\n");
+    CHECK(session.Host.GetState().Text == "float a = missing;\n");
+    session.Document.Bind(&session.Host);
+}
+
+TEST_CASE("Show Code Actions is disabled with its reason when the server has none", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = 1;\n",
+                                  {QStringLiteral("--capabilities"), QStringLiteral(R"({"completionProvider": {}})")});
+    CodeEditor& editor = session.Editor;
+    QAction* actionsOrNull = nullptr;
+    for (QAction* action : editor.actions())
+    {
+        actionsOrNull = action->objectName() == QStringLiteral("codeEditorCodeActions") ? action : actionsOrNull;
+    }
+    REQUIRE(actionsOrNull != nullptr);
+    CHECK(actionsOrNull->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_Period));
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([actionsOrNull]() { return actionsOrNull->isEnabled() == false; }));
+    CHECK(actionsOrNull->toolTip() == QStringLiteral("The selected slangd does not support codeAction."));
+    CHECK(editor.HasCodeActions() == false);
+}
+
+TEST_CASE("Completion merges words from open editors and built-in snippets", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float accumulated = 1;\nfloat b = acc",
+                                  {QStringLiteral("--capabilities"), QStringLiteral(R"({"completionProvider": {}})")});
+    CodeEditor& editor = session.Editor;
+    // Another open shader contributes its words; an open file in another language does not.
+    CodeEditor shader;
+    shader.SetLanguage(CodeLanguage::Slang);
+    shader.setPlainText(QStringLiteral("float accelerate;\n"));
+    CodeEditor script;
+    script.SetLanguage(CodeLanguage::Luau);
+    script.setPlainText(QStringLiteral("local accent = 1\n"));
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    // The server's "Item" does not match "acc"; the words do.
+    REQUIRE(popupOrNull->count() == 2);
+    CHECK(popupOrNull->item(0)->text() == QStringLiteral("accumulated  —  word in an open file"));
+    CHECK(popupOrNull->item(1)->text().startsWith(QStringLiteral("accelerate")) == true);
+    QTest::keyClick(&editor, Qt::Key_Return);
+    CHECK(session.Host.GetState().Text == "float accumulated = 1;\nfloat b = accumulated");
+}
+
+TEST_CASE("A built-in snippet completes indented to its line", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("void Run()\n{\n    fo",
+                                  {QStringLiteral("--capabilities"), QStringLiteral(R"({"completionProvider": {}})")});
+    CodeEditor& editor = session.Editor;
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    REQUIRE(popupOrNull->count() == 1);
+    CHECK(popupOrNull->item(0)->text() == QStringLiteral("for  —  for loop (snippet)"));
+    CHECK(editor.GetCompletionDocumentation().startsWith(QStringLiteral("for (uint i = 0; i < count; ++i)")) == true);
+    QTest::keyClick(&editor, Qt::Key_Return);
+    CHECK(session.Host.GetState().Text ==
+          "void Run()\n{\n    for (uint i = 0; i < count; ++i)\n    {\n        \n    }");
+    CHECK(editor.IsInSnippet() == true);
+    CHECK(editor.textCursor().selectedText() == QStringLiteral("i"));
+    // The loop variable's mirrors follow it.
+    QTest::keyClicks(&editor, QStringLiteral("row"));
+    CHECK(session.Host.GetState().Text ==
+          "void Run()\n{\n    for (uint row = 0; row < count; ++row)\n    {\n        \n    }");
+}
+
+TEST_CASE("Snippet tab stops edit mirrors together and end at the final position", "[editor][text][assistance]")
+{
+    CodeSnippet snippet;
+    REQUIRE(ParseCodeSnippet(QStringLiteral("${1:value} = ${2:other} + $1;$0"), snippet) == true);
+    MemoryCodeDocument host(snippet.Text.toUtf8() + "\n");
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    editor.show();
+    editor.setFocus();
+    editor.StartSnippet(0, snippet);
+    REQUIRE(editor.IsInSnippet() == true);
+    CHECK(editor.textCursor().selectedText() == QStringLiteral("value"));
+    // The mirror is a secondary cursor, so typing replaces both.
+    QTest::keyClicks(&editor, QStringLiteral("x"));
+    CHECK(editor.toPlainText() == QStringLiteral("x = other + x;\n"));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    CHECK(editor.textCursor().selectedText() == QStringLiteral("other"));
+    QTest::keyClick(&editor, Qt::Key_Backtab);
+    CHECK(editor.textCursor().selectedText() == QStringLiteral("x"));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    QTest::keyClicks(&editor, QStringLiteral("y"));
+    // Past the last stop the caret goes to $0 and Tab indents again.
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    CHECK(editor.IsInSnippet() == false);
+    CHECK(editor.textCursor().position() == static_cast<int32>(QStringLiteral("x = y + x;").size()));
+    CHECK(editor.toPlainText() == QStringLiteral("x = y + x;\n"));
+
+    // Escape, or moving the caret out of the snippet, ends it as well.
+    REQUIRE(ParseCodeSnippet(QStringLiteral("${1:x} = ${2:y} + $1;"), snippet) == true);
+    REQUIRE(editor.toPlainText().startsWith(snippet.Text) == true);
+    editor.StartSnippet(0, snippet);
+    REQUIRE(editor.IsInSnippet() == true);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    CHECK(editor.IsInSnippet() == false);
+    editor.StartSnippet(0, snippet);
+    REQUIRE(editor.IsInSnippet() == true);
+    editor.moveCursor(QTextCursor::End);
+    CHECK(editor.IsInSnippet() == false);
+    // A snippet longer than the document starts nothing.
+    REQUIRE(ParseCodeSnippet(QStringLiteral("${1:a much longer placeholder than the text}"), snippet) == true);
+    editor.StartSnippet(0, snippet);
+    CHECK(editor.IsInSnippet() == false);
+}
+
+TEST_CASE("Snippet completions expand and visit their stops", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = ",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {}})"),
+                                   QStringLiteral("--snippet"),
+                                   QStringLiteral("Call(${1:value}, ${2:factor})$0")});
+    CodeEditor& editor = session.Editor;
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    QTest::keyClick(&editor, Qt::Key_Return);
+    REQUIRE(session.Host.GetState().Text == "float a = Call(value, factor)");
+    CHECK(editor.IsInSnippet() == true);
+    CHECK(editor.textCursor().selectedText() == QStringLiteral("value"));
+    QTest::keyClicks(&editor, QStringLiteral("1"));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    CHECK(editor.textCursor().selectedText() == QStringLiteral("factor"));
+    QTest::keyClicks(&editor, QStringLiteral("2"));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    CHECK(editor.IsInSnippet() == false);
+    CHECK(session.Host.GetState().Text == "float a = Call(1, 2)");
+    CHECK(editor.textCursor().position() == static_cast<int32>(editor.toPlainText().size()));
+}
+
+TEST_CASE("A snippet transform is refused without editing", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = ",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {}})"),
+                                   QStringLiteral("--snippet"),
+                                   QStringLiteral("${1/(.*)/upper/}")});
+    CodeEditor& editor = session.Editor;
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    QTest::keyClick(&editor, Qt::Key_Return);
+    CHECK(session.Host.GetState().Text == "float a = ");
+    CHECK(session.Host.CanUndo() == false);
+    REQUIRE(status.isEmpty() == false);
+    CHECK(status.last().first().toString().contains(QStringLiteral("snippet transform")) == true);
+}
+
+TEST_CASE("Completion resolve fills in the highlighted suggestion's documentation", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = ",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {"resolveProvider": true}})"),
+                                   QStringLiteral("--resolve")});
+    CodeEditor& editor = session.Editor;
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    REQUIRE(popupOrNull->count() == 2 + static_cast<int32>(GetCodeSnippetTemplates(CodeLanguage::Slang).GetSize()));
+    // Only the highlighted item is resolved, and only once.
+    REQUIRE(QTest::qWaitFor([&editor]() {
+        return editor.GetCompletionDocumentation().startsWith(QStringLiteral("Documentation for Item")) == true;
+    }));
+    CHECK(popupOrNull->item(0)->text().endsWith(QStringLiteral("resolved detail")) == true);
+    CHECK(popupOrNull->item(1)->text().contains(QStringLiteral("resolved")) == false);
+    QTest::keyClick(&editor, Qt::Key_Down);
+    REQUIRE(QTest::qWaitFor([&editor]() {
+        return editor.GetCompletionDocumentation().startsWith(QStringLiteral("Documentation for Other")) == true;
+    }));
+    QTest::keyClick(&editor, Qt::Key_Up);
+    CHECK(editor.GetCompletionDocumentation().startsWith(QStringLiteral("Documentation for Item")) == true);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    CHECK(editor.GetCompletionDocumentation().isEmpty() == true);
+}
+
+TEST_CASE("Inlay hints cover the authored source and follow a server refresh", "[editor][text][assistance]")
+{
+    // The first reply has no hints; the server then asks for a refresh.
+    FakeAssistanceSession session("float a = Call(missing);\nfloat b = Call(missing);\n",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {}, "inlayHintProvider": true})"),
+                                   QStringLiteral("--hints"),
+                                   QStringLiteral("missing"),
+                                   QStringLiteral("--refresh-hints")});
+    CodeEditor& editor = session.Editor;
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetInlayHints().size() == 2; }));
+    const QString text = editor.toPlainText();
+    CHECK(editor.GetInlayHints().at(0).Position == text.indexOf(QStringLiteral("missing")));
+    CHECK(editor.GetInlayHints().at(1).Position == text.lastIndexOf(QStringLiteral("missing")));
+    CHECK(editor.GetInlayHints().at(0).Label == QStringLiteral("name:"));
+    CHECK(editor.GetInlayHints().at(0).Kind == CodeInlayHintKind::Parameter);
+    CHECK(session.Host.CanUndo() == false);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    editor.moveCursor(QTextCursor::End);
+    QTest::keyClicks(&editor, QStringLiteral("Call(missing);"));
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetInlayHints().size() == 3; }));
+    session.Assistance.ClearContext();
+    CHECK(editor.GetInlayHints().isEmpty() == true);
+}
+
+TEST_CASE("A semantic token reply for an earlier draft is discarded", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = missing;\n",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {}, "hoverProvider": true,
+                            "semanticTokensProvider": {"legend": {"tokenTypes": ["function"], "tokenModifiers": []},
+                                                       "full": true}})"),
+                                   QStringLiteral("--tokens"),
+                                   QStringLiteral("missing"),
+                                   QStringLiteral("--hold"),
+                                   QStringLiteral("textDocument/semanticTokens/full")});
+    CodeEditor& editor = session.Editor;
+    QAction* hoverOrNull = nullptr;
+    for (QAction* action : editor.actions())
+    {
+        hoverOrNull = action->objectName() == QStringLiteral("codeEditorHover") ? action : hoverOrNull;
+    }
+    REQUIRE(hoverOrNull != nullptr);
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    // The first token reply is held. An edit at the start makes it describe the
+    // previous text; a hover, which sends the draft without asking for layers,
+    // releases it before the next synchronization asks again.
+    QTextCursor cursor(editor.document());
+    editor.setTextCursor(cursor);
+    QTest::keyClicks(&editor, QStringLiteral("x"));
+    hoverOrNull->trigger();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetHoverText().isEmpty() == false; }));
+    // Applied, the stale reply would mark "issing" at the old offset.
+    const QString text = editor.toPlainText();
+    for (const CodeSyntaxToken& token : editor.GetSemanticTokens())
+    {
+        CHECK(QStringView(text).sliced(token.GetStart(), token.GetEnd() - token.GetStart()) ==
+              QStringLiteral("missing"));
+    }
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetSemanticTokens().size() == 1; }));
+    CHECK(editor.GetSemanticTokens().constFirst().GetStart() == text.indexOf(QStringLiteral("missing")));
 }
 
 TEST_CASE("Escape cancels pending shader assistance before a delayed reply", "[editor][text][assistance]")
@@ -986,7 +2142,8 @@ TEST_CASE("Native Slang resolves authored symbols references and generated API d
     }
     const QString prefix = QStringLiteral("struct SceneContext { float Exposure; };\n");
     const QString source = QStringLiteral(
-        "// Unicode: \U0001f600\nfloat Value() { return 1; }\nfloat Main(SceneContext scene) { return Value(); }\n");
+        "// Unicode: \U0001f600\nfloat Value() { return 1; }\nfloat Main(SceneContext scene) { return Value(); }\n"
+        "float Twice(float amount) { return amount * 2; }\nfloat Use() { return Twice(3); }\n");
     MemoryCodeDocument host(source.toUtf8());
     CodeEditor editor;
     CodeDocumentController document(editor);
@@ -1012,6 +2169,46 @@ TEST_CASE("Native Slang resolves authored symbols references and generated API d
         QTest::qWaitFor([&]() { return editor.textCursor().selectedText().contains(QStringLiteral("Value")); }, 15000));
     CHECK(editor.textCursor().blockNumber() == 1);
     CHECK(host.CanUndo() == false);
+    // slangd's semantic tokens color authored names after the astral character on
+    // the first line; the generated prefix's names never reach the view.
+    const auto hasToken = [&editor, &source](const QString& name, CodeSyntaxRole role) {
+        for (const CodeSyntaxToken& token : editor.GetSemanticTokens())
+        {
+            if (token.GetRole() == role &&
+                QStringView(source).sliced(token.GetStart(), token.GetEnd() - token.GetStart()) == name)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    REQUIRE(QTest::qWaitFor([&]() { return hasToken(QStringLiteral("Value"), CodeSyntaxRole::Function); }, 15000));
+    CHECK(hasToken(QStringLiteral("SceneContext"), CodeSyntaxRole::Type) == true);
+    CHECK(hasToken(QStringLiteral("scene"), CodeSyntaxRole::Parameter) == true);
+    // Inlay hints name the parameter an argument binds.
+    // slangd sends none until it has read its configuration, then asks for a refresh.
+    const int32 argument = static_cast<int32>(source.lastIndexOf(QStringLiteral("3)")));
+    REQUIRE(QTest::qWaitFor(
+        [&]() {
+            for (const CodeInlayHint& hint : editor.GetInlayHints())
+            {
+                if (hint.Position == argument && hint.Kind == CodeInlayHintKind::Parameter &&
+                    hint.Label.startsWith(QStringLiteral("amount")) == true)
+                {
+                    return true;
+                }
+            }
+            return false;
+        },
+        15000));
+    const QString assistanceCapture = qEnvironmentVariable("LUDUS_NAVIGATION_CAPTURE_DIR");
+    if (assistanceCapture.isEmpty() == false)
+    {
+        // Semantic colors and inlay hints from the real server, for visual acceptance.
+        QTest::qWait(500);
+        REQUIRE(QDir().mkpath(assistanceCapture) == true);
+        REQUIRE(editor.grab().save(QDir(assistanceCapture).filePath(QStringLiteral("assistance.png"))) == true);
+    }
     assistance.RequestNavigation(CodeNavigationKind::Symbols);
     REQUIRE(QTest::qWaitFor([&]() { return editor.GetNavigation().IsChoosing(); }, 15000));
     QListWidget* resultsOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeNavigationResults"));
@@ -1056,19 +2253,31 @@ TEST_CASE("Native Slang resolves authored symbols references and generated API d
     editor.setFocus();
     cursor.setPosition(static_cast<int32>(source.indexOf(QStringLiteral("SceneContext"))) + 2);
     editor.setTextCursor(cursor);
-    bool hasInspected = false;
-    QTimer inspector;
-    QObject::connect(&inspector, &QTimer::timeout, &editor, [&]() {
-        QPlainTextEdit* readOnlyOrNull = editor.findChild<QPlainTextEdit*>(QStringLiteral("codeNavigationReadOnly"));
-        if (readOnlyOrNull != nullptr)
+    class DefinitionViewHost final : public CodeNavigationViewHost
+    {
+    public:
+        CodeNavigation* OpenNavigationTarget(const CodeNavigationTarget& target) override
         {
-            hasInspected = readOnlyOrNull->isReadOnly() == true && readOnlyOrNull->toPlainText().contains(prefix);
-            static_cast<QDialog*>(readOnlyOrNull->parentWidget())->reject();
+            Destination = target;
+            Preview.setPlainText(target.Text);
+            return &Preview.GetNavigation();
         }
-    });
-    inspector.start(20);
+
+        CodeNavigation* ActivateNavigationView(CodeNavigation* viewOrNull, const QString&) override
+        {
+            return viewOrNull;
+        }
+
+        CodeNavigationTarget Destination;
+        CodeEditor Preview;
+    };
+    DefinitionViewHost views;
+    editor.GetNavigation().SetViewHost(&views);
     assistance.RequestNavigation(CodeNavigationKind::Definition);
-    REQUIRE(QTest::qWaitFor([&]() { return hasInspected; }, 15000));
+    REQUIRE(QTest::qWaitFor([&]() { return views.Destination.IsReadOnly == true; }, 15000));
+    CHECK(views.Destination.Text.contains(prefix) == true);
+    CHECK(views.Preview.textCursor().selectedText() == QStringLiteral("SceneContext"));
+    editor.GetNavigation().SetViewHost(nullptr);
     CHECK(host.GetState().Text == source.toUtf8());
     CHECK(host.CanUndo() == false);
 }

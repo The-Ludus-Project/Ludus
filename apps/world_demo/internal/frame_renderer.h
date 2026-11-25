@@ -1,6 +1,7 @@
 #pragma once
 #include "render_items.h"
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -49,6 +50,11 @@ public:
     /// @return Ready once frames can be presented, Pending while setup continues, or the
     /// Renderer's failure, after which only Reset recovers.
     [[nodiscard]] graphics::rhi::RasterStatus Prepare(graphics::rhi::DeviceHandle device) noexcept;
+    /// CPU clock interval from unit-quad upload submission to the first Ready poll.
+    [[nodiscard]] LUDUS_INLINE foundation::time::Duration GetQuadReadyDuration() const noexcept
+    {
+        return mQuadReadyDuration;
+    }
     /// Replace the presented scene with one frame, viewed for a drawable of the given size.
     /// A size change recreates the viewport's targets, so the next frames wait for the new view.
     /// @param frame Extraction to draw; copied into a renderer snapshot before return.
@@ -91,6 +97,8 @@ private:
     graphics::renderer::Snapshot mSnapshot;
     graphics::rhi::DeviceHandle mDevice;
     FrameItems mItems;
+    foundation::time::Timestamp mQuadUploadStart;
+    foundation::time::Duration mQuadReadyDuration;
     FrameRendererStage mStage = FrameRendererStage::Idle;
     uint32 mViewportWidth = 0;
     uint32 mViewportHeight = 0;

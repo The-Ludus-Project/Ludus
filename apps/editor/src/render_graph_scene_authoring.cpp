@@ -147,7 +147,7 @@ bool HasSceneRayInterface(const QJsonObject& manifest)
     return false;
 }
 
-QByteArray MakeSceneRaySource(QJsonObject& inoutProgram)
+QByteArray MakeSceneRaySource(QJsonObject& inoutProgram, bool isLusl)
 {
     const QString stage = inoutProgram.value(QStringLiteral("stage")).toString();
     const QString function = inoutProgram.value(QStringLiteral("function")).toString();
@@ -157,7 +157,8 @@ QByteArray MakeSceneRaySource(QJsonObject& inoutProgram)
     {
         inoutProgram.insert(QStringLiteral("input"), QStringLiteral("RayLaunch"));
         inoutProgram.insert(QStringLiteral("output"), QStringLiteral("Radiance"));
-        source += QStringLiteral("float3 %1(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)\n"
+        source += QStringLiteral("float3 %1(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, "
+                                 "%1Resources resources)\n"
                                  "{\n    ScenePayload payload = (ScenePayload)0;\n"
                                  "    TraceAndShade(scene, queries, launch.CameraRay, payload);\n"
                                  "    return payload.Radiance;\n}\n")
@@ -180,7 +181,8 @@ QByteArray MakeSceneRaySource(QJsonObject& inoutProgram)
         // C03 scene compute kernel: the ray-generation signature, without hit or miss callbacks.
         inoutProgram.insert(QStringLiteral("input"), QStringLiteral("RayLaunch"));
         inoutProgram.insert(QStringLiteral("output"), QStringLiteral("Radiance"));
-        source += QStringLiteral("float3 %1(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)\n"
+        source += QStringLiteral("float3 %1(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, "
+                                 "%1Resources resources)\n"
                                  "{\n"
                                  "    // A compute pass has no hit or miss callbacks: TraceAndShade fails here.\n"
                                  "    SurfaceHit hit;\n"
@@ -203,6 +205,31 @@ QByteArray MakeSceneRaySource(QJsonObject& inoutProgram)
     else
     {
         return {};
+    }
+    if (isLusl == true)
+    {
+        source.replace(QStringLiteral("float3"), QStringLiteral("float32x3"));
+        source.replace(QStringLiteral("(ScenePayload)0"), QStringLiteral("0"));
+        source.replace(QStringLiteral("inout RayQueryContext queries"),
+                       QStringLiteral("inout RayQueryContext inoutQueries"));
+        if (stage == QStringLiteral("compute") || stage == QStringLiteral("ray_generation"))
+        {
+            source.replace(QStringLiteral("%1Resources resources").arg(function),
+                           QStringLiteral("in %1Resources resources").arg(function));
+            source.prepend(QStringLiteral("#include \"graph_resources.luslh\"\n"));
+        }
+        source.replace(QStringLiteral("inout ScenePayload payload"), QStringLiteral("inout ScenePayload inoutPayload"));
+        if (stage == QStringLiteral("closest_hit") || stage == QStringLiteral("miss"))
+        {
+            source.replace(QStringLiteral("payload.Radiance"), QStringLiteral("inoutPayload.Radiance"));
+        }
+        source.replace(QStringLiteral("TraceAndShade(scene, queries, launch.CameraRay, payload)"),
+                       QStringLiteral("TraceAndShade(scene, inout inoutQueries, launch.CameraRay, inout payload)"));
+        source.replace(QStringLiteral("TraceClosest(scene, queries, launch.CameraRay, hit)"),
+                       QStringLiteral("TraceClosest(scene, inout inoutQueries, launch.CameraRay, out hit)"));
+        source.insert(0,
+                      stage == QStringLiteral("compute") ? QStringLiteral("#include \"scene_shader.luslh\"\n\n")
+                                                         : QStringLiteral("#include \"scene_payload.luslh\"\n\n"));
     }
     return source.toUtf8();
 }

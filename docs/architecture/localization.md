@@ -20,11 +20,12 @@ the opt-in private [`Ludus::Unicode`](../modules/foundation/unicode.md) owner
 builds the pinned ICU4C for native and wasm32 and owns the host service (hooks,
 embedded data, warm-up, fail-stop on ICU allocation failure, teardown cleanup);
 `PrepareFormatterContext` and `Format` validate the full schema before ICU and
-copy complete output, and generated descriptors gain typed helpers. Consumer
-presentation caches (`LocalizedText`), locale negotiation, context switching and
-paragraph integration below describe subsequent phases. No throughput or complete language-support
-claim is made. Original design baseline: `52e29ce`; initial implementation base:
-`afe3b78`, with FoundationMemory/Strings now available.
+copy complete output, and generated descriptors gain typed helpers. L3 implements
+[locale and visible-text publication](../modules/localization.md#publish-a-locale-and-its-visible-text)
+from an application-selected, verified catalog set. Locale negotiation, paragraph
+layout, Content/web acquisition and localized assets remain future work. The
+original design baseline was `52e29ce` and implementation began from `afe3b78`
+with FoundationMemory and FoundationStrings available.
 
 Ludus should resolve stable message keys through immutable locale catalogs,
 format complete messages with typed arguments, and rebuild presentation when its
@@ -437,20 +438,21 @@ advisory where reachability cannot be proved.
 
 ## Runtime API and lifetime
 
-The public contract is small. These names describe proposed APIs, not existing
-C++ declarations; all fallible calls return `Status` and are `noexcept`.
+The public contract is small. All fallible calls return `Status` and are
+`noexcept`. See the [module guide](../modules/localization.md) for the shipped C++
+signatures and [publication workflow](../modules/localization.md#publish-a-locale-and-its-visible-text).
 
 | Operation | Contract |
 | --- | --- |
 | `PrepareCatalog(bytes, limits, outCatalog)` | Validate and own/lease bytes; create a complete immutable catalog or return failure |
-| `AcquireSnapshot(context, outLease)` | Acquire on the context owner, retain an immutable generation for reader use |
+| `AcquireSnapshot(outLease)` | Acquire on the context owner, retain the immutable catalogs and prepared visible text for reader use |
 | `BindMessage(schema, descriptor, outBinding)` | Exact key and expected argument-schema match; cold path |
 | `ResolveStatic(lease, binding, outView, outInfo)` | Bounds/schema check plus table access for an argument-free schema; view valid while lease is retained; rejects schemas requiring arguments |
 | `PrepareFormatterContext(lease, domainSet, outContext)` | Create bounded formatter state for declared dynamic messages; one thread owns it |
 | `Format(context, binding, argumentSpan, outputSpan, outResult)` | Validate types/ranges, format, then copy complete UTF-8 output; explicit status and effective locale |
-| `RequestLocaleChange(context, preferences, outRequest)` | Start candidate preparation; no synchronous network or browser wait |
-| `PollLocaleChange` and `CancelLocaleChange` | Owned request state and bounded diagnostics; publication requires application readiness |
-| `CommitLocaleChange(context, request, readiness)` | Owner-thread publication of the prepared generation after all required contributors are ready |
+| `RequestLocaleChange`, `SubmitCatalog`, `FailCatalogAcquisition` | Declare the effective locale and required domains, then deliver verified bytes or acquisition failures to the owner |
+| `PollLocaleChange`, `CancelLocaleChange`, `PrepareCandidateView` | Observe or cancel preparation, or prepare a complete text view for one visible-input revision |
+| `CommitLocaleChange` | Publish the exact prepared view and catalogs on the owner thread after the application establishes readiness |
 
 Headers need only Band 0 types, explicit lightweight Ludus declarations,
 `<span>` and `<string_view>` where named. Use the Ludus fixed-width aliases;
@@ -543,6 +545,15 @@ logger's own diagnostics.
 
 ## Locale switching and live replacement
 
+L3's `LocalizationContext` loads and validates application-supplied packages
+under one requested-byte overlap budget. It uses the cooker’s baked provider
+closure and prepares immutable ordered text from exact descriptors and explicit
+arguments. The context publishes the catalog and text lease in one operation.
+The application chooses the frame boundary and invokes commit when the layout
+for that exact preview and current input revisions is ready. The headless runtime
+supplies text and provenance for this boundary. Later phases cover Text layout,
+font policy and localized asset adapters.
+
 One application owner serializes requests and commit. Each asynchronous result
 carries context/session identity, request generation, catalog revision and desired
 preference revision. A completion for an older request is discarded. A closed
@@ -572,9 +583,10 @@ completion. A lease leak appears in retained-generation telemetry rather than
 becoming use-after-free. Keep an invariant emergency/settings surface available
 if the initial source catalog cannot load.
 
-Translation-only hot reload can preserve schema bindings. Schema replacement
-requires a complete compatible game/content generation and explicit rebind;
-never reinterpret old indices. External-file conflicts preserve editor drafts.
+Translation-only hot reload preserves the generated schema descriptors. Each
+package load receives new catalog-local bindings. Schema replacement requires a
+complete compatible game/content context and explicit rebind. External-file
+conflicts preserve editor drafts.
 All formatter contexts participate in retirement before backend teardown.
 
 ## Text layout and localized assets
@@ -695,8 +707,8 @@ architecture-only change does not configure, repair, or build such a project.
 | --- | --- | --- |
 | L0 | Schema/manifest/profile specification, ICU dependency probe, representative corpus | Native/wasm exception-free backend proof, sizes, failure behavior and confirmed CAT profile; report unsupported targets. [Implemented](localization-l0.md) except the CAT confirmation |
 | L1 | Source validation, static cooker/reader, exact bindings and generated descriptors | Static escaping/UTF-8, corruption/collision/lifetime tests, reproducible packages and CLI inspection. [Implemented](../modules/localization.md#release-cooking-ludus-icu-mf1-v1); typed helpers wait for L2 `Format` |
-| L2 | Typed ICU formatting, context preparation and consumer caches | Grammar corpus, failure injection, native/wasm formatting parity and measured dynamic cost. [Implemented](../modules/localization.md#formatting-messages-with-arguments) except consumer caches (`LocalizedText`), which move to L3 visible-view work; ICU allocation failure is fail-stop, not recoverable |
-| L3 | Candidate loading, visible-view readiness and generation publication | Cancellation, old-plus-new budgets, consistent visible switch, hot reload and multi-context tests |
+| L2 | Typed ICU formatting, context preparation and consumer caches | Grammar corpus, failure injection, native/wasm formatting parity and measured dynamic cost. [Implemented](../modules/localization.md#formatting-messages-with-arguments). L3 caches complete visible text by revision. ICU allocation failure is fail-stop |
+| L3 | Candidate loading, visible-view readiness and generation publication | [Implemented](../modules/localization.md#publish-a-locale-and-its-visible-text) with headless cancellation, old-plus-new budgets, consistent visible switch, hot reload and multi-context tests |
 | L4 | Text paragraph/locale-transfer extension and font policy | Conformance tests and real rendered language coverage; actual web Text integration |
 | L5 | Editor/XLIFF workflow, localized assets, dialogue coordination | Translator round trips, stale-import conflicts, full package and cue/playback validation |
 | L6 | Workload-driven optimization and optional richer profile | Representative improvements with unchanged semantics and maintained failure/lifetime guarantees |

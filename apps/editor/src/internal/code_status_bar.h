@@ -21,8 +21,6 @@ class CodeFileDocument;
 /// indentation, the encoding, the line endings, the language mode and the tool
 /// (language-server) state. Items whose change M1 supports are clickable and
 /// emit a request the shell acts on; the rest are shown for information only.
-/// The language-server state is a placeholder until M4.
-///
 /// The widget mirrors one active tab at a time: it connects to that tab's editor
 /// cursor/selection signals and reads its bound file host, and shows nothing when
 /// no code tab is active. GUI thread only. It owns no document and never mutates
@@ -60,6 +58,7 @@ Q_SIGNALS:
 private:
     void updatePosition();
     void updateSelection();
+    void updateToolState();
     void updateFromHost();
     void disconnectEditor();
     [[nodiscard]] CodeEditor* editorOrNull() const;

@@ -74,6 +74,13 @@ support self-borrowed slices. Fixed-capacity overflow returns `CapacityExceeded`
 without truncation. Allocation failure returns `OutOfMemory`; owners and checked
 operation outputs retain their previous logical values on failure.
 
+Edit in place with `TryErase(offset, count)`, which checks the byte range and
+returns `OutOfRange` without changing anything, and release unused capacity
+with `String::TryShrinkToFit()`. Short values return to inline storage without
+allocating; longer ones move to an exact-size block, and an `OutOfMemory`
+failure keeps the old storage. Byte ranges can split a UTF-8 sequence, so
+choose text ranges with the checked slicing functions below.
+
 `String` defaults to the process-lifetime system allocation domain. A custom
 `AllocationDomain` and its callback context must outlive all allocations made
 through it. Byte assignment keeps the destination domain; moves carry the
@@ -165,6 +172,37 @@ Mutable table operations synchronize internally. Freeze, move and destruction
 require all concurrent operations to finish first. Successful freeze consumes
 the mutable owner without allocation or changing IDs; frozen lookups do not
 acquire its mutation mutex. Keep the frozen owner alive for every view and job.
+
+### Reserve known content and inspect a table
+
+When a loader knows how many distinct spellings it will add and their total
+byte length, reserve them first so the insertions themselves cannot allocate:
+
+```cpp
+// 120 names totalling 2400 payload bytes; terminators are added for you.
+StringStatus status = table.TryReserve(120, 2400);
+```
+
+The reservation grows the entry directory and lookup array to their exact
+final size and adds one page of exactly `2400 + 120` bytes when the current page
+cannot hold them. Its budget check covers the growth peak, when an old and a
+replacement array briefly coexist, before anything is allocated:
+`CapacityExceeded` allocates nothing. After `OutOfMemory`, completed steps may
+remain, but no entry, ID or view changes. Duplicates consume no reservation.
+
+Compact records that store a `StringIndex` beside their known owner resolve it
+with `TryResolveIndex(index, view)`. The index has no table token, so it is
+checked only against that table's entry count; an in-range index from another
+table resolves to this table's spelling. Keep the owner with the record and use
+`NameId` wherever ownership is not otherwise known.
+
+`TryCaptureSnapshot(snapshot)` copies a `StringTableSnapshot` in constant time
+without allocating: entry count and capacity, spelling, terminator, page,
+slack, entry-directory, lookup and state bytes, current and peak allocated
+bytes against the budget, duplicate admissions and a power-of-two histogram of
+lookup probe distances. `AllocatedBytes` is exactly what the creation domain
+holds for the table. A frozen table reports the counters it had when frozen,
+without locking. Snapshots contain counters only, never spellings.
 
 A `NameLiteral` precomputes a fingerprint and retains spelling; it is not an
 interned ID. Binding remains explicit, and its source storage must survive until
@@ -273,8 +311,65 @@ The C-string check alone does not validate encoding or create owned storage;
 pass a terminated owner's data when the receiving API requires termination.
 
 When a checked call fails, propagate its status or show a bounded diagnostic.
-Do not reinterpret failure as an empty successful value. UTF-16 conversion,
-checked text slicing, normalization and SIMD validation are separate future APIs.
+Do not reinterpret failure as an empty successful value.
+
+## Slice, shorten and repair text
+
+A plain `substr` may split a code point. `TrySliceUtf8(text, offset, size,
+slice)` borrows a range of a `Utf8View` only when both ends are code point
+boundaries, returning `SplitsCodePoint` or `OutOfRange` and leaving `slice`
+unchanged otherwise. `FindPrecedingUtf8Boundary(text, offset)` moves an offset
+back to the nearest boundary. To fit validated text into a fixed field, call
+`StaticString::AssignTruncatedUtf8(text, isTruncated)`; it keeps whole scalars
+and tells you whether anything was dropped. None of these find grapheme
+clusters or display widths, so a combining mark can be separated from its base.
+
+Strict validation never repairs. To show bytes that may be malformed, such as a
+name a native API reported, repair them explicitly:
+
+```cpp
+#include <ludus/foundation/strings/string.hpp>
+#include <ludus/foundation/strings/utf8.hpp>
+
+#include <string_view>
+
+// Show untrusted bytes; diagnostics are limited to 256 bytes after repair.
+[[nodiscard]] ludus::foundation::StringStatus MakeDisplayName(std::string_view reported,
+                                                              ludus::foundation::String& outName) noexcept
+{
+    using namespace ludus::foundation;
+    constexpr usize MAX_DISPLAY_NAME_BYTES = 256;
+    usize replacements = 0;
+    return TryRepairUtf8(reported, MAX_DISPLAY_NAME_BYTES, outName, replacements);
+}
+```
+
+Each maximal ill-formed subpart becomes one U+FFFD, following the Unicode
+Standard's recommendation, and `replacements` counts them. Every replacement
+takes three bytes, so the limit applies to the repaired size. On
+`CapacityExceeded`, `TooLarge` or `OutOfMemory` the output and count keep their
+previous values, and `reported` may borrow `outName`.
+
+## Cross a UTF-16 or `char8_t` boundary
+
+Engine text stays UTF-8. Where an OS API needs UTF-16, include
+`<ludus/foundation/strings/utf16.hpp>` and convert into bounded caller storage
+with `ConvertUtf8ToUtf16` or `ConvertUtf16ToUtf8`. Windows also has
+`wchar_t` overloads for Win32 wide-character APIs. Conversion is strict: it
+returns `InvalidUtf8` with the first bad byte offset or `InvalidUtf16` with the
+first unpaired surrogate's unit offset, and never substitutes characters.
+`CapacityExceeded` means the output span is too small; `MeasureUtf8AsUtf16`
+and `MeasureUtf16AsUtf8` report the exact size. A failed conversion writes
+nothing. Conversions write no terminator, so reserve one element and write it
+yourself. Check `ValidateCString` first when the API reads a terminated string
+that must not contain U+0000.
+
+For `u8"..."` literals and `std::u8string`, `GetByteView(units)` borrows the
+units as bytes without copying. Going the other way, for example to build a
+`std::filesystem::path` from engine text, copy with
+`TryCopyToUtf8Units(bytes, units, count)`: reading `char` storage through a
+`char8_t` pointer is not allowed in C++. Normalization and SIMD validation
+remain separate future APIs.
 
 ## Implementation and further reading
 
@@ -285,7 +380,8 @@ reader and writer are not yet adopted by a content cooker or snapshot. The
 [adoption survey](../../architecture/strings.md#dictionary-adoption-survey) found
 no current format with a repeated-spelling need and lists the triggers for that
 integration. Format adapters, debugger printers and an editor strings inspector
-remain follow-on work.
+remain follow-on work. The Win32 window title uses the strict UTF-16 conversion;
+other Win32 call sites migrate when they are next changed.
 
 See the [implementation status](../../architecture/strings.md#implementation-status),
 [public headers](https://github.com/The-Ludus-Project/Ludus/tree/main/modules/foundation/strings/include/ludus/foundation/strings),

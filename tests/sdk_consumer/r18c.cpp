@@ -9,6 +9,7 @@
 #include <ludus/graphics/rhi/lifetime.h>
 
 #include "r18c.h"
+#include "r18c_slots.h"
 
 #include <cstring>
 
@@ -23,6 +24,20 @@ using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
 constexpr logging::LogCategory LOG_R18C{"R18c-Fixture"};
 constexpr usize BINDING_COUNT = 9;
+namespace r18c_slots = ludus::shaders::r18c::slots;
+// The slot of each gBuffers entry, which r18c.lusl declares in this order: four read-only buffers,
+// the output buffer and four constant buffers.
+constexpr StaticArray<uint32, BINDING_COUNT> BUFFER_SLOTS{{
+    r18c_slots::PRIMARY,
+    r18c_slots::SECONDARY,
+    r18c_slots::THIRD,
+    r18c_slots::FOURTH,
+    r18c_slots::OUTPUT,
+    r18c_slots::FIRST_SETTINGS,
+    r18c_slots::SECOND_SETTINGS,
+    r18c_slots::THIRD_SETTINGS,
+    r18c_slots::FOURTH_SETTINGS,
+}};
 constexpr usize LARGE_BYTES = usize{64} * 1024 * 1024 + 256;
 constexpr usize RANGE_BYTES = usize{16} * 1024 * 1024 + 256;
 constexpr usize RANGE_OFFSET = LARGE_BYTES - RANGE_BYTES;
@@ -128,7 +143,7 @@ bool PrepareDispatch() noexcept
     StaticArray<rhi::RasterBindingResource, BINDING_COUNT> resources{};
     for (usize binding = 0; binding < BINDING_COUNT; ++binding)
     {
-        resources[binding].Binding = static_cast<uint32>(binding);
+        resources[binding].Binding = BUFFER_SLOTS[binding];
         resources[binding].Buffer = gBuffers[binding];
         resources[binding].Size = binding == 0 ? RANGE_BYTES : binding < 5 ? 4U : 16U;
         resources[binding].Offset = binding == 0 ? RANGE_OFFSET : 0;
@@ -139,6 +154,8 @@ bool PrepareDispatch() noexcept
 }
 bool PrepareGraph() noexcept
 {
+    // Elements use their default member initializers; the check misreports them as zero enums.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<rhi::GraphUse, BINDING_COUNT> uses{};
     if (rhi::CreateOrderedGraph(gDevice, gGraph) != rhi::RasterStatus::Ready)
     {

@@ -234,9 +234,11 @@ struct TextureDescription final
     /// Stencil support is independent of depth sampling and MSAA.
     bool Stencil = false;
     /// Also allow write-only shader storage through Storage views (R12b). Requires a
-    /// format with enabled Uses.Storage, D2, one mip, one sample and complete upload bytes:
-    /// attachments, deferred initialization and retained CPU content reject. Sampled views
-    /// of the same allocation remain available; ordered graphs order writes before reads.
+    /// format with enabled Uses.Storage, D2, one mip and one sample. Non-attachments require
+    /// a complete upload. RGBA8Unorm attachments without stencil may also enable storage, using
+    /// an empty upload and an attachment Clear/Store before the first storage use.
+    /// Deferred initialization and retained CPU content reject. Ordered graphs can order
+    /// attachment, storage and sampled access to the same allocation in separate passes.
     bool IsStorage = false;
 };
 /// Sampled color or private depth/stencil aspect; capability-gated independently.
@@ -271,9 +273,9 @@ struct TextureViewDescription final
     /// exactly one mip/layer and D2; retains both color and its private depth/stencil.
     /// Undefined contents are legal until a pass clears them. Not bindable in a set.
     bool Attachment = false;
-    /// Select the write-only storage view of a Storage texture instead of a sampled view.
+    /// Select the storage view of a Storage texture instead of a sampled view.
     /// Color, D2 and the complete single mip/layer; excludes Attachment. Bindable only at
-    /// StorageTexture2D entries of the allocation's format; sampled bindings reject it.
+    /// storage texture entries of the allocation's format; sampled bindings reject it.
     bool IsStorage = false;
 };
 /// One complete initialized mip within the borrowed upload byte blob.
@@ -405,6 +407,10 @@ enum class RasterBindingKind : ludus::foundation::uint8
     /// one fragment or compute stage. Binds a Storage view; writes are declared through an
     /// ordered-graph StorageTextureWrite use. Requires RasterStorageCapabilities per-stage counts.
     StorageTexture2D,
+    /// Read/write RGBA8Unorm 2D storage texture for native compute. Binds an initialized
+    /// storage view and requires an ordered-graph StorageTextureWrite use. The shader
+    /// owns synchronization between invocations. Requires Vulkan or Metal read/write tier 2.
+    StorageTexture2DReadWrite,
 };
 /// Shader stage visibility mask.
 enum class RasterVisibility : ludus::foundation::uint8
@@ -458,7 +464,7 @@ struct RasterBinding final
     /// Holes sample/bind that retained fallback and cannot produce host index tokens.
     /// Allocation and descriptor budgets charge the complete table, including holes.
     bool HasPartialBinding = false;
-    /// Texel format written through a StorageTexture2D binding, from target reflection.
+    /// Texel format accessed through a storage texture binding, from target reflection.
     /// Must be a format whose enabled FormatCapabilities::Uses.Storage is true; the bound
     /// Storage view must have exactly this format. Ignored for every other kind.
     RasterFormat StorageFormat = RasterFormat::Rgba8Unorm;
@@ -572,7 +578,7 @@ struct RasterBindingResource final
     /// Buffer byte range, nonzero and at least the layout's reflected minimum.
     ludus::foundation::usize Size = 0;
     /// Sampled view of the layout's exact dimension/aspect, or an IsStorage view of the
-    /// layout's StorageFormat for StorageTexture2D entries. Attachment views reject.
+    /// layout's StorageFormat for storage texture entries. Attachment views reject.
     TextureViewHandle Texture{};
     /// Sampler identity; ignored for other entries.
     SamplerHandle Sampler{};

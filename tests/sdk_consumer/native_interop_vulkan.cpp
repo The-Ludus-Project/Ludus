@@ -1,5 +1,6 @@
 #include "native_interop_fixture.h"
 #include "native_sample.h"
+#include "native_sample_slots.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -520,9 +521,11 @@ bool SubmitSample(Foreign& fixture, const ludus::graphics::rhi::NativeTextureInf
         .maxLod = 0,
     };
     NATIVE_VK(api.vkCreateSampler(source.Device, &sampler, nullptr, &source.Sampler));
+    // The slots that the LUSL compiler assigned to native_interop.lusl's sourceImage and sourceSampler.
+    namespace sample_slots = ludus::shaders::native_sample::slots;
     const VkDescriptorSetLayoutBinding bindings[2]{
-        {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+        {sample_slots::SOURCE_IMAGE, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {sample_slots::SOURCE_SAMPLER, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
     VkDescriptorSetLayoutCreateInfo layout
     {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -555,7 +558,7 @@ bool SubmitSample(Foreign& fixture, const ludus::graphics::rhi::NativeTextureInf
     {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = source.Set;
-        writes[i].dstBinding = i;
+        writes[i].dstBinding = bindings[i].binding;
         writes[i].descriptorCount = 1;
         writes[i].descriptorType = bindings[i].descriptorType;
         writes[i].pImageInfo = &descriptors[i];
@@ -638,7 +641,10 @@ bool SubmitSample(Foreign& fixture, const ludus::graphics::rhi::NativeTextureInf
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
     };
     const VkVertexInputBindingDescription vertexBinding{0, VERTEX_STRIDE, VK_VERTEX_INPUT_RATE_VERTEX};
-    const VkVertexInputAttributeDescription attribute{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0};
+    const VkVertexInputAttributeDescription attribute{ludus::shaders::native_sample::locations::POSITION,
+                                                      0,
+                                                      VK_FORMAT_R32G32B32_SFLOAT,
+                                                      0};
     inputs.vertexBindingDescriptionCount = 1;
     inputs.pVertexBindingDescriptions = &vertexBinding;
     inputs.vertexAttributeDescriptionCount = 1;

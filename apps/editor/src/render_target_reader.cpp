@@ -6,6 +6,7 @@
 #include <ludus/graphics/rhi/graph.h>
 
 #include "editor_texture_depth_pack.h"
+#include "editor_texture_depth_pack_slots.h"
 
 #include <cstring>
 
@@ -22,6 +23,9 @@ constexpr usize STREAM_COUNT = 1;
 constexpr usize ATTRIBUTE_COUNT = 1;
 constexpr float32 FULLSCREEN_EXTENT = 3.0F;
 constexpr usize PACKED_TEXEL_BYTES = 4;
+/// The LUSL compiler assigns the pack shader's slot and input location in declaration order
+/// (apps/editor/shaders/texture_depth_pack.lusl); the host binds by the generated names.
+namespace depth_pack = shaders::editor_texture_depth_pack;
 
 /// Destroying a never-created (default) handle is a rejected no-op, so release needs no tracking.
 template <typename Handle>
@@ -218,8 +222,8 @@ bool RenderTargetReader::preparePacking(uint32 width, uint32 height) noexcept
 {
     if (mIsPackingReady == false)
     {
-        const rhi::RasterShaderDescription vertex = shaders::editor_texture_depth_pack::Vertex();
-        const rhi::RasterShaderDescription fragment = shaders::editor_texture_depth_pack::Fragment();
+        const rhi::RasterShaderDescription vertex = depth_pack::Vertex();
+        const rhi::RasterShaderDescription fragment = depth_pack::Fragment();
         if (rhi::CreateRasterShader(mDevice, vertex, mVertex) != rhi::RasterStatus::Ready ||
             rhi::CreateRasterShader(mDevice, fragment, mFragment) != rhi::RasterStatus::Ready ||
             rhi::CreateBindingLayout(mDevice, fragment.Bindings, mLayout) != rhi::RasterStatus::Ready)
@@ -228,7 +232,7 @@ bool RenderTargetReader::preparePacking(uint32 width, uint32 height) noexcept
         }
         const StaticArray<rhi::RasterVertexStream, STREAM_COUNT> streams{{{sizeof(math::Vector4), false}}};
         const StaticArray<rhi::RasterVertexAttribute, ATTRIBUTE_COUNT> attributes{
-            {{0, 0, 0, rhi::RasterVertexFormat::Float4}}};
+            {{depth_pack::locations::INPUT_POSITION_CLIP, 0, 0, rhi::RasterVertexFormat::Float4}}};
         rhi::RasterPipelineDescription description;
         description.Vertex = mVertex;
         description.Fragment = mFragment;
@@ -281,7 +285,7 @@ bool RenderTargetReader::encodePacking(rhi::SurfaceHandle surface, rhi::TextureH
     {
         return false;
     }
-    const rhi::RasterBindingResource resource{ .Texture = depth };
+    const rhi::RasterBindingResource resource{ .Binding = depth_pack::slots::DEPTH_IMAGE, .Texture = depth };
     rhi::BindingSetHandle set;
     if (rhi::CreateBindingSet(mDevice, mLayout, {&resource, 1}, set) != rhi::RasterStatus::Ready)
     {

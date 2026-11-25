@@ -19,53 +19,21 @@ using namespace foundation;
 constexpr int32 MAX_RESULTS = 256;
 constexpr int32 MAX_EXAMINED_RESULTS = 8192;
 constexpr int32 MAX_LABEL_UNITS = 2048;
-} // namespace
+constexpr int32 SINGULAR_COUNT = 1;
 
-namespace
+QString DescribeLocationCount(int32 count)
 {
-using ProtocolLineOffsets = QList<foundation::int32>;
-ProtocolLineOffsets BuildProtocolLines(const QString& text)
-{
-    ProtocolLineOffsets lines{0};
-    qsizetype position = 0;
-    while ((position = text.indexOf(QLatin1Char('\n'), position)) >= 0)
+    if (count == SINGULAR_COUNT)
     {
-        lines.append(static_cast<foundation::int32>(++position));
+        return QStringLiteral("1 location");
     }
-    return lines;
-}
-
-bool ResolveProtocolOffset(const QString& text,
-                           const ProtocolLineOffsets& lines,
-                           const QJsonObject& position,
-                           foundation::int32& outOffset)
-{
-    const foundation::int32 line = position.value(QStringLiteral("line")).toInt(-1);
-    const foundation::int32 column = position.value(QStringLiteral("character")).toInt(-1);
-    if (line < 0 || line >= lines.size() || column < 0)
-    {
-        return false;
-    }
-    const foundation::int32 start = lines.at(line);
-    const foundation::int32 end =
-        line + 1 < lines.size() ? lines.at(line + 1) - 1 : static_cast<foundation::int32>(text.size());
-    if (column > end - start)
-    {
-        return false;
-    }
-    const foundation::int32 offset = start + column;
-    if (offset > 0 && offset < text.size() && text.at(offset).isLowSurrogate() == true)
-    {
-        return false;
-    }
-    outOffset = offset;
-    return true;
+    return QStringLiteral("%1 locations").arg(count);
 }
 } // namespace
 
 bool GetCodeProtocolOffset(const QString& text, const QJsonObject& position, foundation::int32& outOffset)
 {
-    return ResolveProtocolOffset(text, BuildProtocolLines(text), position, outOffset);
+    return GetLanguageOffset(text, position, LanguagePositionEncoding::Utf16, outOffset);
 }
 
 QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
@@ -76,13 +44,14 @@ QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
                                                       const QString& source,
                                                       const QString& file,
                                                       const CodeNavigationSources& sources,
-                                                      QString& outMessage)
+                                                      QString& outMessage,
+                                                      LanguagePositionEncoding encoding)
 {
     using namespace foundation;
     QList<CodeNavigationTarget> result;
     QJsonArray pending =
         value.isArray() == true ? value.toArray() : (value.isObject() == true ? QJsonArray{value} : QJsonArray{});
-    QMap<QString, ProtocolLineOffsets> indexedLines;
+    QMap<QString, QList<int32>> indexedLines;
     QSet<QString> seen;
     const int32 prefixLines = static_cast<int32>(prefix.count(QLatin1Char('\n')));
     int32 examined = 0;
@@ -93,6 +62,7 @@ QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
         pending.removeFirst();
         if (kind == CodeNavigationKind::Symbols)
         {
+            // Only document symbols nest; workspace symbols are flat.
             for (const QJsonValue& child : item.value(QStringLiteral("children")).toArray())
             {
                 if (pending.size() + examined >= MAX_EXAMINED_RESULTS)
@@ -139,14 +109,14 @@ QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
         }
         if (indexedLines.contains(targetUri) == false)
         {
-            indexedLines.insert(targetUri, BuildProtocolLines(text));
+            indexedLines.insert(targetUri, IndexLanguageLines(text));
         }
-        const ProtocolLineOffsets lines = indexedLines.value(targetUri);
+        const QList<int32> lines = indexedLines.value(targetUri);
         int32 displayLine = range.value(QStringLiteral("start")).toObject().value(QStringLiteral("line")).toInt() + 1;
         int32 start = 0;
         int32 end = 0;
-        if (ResolveProtocolOffset(text, lines, range.value(QStringLiteral("start")).toObject(), start) == false ||
-            ResolveProtocolOffset(text, lines, range.value(QStringLiteral("end")).toObject(), end) == false ||
+        if (GetLanguageOffset(text, lines, range.value(QStringLiteral("start")).toObject(), encoding, start) == false ||
+            GetLanguageOffset(text, lines, range.value(QStringLiteral("end")).toObject(), encoding, end) == false ||
             end < start)
         {
             ++rejected;
@@ -168,7 +138,7 @@ QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
                 targetFile.clear();
             }
         }
-        if (kind == CodeNavigationKind::Symbols && isReadOnly == true)
+        if (IsCodeSymbolNavigation(kind) == true && isReadOnly == true)
         {
             continue;
         }
@@ -204,19 +174,18 @@ QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
         }
         result.append({label, targetFile, text, start, end, isReadOnly});
     }
-    outMessage = result.isEmpty() == true
-                     ? QStringLiteral("No mapped locations. Check the shader/program context and retry.")
-                     : QStringLiteral("%1 locations. Filter, then Enter to jump; Escape keeps the current view.")
-                           .arg(result.size());
+    outMessage =
+        result.isEmpty() == true
+            ? QStringLiteral("No mapped locations. Check the shader/program context and retry.")
+            : QStringLiteral("%1. Enter to jump.").arg(DescribeLocationCount(static_cast<int32>(result.size())));
     if (pending.isEmpty() == false)
     {
         outMessage += QStringLiteral(" Result limit reached; narrow the query.");
     }
     if (rejected > 0)
     {
-        outMessage +=
-            QStringLiteral(" %1 locations outside the captured source map or with invalid ranges were omitted.")
-                .arg(rejected);
+        outMessage += QStringLiteral(" %1 outside the captured source map or with invalid ranges were omitted.")
+                          .arg(DescribeLocationCount(rejected));
     }
     return result;
 }

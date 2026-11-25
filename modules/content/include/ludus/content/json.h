@@ -23,6 +23,8 @@ struct JsonValue final
     [[nodiscard]] JsonValue At(usize index) const noexcept;
     [[nodiscard]] usize Count() const noexcept;
     [[nodiscard]] bool Array() const noexcept;
+    /// Return whether this borrowed value is a JSON object.
+    [[nodiscard]] bool Object() const noexcept;
     [[nodiscard]] bool String(std::string_view& output) const noexcept;
     [[nodiscard]] bool Integer(uint64& output) const noexcept;
     [[nodiscard]] bool Number(float64& output) const noexcept;
@@ -33,6 +35,9 @@ class JsonDocument final
 {
 public:
     JsonDocument() noexcept = default;
+    /// Construct an empty document whose workspace is allocated from `domain`.
+    /// The domain and its callback context must outlive the document.
+    explicit JsonDocument(const AllocationDomain& domain) noexcept;
     ~JsonDocument() noexcept;
     JsonDocument(const JsonDocument&) = delete;
     JsonDocument& operator=(const JsonDocument&) = delete;

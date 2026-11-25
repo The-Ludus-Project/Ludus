@@ -5,8 +5,10 @@
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/config/json.hpp>
 #include <ludus/runtime/configuration/host_options.hpp>
+#include <ludus/runtime/configuration/schema_catalog.hpp>
 
 #include <QAbstractItemView>
+#include <QComboBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -16,6 +18,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QSignalBlocker>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -67,18 +70,49 @@ bool Read(const QString& path, QByteArray& output)
     output = file.read(static_cast<qint64>(MAX_BUNDLE_BYTES) + 1);
     return file.error() == QFileDevice::NoError && output.size() <= static_cast<qsizetype>(MAX_BUNDLE_BYTES);
 }
+// The catalog schema a bundle names, or null when it is malformed or names none.
+const runtime::configuration::SchemaEntry* FindBundleSchemaOrNull(const QByteArray& bytes)
+{
+    foundation::parsing::JsonDocument document;
+    foundation::parsing::ParseError error;
+    std::string_view identity;
+    if (document.Read({bytes.constData(), static_cast<foundation::usize>(bytes.size())}, error) !=
+            foundation::parsing::ParseStatus::Ok ||
+        document.Root().Get("schema").String(identity) == false)
+    {
+        return nullptr;
+    }
+    return runtime::configuration::FindSchemaOrNull(identity);
+}
 } // namespace
 ConfigurationWorkspace::ConfigurationWorkspace(QWidget* parent) : QWidget(parent)
 {
     setObjectName(QStringLiteral("configurationWorkspace"));
     auto* layout = new QVBoxLayout(this);
     auto* description = new QLabel(
-        QStringLiteral(
-            "GameHost configuration preview — edits take effect on the next launch. "
-            "Load a cooked project bundle, edit preferences, then pass --config and --preferences to GameHost."),
+        QStringLiteral("Offline configuration preview — edits change saved files, never a running game. Select the "
+                       "schema, load a cooked project bundle, edit preferences, then pass the files to the game."),
         this);
     description->setWordWrap(true);
     layout->addWidget(description);
+    mSchemaSelectorOrNull = new QComboBox(this);
+    mSchemaSelectorOrNull->setObjectName(QStringLiteral("configurationSchema"));
+    mSchemaSelectorOrNull->setAccessibleName(QStringLiteral("Configuration schema"));
+    for (const runtime::configuration::SchemaEntry& schema : runtime::configuration::GetSchemaCatalog())
+    {
+        mSchemaSelectorOrNull->addItem(QStringLiteral("%1 (%2)").arg(Text(schema.Title), Text(schema.Identity)),
+                                       Text(schema.Identity));
+    }
+    layout->addWidget(mSchemaSelectorOrNull);
+    connect(mSchemaSelectorOrNull, &QComboBox::currentIndexChanged, this, [this](int index) {
+        const QByteArray identity = mSchemaSelectorOrNull->itemData(index).toString().toUtf8();
+        if (SelectSchema({identity.constData(), static_cast<foundation::usize>(identity.size())}) == false)
+        {
+            // Cancelled: keep the selector on the schema that still owns the draft.
+            const QSignalBlocker blocker(mSchemaSelectorOrNull);
+            mSchemaSelectorOrNull->setCurrentIndex(mSchemaSelectorOrNull->findData(Text(GetSchemaIdentity())));
+        }
+    });
     Table_ = new QTableWidget(0, 6, this);
     Table_->setObjectName(QStringLiteral("configurationSettings"));
     Table_->setHorizontalHeaderLabels({QStringLiteral("Setting"),
@@ -158,21 +192,65 @@ ConfigurationWorkspace::ConfigurationWorkspace(QWidget* parent) : QWidget(parent
             Value_->setText(Display(explanation.Requested));
         }
     });
-    Context_ = new (std::nothrow) Context;
-    Diagnostic error;
-    if (Context_ == nullptr ||
-        Context_->Initialize(runtime::configuration::HostSchema(), foundation::GetSystemAllocationDomain(), error) !=
-            Status::Ok)
+    const runtime::configuration::SchemaEntry* hostOrNull =
+        runtime::configuration::FindSchemaOrNull(runtime::configuration::HOST_SCHEMA);
+    if (hostOrNull == nullptr || resetContext(*hostOrNull) == false)
     {
-        delete Context_;
-        Context_ = nullptr;
-        (void)Report(Status::OutOfMemory);
         setEnabled(false);
         return;
     }
-    (void)Context_->SealStartup();
-    Render();
     (void)Report(Status::Ok);
+}
+
+bool ConfigurationWorkspace::resetContext(const runtime::configuration::SchemaEntry& schema)
+{
+    Context* contextOrNull = new (std::nothrow) Context;
+    Diagnostic error;
+    if (contextOrNull == nullptr ||
+        contextOrNull->Initialize(schema.Settings, foundation::GetSystemAllocationDomain(), error) != Status::Ok)
+    {
+        delete contextOrNull;
+        (void)Report(Status::OutOfMemory);
+        return false;
+    }
+    (void)contextOrNull->SealStartup();
+    delete Context_;
+    Context_ = contextOrNull;
+    mSchemaOrNull = &schema;
+    PreferencePath_.clear();
+    PreferenceStamp_.clear();
+    Dirty_ = false;
+    {
+        const QSignalBlocker blocker(mSchemaSelectorOrNull);
+        mSchemaSelectorOrNull->setCurrentIndex(mSchemaSelectorOrNull->findData(Text(schema.Identity)));
+    }
+    Table_->clearSelection();
+    Value_->clear();
+    Render();
+    return true;
+}
+
+bool ConfigurationWorkspace::SelectSchema(std::string_view identity)
+{
+    const runtime::configuration::SchemaEntry* schemaOrNull = runtime::configuration::FindSchemaOrNull(identity);
+    if (schemaOrNull == nullptr)
+    {
+        return Report(Status::InvalidSchema);
+    }
+    if (schemaOrNull == mSchemaOrNull)
+    {
+        return true;
+    }
+    if (ConfirmDiscard() == false || resetContext(*schemaOrNull) == false)
+    {
+        return false;
+    }
+    return Report(Status::Ok);
+}
+
+std::string_view ConfigurationWorkspace::GetSchemaIdentity() const noexcept
+{
+    return mSchemaOrNull == nullptr ? std::string_view{} : mSchemaOrNull->Identity;
 }
 
 void ConfigurationWorkspace::Save(bool choosePath)
@@ -211,7 +289,9 @@ bool ConfigurationWorkspace::Report(Status status, const Diagnostic& error)
         return false;
     }
     Status_->setText(
-        success ? QStringLiteral("Preview updated. Save preferences explicitly; launch GameHost to apply them.")
+        success ? QStringLiteral("Preview of %1 updated. Save preferences explicitly; the game applies them when it "
+                                 "next reads the saved file.")
+                      .arg(Text(GetSchemaIdentity()))
                 : QStringLiteral("Configuration %1: %2 (record %3)")
                       .arg(Text(StatusName(status)), Text(error.Key.GetView()))
                       .arg(error.Record));
@@ -337,11 +417,24 @@ bool ConfigurationWorkspace::Load(const QString& path, Layer layer)
     {
         return Report(Status::InvalidBundle);
     }
+    // A file for another engine schema selects that schema. Loading preferences already replaces the draft
+    // (its caller confirmed that); a project bundle asks before discarding unsaved preferences.
+    const runtime::configuration::SchemaEntry* namedOrNull = FindBundleSchemaOrNull(bytes);
+    const bool isSwitchCancelled = namedOrNull != nullptr && namedOrNull != mSchemaOrNull &&
+                                   (layer == Layer::Preference ? resetContext(*namedOrNull) == false
+                                                               : SelectSchema(namedOrNull->Identity) == false);
+    if (isSwitchCancelled == true)
+    {
+        Status_->setText(QStringLiteral("'%1' uses the %2 schema. Save or discard the %3 preferences, then load it "
+                                        "again.")
+                             .arg(QFileInfo(path).fileName(), Text(namedOrNull->Identity), Text(GetSchemaIdentity())));
+        return false;
+    }
     Diagnostic error;
     auto status = PrepareJson(*Context_,
                               {bytes.constData(), static_cast<foundation::usize>(bytes.size())},
                               layer,
-                              runtime::configuration::HOST_SCHEMA,
+                              mSchemaOrNull->Identity,
                               Context_->Revision(),
                               foundation::GetSystemAllocationDomain(),
                               error);
@@ -379,7 +472,7 @@ bool ConfigurationWorkspace::SavePreferences(const QString& path)
     }
     uint8 bytes[MAX_BUNDLE_BYTES]{};
     std::span<const uint8> output;
-    const auto status = WriteLayer(*Context_, Layer::Preference, runtime::configuration::HOST_SCHEMA, bytes, output);
+    const Status status = WriteLayer(*Context_, Layer::Preference, mSchemaOrNull->Identity, bytes, output);
     if (status != Status::Ok)
     {
         return Report(status);

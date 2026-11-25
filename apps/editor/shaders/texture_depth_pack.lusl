@@ -1,0 +1,41 @@
+// Texture viewer depth readback: copy every Depth32Float texel's IEEE bits into the four bytes
+// of an RGBA8Unorm attachment (least significant byte in red), so the editor's RGBA8 readback
+// returns depth exactly. Each byte k is written as k / 255, which unorm conversion rounds back
+// to k. See apps/editor/src/internal/render_target_reader.h. The host binds the slot and
+// vertex input location the LUSL compiler assigns (editor_texture_depth_pack_slots.h).
+Texture2D<float32> depthImage;
+
+static const uint32 BYTE_MASK = 0xFF;
+static const uint32 BITS_PER_BYTE = 8;
+static const float32 UNORM8_MAXIMUM = 255.0;
+
+struct PackInput
+{
+    float32x4 PositionClip;
+};
+
+struct PackVarying
+{
+    float32x4 PositionClip : ClipPosition;
+};
+
+[stage(vertex)]
+PackVarying VertexMain(in PackInput input)
+{
+    PackVarying output = { .PositionClip = input.PositionClip };
+    return output;
+}
+
+// Load, not Sample: one stored texel per output pixel, without filtering or comparison.
+[stage(fragment)]
+float32x4 FragmentMain(in PackVarying input)
+{
+    // A fragment reads the ClipPosition field as its pixel position, top-left origin.
+    int32x2 positionPixel = int32x2(input.PositionClip.xy);
+    uint32 bits = asuint(depthImage.Load(int32x3(positionPixel, 0)));
+    uint32x4 bytes = uint32x4(bits & BYTE_MASK,
+                              (bits >> BITS_PER_BYTE) & BYTE_MASK,
+                              (bits >> (BITS_PER_BYTE * 2)) & BYTE_MASK,
+                              bits >> (BITS_PER_BYTE * 3));
+    return float32x4(bytes) / UNORM8_MAXIMUM;
+}

@@ -8,7 +8,9 @@
 
 #include "internal/code_document_controller.h"
 #include "internal/code_editor.h"
+#include "internal/code_text.h"
 
+#include <QChar>
 #include <QColor>
 #include <QKeyEvent>
 #include <QPainter>
@@ -41,6 +43,41 @@ constexpr int32 SECONDARY_CARET_WIDTH = 2;
 constexpr int32 SECONDARY_CARET_OPACITY = 200;
 
 } // namespace
+
+void RepairSlangPaste(QStringView source, BorrowedView<CodeRegionEdit> inoutRegions)
+{
+    QString candidate;
+    candidate.reserve(source.size());
+    isize previousEnd = 0;
+    for (const CodeRegionEdit& region : inoutRegions)
+    {
+        if (region.Start < previousEnd || region.End < region.Start || region.End > source.size())
+        {
+            return;
+        }
+        candidate.append(source.sliced(previousEnd, region.Start - previousEnd));
+        candidate.append(region.Inserted);
+        previousEnd = region.End;
+    }
+    candidate.append(source.sliced(previousEnd));
+    const QString repaired = RepairSlangLineSeparators(candidate, u"\n");
+    if (repaired.isEmpty() == true)
+    {
+        return;
+    }
+    // A separator and its replacement LF each occupy one UTF-16 unit. Map the
+    // repaired candidate back to just the pasted regions, keeping the edit set intact.
+    isize displacement = 0;
+    for (CodeRegionEdit& region : inoutRegions)
+    {
+        const isize length = region.Inserted.size();
+        if (region.Inserted.contains(QChar::LineSeparator) == true)
+        {
+            region.Inserted = repaired.mid(region.Start + displacement, length);
+        }
+        displacement += length - (region.End - region.Start);
+    }
+}
 
 CodeMultiCursor::CodeMultiCursor(CodeEditor& inoutEditor) noexcept : mEditor(inoutEditor) {}
 
@@ -466,6 +503,10 @@ bool CodeMultiCursor::HandlePaste(const QString& text)
     {
         regions[index].Inserted = isOneLinePerCursor == true ? perCursor.at(index) : normalized;
     }
+    if (mEditor.GetLanguage() == CodeLanguage::Slang && normalized.contains(QChar::LineSeparator) == true)
+    {
+        RepairSlangPaste(mEditor.document()->toRawText(), {regions.data(), static_cast<usize>(regions.size())});
+    }
     return applyRegionEdits(regions);
 }
 
@@ -488,7 +529,7 @@ bool CodeMultiCursor::applyRegionEdits(const QList<CodeRegionEdit>& regionsInDoc
     return true;
 }
 
-void CodeMultiCursor::Paint(QPainter& inoutPainter) const
+void CodeMultiCursor::Paint(QPainter& inoutPainter, int32 firstVisiblePosition, int32 lastVisiblePosition) const
 {
     QColor caretColor = mEditor.palette().color(QPalette::Text);
     caretColor.setAlpha(SECONDARY_CARET_OPACITY);
@@ -496,6 +537,10 @@ void CodeMultiCursor::Paint(QPainter& inoutPainter) const
     inoutPainter.setBrush(caretColor);
     for (const CodeSecondaryCursor& secondary : mSecondary)
     {
+        if (secondary.Caret < firstVisiblePosition || secondary.Caret > lastVisiblePosition)
+        {
+            continue;
+        }
         QTextCursor cursor(mEditor.document());
         cursor.setPosition(secondary.Caret);
         const QRect caret = mEditor.cursorRect(cursor);

@@ -171,15 +171,16 @@ WireStatus EncodeMessage(const MessageHeader& header,
     destination[HEADER_VERSION_OFFSET] = WIRE_VERSION;
     destination[HEADER_LANE_OFFSET] = static_cast<uint8>(header.Lane);
     (void)ludus::foundation::TryWriteLittleEndian(header.Kind,
-                                                  destination.subspan(HEADER_KIND_OFFSET, sizeof(header.Kind)));
+                                                  {destination.data() + HEADER_KIND_OFFSET, sizeof(header.Kind)});
     (void)ludus::foundation::TryWriteLittleEndian(header.Session,
-                                                  destination.subspan(HEADER_SESSION_OFFSET, sizeof(header.Session)));
-    (void)ludus::foundation::TryWriteLittleEndian(header.Sequence,
-                                                  destination.subspan(HEADER_SEQUENCE_OFFSET, sizeof(header.Sequence)));
+                                                  {destination.data() + HEADER_SESSION_OFFSET, sizeof(header.Session)});
+    (void)ludus::foundation::TryWriteLittleEndian(
+        header.Sequence,
+        {destination.data() + HEADER_SEQUENCE_OFFSET, sizeof(header.Sequence)});
     (void)ludus::foundation::TryWriteLittleEndian(static_cast<uint16>(payload.size()),
-                                                  destination.subspan(HEADER_PAYLOAD_BYTES_OFFSET, sizeof(uint16)));
+                                                  {destination.data() + HEADER_PAYLOAD_BYTES_OFFSET, sizeof(uint16)});
     (void)ludus::foundation::TryWriteLittleEndian(uint16{0},
-                                                  destination.subspan(HEADER_RESERVED_OFFSET, sizeof(uint16)));
+                                                  {destination.data() + HEADER_RESERVED_OFFSET, sizeof(uint16)});
     if (payload.empty() == false)
     {
         std::memcpy(destination.data() + MESSAGE_HEADER_BYTES, payload.data(), payload.size());
@@ -205,15 +206,15 @@ WireStatus DecodeMessage(std::span<const uint8> bytes, MessageView& view) noexce
     header.Lane = static_cast<Channel>(bytes[HEADER_LANE_OFFSET]);
     uint16 payloadBytes = 0;
     uint16 reserved = 0;
-    if (ludus::foundation::TryReadLittleEndian(bytes.subspan(HEADER_KIND_OFFSET, sizeof(header.Kind)), header.Kind) ==
+    if (ludus::foundation::TryReadLittleEndian({bytes.data() + HEADER_KIND_OFFSET, sizeof(header.Kind)}, header.Kind) ==
             false ||
-        ludus::foundation::TryReadLittleEndian(bytes.subspan(HEADER_SESSION_OFFSET, sizeof(header.Session)),
+        ludus::foundation::TryReadLittleEndian({bytes.data() + HEADER_SESSION_OFFSET, sizeof(header.Session)},
                                                header.Session) == false ||
-        ludus::foundation::TryReadLittleEndian(bytes.subspan(HEADER_SEQUENCE_OFFSET, sizeof(header.Sequence)),
+        ludus::foundation::TryReadLittleEndian({bytes.data() + HEADER_SEQUENCE_OFFSET, sizeof(header.Sequence)},
                                                header.Sequence) == false ||
-        ludus::foundation::TryReadLittleEndian(bytes.subspan(HEADER_PAYLOAD_BYTES_OFFSET, sizeof(payloadBytes)),
+        ludus::foundation::TryReadLittleEndian({bytes.data() + HEADER_PAYLOAD_BYTES_OFFSET, sizeof(payloadBytes)},
                                                payloadBytes) == false ||
-        ludus::foundation::TryReadLittleEndian(bytes.subspan(HEADER_RESERVED_OFFSET, sizeof(reserved)), reserved) ==
+        ludus::foundation::TryReadLittleEndian({bytes.data() + HEADER_RESERVED_OFFSET, sizeof(reserved)}, reserved) ==
             false ||
         bytes[HEADER_LANE_OFFSET] >= CHANNEL_COUNT || header.Kind == 0 || header.Session == 0 || reserved != 0 ||
         payloadBytes != bytes.size() - MESSAGE_HEADER_BYTES)

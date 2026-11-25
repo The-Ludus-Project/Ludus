@@ -16,6 +16,9 @@
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
 
+#include <ludus/content/terrain/terrain_noise.h>
+#include <ludus/foundation/math/addressed_random.hpp>
+
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
@@ -378,6 +381,106 @@ TEST_CASE("A grayscale heightmap keeps its sample orientation and persists witho
     CHECK(scene.Meshes[scene.Objects[0].Mesh].Positions == mesh.Positions);
 }
 
+TEST_CASE("Terrain recipes keep the noise layout they were saved with", "[editor][world][terrain]")
+{
+    QByteArray schema;
+    QString error;
+    INFO(error.toStdString());
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument world;
+    REQUIRE(world.LoadSchema(schema, error) == true);
+    REQUIRE(world.New(error) == true);
+    const QString layoutKey = GetTerrainNoiseLayoutKey();
+    QJsonObject legacy = GetDefaultRecipe(world);
+    CHECK(legacy.value(layoutKey) == 1);
+    legacy.remove(layoutKey);
+    QJsonObject cubic = legacy;
+    cubic.insert(layoutKey, 1);
+    QJsonObject quintic;
+    SetLatestTerrainNoiseLayout(quintic);
+    CHECK(quintic.value(layoutKey) == static_cast<foundation::int32>(content::terrain::TERRAIN_NOISE_LAYOUT_VERSION));
+    CHECK(quintic.value(layoutKey) == 2);
+    for (QJsonObject::const_iterator field = legacy.constBegin(); field != legacy.constEnd(); ++field)
+    {
+        quintic.insert(field.key(), field.value());
+    }
+
+    // A recipe saved before the field existed generates exactly the layout 1 heights of the shared recipe.
+    PreviewMesh legacyMesh;
+    PreviewMesh cubicMesh;
+    PreviewMesh quinticMesh;
+    REQUIRE(BuildTerrainMesh(legacy, legacyMesh, error) == true);
+    REQUIRE(BuildTerrainMesh(cubic, cubicMesh, error) == true);
+    REQUIRE(BuildTerrainMesh(quintic, quinticMesh, error) == true);
+    CHECK(legacyMesh.Positions == cubicMesh.Positions);
+    CHECK(quinticMesh.Positions != cubicMesh.Positions);
+    foundation::math::RandomKey key;
+    // The editor's elevation random domain.
+    constexpr foundation::uint32 TERRAIN_RANDOM_DOMAIN = 1;
+    REQUIRE(foundation::math::TryMakeRandomKey(
+                static_cast<foundation::uint64>(legacy.value(QStringLiteral("seed")).toInt()),
+                TERRAIN_RANDOM_DOMAIN,
+                key) == foundation::math::MathStatus::Success);
+    content::terrain::TerrainNoiseShape shape
+    {
+        .MinimumElevationMetres = legacy.value(QStringLiteral("minimumElevation")).toDouble(),
+        .MaximumElevationMetres = legacy.value(QStringLiteral("maximumElevation")).toDouble(),
+        .FeatureSizeMetres = legacy.value(QStringLiteral("featureSize")).toDouble(),
+        .Roughness = legacy.value(QStringLiteral("roughness")).toDouble(),
+        .Profile = content::terrain::TerrainNoiseProfile::Hills,
+        .Layout = content::terrain::TerrainNoiseLayout::CubicFade,
+    };
+    for (const foundation::math::Vector3 position : legacyMesh.Positions)
+    {
+        CHECK(position.Y == static_cast<foundation::float32>(content::terrain::ComputeTerrainElevation(
+                                shape,
+                                key,
+                                static_cast<foundation::float64>(position.X),
+                                static_cast<foundation::float64>(position.Z))));
+    }
+    shape.Layout = content::terrain::TerrainNoiseLayout::QuinticFade;
+    for (const foundation::math::Vector3 position : quinticMesh.Positions)
+    {
+        CHECK(position.Y == static_cast<foundation::float32>(content::terrain::ComputeTerrainElevation(
+                                shape,
+                                key,
+                                static_cast<foundation::float64>(position.X),
+                                static_cast<foundation::float64>(position.Z))));
+    }
+
+    // A layout this editor does not implement fails without replacing the output.
+    for (const QJsonValue& unknown : {QJsonValue(0), QJsonValue(3), QJsonValue(1.5), QJsonValue(QStringLiteral("2"))})
+    {
+        QJsonObject recipe = legacy;
+        recipe.insert(layoutKey, unknown);
+        PreviewMesh unchanged = cubicMesh;
+        error.clear();
+        CHECK(ValidateTerrainRecipe(recipe, error) == false);
+        CHECK(error.contains(QStringLiteral("noise layout")) == true);
+        CHECK(BuildTerrainMesh(recipe, unchanged, error) == false);
+        CHECK(unchanged.Positions == cubicMesh.Positions);
+    }
+
+    // Saving and reopening keeps each recipe, its recorded layout or its absence, and its heights.
+    QString legacyKey;
+    QString quinticKey;
+    tests::SequentialEntropy sequence;
+    const foundation::identity::EntropySource entropy = tests::MakeSequentialEntropySource(sequence);
+    REQUIRE(EditWorldTerrain(world, entropy, {}, legacy, legacyKey, error) == true);
+    REQUIRE(EditWorldTerrain(world, entropy, {}, quintic, quinticKey, error) == true);
+    WorldDocument reopened;
+    REQUIRE(reopened.LoadSchema(schema, error) == true);
+    REQUIRE(reopened.Load(world.Encode(), error) == true);
+    CHECK(GetTerrainRecipe(reopened, legacyKey) == legacy);
+    CHECK(GetTerrainRecipe(reopened, legacyKey).contains(layoutKey) == false);
+    CHECK(GetTerrainRecipe(reopened, quinticKey) == quintic);
+    PreviewMesh reopenedMesh;
+    REQUIRE(BuildTerrainMesh(GetTerrainRecipe(reopened, legacyKey), reopenedMesh, error) == true);
+    CHECK(reopenedMesh.Positions == legacyMesh.Positions);
+    REQUIRE(BuildTerrainMesh(GetTerrainRecipe(reopened, quinticKey), reopenedMesh, error) == true);
+    CHECK(reopenedMesh.Positions == quinticMesh.Positions);
+}
+
 TEST_CASE("Flatten strokes retain their local target when the procedural base regenerates", "[editor][world][terrain]")
 {
     QByteArray schema;
@@ -588,6 +691,9 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
     commitOrNull->click();
     const QJsonObject created = workspace.Document().Draft();
     CHECK(GetTerrainRecipe(workspace.Document(), previewKey).value(QStringLiteral("shape")) == QStringLiteral("Flat"));
+    // New terrain records the noise layout it generates with.
+    CHECK(GetTerrainRecipe(workspace.Document(), previewKey).value(GetTerrainNoiseLayoutKey()) ==
+          static_cast<foundation::int32>(content::terrain::TERRAIN_NOISE_LAYOUT_VERSION));
     CHECK(GetTerrainRecipe(workspace.Document(), previewKey).value(QStringLiteral("minimumElevation")) == 3);
     CHECK(panelOrNull->isHidden() == true);
     workspace.Undo();

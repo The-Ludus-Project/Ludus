@@ -6,6 +6,7 @@ target_sources(ludus_foundation_strings
         src/string.cpp
         src/shared_string.cpp
         src/utf8.cpp
+        src/utf16.cpp
         src/string_table.cpp
     PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include FILES
         include/ludus/foundation/strings/status.hpp
@@ -13,9 +14,10 @@ target_sources(ludus_foundation_strings
         include/ludus/foundation/strings/string.hpp
         include/ludus/foundation/strings/shared_string.hpp
         include/ludus/foundation/strings/utf8.hpp
+        include/ludus/foundation/strings/utf16.hpp
         include/ludus/foundation/strings/string_table.hpp
 )
-target_link_libraries(ludus_foundation_strings PUBLIC Ludus::FoundationBase Ludus::FoundationMemory Ludus::FoundationHash)
+target_link_libraries(ludus_foundation_strings PUBLIC Ludus::FoundationBase Ludus::FoundationContainers Ludus::FoundationMemory Ludus::FoundationHash)
 ludus_apply_project_defaults(ludus_foundation_strings)
 install(TARGETS ludus_foundation_strings EXPORT LudusTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
@@ -26,7 +28,7 @@ if(LUDUS_BUILD_TESTS)
     add_executable(ludus_foundation_strings_tests tests/strings_tests.cpp)
     target_include_directories(ludus_foundation_strings_tests PRIVATE src)
     target_link_libraries(ludus_foundation_strings_tests
-        PRIVATE Ludus::FoundationThreading Ludus::FoundationStrings Ludus::FoundationContainers Catch2::Catch2WithMain Threads::Threads)
+        PRIVATE Ludus::FoundationThreading Ludus::FoundationStrings Catch2::Catch2WithMain Threads::Threads)
     ludus_apply_project_defaults(ludus_foundation_strings_tests)
     ludus_enable_test_exceptions(ludus_foundation_strings_tests)
     add_test(NAME ludus_foundation_strings_tests COMMAND ludus_foundation_strings_tests)

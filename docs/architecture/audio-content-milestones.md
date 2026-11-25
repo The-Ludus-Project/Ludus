@@ -1,6 +1,6 @@
 # Audio content implementation milestones
 
-Status: C0–C5 code delivered; release acceptance remains partial. Read
+Status: C0–C6 implementation is available. Release acceptance remains partial. Read
 [resource architecture](content-resources.md), [audio authoring](audio-authoring.md)
 and [Codex handoff](audio-content-codex-handoff.md). Checked boxes identify delivered implementation; see
 [actual validation and pending gates](../development/audio-content-evidence.md).
@@ -156,16 +156,16 @@ closure. Mark full world binding pending if only its substitute sample exists.
 
 ## C6 Dynamic music
 
-- [ ] First freeze complete music v2 grammar, canonical JSON examples, limits and
+- [x] First freeze complete music v2 grammar, canonical JSON examples, limits and
   typed structures in audio-authoring.md. Include all fields required to reproduce
   state/section mapping, layer curves, rational tempo/meter, quantization, fade
   durations, overlap limits, stingers and capacity validation. V1 stays readable.
-- [ ] Implement authoritative group transport and atomic scheduled group starts,
+- [x] Implement authoritative group transport and atomic scheduled group starts,
   gain ramps and stops. Document command acknowledgement, late/defer policy and
   lookahead relative to the existing scheduling horizon.
-- [ ] Implement aligned stream consumption and group starvation fade/hold/resume;
+- [x] Implement aligned stream consumption and group starvation fade/hold/resume;
   keep independent stream policy intact for ordinary BGM. Protect group capacity.
-- [ ] Implement bounded MusicDirector state/intensity planning, compatible section
+- [x] Implement bounded MusicDirector state/intensity planning, compatible section
   transitions and resident stingers. Expose transport and pending-plan diagnostics.
 
 Acceptance: sample-frame reference output across render block partitions, many
@@ -177,6 +177,8 @@ alignment and lookahead beyond two seconds. Exercise actual streaming with TSan,
 allocation checks and real listening; offline clips alone do not certify it.
 Definitions requiring more than four stream instances fail before playback.
 Do not mark complete by increasing a capacity constant without budget evidence.
+
+See the [rendered C6 timing evidence](../development/audio-content-evidence.md#c6-rendered-transition-timing) for the native results and remaining listening gate.
 
 ## C7 Dynamic authoring and composer acceptance
 

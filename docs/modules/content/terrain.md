@@ -64,9 +64,131 @@ across tiles for identical shared positions. Positions and indices use the
 same decoded triangles as the queries. Every non-success status preserves
 the tile, contact or mesh buffers supplied to the operation.
 
-This slice covers solid height tiles and the raw height payload. Cook manifests,
-holes, physical materials, residency and renderer/physics adapters are governed
-by the [terrain architecture](../../architecture/terrain.md#performance-and-delivery-gates).
+This slice covers solid height tiles and the raw height payload. Holes, physical
+materials, residency and renderer/physics adapters are governed by the
+[terrain architecture](../../architecture/terrain.md#performance-and-delivery-gates).
+
+## Versioned page cooking
+
+`terrain_cook.h` cooks one complete elevation field into a terrain revision: a
+manifest plus a pack of independently readable height pages. The wire layout is
+owned by the header-only `Ludus::TerrainFormat` target
+(`ludus/content/terrain_format/`), which both the cooker and any reader include.
+It follows the [cooked format contract](../../architecture/terrain-generation.md#cooked-format-and-validation).
+
+1. Describe the revision with a `TerrainRevisionLayout`: the revision number,
+   your recipe version and source digest, the first page's tile address, the
+   page counts on X and Z, cells per page, spacing and the shared height codec.
+   The field has `PagesX * CellsPerPage + 1` columns and
+   `PagesZ * CellsPerPage + 1` rows. Field sample (0, 0) is the first page's
+   minimum global sample.
+2. Call `TryCookTerrainRevision` to cook every page serially. To cook pages on
+   several workers, call `TryCookTerrainPage` for each page address from the
+   same immutable field, then pass all of them, in any order, to
+   `TryAssembleTerrainRevision`. The output bytes do not depend on the order.
+3. Store `GetManifestBytes()` and `GetPagePackBytes()`. To read, validate the
+   manifest with `TryReadTerrainManifest`, then fetch one page's byte range
+   from its `TerrainPageRecord` (`ByteOffset`, `ByteSize`). Decode it with
+   `TryReadTerrainPage`, which needs no other page.
+4. Use `TerrainPage::GetTile()` with the existing tile queries, mesh export and
+   `CheckTerrainTileSeam`. `TryGetTerrainPageHeight` also reads the halo.
+
+Each page stores its core samples and a one-sample halo. The core is exactly the
+tile height payload version 1. The halo lets a page compute central-difference
+normals at its border without loading a neighbour. Inside the domain a halo
+sample repeats the code of the page that owns it. Outside the domain it repeats
+the nearest domain sample, so the boundary uses a one-sided difference, as the
+manifest's `ClampToEdge` boundary extension declares. Assembly checks every
+shared edge, corner and halo sample against its owner and returns
+`BorderMismatch` instead of publishing disagreeing pages.
+
+Records carry the page address, the revision that last cooked the page, the
+lowest and highest core code, and the largest quantization error in metres. They
+also carry an XXH3-128 digest of the payload. Readers check the magic, the
+format version, the exact size, the tags, the canonical page order, contiguous
+byte ranges, code bounds and both digests before exposing a page. Truncation,
+trailing bytes, out-of-range fields and pages from another range fail with a
+`TerrainCookStatus` and leave outputs unchanged. `Ludus::TerrainFormat`'s
+`limits.h` owns the admission limits.
+
+### Recook after an edit
+
+`TryCollectTerrainEditPages` lists the pages whose core or halo contains a
+sample of an edited rectangle. Use it to show the rebuild scope before an
+expensive edit. `TryRecookTerrainRevision` takes the base manifest and pack, the
+same layout with a later revision, the complete new field and the edited
+rectangle. It cooks those pages at the new revision and copies every other page
+after checking its digest. Reused pages keep their content revision. The
+result decodes to the same heights, and the same payload digests, as a full cook
+of the new field. Declare every changed sample in the rectangle. If the
+rectangle misses a change next to a page border, the border check rejects the
+recook. A change elsewhere is not detected, so derive the rectangle from the
+edit's support.
+
+Only heights are cooked. Drainage, rivers and other regional products can
+depend on the whole domain; recompute them from the complete field rather than
+from the edited pages (see
+[Drainage over decoded pages](#drainage-over-decoded-pages)). Material, hole
+and coarse-level channels are later format versions. The cooker produces bytes
+in memory. Write the manifest last, or into an immutable revision directory, so
+an interrupted publication leaves the previous revision usable.
+
+### Drainage over decoded pages
+
+Pages hold quantized heights, not drainage. A consumer that reads decoded
+pages and reruns `TryComputeTerrainDrainage` gets a diagnostic, not the source
+drainage. Two fixtures in `terrain_drainage_cook_tests.cpp` measure the gap.
+
+**A branching basin.** Two tributaries cross page edges, join, and drain to
+one outlet. The fixture cooks the basin at 16-cell and 8-cell pages in
+shuffled order, then reassembles the decoded field. Shared channel heights
+agree exactly across every page edge, core or halo, and lie within half a
+quantum of the source. Drainage over the decoded field keeps the control's
+network, confluence and outlet accumulation. It still differs at a few
+hillslope samples: there, two neighbours' drops differ by at most two
+quanta per metre of spacing, and the decoded heights pick the other neighbour.
+Accumulation along the channels moves by at most the samples those flips
+carry.
+
+A dam stamp diverts one tributary across a low divide. The recook rebuilds
+only the pages the stamp reaches, and they decode exactly as a clean cook of
+the final terrain. Drainage still changes on reused pages downstream of the
+divide. Recompute drainage over the whole field after every edit.
+
+**A shallow saddle.** A lake can spill over two passes on a page edge. The
+fixture sets the two pass heights on either side of one quantum. Every decoded
+height passes the half-quantum tolerance, and every partition and cook order
+decodes the same field and drainage. The route depends on how the pass heights
+fall relative to the codes:
+
+| Pass heights | Decoded passes | Decoded route |
+| --- | --- | --- |
+| 1.25 quanta apart | Different codes | Source outlet kept |
+| A quarter quantum apart across a code boundary | Different codes, one quantum apart | Source outlet kept |
+| Half a quantum apart in one code; the source route's pass has the higher sample index | Tie | Whole lake moves to the other outlet |
+| Half a quantum apart in one code; the source route's pass has the lower sample index | Tie | Outlet kept; one ridge sample moves to the other outlet |
+
+Rounding to the nearest code is monotone. Quantization can therefore merge
+two spill heights into one code but never reverses their order. When pass
+heights differ by more than one quantum, their codes differ too, so the source
+order survives. A merged pair resolves by the kernel's tie rules: the flood
+visits equal heights in ascending sample index, and D8 picks equal drops in
+`TerrainFlowDirection` order. The pointwise error bound says nothing about
+which route that picks.
+
+If a consumer needs the source drainage topology, choose one of these:
+
+- **A codec scale.** Recompute from decoded heights only when every pair of
+  competing spill points differs by more than one `QuantumMetres`. Choose the
+  quantum against the smallest such difference, for example `Signed32` with a
+  finer quantum. Generated and eroded terrain has no lower bound on that
+  difference, so this works only for terrain whose saddles you control.
+- **A canonical cook-stage drainage product.** Use drainage computed by
+  `TryComputeTerrainDrainage` over the complete source field, versioned with
+  `TERRAIN_FIELDS_LAYOUT_VERSION`, for rivers, lakes, wetness and materials.
+  T1 cooks heights only and does not publish this product yet. Until it does,
+  compute drainage from the source field where it is available, and treat
+  drainage from decoded pages as a preview.
 
 ## Elevation recipe (`terrain_noise.h`)
 
@@ -81,9 +203,49 @@ a height. `CanSampleTerrainNoise(shape, halfExtentMetres)` rejects shapes whose
 highest octave would address a lattice point beyond
 `MAX_TERRAIN_LATTICE_POSITION`.
 
-`TERRAIN_NOISE_LAYOUT_VERSION` names the gradient set, fade and octave layout.
-The module tests pin a digest of a golden grid; a different digest requires a
-new layout version, because it would move every saved default World's terrain.
+### Noise layouts and the fade migration
+
+`TerrainNoiseLayout` names the lattice addressing, gradient set, fade and octave
+layout. Store its integer with generated content: `TryGetTerrainNoiseLayout`
+reads it back and rejects versions this build does not implement, and
+`CanSampleTerrainNoise` rejects a shape with an unknown layout.
+
+| Layout | Fade | Status |
+| --- | --- | --- |
+| 1, `CubicFade` | `3t^2 - 2t^3` (FoundationMath `SmoothStep01`) | Frozen. Every terrain recipe saved before the layout was recorded, and every cook replay of one |
+| 2, `QuinticFade` | `6t^5 - 15t^4 + 10t^3`, evaluated as `t^3 (t (6t - 15) + 10)` without fused multiply-adds | Current (`LATEST_TERRAIN_NOISE_LAYOUT`, `TERRAIN_NOISE_LAYOUT_VERSION`); new content records it |
+
+Both layouts read the same gradients at the same lattice addresses, with the
+same octave order and normalization; only the fade that blends a cell's four
+gradients differs. They therefore agree wherever both fade weights are 0, ½
+or 1. Values and first derivatives are continuous across lattice edges in both
+layouts. The cubic's second derivative is `6 (1 - 2t)` times a gradient
+difference, nonzero at both ends of a cell, so it jumps across each edge; that
+crease shows in derivative-derived normals and slope fields. The quintic's
+first and second derivatives vanish at both ends, which closes the jump.
+
+The design calls for the quintic, but changing layout 1 would move the terrain
+of every saved World. Ludus therefore keeps layout 1 exactly as it was and
+adds the quintic as layout 2:
+
+- The World editor's terrain recipe stores the layout in `noiseLayout`. A
+  recipe without the field, as every World saved before it does, is layout 1
+  and keeps its heights and surface variation. New terrain records layout 2.
+  Editing an existing terrain keeps its layout, because a different fade would
+  move its saved heights under any sculpt strokes; add a new terrain to use
+  layout 2.
+- A cooked revision records the layout in its manifest's `RecipeVersion`
+  (`terrain_cook.h`), so a replay regenerates the field with the same fade.
+- `TerrainNoiseShape::Layout` defaults to the latest layout for new content.
+  Readers of stored recipes set the layout the data records.
+
+The module tests pin a digest of a golden grid for each layout; a different
+digest requires a new layout version, never an updated constant. A fixed-key
+lattice-seam test measures one-sided values and derivatives on both sides of a
+lattice edge: values and slopes match for both layouts, the cubic's second
+derivative jumps, and the quintic's is zero on both sides. The cook tests run
+each layout through two page partitions, a scrambled page order and a
+save/reopen replay from the recorded `RecipeVersion`.
 
 ## Derived fields (`terrain_fields.h`)
 
@@ -178,11 +340,16 @@ surface before deriving slope, wetness or materials from it.
 | Cells per patch edge | 1 through 256 |
 | Halo samples | 0 through 4 |
 | River profile reach | 16 samples from the channel centre |
+| Cells per cooked page edge | 1 through 256 |
+| Cells per cooked revision axis | 4096 |
+| Pages per cooked revision | 4096 |
+| Halo samples per cooked page | 1 |
 
 The tiled codec, queries and mesh export, elevation recipe, slope, drainage,
-wetness, rules and palettes, river networks and carving have regression tests in
-`modules/content/terrain/tests`. File imports, stamps, thermal and hydraulic
-erosion, cook manifests and blended material textures remain future pipeline work.
+wetness, rules and palettes, river networks and carving, and versioned page
+cooking have regression tests in `modules/content/terrain/tests`. File imports,
+stamps, thermal and hydraulic erosion, material and hole channels, coarse page
+levels and blended material textures remain future pipeline work.
 The World editor uses
 these kernels to carve rivers and bake its terrain surface; see
 [World authoring](../../development/editor-workspace.md#s4-scene-authoring).
@@ -207,7 +374,22 @@ these kernels to carve rivers and bake its terrain surface; see
 - Arthur N. Strahler, *Quantitative analysis of watershed geomorphology*,
   Transactions, American Geophysical Union 38(6), pp. 913–920, 1957. Stream
   order.
+- Kelley, Malin and Nielson, *Terrain Simulation Using a Model of Stream
+  Erosion*, SIGGRAPH '88, pp. 263–268
+  ([doi:10.1145/378456.378519](https://doi.org/10.1145/378456.378519)).
+  Branching drainage networks as terrain structure; the branching-basin
+  fixture uses a confluence across pages.
+- Yuxiao Li, Mingze Xia, Xin Liang, Bei Wang and Hanqi Guo, *Preserving
+  Discrete Morse-Smale Complexes in Error-Bounded Lossy Compression*, IEEE
+  TVCG 32(7), pp. 6593–6609 ([arXiv:2409.17346](https://arxiv.org/abs/2409.17346)).
+  A bounded pointwise error can still change critical points and their
+  connections; the shallow-saddle fixture measures this for the height codec.
 - Ken Perlin, *Implementing Improved Perlin Noise*, GPU Gems 1, chapter 5.
   Smooth fade and balanced gradients.
+- Ken Perlin, *Improving Noise*, SIGGRAPH '02 (ACM Transactions on Graphics
+  21(3)), pp. 681–682
+  ([paper](https://www.cs.rpi.edu/~cutler/classes/advancedgraphics/S23/papers/perlin_improving_noise_2002.pdf)).
+  The cubic interpolant's nonzero second derivatives at the cell ends and the
+  quintic replacement adopted as noise layout 2.
 - Ferenc Pintér, *Large-Scale Terrain Rendering for Outdoor Games*, GPU Pro 2,
   chapter II.3. Procedural soil maps combined with artist paint.

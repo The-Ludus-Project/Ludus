@@ -1,6 +1,7 @@
 #include <ludus/foundation/base/config.h>
 
 #include <ludus/audio/audio_system.h>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 
@@ -87,4 +88,65 @@ TEST_CASE("Native device renders resident and streaming voices and joins on shut
         REQUIRE(system.GetState() == SystemState::Disabled);
         REQUIRE(system.PlayClip(play, resident) == Status::NotReady);
     }
+}
+
+TEST_CASE("Native callback acknowledges a streamed group transition", "[audio][music][.device]")
+{
+    using namespace ludus::foundation;
+    AudioSystem system;
+    SystemConfig config;
+    config.SystemMode = Mode::Device;
+    const Status initialized = system.Initialize(config);
+    if (initialized == Status::DeviceError && std::getenv("LUDUS_TEST_AUDIO_DEVICE") == nullptr)
+    {
+        SKIP("Set LUDUS_TEST_AUDIO_DEVICE on a host with a native output device");
+    }
+    REQUIRE(initialized == Status::Ok);
+    const Array<uint8> wave = test::MakeSineWav(system.GetSampleRate(), 2, system.GetSampleRate(), 440, 0.05);
+    StreamDescriptor descriptor;
+    descriptor.Looping = true;
+    StaticArray<StreamHandle, 2> initial{};
+    StaticArray<StreamHandle, 2> incoming{};
+    for (usize i = 0; i < initial.GetSize(); ++i)
+    {
+        REQUIRE(system.PrepareStream({wave.GetData(), wave.GetSize()}, descriptor, initial[i]) == Status::Ok);
+        REQUIRE(system.PrepareStream({wave.GetData(), wave.GetSize()}, descriptor, incoming[i]) == Status::Ok);
+    }
+    const StaticArray<float32, 2> gains{1, 0};
+    VoiceHandle active;
+    VoiceHandle candidate;
+    REQUIRE(system.PlayStreamGroup(initial, gains, 0, PRIORITY_MAX, active) == Status::Ok);
+    VoiceInfo info;
+    for (uint32 i = 0; i < 2000 && info.CursorFrame == 0; ++i)
+    {
+        system.Service();
+        REQUIRE(system.GetVoiceInfo(active, info) == Status::Ok);
+        threading::SleepFor(timing::Milliseconds(1));
+    }
+    REQUIRE(info.CursorFrame > 0);
+    SystemSnapshot snapshot;
+    system.GetSystemSnapshot(snapshot);
+    const uint64 boundary = snapshot.RenderFrame + system.GetSampleRate() / 4 + 1;
+    REQUIRE(system.ScheduleStreamGroup(incoming,
+                                       gains,
+                                       active,
+                                       { .StartFrame = boundary, .DurationFrames = CONTROL_QUANTUM_FRAMES },
+                                       candidate) == Status::Ok);
+    const uint64 revised = boundary + CONTROL_QUANTUM_FRAMES;
+    REQUIRE(system.ReviseStreamTransition(candidate, revised) == Status::Ok);
+    for (uint32 i = 0; i < 2000; ++i)
+    {
+        system.Service();
+        REQUIRE(system.GetVoiceInfo(candidate, info) == Status::Ok);
+        if (info.CursorFrame > CONTROL_QUANTUM_FRAMES)
+        {
+            break;
+        }
+        threading::SleepFor(timing::Milliseconds(1));
+    }
+    REQUIRE(info.CursorFrame > CONTROL_QUANTUM_FRAMES);
+    REQUIRE(info.StartFrame == revised);
+    REQUIRE(system.GetVoiceInfo(active, info) == Status::Ok);
+    REQUIRE(info.Terminal == TerminalReason::Stopped);
+    REQUIRE(system.BeginShutdown() == Status::Ok);
 }

@@ -1,6 +1,7 @@
 // Target tests: lowered LUSL compiled by the pinned Slang through Ludus::ShaderCompiler for every
 // portable target (docs/architecture/shading-language.md#testing).
 
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
@@ -168,6 +169,12 @@ bool Trace(in float32x3 origin, out float32x3 outRadiance)
     outRadiance = origin * 0.5;
     return true;
 }
+Lobe MakeLobe(in float32 weight)
+{
+    Lobe lobe = { .IsFront = true };
+    lobe.Weights[0] = weight;
+    return lobe;
+}
 float32 Pick(in uint32 index, in uint32 count)
 {
     float32 weights[TAP_COUNT] = 0;
@@ -196,9 +203,11 @@ float32 Pick(in uint32 index, in uint32 count)
             total = 3;
             break;
     }
+    const Lobe sampled = MakeLobe(float32(count));
+    const float32 sampledWeight = sampled.Evaluate(0.5);
     if (mode == Mode::On && hasHit == true)
     {
-        total += ComputeLuminance(radiance) + positionClip.w + lobe.Twice();
+        total += ComputeLuminance(radiance) + positionClip.w + lobe.Twice() + sampledWeight * sampled.Weights[0];
     }
     return weights[index] + Scale(total, bias = 1.0) + Scale(factor = 3.0, value = Constant()) +
            float32(Wrap(int32(index), LOWEST));
@@ -433,7 +442,7 @@ TEST_CASE("The SDK math declarations match math.slang on every target", "[shader
     Files files;
     files.Add("shaders/math.slang", ReadMathShader("math.slang"));
     files.Add("shaders/math.luslh", ReadMathShader("math.luslh"));
-    // Every declaration is called, so Slang checks each against its definition.
+    // Use the portable declarations so Slang checks them against their definitions.
     files.Add(std::string(ROOT), R"(#include "math.luslh"
 groupshared float32 result = 0;
 [stage(compute), threads(1, 1, 1)]
@@ -454,7 +463,15 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
                     DecodeSrgb(0.5) + RandomFloat01(low ^ high) + SampleRandomFloat01(dispatchThread.xy, address);
     total += float32(Philox4x32(PackRandomCounter(address, 0), dispatchThread.xy).x) +
              float32(SampleRandomUInt32(dispatchThread.xy, address)) + normal.x + float32(bounded);
+    total += TAU + HALF_PI + QUARTER_PI + INV_PI + INV_TAU + DEGREES_TO_RADIANS + RADIANS_TO_DEGREES;
+    total += E + LN_2 + LN_10 + LOG2_E + LOG10_E + SQRT_2 + INV_SQRT_2;
+    total += clamp(float32(dispatchThread.x), FLOAT32_MIN_NORMAL, FLOAT32_MAX) * FLOAT32_EPSILON;
+    total += float32(clamp(int32(dispatchThread.x), INT32_MIN, INT32_MAX)) +
+             float32(dispatchThread.x ^ UINT32_MAX);
     if (IsFiniteBits(total) == true && IsFiniteBits(normal) == true && HasPositiveComponent(normal) == true &&
+        IsNanBits(total) == false && IsInfBits(total) == false &&
+        NearlyEqual(total, normal.x, 0.5, 0.125) == false &&
+        NearlyEqual(normal, float32x3(1.0, 0.0, 0.0), 0.25) == true &&
         isBounded == true && IsRandomAddressInRange(address) == true)
     {
         result = total;
@@ -470,6 +487,69 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
         INFO("target " << static_cast<int>(target) << "\n" << GetDiagnostics(result));
         CHECK(status == compiler::Status::Ready);
     }
+}
+
+TEST_CASE("The SDK math declarations support half-precision shaders", "[shader-language][emitter-targets]")
+{
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add("shaders/math.slang", ReadMathShader("math.slang"));
+    files.Add("shaders/math.luslh", ReadMathShader("math.luslh"));
+    files.Add(std::string(ROOT), R"(#include "math.luslh"
+groupshared float32 result = 0;
+[stage(compute), threads(1, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+    float16 value = float16(dispatchThread.x) * FLOAT16_EPSILON;
+    if (value >= FLOAT16_MIN_NORMAL && value <= FLOAT16_MAX)
+    {
+        result = float32(value);
+    }
+}
+)");
+    compiler::Request options;
+    for (const compiler::Target target : {compiler::Target::Spirv, compiler::Target::Wgsl, compiler::Target::Metal})
+    {
+        options.OutputTarget = target;
+        compiler::Result result;
+        const compiler::Status status = CompileLanguage(slang, files, options, result);
+        INFO("target " << static_cast<int>(target) << "\n" << GetDiagnostics(result));
+        CHECK(status == compiler::Status::Ready);
+    }
+}
+
+TEST_CASE("The SDK math declarations support native fixed-width shaders", "[shader-language][emitter-targets]")
+{
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add("shaders/math.slang", ReadMathShader("math.slang"));
+    files.Add("shaders/math.luslh", ReadMathShader("math.luslh"));
+    files.Add(std::string(ROOT), R"(#include "math.luslh"
+groupshared float32 result = 0;
+[stage(compute), threads(1, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+    int16 narrow = int16(dispatchThread.x);
+    int64 wide = int64(dispatchThread.x);
+    uint16 narrowMask = uint16(dispatchThread.x) ^ UINT16_MAX;
+    uint64 wideMask = uint64(dispatchThread.x) ^ UINT64_MAX;
+    float64 value = float64(dispatchThread.x) * FLOAT64_EPSILON;
+    if (narrow >= INT16_MIN && narrow < INT16_MAX && wide >= INT64_MIN && wide < INT64_MAX &&
+        value >= FLOAT64_MIN_NORMAL && value <= FLOAT64_MAX)
+    {
+        float64 total = PI_F64 + TAU_F64 + HALF_PI_F64 + QUARTER_PI_F64 + INV_PI_F64 + INV_TAU_F64 +
+                        DEGREES_TO_RADIANS_F64 + RADIANS_TO_DEGREES_F64 + E_F64 + LN_2_F64 + LN_10_F64 +
+                        LOG2_E_F64 + LOG10_E_F64 + SQRT_2_F64 + INV_SQRT_2_F64;
+        result = float32(total + value + float64(narrowMask) + float64(wideMask));
+    }
+}
+)");
+    compiler::Request options;
+    options.OutputTarget = compiler::Target::SpirvRayQuery;
+    compiler::Result result;
+    const compiler::Status status = CompileLanguage(slang, files, options, result);
+    INFO(GetDiagnostics(result));
+    CHECK(status == compiler::Status::Ready);
 }
 
 TEST_CASE("Lowered LUSL interfaces and templates compile for every portable target",
@@ -826,6 +906,13 @@ void Main(in uint32x3 id : DispatchThreadId, in uint32 groupIndex : GroupIndex)
         INFO("target " << static_cast<int>(target) << "\n" << diagnostics);
         CHECK(status == compiler::Status::Ready);
     }
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    // DXIL: the same module through the pinned DXC, which signs the container (Windows CI).
+    std::string dxilDiagnostics;
+    const compiler::Status dxilStatus = CompileFor(slang, files, compiler::Target::Dxil, dxilDiagnostics);
+    INFO("DXIL\n" << dxilDiagnostics);
+    CHECK(dxilStatus == compiler::Status::Ready);
+#endif
 
     // A structured buffer's length: Slang's direct Metal backend has no buffer-length query, so the
     // portable set (one session for SPIR-V, WGSL and Metal) rejects it, naming GetDimensions. The
@@ -849,6 +936,13 @@ void Main(in uint32x3 id : DispatchThreadId)
     INFO(portableDiagnostics);
     CHECK(portableDiagnostics.find("'metal'") != std::string::npos);
     CHECK(portableDiagnostics.find("GetDimensions") != std::string::npos);
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    // DXIL has its own Slang session and a native structured-buffer length query.
+    std::string bufferDxilDiagnostics;
+    const compiler::Status bufferDxilStatus = CompileFor(slang, buffers, compiler::Target::Dxil, bufferDxilDiagnostics);
+    INFO("DXIL\n" << bufferDxilDiagnostics);
+    CHECK(bufferDxilStatus == compiler::Status::Ready);
+#endif
 
     // Storage an extern slang block declares keeps Slang's Interlocked functions. WGSL requires
     // atomic types that only the declaring Slang can provide, so the portable set rejects them,
@@ -1103,4 +1197,52 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
     REQUIRE(CompileLanguage(slang, files, options, release) == compiler::Status::Ready);
     CHECK(ReadSpirvDebugView(release.Artifact, "main.lusl").HasDebugInfo == false);
     CHECK(release.Artifact.GetSize() == before.Artifact.GetSize());
+}
+
+TEST_CASE("LUSL L5a texture methods and intrinsics compile with pinned Slang", "[shader-language][targets]")
+{
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add(std::string(ROOT), R"(Texture3D<float32x4> volume;
+TextureCube<float32x4> cube;
+Texture2DArray<float32x4> layers;
+DepthTexture2D depthImage;
+SamplerState filtering;
+SamplerComparisonState comparison;
+struct Varying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x2 Uv;
+};
+[stage(fragment)]
+float32x4 Main(in Varying input)
+{
+    float32x2 uv = input.Uv;
+    float32x3 coordinate = float32x3(uv, 1);
+    float32x4 color = volume.SampleLevel(filtering, coordinate, 0) +
+                      volume.Load(int32x4(0)) +
+                      cube.SampleLevel(filtering, coordinate, 0) +
+                      layers.SampleLevel(filtering, coordinate, 0) +
+                      layers.Load(int32x4(0)) +
+                      layers.Gather(filtering, coordinate);
+    float32 shadow = depthImage.SampleCmp(comparison, uv, 0.5);
+    float32x3 facing = faceforward(color.xyz, coordinate, color.xyz);
+    float32x3 bent = refract(coordinate, facing, 0.5);
+    float32x3 adjusted = select(bent >= float32x3(0), tanh(bent), float32x3(sign(bent)));
+    float32 area = determinant(float32x2x2(color.xy, color.zw));
+    uint32 size = volume.GetDimensions().z + layers.GetDimensions().z + cube.GetDimensions().y +
+                  depthImage.GetDimensions().x;
+    float32x3 width = fwidth(adjusted);
+    clip(adjusted);
+    return float32x4(width, fma(area, color.x, shadow) + float32(size));
+}
+)");
+    (void)LowerInto(files, false);
+    for (const compiler::Target target : {compiler::Target::Spirv, compiler::Target::Wgsl, compiler::Target::Metal})
+    {
+        std::string diagnostics;
+        const compiler::Status status = CompileFor(slang, files, target, diagnostics, ENTRY, compiler::Stage::Fragment);
+        INFO("target " << static_cast<int>(target) << '\n' << diagnostics);
+        CHECK(status == compiler::Status::Ready);
+    }
 }

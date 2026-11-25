@@ -10,77 +10,86 @@
 // Review: docs/architecture/primitive-types.md.
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/base/borrowed_view.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
-
-#include <span>
 
 namespace ludus::foundation::core
 {
 namespace detail
 {
-template <bool LittleEndian, UnsignedInteger ValueType>
-[[nodiscard]] constexpr bool TryReadEndian(std::span<const uint8> bytes, ValueType& out) noexcept
+inline constexpr usize BITS_PER_BYTE = 8;
+
+template <bool IsLittleEndian, UnsignedInteger ValueType>
+[[nodiscard]] constexpr bool TryReadEndian(BorrowedView<const uint8> bytes, ValueType& outValue) noexcept
 {
-    if (bytes.size() < sizeof(ValueType))
+    if (bytes.IsValid() == false || bytes.GetSize() < sizeof(ValueType))
     {
         return false;
     }
+    const uint8* data = bytes.GetDataOrNull();
     ValueType result{};
     for (usize i = 0; i < sizeof(ValueType); ++i)
     {
-        const usize index = LittleEndian ? i : sizeof(ValueType) - 1 - i;
-        result = static_cast<ValueType>(result | (static_cast<ValueType>(bytes[index]) << (i * 8)));
+        const usize index = IsLittleEndian == true ? i : sizeof(ValueType) - 1 - i;
+        result = static_cast<ValueType>(result | (static_cast<ValueType>(data[index]) << (i * BITS_PER_BYTE)));
     }
-    out = result;
+    outValue = result;
     return true;
 }
 
-template <bool LittleEndian, UnsignedInteger ValueType>
-[[nodiscard]] constexpr bool TryWriteEndian(ValueType value, std::span<uint8> bytes) noexcept
+template <bool IsLittleEndian, UnsignedInteger ValueType>
+[[nodiscard]] constexpr bool TryWriteEndian(ValueType value, BorrowedView<uint8> bytes) noexcept
 {
-    if (bytes.size() < sizeof(ValueType))
+    if (bytes.IsValid() == false || bytes.GetSize() < sizeof(ValueType))
     {
         return false;
     }
+    uint8* data = bytes.GetDataOrNull();
     for (usize i = 0; i < sizeof(ValueType); ++i)
     {
-        const usize index = LittleEndian ? i : sizeof(ValueType) - 1 - i;
-        bytes[index] = static_cast<uint8>(value >> (i * 8));
+        const usize index = IsLittleEndian == true ? i : sizeof(ValueType) - 1 - i;
+        data[index] = static_cast<uint8>(value >> (i * BITS_PER_BYTE));
     }
     return true;
 }
 } // namespace detail
 
 /// Read the first sizeof(ValueType) bytes as a little-endian unsigned integer.
-/// Unaligned input is supported; false preserves out when input is too short.
+/// @param bytes Readable byte view; unaligned input is supported.
+/// @param outValue Preserved if the view is invalid or too short.
+/// @return True if the value was read.
 template <UnsignedInteger ValueType>
-[[nodiscard]] constexpr bool TryReadLittleEndian(std::span<const uint8> bytes, ValueType& out) noexcept
+[[nodiscard]] constexpr bool TryReadLittleEndian(BorrowedView<const uint8> bytes, ValueType& outValue) noexcept
 {
-    return detail::TryReadEndian<true>(bytes, out);
+    return detail::TryReadEndian<true>(bytes, outValue);
 }
 
 /// Read the first sizeof(ValueType) bytes as a big-endian unsigned integer.
-/// Unaligned input is supported; false preserves out when input is too short.
+/// @param bytes Readable byte view; unaligned input is supported.
+/// @param outValue Preserved if the view is invalid or too short.
+/// @return True if the value was read.
 template <UnsignedInteger ValueType>
-[[nodiscard]] constexpr bool TryReadBigEndian(std::span<const uint8> bytes, ValueType& out) noexcept
+[[nodiscard]] constexpr bool TryReadBigEndian(BorrowedView<const uint8> bytes, ValueType& outValue) noexcept
 {
-    return detail::TryReadEndian<false>(bytes, out);
+    return detail::TryReadEndian<false>(bytes, outValue);
 }
 
 /// Write a little-endian unsigned integer into the first sizeof(ValueType) bytes.
-/// Unaligned output is supported; trailing bytes stay untouched. Short buffers
-/// return false without modifying any bytes.
+/// @param value Unsigned integer to encode.
+/// @param bytes Writable byte view; unaligned output is supported.
+/// @return False for an invalid or short view, without modifying any bytes. On success, trailing bytes stay untouched.
 template <UnsignedInteger ValueType>
-[[nodiscard]] constexpr bool TryWriteLittleEndian(ValueType value, std::span<uint8> bytes) noexcept
+[[nodiscard]] constexpr bool TryWriteLittleEndian(ValueType value, BorrowedView<uint8> bytes) noexcept
 {
     return detail::TryWriteEndian<true>(value, bytes);
 }
 
 /// Write a big-endian unsigned integer into the first sizeof(ValueType) bytes.
-/// Unaligned output is supported; trailing bytes stay untouched. Short buffers
-/// return false without modifying any bytes.
+/// @param value Unsigned integer to encode.
+/// @param bytes Writable byte view; unaligned output is supported.
+/// @return False for an invalid or short view, without modifying any bytes. On success, trailing bytes stay untouched.
 template <UnsignedInteger ValueType>
-[[nodiscard]] constexpr bool TryWriteBigEndian(ValueType value, std::span<uint8> bytes) noexcept
+[[nodiscard]] constexpr bool TryWriteBigEndian(ValueType value, BorrowedView<uint8> bytes) noexcept
 {
     return detail::TryWriteEndian<false>(value, bytes);
 }

@@ -21,21 +21,53 @@ float64 ComputeEarthExtinction(float64 altitude, usize channel)
            OZONE[channel] * math::Max(0.0, 1 - math::Abs(altitude - 25.0) / 15.0);
 }
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): the channel and step count follow IntegrateEarthSky's order.
+bool ComputeEarthSolarTransmittance(math::Vector3d pointKilometres,
+                                    math::Vector3d sunWorld,
+                                    usize channel,
+                                    usize solarSteps,
+                                    float64& outTransmittance)
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    constexpr float64 GROUND = EARTH_GROUND_RADIUS_KILOMETRES;
+    constexpr float64 TOP = EARTH_TOP_RADIUS_KILOMETRES;
+    const float64 solarProjection = math::Dot(pointKilometres, sunWorld);
+    const float64 squaredRadius = math::Dot(pointKilometres, pointKilometres);
+    const float64 solarDiscriminant = solarProjection * solarProjection + GROUND * GROUND - squaredRadius;
+    if (solarProjection < 0 && solarDiscriminant >= 0)
+    {
+        return false;
+    }
+    const float64 solarDistance =
+        -solarProjection + std::sqrt(solarProjection * solarProjection + TOP * TOP - squaredRadius);
+    const float64 solarStep = solarDistance / static_cast<float64>(solarSteps);
+    float64 solarOpticalDepth = 0;
+    for (usize solarSample = 0; solarSample < solarSteps; ++solarSample)
+    {
+        const math::Vector3d solarPointWorld =
+            pointKilometres + sunWorld * ((static_cast<float64>(solarSample) + 0.5) * solarStep);
+        solarOpticalDepth += ComputeEarthExtinction(math::Length(solarPointWorld) - GROUND, channel) * solarStep;
+    }
+    outTransmittance = std::exp(-solarOpticalDepth);
+    return true;
+}
+
 // NOLINTBEGIN(bugprone-easily-swappable-parameters): the channel and step counts keep the existing quadrature
 // signature.
-EarthSkyIntegral IntegrateEarthSky(float64 altitude,
-                                   math::Vector3d directionWorld,
-                                   math::Vector3d sunWorld,
-                                   usize channel,
-                                   usize viewSteps,
-                                   usize solarSteps)
+EarthSkyIntegral IntegrateEarthSkySegment(math::Vector3d observerKilometres,
+                                          math::Vector3d directionWorld,
+                                          math::Vector3d sunWorld,
+                                          usize channel,
+                                          float64 maximumKilometres,
+                                          usize viewSteps,
+                                          usize solarSteps)
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
     constexpr float64 GROUND = EARTH_GROUND_RADIUS_KILOMETRES;
     constexpr float64 TOP = EARTH_TOP_RADIUS_KILOMETRES;
     constexpr usize CHANNEL_COUNT = 3;
     constexpr StaticArray<float64, CHANNEL_COUNT> MOLECULAR{{0.005802, 0.013558, 0.033100}};
-    const math::Vector3d observerWorld{0, GROUND + altitude, 0};
+    const math::Vector3d observerWorld = observerKilometres;
     const float64 projected = math::Dot(observerWorld, directionWorld);
     const float64 projectedSquared = projected * projected;
     // Thanks to Nishita, Sirai, Tadamura and Nakamae, “Display of the Earth Taking into Account
@@ -51,8 +83,9 @@ EarthSkyIntegral IntegrateEarthSky(float64 altitude,
     const float64 topRoot = std::sqrt(topDiscriminant);
     const float64 entry = math::Max(0.0, -projected - topRoot);
     const float64 groundDiscriminant = projectedSquared + GROUND * GROUND - squaredEyeRadius;
-    const float64 exitDistance =
-        projected < 0 && groundDiscriminant >= 0 ? -projected - std::sqrt(groundDiscriminant) : -projected + topRoot;
+    const float64 exitDistance = math::Min(
+        projected < 0 && groundDiscriminant >= 0 ? -projected - std::sqrt(groundDiscriminant) : -projected + topRoot,
+        maximumKilometres);
     if (exitDistance <= entry)
     {
         return {};
@@ -76,24 +109,10 @@ EarthSkyIntegral IntegrateEarthSky(float64 altitude,
         const float64 rayleigh = MOLECULAR[channel] * std::exp(-height / 8);
         const float64 aerosol = 0.003996 * std::exp(-height / 1.2);
         result.ReturnFraction += weight * (rayleigh + aerosol);
-        const float64 solarProjection = math::Dot(pointWorld, sunWorld);
-        const float64 squaredRadius = math::Dot(pointWorld, pointWorld);
-        const float64 solarDiscriminant = solarProjection * solarProjection + GROUND * GROUND - squaredRadius;
-        if (solarProjection >= 0 || solarDiscriminant < 0)
+        float64 solarTransmittance = 0;
+        if (ComputeEarthSolarTransmittance(pointWorld, sunWorld, channel, solarSteps, solarTransmittance) == true)
         {
-            const float64 solarDistance =
-                -solarProjection + std::sqrt(solarProjection * solarProjection + TOP * TOP - squaredRadius);
-            const float64 solarStep = solarDistance / static_cast<float64>(solarSteps);
-            float64 solarOpticalDepth = 0;
-            for (usize solarSample = 0; solarSample < solarSteps; ++solarSample)
-            {
-                const math::Vector3d solarPointWorld =
-                    pointWorld + sunWorld * ((static_cast<float64>(solarSample) + 0.5) * solarStep);
-                solarOpticalDepth +=
-                    ComputeEarthExtinction(math::Length(solarPointWorld) - GROUND, channel) * solarStep;
-            }
-            result.Radiance +=
-                weight * std::exp(-solarOpticalDepth) * (rayleigh * moleculePhase + aerosol * aerosolPhase);
+            result.Radiance += weight * solarTransmittance * (rayleigh * moleculePhase + aerosol * aerosolPhase);
         }
         else
         {
@@ -101,7 +120,29 @@ EarthSkyIntegral IntegrateEarthSky(float64 altitude,
         }
         opticalDepth += extinction;
     }
+    result.Transmittance = std::exp(-opticalDepth);
     return result;
+}
+
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): the channel and step counts keep the existing quadrature
+// signature.
+EarthSkyIntegral IntegrateEarthSky(float64 altitude,
+                                   math::Vector3d directionWorld,
+                                   math::Vector3d sunWorld,
+                                   usize channel,
+                                   usize viewSteps,
+                                   usize solarSteps)
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    // Longer than any chord of the shell.
+    constexpr float64 UNCLIPPED_KILOMETRES = 2 * EARTH_TOP_RADIUS_KILOMETRES;
+    return IntegrateEarthSkySegment({0, EARTH_GROUND_RADIUS_KILOMETRES + altitude, 0},
+                                    directionWorld,
+                                    sunWorld,
+                                    channel,
+                                    UNCLIPPED_KILOMETRES,
+                                    viewSteps,
+                                    solarSteps);
 }
 
 // Independent higher-order solution for the local isotropic approximation at

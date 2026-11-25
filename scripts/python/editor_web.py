@@ -15,6 +15,7 @@ import sys
 import tarfile
 import urllib.request
 
+import host_luslc
 import managed_venv
 from web_package import EDITOR_MAXIMUM_MEMORY_PAGES, SDK_NOTICES, PORT_NOTICES, validate_wasm
 
@@ -383,13 +384,18 @@ def main() -> int:
     if args.rebuild_qt or not stamp.exists() or json.loads(stamp.read_text()) != identity:
         qt_build(cmake, ninja, source, build, prefix, host, env)
         stamp.write_text(json.dumps(identity, indent=2) + "\n")
+    # The browser build has no luslc target; the web samples' LUSL shaders lower with a host build.
+    try:
+        luslc = host_luslc.ensure(ROOT)
+    except host_luslc.HostLuslcError as error:
+        raise ValueError(str(error)) from error
     app = ROOT / "out/build/web-editor"
     run([cmake, "--fresh", "-S", ROOT, "-B", app, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}",
          f"-DCMAKE_TOOLCHAIN_FILE={prefix / 'lib/cmake/Qt6/qt.toolchain.cmake'}", f"-DQT_HOST_PATH={host}",
          "-DCMAKE_BUILD_TYPE=MinSizeRel", "-DLUDUS_BUILD_FLAVOR=Release", "-DLUDUS_USE_INIT_OPTIONS=OFF",
          "-DLUDUS_BUILD_TESTS=OFF", "-DLUDUS_BUILD_SMOKE_APP=OFF", "-DLUDUS_BUILD_WEB_PROBES=OFF",
          "-DLUDUS_BUILD_EDITOR=ON", "-DLUDUS_WARNINGS_AS_ERRORS=ON", "-DLUDUS_BUILD_WEB_SAMPLES=ON", "-DLUDUS_BUILD_BEHAVIOR=ON",
-         f"-DLUDUS_SLANG_COMPILER={ROOT / 'out/shader-tools/slang/bin/slangc'}",
+         f"-DLUDUS_SLANG_COMPILER={ROOT / 'out/shader-tools/slang/bin/slangc'}", f"-DLUDUS_LUSLC={luslc}",
          f"-DLUDUS_SPIRV_VALIDATOR={ROOT / 'out/shader-tools/spirv-tools/usr/bin/spirv-val'}",
          f"-DLUDUS_SPIRV_CROSS={ROOT / 'out/shader-tools/spirv-cross/bin/spirv-cross'}"], env=env)
     run([cmake, "--build", app, "--target", "ludus_editor", "ludus_web_live_edit", "ludus_web_scripted", "ludus_web_cornell",

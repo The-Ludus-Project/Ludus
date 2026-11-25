@@ -12,6 +12,7 @@
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
+class QPushButton;
 class QSplitter;
 class QTabWidget;
 QT_END_NAMESPACE
@@ -75,6 +76,17 @@ public:
     /// OpenFailed when the file could not be loaded. The view is focused.
     [[nodiscard]] bool OpenFile(const QString& absolutePath, bool isPreview);
 
+    /// Open or focus a session-owned code tab. Session tabs share the normal
+    /// preview slot and are kept out of ordinary file persistence and recovery.
+    [[nodiscard]] CodeDocumentTab& OpenSessionTab(const QString& key, const QString& path, bool isPreview);
+    [[nodiscard]] bool ActivateTab(CodeDocumentTab& inoutTab);
+    void CloseSessionTab(CodeDocumentTab& inoutTab);
+    void CloseSessionTabs();
+    void RefreshSessionTabs();
+    void SetSessionAction(const QString& label);
+    /// Transfer the package header and companion panel into the Code workspace.
+    QSplitter& InstallSessionWidgets(QWidget& inoutHeader, QWidget& inoutCompanion);
+
     /// Place the second editor group (creating it) and open `absolutePath` in it
     /// so the file is visible side by side with the active group (CE02).
     [[nodiscard]] bool OpenFileInSecondGroup(const QString& absolutePath);
@@ -136,6 +148,7 @@ Q_SIGNALS:
     void OpenFailed(const QString& absolutePath, const QString& explanation);
     /// The set of open tabs or their dirty state changed, for Save All and title.
     void TabsChanged();
+    void SessionActionRequested();
     /// The active code view changed, so the owner can refresh the status bar.
     void ActiveTabChanged(CodeDocumentTab* tabOrNull);
     /// The user asked to close a dirty tab; the owner runs the Save/Don't Save
@@ -170,6 +183,7 @@ private:
 
     CodeDocumentRegistry mRegistry;
     QSplitter* mSplitter;
+    QPushButton* mSessionAction;
     QList<Group> mGroups;
     // Every tab's acquired host, so the matching ReleaseHost runs on close.
     QHash<CodeDocumentTab*, CodeFileDocument*> mTabHosts;

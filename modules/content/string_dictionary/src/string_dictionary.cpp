@@ -1,10 +1,9 @@
 #include <ludus/content/string_dictionary/string_dictionary.h>
 
+#include <ludus/foundation/base/borrowed_view.hpp>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/strings/utf8.hpp>
-
-#include <span>
 
 // Thanks to James Boer, "A Flexible Text Parsing System", Game Programming Gems 2,
 // section 1.17, pp.112-117, for compiling authored text into a compact indexed
@@ -26,7 +25,7 @@ namespace
 uint32 ReadWord(const uint8* bytes, usize offset) noexcept
 {
     uint32 value{};
-    const std::span<const uint8> field{bytes + offset, sizeof(uint32)};
+    const foundation::BorrowedView<const uint8> field{bytes + offset, sizeof(uint32)};
     [[maybe_unused]] const bool isRead = foundation::TryReadLittleEndian(field, value);
     LUDUS_ASSERT(isRead == true);
     return value;

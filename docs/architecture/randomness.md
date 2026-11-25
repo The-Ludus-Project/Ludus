@@ -5,8 +5,9 @@ integration remains proposed. `apps/world_demo` scatters static placements per
 room from a recorded session seed and the checked-in manifest, harvests a
 placement of one authored layer, and regrows it with an advancing ordinal
 ([milestone 1](#milestone-1-procedural-placement) is delivered across its three
-pull requests). Deferred to later milestones: the checkpoint state codec
-(milestone 2), weighted selection and automatic seed acquisition.
+pull requests). The session checkpoints its seed, regrow counters and
+tombstones through FoundationMath's `random_checkpoint.hpp` (milestone 2).
+Deferred to later milestones: weighted selection and automatic seed acquisition.
 FoundationMath ships `addressed_random.hpp`: checked domain-key derivation and
 address construction, Philox4x32-10 raw/block/float samples, and bounded sampling
 with a prepared-bound option. Existing PCG32 v1 behavior remains authoritative in
@@ -22,13 +23,17 @@ for resampled light selection. `random_domains.hpp`
 checks domain manifests against the game and engine ID ranges at compile time,
 and the headless procedural scatter kernel is the first consumer outside the
 renderer ([milestone 1](#milestone-1-procedural-placement)). It makes no throughput
-or statistical certification claim. Sequential seed factories, wire state codecs,
-probability/weighted distributions, game-world integration, designer policies,
-and security entropy remain future work.
+or statistical certification claim. `random.hpp`'s `TryMakeRandomStream` seeds
+a stream per domain and scope, and `random_checkpoint.hpp` provides the explicit
+PCG payload codec and the [checkpoint format](#replay-persistence-networking-and-entropy).
+Probability/weighted distributions, broader game-world integration, designer
+policies and security entropy remain future work.
 
 The specification below describes the complete target architecture. Code uses
 `TryMakeRandomKey`, `TryMakeRandomAddress`, `SampleUInt32`, `SampleFloat01`,
-`TrySampleBlock`, `TryPrepareBound32`, `TrySampleBounded`,
+`TrySampleBlock`, `TryPrepareBound32`, `TrySampleBounded`, `TryMakeRandomStream`,
+`TryEncodeRandomState`, `TryDecodeRandomState`, `TryWriteRandomCheckpoint`,
+`TryReadRandomCheckpoint`, `TryRestoreRandomStreams`,
 `TryAddReservoirCandidate`, and `TryComputeReservoirContributionWeight`; illustrative API
 names elsewhere in this proposal are not additional shipped entry points.
 
@@ -209,6 +214,9 @@ a new named setup convention; do not replace an existing game's explicit seed
 scheme. Different scopes in one domain have the same increment and different
 starting phases. Use the addressed path when independent parallel identity is
 the requirement; do not advertise these phases as guaranteed disjoint streams.
+FoundationMath's `TryMakeRandomStream(rootSeed, RandomOwner{domain, scope}, out)`
+in `random.hpp` implements this convention as `RANDOM_STREAM_SETUP_VERSION` 1,
+with golden answers in `random_checkpoint_tests.cpp`; domain zero is rejected.
 
 `scopeId` is a stable `uint64` identity assigned by gameplay/content. It must
 survive reconstruction: a saved entity creation ID, persistent room ID, or a
@@ -524,7 +532,8 @@ Renderer quality has a different objective: reducing error and organizing sample
 over dimensions, pixels, and frames. A high-quality IID generator does not replace
 stratified/Sobol sampling or blue-noise masks. Keep those in renderer sampling,
 with explicit sample dimensions and reset/history policy; see the
-[PBRT sampling interface](https://www.pbr-book.org/4ed/Sampling_and_Reconstruction/Sampling_Interface).
+[renderer sampling architecture](renderer-sampling.md#random-coordinates-and-sample-patterns)
+and the [PBRT sampling interface](https://www.pbr-book.org/4ed/Sampling_and_Reconstruction/Sampling_Interface).
 Cosmetic particles, audio variation, and rendering have separate domains and
 owners. Changing render rate, visibility, debug draws, or audio completion timing
 must never advance authoritative simulation streams.
@@ -616,6 +625,23 @@ padding/layout is not the wire format. Validate supported version, odd increment
 owner uniqueness, lengths, and manifest compatibility before atomically restoring
 the world. Addressed sampling stores root/domain identity and owner event/identity
 counters, with no sample cache. Gameplay policy state is serialized separately.
+
+FoundationMath's `random_checkpoint.hpp` implements this format. A checkpoint is
+self-delimiting: an `LRCP` magic, format version 1 and total length; the five
+contract versions (`GetRandomContract`: key derivation, address layout, bounded
+mapping, stream setup, stream state); an owner-defined content identity covering
+manifests, generation revisions and policy schemas; the root seed; then stream
+records (`RandomOwner` and a length-prefixed 20-byte payload), event records
+(`RandomOwner` and next `uint32` event) and identity-allocator records
+(nonzero allocator ID and next `uint64` identity). `TryReadRandomCheckpoint`
+validates everything before writing caller storage and reports `Malformed`,
+`UnsupportedFormat`, `UnsupportedContract`, `IncompatibleContent`,
+`InvalidRecord`, `DuplicateOwner` or `CapacityExceeded`.
+`TryRestoreRandomStreams` then restores every live stream at once or none,
+returning `OwnerMismatch` unless records and owners correspond one to one. The
+encoded bytes are deterministic, so an owner can include them in its canonical
+hash. The world demo's [session checkpoint](../examples/world-demo.md#session-checkpoints)
+is the first consumer.
 
 Seed-only replay works only when initial state, logical input sequence, sampler
 versions, content, event assignment, and sequential draw order are identical.
@@ -715,16 +741,16 @@ The PCG32 v1 and addressed Philox primitives are the starting point; their
 reference, boundary, rejection-budget, allocation and worker-order fixtures,
 installed-SDK checks and representative WebAssembly corpus are already in the
 repository. So are the shader port in FoundationMath's `math.slang`, its renderer
-GPU-preview consumer and its Metal/Vulkan parity test. A real game/world consumer
-and its persistence protocol remain to be delivered.
+GPU-preview consumer and its Metal/Vulkan parity test, the world demo's addressed
+scatter consumer, the named sequential setup and the checkpoint format with its
+first persistence consumer.
 
 ### Remaining initial implementation
 
 | Work | Owner | Required result |
 | --- | --- | --- |
 | Stable integration contract and one addressed consumer | Game/world and content | Inventory existing consumers; assign persistent domain/dimension meanings and scope identities; define event commit/exhaustion rules; integrate a procedural or parallel gameplay consumer with scheduling and presentation isolation regressions. |
-| Named sequential setup helper | FoundationMath | Implement the domain-key/scope PCG seeding convention from [stable keys](#stable-keys-domains-and-identities) with golden answers; preserve existing explicit seed schemes and PCG v1 behavior. |
-| State codec and replay compatibility | Serialization and game/world | Encode the explicit 20-byte little-endian PCG payload; validate owner identity, lengths and RNG/content manifests before atomic restore; checkpoint streams, policy state, event counters and identity allocators; include them in canonical hashes and test rollback/reload incompatibility. |
+| State codec and replay compatibility | Game/world | Delivered in FoundationMath: the named setup helper, the 20-byte PCG payload and the [checkpoint format](#replay-persistence-networking-and-entropy) with atomic stream restore; the world demo checkpoints its seed, regrow counters and tombstones with reload and rejection tests. Remaining: checkpoint saved policy state with its consumer, and streams and identity allocators once a world consumer owns them. |
 | Procedural persistence | Game/world and content | Persist generation recipes/revisions and stable nested identities; save mutations as overrides; retain, migrate or clearly reject unsupported recipes. |
 | Required samplers | FoundationMath and content cooker | Begin with small integer cumulative weighted selection; add probability, shuffle or spread functions only when the selected consumer needs them, with versioned consumption, checked arithmetic and failure-preservation tests. |
 | Authored policies and planning models | Game/domain and tools | Persist the required bag/no-repeat/pity/cooldown or decision state; let planners read the same immutable outcome model without advancing live RNG; isolate rollout domains. |
@@ -788,7 +814,9 @@ placement draws its new variant at `(regrow domain, placement scope, ordinal, 0)
 - An ordinal that would pass `UINT32_MAX` fails the regrow with an explicit status,
   and the placement stays harvested. It never wraps or narrows.
 - Tombstones and ordinals enter the world replay hash in milestone 1 and the
-  checkpoint in milestone 2. Cosmetic samples enter neither.
+  checkpoint in milestone 2 (delivered as the world demo's
+  [session checkpoint](../examples/world-demo.md#session-checkpoints)).
+  Cosmetic samples enter neither.
 
 **Isolation regressions.** The milestone is accepted when tests show that:
 
@@ -880,8 +908,9 @@ test results are evidence about the authors' implementations, not Ludus results.
 
 Core primitives, representative native/WebAssembly fixtures, Metal, Vulkan
 and software-adapter WebGPU parity, and the world demo's room scatter with
-harvesting and regrowth are implemented (milestone 1 is delivered). The
-checkpoint state codec and seed acquisition, broader acceptance evidence,
+harvesting and regrowth are implemented (milestone 1 is delivered), as are the
+named sequential setup and the checkpoint format with the world demo's session
+checkpoint. Seed acquisition, broader acceptance evidence,
 performance baselines, hardware WebGPU qualification and statistical
 qualification remain work for the later milestones above.
 Complete the initial implementation before using the research backlog to propose

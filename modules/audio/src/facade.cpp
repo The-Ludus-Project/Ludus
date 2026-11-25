@@ -15,6 +15,7 @@
 #include "internal/prepared.hpp"
 
 #include <cmath>
+#include <ludus/foundation/math/scalar.hpp>
 #include <new>
 
 // The public AudioSystem façade: lifecycle, preparation, submission,
@@ -780,7 +781,7 @@ BatchResult AudioSystem::TrySubmitBatch(std::span<const Command> commands) noexc
 
     // --- Phase 3: publish once ---------------------------------------------
     std::span<const QueuedCommand> batch(s.BatchScratch, scratchCount);
-    if (s.CommandRing.TryPublishBatch(batch) == false)
+    if (s.PublishCommands(batch) == false)
     {
         rollback();
         s.LastBatchVoiceCount = 0;
@@ -811,6 +812,7 @@ BatchResult AudioSystem::TrySubmitBatch(std::span<const Command> commands) noexc
 
     result.Result = Status::Ok;
     result.Voices = std::span<const VoiceHandle>(s.LastBatchVoices, s.LastBatchVoiceCount);
+    result.Sequence = s.PublishedCommands;
     return result;
 }
 
@@ -901,13 +903,268 @@ Status AudioSystem::PlayStream(StreamHandle stream,
     q.Stream = instance.Data;
     q.AdmissionEpoch = s.StopAllEpoch;
     q.Looping = v.Looping;
-    if (s.CommandRing.TryPublishBatch({&q, 1}) == false)
+    if (s.PublishCommands({&q, 1}) == false)
     {
         v.InUse = false;
         return Status::QueueFull;
     }
     instance.Played = true;
     outVoice = s.MakeVoiceHandle(slot);
+    return Status::Ok;
+}
+
+Status AudioSystem::Impl::ConfigureStreamGroup(std::span<const StreamHandle> streams,
+                                               std::span<const float32> gains) noexcept
+{
+    if (streams.empty() == true || streams.size() > StreamInstances || streams.size() != gains.size())
+    {
+        return Status::InvalidArgument;
+    }
+    for (usize i = 0; i < streams.size(); ++i)
+    {
+        const uint32 slot = FindStream(streams[i]);
+        if (slot >= StreamInstances || Streams[slot].Played == true)
+        {
+            return Status::InvalidHandle;
+        }
+        for (usize j = 0; j < i; ++j)
+        {
+            if (streams[i] == streams[j])
+            {
+                return Status::InvalidArgument;
+            }
+        }
+        const internal::StreamData& member = *Streams[slot].Data;
+        const internal::StreamData& first = *Streams[streams.front().Slot].Data;
+        if (member.Looping == false || foundation::math::IsFinite(gains[i]) == false || gains[i] < 0 || gains[i] > 1 ||
+            member.SourceFrames != first.SourceFrames || member.SourceRate != first.SourceRate ||
+            member.Begin != first.Begin || member.End != first.End)
+        {
+            return Status::InvalidArgument;
+        }
+    }
+    internal::StreamData& first = *Streams[streams.front().Slot].Data;
+    first.MemberCount = streams.size();
+    for (usize i = 0; i < streams.size(); ++i)
+    {
+        first.Members[i] = Streams[streams[i].Slot].Data;
+        first.Gains[i] = gains[i];
+    }
+    return Status::Ok;
+}
+void AudioSystem::Impl::FinishStreamGroup(std::span<const StreamHandle> streams, Status result) noexcept
+{
+    if (result != Status::Ok)
+    {
+        Streams[streams.front().Slot].Data->MemberCount = 0;
+        return;
+    }
+    for (StreamHandle stream : streams)
+    {
+        Streams[stream.Slot].Played = true;
+    }
+}
+Status AudioSystem::PlayStreamGroup(std::span<const StreamHandle> streams,
+                                    std::span<const float32> gains,
+                                    uint32 busIndex,
+                                    uint8 priority,
+                                    VoiceHandle& outVoice) noexcept
+{
+    if (mImpl.Get() == nullptr)
+    {
+        return Status::NotReady;
+    }
+    Status result = mImpl->ConfigureStreamGroup(streams, gains);
+    if (result == Status::Ok)
+    {
+        VoiceHandle admitted;
+        result = PlayStream(streams.front(), busIndex, priority, 1, admitted);
+        if (result == Status::Ok)
+        {
+            outVoice = admitted;
+        }
+        mImpl->FinishStreamGroup(streams, result);
+    }
+    return result;
+}
+Status AudioSystem::SetStreamGroupGains(VoiceHandle voice, std::span<const float32> gains, StreamRamp ramp) noexcept
+{
+    if (mImpl.Get() == nullptr)
+    {
+        return Status::NotReady;
+    }
+    Impl& owner = *mImpl;
+    owner.CollectRender();
+    const uint32 slot = owner.FindVoiceSlot(voice);
+    if (slot >= owner.LogicalCapacity || owner.Voices[slot].InUse == false || owner.Voices[slot].IsStream == false)
+    {
+        return Status::InvalidHandle;
+    }
+    const internal::StreamData& group = *owner.Streams[owner.Voices[slot].StreamSlotIndex].Data;
+    if (gains.empty() == true || gains.size() != group.MemberCount ||
+        (ramp.StartFrame > owner.RenderFrame &&
+         ramp.StartFrame - owner.RenderFrame > uint64{MAX_SCHEDULE_HORIZON_SECONDS} * owner.SampleRate))
+    {
+        return Status::InvalidArgument;
+    }
+    QueuedCommand command;
+    command.Kind = CommandKind::UpdateVoice;
+    command.BatchLength = 1;
+    command.VoiceSlotIndex = slot;
+    command.VoiceGeneration = voice.Generation;
+    command.HasLayerGains = true;
+    command.StartFrame = ramp.StartFrame;
+    command.LayerRamp = ramp.DurationFrames;
+    for (usize i = 0; i < gains.size(); ++i)
+    {
+        if (foundation::math::IsFinite(gains[i]) == false || gains[i] < 0 || gains[i] > 1)
+        {
+            return Status::InvalidArgument;
+        }
+        command.LayerGains[i] = gains[i];
+    }
+    if (owner.PublishCommands({&command, 1}) == false)
+    {
+        return Status::QueueFull;
+    }
+    return Status::Ok;
+}
+Status AudioSystem::ScheduleStreamGroup(std::span<const StreamHandle> streams,
+                                        std::span<const float32> gains,
+                                        VoiceHandle outgoing,
+                                        StreamRamp ramp,
+                                        VoiceHandle& outVoice) noexcept
+{
+    if (mImpl.Get() == nullptr)
+    {
+        return Status::NotReady;
+    }
+    Status result = mImpl->ConfigureStreamGroup(streams, gains);
+    if (result == Status::Ok)
+    {
+        internal::StreamData& first = *mImpl->Streams[streams.front().Slot].Data;
+        first.CrossfadeFrames = ramp.DurationFrames;
+        result = ScheduleStreamTransition(streams.front(), outgoing, ramp.StartFrame, outVoice);
+        if (result != Status::Ok)
+        {
+            first.CrossfadeFrames = 0;
+        }
+        mImpl->FinishStreamGroup(streams, result);
+    }
+    return result;
+}
+Status AudioSystem::ScheduleStreamTransition(StreamHandle incoming,
+                                             VoiceHandle outgoing,
+                                             uint64 frame,
+                                             VoiceHandle& outVoice) noexcept
+{
+    if (mImpl.Get() == nullptr)
+    {
+        return Status::NotReady;
+    }
+    Impl& owner = *mImpl;
+    owner.CollectRender();
+    const uint32 slot = owner.FindVoiceSlot(outgoing);
+    const uint32 index = owner.FindStream(incoming);
+    if (slot >= owner.LogicalCapacity || index >= owner.StreamInstances)
+    {
+        return Status::InvalidHandle;
+    }
+    const VoiceSlot& previous = owner.Voices[slot];
+    if (previous.InUse == false || previous.IsStream == false || previous.State == VoiceState::Terminal ||
+        owner.Streams[index].Played == true)
+    {
+        return Status::NotReady;
+    }
+    if (frame <= owner.RenderFrame || frame >= internal::StreamData::SEALED ||
+        frame - owner.RenderFrame > uint64{MAX_SCHEDULE_HORIZON_SECONDS} * owner.SampleRate)
+    {
+        return Status::InvalidArgument;
+    }
+    for (uint32 i = 0; i < owner.StreamInstances; ++i)
+    {
+        const internal::StreamData* candidateOrNull = owner.Streams[i].Data;
+        if (candidateOrNull != nullptr && candidateOrNull->Outgoing == outgoing &&
+            candidateOrNull->TransitionFrame.load(std::memory_order_acquire) != 0)
+        {
+            return Status::NotReady;
+        }
+    }
+    internal::StreamData& data = *owner.Streams[index].Data;
+    data.Outgoing = outgoing;
+    const uint64 held = owner.Streams[previous.StreamSlotIndex].Data->HeldFrames.load(std::memory_order_acquire);
+    if (frame <= held)
+    {
+        data.Outgoing = {};
+        return Status::InvalidArgument;
+    }
+    data.TransitionFrame.store(frame - held, std::memory_order_relaxed);
+    VoiceHandle admitted;
+    const Status result = PlayStream(incoming, previous.BusIndex, previous.Priority, previous.Gain, admitted);
+    if (result == Status::Ok)
+    {
+        outVoice = admitted;
+    }
+    else
+    {
+        data.Outgoing = {};
+        data.TransitionFrame.store(0, std::memory_order_relaxed);
+    }
+    return result;
+}
+
+Status AudioSystem::ReviseStreamTransition(VoiceHandle incoming, uint64 frame) noexcept
+{
+    if (mImpl.Get() == nullptr)
+    {
+        return Status::NotReady;
+    }
+    Impl& owner = *mImpl;
+    owner.CollectRender();
+    const uint32 slot = owner.FindVoiceSlot(incoming);
+    if (slot >= owner.LogicalCapacity)
+    {
+        return Status::InvalidHandle;
+    }
+    const VoiceSlot& voice = owner.Voices[slot];
+    if (voice.InUse == false || voice.IsStream == false || voice.State == VoiceState::Terminal)
+    {
+        return Status::NotReady;
+    }
+    internal::StreamData& data = *owner.Streams[voice.StreamSlotIndex].Data;
+    uint64 expected = data.TransitionFrame.load(std::memory_order_acquire);
+    if (expected >= internal::StreamData::SEALED)
+    {
+        return Status::TooLate;
+    }
+    if (expected == 0)
+    {
+        return Status::NotReady;
+    }
+    if (frame != 0 && (frame <= owner.RenderFrame || frame >= internal::StreamData::SEALED ||
+                       frame - owner.RenderFrame > uint64{MAX_SCHEDULE_HORIZON_SECONDS} * owner.SampleRate))
+    {
+        return Status::InvalidArgument;
+    }
+    if (frame != 0)
+    {
+        const uint32 previous = owner.FindVoiceSlot(data.Outgoing);
+        if (previous >= owner.LogicalCapacity || owner.Voices[previous].InUse == false)
+        {
+            return Status::NotReady;
+        }
+        const uint64 held =
+            owner.Streams[owner.Voices[previous].StreamSlotIndex].Data->HeldFrames.load(std::memory_order_acquire);
+        if (frame <= held)
+        {
+            return Status::InvalidArgument;
+        }
+        frame -= held;
+    }
+    if (data.TransitionFrame.compare_exchange_strong(expected, frame, std::memory_order_acq_rel) == false)
+    {
+        return expected >= internal::StreamData::SEALED ? Status::TooLate : Status::NotReady;
+    }
     return Status::Ok;
 }
 
@@ -1043,6 +1300,10 @@ Status AudioSystem::GetVoiceInfo(VoiceHandle voice, VoiceInfo& out) const noexce
     out.Stale = false;
     out.SnapshotFrame = mImpl->RenderFrame;
     out.CursorFrame = v.CursorFrame;
+    if (v.IsStream == true && v.InUse == true)
+    {
+        out.HeldFrames = mImpl->Streams[v.StreamSlotIndex].Data->HeldFrames.load(std::memory_order_acquire);
+    }
     out.StartFrame = v.StartFrame;
     out.EffectiveGain = v.FadeGain; // carried per-channel gain (incl. pan/attn)
     out.Priority = v.Priority;
@@ -1122,6 +1383,20 @@ void AudioSystem::GetSystemSnapshot(SystemSnapshot& out) const noexcept
     // not read here.
     mImpl->CollectRender();
     mImpl->FillSnapshot(out);
+}
+
+uint32 AudioSystem::GetCommandRoom() const noexcept
+{
+    if (mImpl.Get() == nullptr || mImpl->State != SystemState::Ready)
+    {
+        return 0;
+    }
+    return mImpl->CommandRing.FreeSlots();
+}
+
+uint64 AudioSystem::GetAppliedSequence() const noexcept
+{
+    return mImpl.Get() == nullptr ? 0 : mImpl->AppliedCommands.load(std::memory_order_acquire);
 }
 
 // ===========================================================================
@@ -1282,7 +1557,7 @@ Status AudioSystem::AcquireModifier(std::span<const ModifierValue> values,
         {
             q.ModifierValues[i] = values[i];
         }
-        if (s.CommandRing.TryPublishBatch({&q, 1}) == false)
+        if (s.PublishCommands({&q, 1}) == false)
         {
             m.InUse = false;
             return Status::QueueFull;
@@ -1316,7 +1591,7 @@ Status AudioSystem::UpdateModifier(ModifierHandle modifier, float32 weight) noex
         q.ModifierSlotIndex = slot;
         q.ModifierGeneration = m.Generation.Value;
         q.ModifierWeight = weight;
-        if (mImpl->CommandRing.TryPublishBatch({&q, 1}) == false)
+        if (mImpl->PublishCommands({&q, 1}) == false)
         {
             return Status::QueueFull;
         }
@@ -1345,7 +1620,7 @@ Status AudioSystem::ReleaseModifier(ModifierHandle modifier) noexcept
         q.BatchLength = 1;
         q.ModifierSlotIndex = slot;
         q.ModifierGeneration = m.Generation.Value;
-        if (mImpl->CommandRing.TryPublishBatch({&q, 1}) == false)
+        if (mImpl->PublishCommands({&q, 1}) == false)
         {
             return Status::QueueFull;
         }

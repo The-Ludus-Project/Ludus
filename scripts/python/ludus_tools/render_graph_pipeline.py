@@ -78,7 +78,9 @@ def validate(node, where, graph):
         for port in node[direction]:
             fields = ('id', 'type', 'required') if direction == 'inputs' else (
                 'id', 'type', 'target', 'format', 'load', 'store')
-            _check_field(graph._keys, port, f'{direction} port record', where, graph, fields)
+            optional = ('access',) if direction == 'outputs' else ()
+            _check_field(lambda value, location: graph._keys(value, fields, location, optional),
+                         port, f'{direction} port record', where, graph)
             _check_field(graph._identifier, port['id'], f'{direction} port ID', where, graph)
             graph._require(port['id'] not in identities, 'DuplicateIdentity', where,
                            f"{direction} port '{port['id']}' is declared more than once. "
@@ -107,6 +109,14 @@ def validate(node, where, graph):
                                'Give each writable resource a separate input, or remove the duplicate output. '
                                'Use separate pipeline nodes for sequential writes.')
                 targets[port['target']] = port['id']
+                if 'access' in port:
+                    _check_field(graph._enum, port['access'], f"Output '{port['id']}' Access", where, graph,
+                                 ('ShaderReadWrite',))
+                    graph._require(port['type'] == 'ColorTexture' and
+                                   (node['kind'] == 'RayTracingPipeline' or is_scene_compute(node)),
+                                   'Capability', where, 'shader read/write requires a ray or scene compute ColorTexture',
+                                   port=port['id'], direction='output',
+                                   repair='Use an automatic output or choose a ray or scene compute pass.')
                 formats = {'ColorTexture': ('RGBA8Unorm',), 'DepthTexture': ('Depth32Float',), 'Buffer': ('Bytes',)}
                 graph._require(port['format'] in formats[port['type']], 'Schema', where,
                                f"Output '{port['id']}' ({port['type']}) has format '{port['format']}'. "
@@ -161,7 +171,7 @@ def validate(node, where, graph):
             _check_field(graph._integer, invocation['work_items'], 'Invocation → work_items', where, graph, 1,
                          ray.MAX_SCENE_WORK_ITEMS)
         else:
-            graph._keys(invocation, ('dimensions',), where, ('type', 'traversal', 'traversal_source'))
+            graph._keys(invocation, ('dimensions',), where, ('type', 'traversal', 'traversal_source', 'storage_texture'))
             if invocation['dimensions'] != 'ColorTarget':
                 _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
     elif node['kind'] == 'ComputePipeline':
@@ -176,9 +186,19 @@ def validate(node, where, graph):
         for field in ('payload_bytes', 'attribute_bytes'):
             if field in state:
                 _check_field(graph._integer, state[field], f'Pipeline State → {field} (bytes)', where, graph, 0, 4096)
-        graph._keys(invocation, ('dimensions',), where, ('type', 'traversal', 'traversal_source'))
+        graph._keys(invocation, ('dimensions',), where, ('type', 'traversal', 'traversal_source', 'storage_texture'))
         if invocation['dimensions'] != 'ColorTarget':
             _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
+
+    if 'storage_texture' in invocation:
+        graph._boolean(invocation['storage_texture'], where)
+    if node['kind'] == 'RayTracingPipeline' or is_scene_compute(node):
+        dimensions = invocation.get('dimensions', 'ColorTarget')
+        if dimensions != 'ColorTarget':
+            graph._require(dimensions[2] == 1 and dimensions[0] * dimensions[1] <= ray.MAX_SCENE_WORK_ITEMS,
+                           'Capability', where, 'a 2D ray launch requires [width, height, 1] within the dispatch limit',
+                           field='invocation.dimensions', actual=dimensions,
+                           repair=f'Use depth 1 and a width × height of at most {ray.MAX_SCENE_WORK_ITEMS} invocations.')
 
     if any(field in invocation for field in ('type', 'traversal', 'traversal_source')):
         graph._require(node['kind'] == 'RayTracingPipeline' or is_scene_compute(node),

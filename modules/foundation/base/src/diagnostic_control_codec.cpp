@@ -2,8 +2,6 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 
-#include <span>
-
 namespace ludus::foundation::diagnostics
 {
 namespace
@@ -31,12 +29,17 @@ usize EncodeControlHeader(char* buffer,
     {
         return 0;
     }
-    const std::span<uint8> bytes{reinterpret_cast<uint8*>(buffer), CONTROL_HEADER_SIZE};
-    if (TryWriteLittleEndian(CONTROL_PROTOCOL_MAGIC, bytes) == false ||
-        TryWriteLittleEndian(CONTROL_PROTOCOL_VERSION, bytes.subspan(CONTROL_VERSION_OFFSET)) == false ||
-        TryWriteLittleEndian(static_cast<uint16>(kind), bytes.subspan(CONTROL_KIND_OFFSET)) == false ||
-        TryWriteLittleEndian(incidentId, bytes.subspan(CONTROL_INCIDENT_OFFSET)) == false ||
-        TryWriteLittleEndian(length, bytes.subspan(CONTROL_LENGTH_OFFSET)) == false)
+    uint8* bytes = reinterpret_cast<uint8*>(buffer);
+    if (TryWriteLittleEndian(CONTROL_PROTOCOL_MAGIC, {bytes, CONTROL_HEADER_SIZE}) == false ||
+        TryWriteLittleEndian(CONTROL_PROTOCOL_VERSION,
+                             {bytes + CONTROL_VERSION_OFFSET, CONTROL_HEADER_SIZE - CONTROL_VERSION_OFFSET}) == false ||
+        TryWriteLittleEndian(static_cast<uint16>(kind),
+                             {bytes + CONTROL_KIND_OFFSET, CONTROL_HEADER_SIZE - CONTROL_KIND_OFFSET}) == false ||
+        TryWriteLittleEndian(incidentId,
+                             {bytes + CONTROL_INCIDENT_OFFSET, CONTROL_HEADER_SIZE - CONTROL_INCIDENT_OFFSET}) ==
+            false ||
+        TryWriteLittleEndian(length, {bytes + CONTROL_LENGTH_OFFSET, CONTROL_HEADER_SIZE - CONTROL_LENGTH_OFFSET}) ==
+            false)
     {
         return 0;
     }
@@ -49,15 +52,19 @@ bool DecodeControlHeader(const char* buffer, usize size, ControlHeader& header) 
     {
         return false;
     }
-    const std::span<const uint8> bytes{reinterpret_cast<const uint8*>(buffer), CONTROL_HEADER_SIZE};
+    const uint8* bytes = reinterpret_cast<const uint8*>(buffer);
     uint32 magic{};
     uint16 version{};
     ControlHeader next;
-    if (TryReadLittleEndian(bytes, magic) == false ||
-        TryReadLittleEndian(bytes.subspan(CONTROL_VERSION_OFFSET), version) == false ||
-        TryReadLittleEndian(bytes.subspan(CONTROL_KIND_OFFSET), next.Kind) == false ||
-        TryReadLittleEndian(bytes.subspan(CONTROL_INCIDENT_OFFSET), next.IncidentId) == false ||
-        TryReadLittleEndian(bytes.subspan(CONTROL_LENGTH_OFFSET), next.Length) == false ||
+    if (TryReadLittleEndian({bytes, CONTROL_HEADER_SIZE}, magic) == false ||
+        TryReadLittleEndian({bytes + CONTROL_VERSION_OFFSET, CONTROL_HEADER_SIZE - CONTROL_VERSION_OFFSET}, version) ==
+            false ||
+        TryReadLittleEndian({bytes + CONTROL_KIND_OFFSET, CONTROL_HEADER_SIZE - CONTROL_KIND_OFFSET}, next.Kind) ==
+            false ||
+        TryReadLittleEndian({bytes + CONTROL_INCIDENT_OFFSET, CONTROL_HEADER_SIZE - CONTROL_INCIDENT_OFFSET},
+                            next.IncidentId) == false ||
+        TryReadLittleEndian({bytes + CONTROL_LENGTH_OFFSET, CONTROL_HEADER_SIZE - CONTROL_LENGTH_OFFSET},
+                            next.Length) == false ||
         magic != CONTROL_PROTOCOL_MAGIC || version != CONTROL_PROTOCOL_VERSION ||
         next.Kind < static_cast<uint16>(ControlMessageType::Hello) ||
         next.Kind > static_cast<uint16>(ControlMessageType::DecisionReply) || next.Length > CONTROL_MAX_PAYLOAD ||

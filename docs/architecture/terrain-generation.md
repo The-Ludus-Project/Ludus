@@ -5,8 +5,12 @@ mesh preview in default Worlds. See [World authoring](../development/editor-work
 [`Ludus::ContentTerrain`](../modules/content/terrain.md) implements the first T1
 kernels headlessly: the editor's elevation recipe, slope, whole-domain D8
 drainage over a depression-filled surface, a wetness field, material rules
-with bounded patch palettes, and river channel networks with carving. The terrain content formats, imports and stamps as
-cooker stages, erosion, and streamed terrain described below remain proposed
+with bounded patch palettes, and river channel networks with carving. It also
+cooks a complete height field into a versioned manifest and independently
+readable height pages with halos, digests and edit-scoped recooking
+([page cooking](../modules/content/terrain.md#versioned-page-cooking)). The
+source schema, imports and stamps as cooker stages, material/hole/coarse
+channels, erosion, and streamed terrain described below remain proposed
 alongside [terrain systems](terrain.md).
 
 Generate a terrain as an editable base plus explicit authored layers, then cook
@@ -88,11 +92,17 @@ gradient constants, lattice addressing, interpolation, evaluation order,
 normalization, octave order and allowed parameter ranges. Use the quintic fade
 `6t^5 - 15t^4 + 10t^3` and derivatives where useful. Version ridged transforms,
 domain warp and remap curves separately; a function named Noise is not a
-reproducibility specification.
+reproducibility specification. The implemented recipe keeps its original cubic
+fade as frozen noise layout 1 for saved Worlds and adopts the quintic as layout
+2 for new content; see the
+[noise layout migration](../modules/content/terrain.md#noise-layouts-and-the-fade-migration).
 
 Thanks to **Ken Perlin**, *Implementing Improved Perlin Noise*, GPU Gems 1,
 chapter 5, sections 5.3–5.4, for the smooth fade and balanced gradient argument
-([author chapter](https://developer.nvidia.com/gpugems/gpugems/part-i-natural-effects/chapter-5-implementing-improved-perlin-noise)).
+([author chapter](https://developer.nvidia.com/gpugems/gpugems/part-i-natural-effects/chapter-5-implementing-improved-perlin-noise)),
+and *Improving Noise*, SIGGRAPH '02, pp. 681–682, for the cubic's nonzero
+endpoint second derivatives and the quintic replacement
+([paper](https://www.cs.rpi.edu/~cutler/classes/advancedgraphics/S23/papers/perlin_improving_noise_2002.pdf)).
 Ludus's 2D gradient set and addressed sampling are separate versioned choices;
 no chapter shader or periodic lookup table is copied.
 

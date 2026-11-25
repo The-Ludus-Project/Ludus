@@ -455,7 +455,7 @@ canvas or hosted target holds one presentation layer, so `CreateDevice` and
 `CreateSurface` return `InvalidDescription` for a target that a live surface of
 any owner already borrows; destroying that owner releases it.
 
-The device-less compatibility facade (`Start`, `BeginFrame()`, `CreateShader`
+The device-less compatibility facade (`Start`, `BeginFrameStatus`, `CreateShader`
 without a device, and so on) addresses the first owner slot. That slot holds the
 device created while no other device was live, so a single-device program
 behaves as before. A facade session from `Start` or `Initialize` runs only while
@@ -799,7 +799,8 @@ Create resources outside frames, then set a target, BeginFrame, DrawIndexed and
 EndFrame. Check every result. Portable draws and DrawFullscreen cannot share
 one frame. The complete public-only example is
 [`tests/sdk_consumer/raster.cpp`](../../tests/sdk_consumer/raster.cpp), with its
-[application-owned shader](../../tests/sdk_consumer/shaders/raster.slang).
+[application-owned LUSL shader](../../tests/sdk_consumer/shaders/raster.lusl), which it
+binds through the generated `raster_slots.h` constants.
 
 ### Destruction and validation evidence
 
@@ -1236,7 +1237,7 @@ The installed shader helper accepts one compute entry:
 
 ```cmake
 ludus_compile_shader(TARGET my_renderer NAME cull
-    SOURCE shaders/cull.slang COMPUTE computeMain)
+    SOURCE shaders/cull.lusl COMPUTE ComputeMain)
 ```
 
 The generated `ludus::shaders::cull::Compute()` description selects the native
@@ -1338,7 +1339,7 @@ preflight retry and partial-encoding failure follow R2/R3.
 
 The shared [`ordered_frame.h`](../../tests/sdk_consumer/ordered_frame.h) fixture
 has an authored CPU culling function and the
-[`cull.slang`](../../tests/sdk_consumer/shaders/cull.slang) GPU variant. A single
+[`cull.lusl`](../../tests/sdk_consumer/shaders/cull.lusl) GPU variant. A single
 invocation compacts four candidates into two visible instances and writes one
 indexed indirect command. GPU output buffers start at zero. Native tests read
 back the generated command through R2 and compare the complete rendered image
@@ -1986,8 +1987,9 @@ A complete 8240-by-8200 RGBA8 blob requires both an upload limit and remaining
 resource budget large enough for its roughly 258 MiB payload; width alone does
 not establish support. There is no implicit resizing or conversion.
 
-Binding metadata and copied dynamic-offset/shader-name tables now have sixteen
-slots (`RASTER_BINDING_COUNT`). `Interface.MaxBindings` and
+Compute layouts have eighteen slots (`RASTER_COMPUTE_BINDING_COUNT`), with the
+last two reserved for sampled color textures. Graphics layouts, dynamic offsets
+and shader-name tables use the first sixteen (`RASTER_BINDING_COUNT`). `Interface.MaxBindings` and
 `Binding.MaxBindings` report the enabled entry/index envelope. Independently
 check `Binding.MaxUniformBuffersPerStage`, `MaxSampledTexturesPerStage`,
 `MaxSamplersPerStage`, `Compute.MaxStorageBindings` and
@@ -2440,6 +2442,14 @@ pressure across delayed completion, stale indices, retained array elements,
 Reflection regressions cover fixed/runtime counts, target registers, indexing
 modes and unsafe bounds.
 
+The scalar, compute and constant-index array programs are LUSL (`r11.lusl`,
+`r11compute.lusl`, `r11_constant.lusl` and `r11_wider.lusl`); the fixture binds
+them through their generated `<NAME>_slots.h` constants. The non-uniform,
+runtime-sized, constant-buffer and storage-buffer arrays stay Slang (`r11.slang`,
+`r11buffers.slang`, `r11storage.slang`), because LUSL binding arrays hold sampled
+textures and samplers indexed by constants
+([retained list](../../config/lusl_migration.json)).
+
 The native fixture reports CPU creation time for 32 static snapshots versus one
 reused dynamic snapshot, alongside populated descriptors and actual Vulkan pool
 reservations. R7 `AllocationTelemetry` adds `BindingDescriptors`,
@@ -2575,8 +2585,9 @@ boundaries.
 
 The portable conformance case `Portable R12a indirect commands honor offsets,
 counts, strides and dispatch arguments` (`ludus_rhi_render_tests` and the Windows
-`ludus_rhi_d3d12_tests`) cooks `tests/shaders/indirect_commands.slang` for every
-native target. One kernel writes every command; nothing is read back before use:
+`ludus_rhi_d3d12_tests`) cooks `tests/sdk_consumer/shaders/indirect_commands.lusl`
+for every native target. One kernel writes every command; nothing is read back
+before use:
 
 - an indexed command with nonzero `FirstIndex`, `BaseVertex` and `FirstInstance`;
 - a zero-instance command 40 bytes later, consumed through `IndirectCount = 2`, with
@@ -2589,7 +2600,28 @@ right half, and the dispatch marks are read back. Reference tests (`[indirect]` 
 `ludus_rhi_lifecycle_tests`) cover the profile and its WebGL absence, non-indexed
 admission, count, stride, alignment and span-overflow rejection, disabled-feature
 `Unsupported` results, graph span declarations and producer-to-command hazards.
-Metal runs locally. Vulkan, Direct3D 12 and WebGPU results come from their CI
+
+The installed-SDK fixture `tests/sdk_consumer/indirect.cpp` runs the same commands
+through the public API with the shared shader. Natively it is the CTests
+`ludus_sdk_indirect_consumer` and `ludus_sdk_indirect_zero_first_instance_consumer`.
+The second forces the layout for a profile without `HasFirstInstance`: the kernel
+writes zero `FirstInstance` values, each packet's instance slice starts at its
+color, and the non-indexed draw runs first so that a wrong stride or an executed
+zero-instance command still covers the right half. In the browser,
+`indirect-browser-test.mjs` (the `raster` suite in
+`tests/sdk_consumer/browser-suites.json`) runs four scenarios in Chromium on
+SwiftShader:
+
+| Scenario | Checks |
+| --- | --- |
+| `webgpu` | Fixed profile (4-byte alignment, 64 commands, non-indexed, offsets, dispatch); `indirect-first-instance` requested exactly when the adapter offers it; image and dispatch marks |
+| `webgpu-no-first-instance` | The adapter hides the feature: `HasFirstInstance` is false, the device does not request it, and the zero-`FirstInstance` layout matches the oracle |
+| `webgl2` | Empty profile, `Unsupported` for a `StorageIndirect` buffer, a required `IndirectRendering` rejected at `CreateDevice`, and the authored direct variant matches the oracle |
+| `auto-fallback` | Without `navigator.gpu`, Auto selects WebGL 2 and draws the direct variant |
+
+The report records whether the software adapter offered `indirect-first-instance`,
+so nonzero browser `FirstInstance` coverage is explicit rather than assumed.
+Metal runs locally. Vulkan, Direct3D 12 and browser results come from their CI
 lanes, and physical-GPU qualification remains R7b. Visibility and compaction
 algorithms that produce commands remain renderer policy.
 
@@ -2779,8 +2811,9 @@ public handles are gone.
 
 ### Scope
 
-This profile admits immutable scenes and compute-stage inline queries. Graph-owned
-builds, updates, refits, compaction and acceleration-structure copies are R16b.
+This profile admits immutable scenes and compute-stage inline queries. RHI-owned
+refits and compaction are [R16b](#acceleration-structure-refit-and-compaction-r16b).
+Graph-owned builds and acceleration-structure copies remain planned.
 Procedural and motion inputs are R16c. Dedicated ray pipelines and function tables
 in graphs are R17b. Other query stages are R17c.
 
@@ -2802,6 +2835,136 @@ discard and execution.
 Metal runs locally. The Linux CI adapter (llvmpipe) lacks the profile and skips the
 native case, so Vulkan hit/miss evidence requires a ray-capable host. Physical-GPU
 qualification remains R7b.
+
+## Acceleration-structure refit and compaction (R16b)
+
+R16b adds refits of geometry and scenes and compacted copies of geometry to the
+[R16a static profile](#acceleration-structure-builds-and-graph-reads-r16ar17a).
+Each operation publishes a new incarnation and leaves its source unchanged. Scenes,
+batches and graph imports that already use the source keep using it, so a refit
+never replaces a structure that accepted GPU work is reading. The
+[architecture milestone](../architecture/rhi-gdi.md#follow-up-milestones-r6r17)
+owns the assignment; the API comments in `ray.h` own the caller contracts.
+
+### Negotiate and opt in
+
+`RayCapabilities::Updates` and `RayCapabilities::CanCompact` report the operations.
+Metal and Vulkan enable both with the static profile. Direct3D 12, WebGPU and
+WebGL 2 report them unavailable, and the R16b calls return `Unsupported`.
+
+Opt in when you create the source:
+
+- `RayGeometryDescription::ShouldAllowUpdate` builds a refittable BLAS.
+- `RayGeometryDescription::ShouldAllowCompaction` records the compacted size.
+- `RaySceneDescription::ShouldAllowUpdate` builds a refittable TLAS.
+
+Requesting an option that the device lacks returns `Unsupported`. Native builders
+can trade trace quality or resident bytes for refit support, so enable it only on
+structures that change.
+
+### Refit geometry
+
+`UpdateRayGeometry(device, source, description, output)` refits a `Ready`,
+update-enabled source with new positions. It validates positions like
+`CreateRayGeometry`, and it requires the same topology as the source:
+
+- equal `VertexCount` and `IndexCount`;
+- the same index values in the same order;
+- the same `OpaqueTriangleCount`, `ShouldAllowUpdate` and `ShouldAllowCompaction`.
+
+A topology change returns `InvalidDescription` and publishes nothing; create a new
+geometry with `CreateRayGeometry` instead. Texture coordinates may change. The
+result keeps the source's options, so refits can chain.
+
+A refit is a different BLAS. Create a scene with `CreateRayScene` to trace it.
+
+### Refit a scene
+
+`UpdateRayScene(device, source, description, output)` refits a `Ready`,
+update-enabled scene. The description must have the same `Count` and
+`ShouldAllowUpdate`. Each instance must name the same geometry incarnation and
+the same `AlphaMasked` choice. Transforms, masks, opacity values, cutoffs, UV
+transforms, alpha tables and filtering may change. Any other change returns
+`InvalidDescription`; rebuild with `CreateRayScene`, which is also required after
+a geometry refit or compaction.
+
+Vulkan permits more instance changes in an update. Metal does not document which
+instance changes a refit accepts, so Ludus admits only the set that both backends
+support.
+
+### Compact geometry
+
+`CompactRayGeometry(device, {source, byteBudget}, output)` copies a `Ready`,
+compaction-enabled BLAS into a structure of its native compacted size. The build
+records that size when it runs, so compaction does not wait for the GPU. A size
+above `byteBudget` returns `CapacityExceeded`. The compacted copy:
+
+- keeps the source triangle identities and opacity ranges;
+- owns no vertex or index inputs, so it reports fewer resident bytes;
+- cannot be refit or compacted again (`InvalidState`).
+
+### Sources and retirement
+
+Every operation checks its source the same way:
+
+| Source | Result |
+| --- | --- |
+| Destroyed, stale or from another device | `InvalidHandle` |
+| Build still `Pending` | `NotReady` |
+| Build `Failed` | `Failed` |
+| Created without the option | `InvalidState` |
+
+A pending refit or copy retains its exact source until the native work completes,
+even when it fails. Once it completes, the source is released. Destroy the source
+after compacting it: it retires when the copy and every scene, batch and graph
+frame that uses it complete. `GetRayResourceStats` reports the retained bytes in
+`DetachedBytes` until then. Refit scratch appears in `BuildScratchBytes` while the
+refit is `Pending`. After device loss every operation returns `DeviceLost`. Handles
+from the lost session never resolve in a replacement session.
+
+### Synchronize
+
+Refits and copies are RHI operations, like builds. Graphs import their `Ready`
+results through `ImportGraphRayScene`, which reports the operation as the scene's
+external producer, as for an R16a build.
+
+- **Metal** refits out of place into a new structure, with refit scratch. A build
+  with compaction enabled writes its compacted size in the same encoder.
+  `copyAndCompactAccelerationStructure` makes the copy.
+- **Vulkan** runs an update-mode build from the source with update scratch. A
+  compaction-enabled build writes an `ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR`
+  query after its build barrier. `vkCmdCopyAccelerationStructureKHR` makes the
+  compacting copy. Refits and copies begin with a barrier from
+  `ACCELERATION_STRUCTURE_BUILD` writes to `ACCELERATION_STRUCTURE_BUILD` reads.
+  They end with the R16a build-to-compute barrier.
+
+### Evidence
+
+`R16b refits and compacted copies trace like rebuilt structures`
+(`ludus_rhi_ray_tests`) runs 144 rays over an 8 by 8 quad grid. It refits the grid
+to bent positions and compares the result with a rebuild from the same positions.
+It refits the scene with a moved instance and compares the result with a rebuilt
+scene. It compacts the flat grid and compares the result with the source trace. The
+comparisons check hit flags, primitive and instance IDs, and distance and
+barycentrics within 1e-5. The test also checks:
+
+- the source still traces its own positions after the refit;
+- native topology-change rejection;
+- fewer resident bytes after compaction;
+- retirement of the destroyed source once the copy completes.
+
+The reference-backend `[ray][update]` cases in `ludus_rhi_lifecycle_tests` cover:
+
+- unsupported targets and sources without the options;
+- pending, failed and stale sources, and compaction budgets;
+- each topology change for geometry and scenes;
+- retention of refit, compaction and graph-imported sources until completion;
+- release after a failed operation;
+- device loss, and old identities in a replacement session.
+
+Metal ran this evidence on Apple GPU family 9. The Linux CI adapter lacks the ray
+profile, so Vulkan refit and compaction parity stays open until a ray-capable
+Vulkan host runs `ludus_rhi_ray_tests`.
 
 ## Raster world coordinate grid
 

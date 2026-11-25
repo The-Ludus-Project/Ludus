@@ -54,7 +54,7 @@ enum class HostedRecordingResult : foundation::uint8
 {
     /// Start: recording from Frame. Stop: recording ended after Frame.
     Ok = 0,
-    /// The game has no recorder attached to its window, or its device cannot measure passes.
+    /// The game has no recorder attached to its window, or its device cannot measure GPU time.
     Unsupported = 1,
     /// Start: another recording is active in the game.
     Busy = 2,
@@ -105,6 +105,12 @@ struct HostedRecordingAcknowledgement final
     foundation::uint64 Ticks = 0;
     /// Stop only: what the recording measured. Zero for Start.
     HostedRecordingCoverage Coverage{};
+    /// @brief Start with Ok only: the game's device armed per-pass timestamp counters.
+    ///
+    /// True when the recording's samples measure the game's named passes. False when
+    /// the device has no per-pass counters, so every sample is a whole-frame sample
+    /// (HostedRecordingSample::IsFrame), and for every other kind and result.
+    bool IsPassTimingSupported = false;
     /// UTF-8 name the game gives its recorder, possibly empty.
     HostedProducerName ProducerName{};
 };
@@ -120,9 +126,13 @@ enum class HostedPassKind : foundation::uint8
     RayTracing = 2,
 };
 
-/// @brief One measured physical pass of one game frame.
+/// @brief One measured physical pass, or one whole submitted frame, of one game frame.
 ///
-/// Ticks are on the game's monotonic clock and remain process-local.
+/// A pass sample names its scope. A frame sample (IsFrame) measures the device
+/// interval of the whole submitted frame, from a recording whose Start acknowledgement
+/// reported no per-pass counters; it has a zero ScopeIdentity and ScopePassIndex, one
+/// logical operation, the Raster kind, no calibrated interval and an empty Name. Ticks
+/// are on the game's monotonic clock and remain process-local.
 struct HostedRecordingSample final
 {
     /// Recording the pass was measured for.
@@ -135,7 +145,7 @@ struct HostedRecordingSample final
     foundation::uint64 CollectionTicks = 0;
     /// Measured device interval in nanoseconds.
     foundation::uint64 DurationNanoseconds = 0;
-    /// Nonzero producer-local identity of the pass's scope.
+    /// Nonzero producer-local identity of the pass's scope; zero for a frame sample.
     foundation::uint64 ScopeIdentity = 0;
     /// Zero-based physical operation within the scope.
     foundation::uint32 ScopePassIndex = 0;
@@ -143,7 +153,9 @@ struct HostedRecordingSample final
     foundation::uint32 LogicalPassCount = 1;
     /// Native operation class.
     HostedPassKind Kind = HostedPassKind::Raster;
-    /// True when StartTicks and EndTicks place the pass on the game's clock.
+    /// True when the sample measures the whole frame rather than one named pass.
+    bool IsFrame = false;
+    /// True when StartTicks and EndTicks place the pass on the game's clock; never for a frame.
     bool HasCpuInterval = false;
     /// Calibrated start on the game's clock; meaningful only with HasCpuInterval.
     foundation::uint64 StartTicks = 0;
@@ -151,7 +163,7 @@ struct HostedRecordingSample final
     foundation::uint64 EndTicks = 0;
     /// Error bound of the calibrated interval, in nanoseconds.
     foundation::uint64 ClockUncertaintyNanoseconds = 0;
-    /// Nonempty UTF-8 scope name.
+    /// UTF-8 scope name: nonempty for a pass sample, empty for a frame sample.
     HostedPassName Name{};
 };
 
@@ -203,13 +215,15 @@ public:
     /// @param acknowledgement Kind, Recording and Request of the taken request, and its outcome.
     /// Names longer than HOSTED_RECORDING_PRODUCER_NAME_BYTES or without a terminator are refused.
     /// @return Ok; Busy when the recording send room is full (retry on a later frame);
-    /// Disconnected; InvalidArgument for a zero recording or request, or an invalid name.
+    /// Disconnected; InvalidArgument for a zero recording or request, an invalid name, or
+    /// IsPassTimingSupported on anything but a successful Start.
     [[nodiscard]] virtual HostedSurfaceStatus
     Acknowledge(const HostedRecordingAcknowledgement& acknowledgement) noexcept = 0;
     /// @brief Send one measured pass.
     /// @return Ok; Busy when the recording send room is full, so the caller counts the
     /// sample as dropped; Disconnected; InvalidArgument for zero identities, a zero
-    /// logical count, ticks out of order or an empty, unterminated or invalid name.
+    /// logical count, ticks out of order, an unterminated or invalid name, a pass sample
+    /// without a name or a frame sample with pass fields (see HostedRecordingSample).
     [[nodiscard]] virtual HostedSurfaceStatus SendSample(const HostedRecordingSample& sample) noexcept = 0;
 
 protected:

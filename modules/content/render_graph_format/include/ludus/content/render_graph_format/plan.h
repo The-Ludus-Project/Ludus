@@ -13,7 +13,7 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored ray functions over immutable scene geometry, materials and lighting.
-inline constexpr foundation::uint32 VERSION = 15;
+inline constexpr foundation::uint32 VERSION = 17;
 /// Opt-in portable raster ABI: static inputs plus primitive halves and draw/instance references.
 inline constexpr foundation::usize VISIBILITY_INPUT_COUNT = 8;
 /// Maximum authored passes in one admitted configuration.
@@ -56,7 +56,7 @@ inline constexpr foundation::uint32 RAY_BUFFER_WORD_BYTES = 16;
 inline constexpr foundation::uint32 MAX_RAY_BUFFER_PIXEL_BYTES = 4096;
 /// Maximum bytes in one persistent buffer, fixed or resolved per pixel.
 inline constexpr foundation::uint32 MAX_RAY_BUFFER_BYTES = 256 * 1024 * 1024;
-/// Maximum logical invocations in one buffer-only scene dispatch.
+/// Maximum logical invocations in an explicit scene dispatch.
 inline constexpr foundation::uint32 MAX_SCENE_WORK_ITEMS = 16 * 1024 * 1024;
 /// Number of shader stages (vertex and fragment) of one technique.
 inline constexpr foundation::usize TECHNIQUE_STAGE_COUNT = 2;
@@ -77,7 +77,25 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 /// Largest number of distinct per-draw uniform value sets one technique prepares per extraction.
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized four-byte fields in a current pass record (uint32 or float32).
-inline constexpr foundation::usize PASS_FIELD_COUNT = 22;
+inline constexpr foundation::usize PASS_FIELD_COUNT = 26;
+/// First shader binding for independently named graph textures. This profile reuses the
+/// ray visibility and capture slots. These bindings appear only in ordinary scene kernels.
+inline constexpr foundation::uint32 FIRST_SHADER_TEXTURE_BINDING = 8;
+/// Maximum distinct shader read/write textures a ray pass may bind.
+inline constexpr foundation::uint32 MAX_SHADER_TEXTURES = 3;
+/// Additional sampled color slots following the legacy GraphColorInput slot.
+inline constexpr foundation::uint32 MAX_ADDITIONAL_SAMPLED_TEXTURES = 2;
+/// Maximum read-only color textures exposed to a scene compute pass.
+inline constexpr foundation::uint32 MAX_SAMPLED_TEXTURES = 1 + MAX_ADDITIONAL_SAMPLED_TEXTURES;
+/// Shader binding for the first scene sampled texture, also exposed as GraphColorInput.
+inline constexpr foundation::uint32 FIRST_SAMPLED_TEXTURE_BINDING = 12;
+/// First binding in the contiguous range for the remaining sampled textures.
+inline constexpr foundation::uint32 FIRST_ADDITIONAL_SAMPLED_TEXTURE_BINDING = 16;
+/// Get the compute shader binding for a sampled texture slot below MAX_SAMPLED_TEXTURES.
+[[nodiscard]] LUDUS_INLINE constexpr foundation::uint32 GetSampledTextureBinding(foundation::uint32 slot) noexcept
+{
+    return slot == 0 ? FIRST_SAMPLED_TEXTURE_BINDING : FIRST_ADDITIONAL_SAMPLED_TEXTURE_BINDING + slot - 1;
+}
 /// Serialized four-byte field index of Pass::DenoisingQuality, stable since it was appended in
 /// runtime package version 16; later versions append fields after it.
 inline constexpr foundation::usize PASS_DENOISING_QUALITY_FIELD = 18;
@@ -267,8 +285,8 @@ struct Pass final
     /// sRGB encoding: after the optional linear RGB mean of a ray pass, or inside the lighting resolve
     /// of a clustered deferred ColorAndDepth pass. Other techniques require zero.
     foundation::float32 ToneMappingExposure = 0;
-    /// Offscreen initialized RGBA8 source for image operations; ABSENT for scene techniques.
-    /// Color is a distinct output allocation; Program selects reconstruction and color interpretation.
+    /// Offscreen initialized RGBA8 source for image operations, or an earlier ordered scene pass's
+    /// color output sampled by scene compute. Color is a distinct output allocation. ABSENT when unused.
     foundation::uint32 SourceColor = ABSENT;
     /// Zero bypasses denoising; otherwise ProcessingQuality selects OIDN RT HDR filtering
     /// after accumulation and before display conversion. Requires an enabled native OIDN profile.
@@ -278,9 +296,60 @@ struct Pass final
     /// Curve of the ToneMap described by ToneMappingExposure; Reinhard when that exposure is zero.
     /// Packages before RASTER_TONE_MAPPING_PACKAGE_VERSION imply Reinhard.
     DisplayCurve ToneMappingCurve = DisplayCurve::Reinhard;
-    /// Positive for a buffer-only scene compute pass with no camera or color, zero for existing passes.
+    /// Positive for a scene compute work-item pass with no camera or automatic color output.
     foundation::uint32 WorkItemCount = 0;
+    /// Explicit storage-texture launch width in existing numeric plans. Both dimensions must be
+    /// positive together. New callers can select a storage texture independently with HasStorageTexture.
+    foundation::uint32 StorageLaunchWidth = 0;
+    /// Explicit storage-texture launch height in existing numeric plans.
+    foundation::uint32 StorageLaunchHeight = 0;
+    /// Explicit launch width for ray dispatch. Zero derives the size from Color or the legacy storage size.
+    foundation::uint32 ImageLaunchWidth = 0;
+    /// Explicit launch height. The automatic output writes RGB at the matching launch coordinate in Color,
+    /// while a storage texture shader can select any texel in Color.
+    foundation::uint32 ImageLaunchHeight = 0;
+    /// Whether the shader reads and writes Color through GraphStorageTexture. Requires a dedicated offscreen
+    /// RGBA8 target. Explicit storage launch dimensions also select this access mode for existing plans.
+    bool HasStorageTexture = false;
+    /// Graph resource IDs in shader storage slot order. Unused slots are ABSENT and follow the bound slots.
+    foundation::uint32 ShaderTextures[MAX_SHADER_TEXTURES]{ABSENT, ABSENT, ABSENT};
+    /// Sampled color inputs after SourceColor, in shader slot order. Unused trailing slots are ABSENT.
+    foundation::uint32 AdditionalSampledTextures[MAX_ADDITIONAL_SAMPLED_TEXTURES]{ABSENT, ABSENT};
+    /// One bit per occupied ShaderTextures slot. Set to clear the full target to transparent black before dispatch.
+    foundation::uint32 ShaderTextureClearMask = 0;
 };
+/// Number of occupied slots. An admitted Pass has no gaps between bound slots.
+[[nodiscard]] LUDUS_INLINE constexpr foundation::uint32 GetShaderTextureCount(const Pass& pass) noexcept
+{
+    foundation::uint32 count = 0;
+    while (count < MAX_SHADER_TEXTURES && pass.ShaderTextures[count] != ABSENT)
+    {
+        ++count;
+    }
+    return count;
+}
+/// Get the resource ID for a RayTracing pass's sampled texture slot below MAX_SAMPLED_TEXTURES.
+[[nodiscard]] LUDUS_INLINE constexpr foundation::uint32 GetSampledTexture(const Pass& pass,
+                                                                          foundation::uint32 slot) noexcept
+{
+    return slot == 0 ? pass.SourceColor : pass.AdditionalSampledTextures[slot - 1];
+}
+/// Get the number of occupied sampled color slots in an admitted pass. Image operations return zero.
+[[nodiscard]] LUDUS_INLINE constexpr foundation::uint32 GetSampledTextureCount(const Pass& pass) noexcept
+{
+    foundation::uint32 count = 0;
+    while (pass.Program == Technique::RayTracing && count < MAX_SAMPLED_TEXTURES &&
+           GetSampledTexture(pass, count) != ABSENT)
+    {
+        ++count;
+    }
+    return count;
+}
+/// Whether Color is bound for shader read/write access, including existing numeric plans with explicit storage sizes.
+[[nodiscard]] LUDUS_INLINE constexpr bool UsesStorageTexture(const Pass& pass) noexcept
+{
+    return pass.HasStorageTexture == true || pass.StorageLaunchWidth != 0;
+}
 /// Whether a pass's ToneMap fields form an admitted pair: a zero exposure with the Reinhard (zero) code, or an exposure
 /// in [MIN_TONE_MAPPING_EXPOSURE, MAX_TONE_MAPPING_EXPOSURE] with either curve on a RayTracing or ColorAndDepth pass.
 /// A raster pass additionally needs the clustered deferred profile, whose lighting resolve applies it; that program
@@ -342,7 +411,6 @@ static_assert(sizeof(StorageBuffer) == sizeof(foundation::uint32) * STORAGE_BUFF
 /// Number of explicitly serialized resource fields in the current runtime layout.
 inline constexpr foundation::usize RESOURCE_FIELD_COUNT = 9;
 static_assert(sizeof(Resource) == sizeof(foundation::uint32) * RESOURCE_FIELD_COUNT);
-static_assert(sizeof(Pass) == sizeof(foundation::uint32) * PASS_FIELD_COUNT);
 static_assert(sizeof(Camera) == sizeof(foundation::uint32));
 static_assert(sizeof(UniformBinding) == sizeof(foundation::uint32) * 5);
 static_assert(sizeof(UniformBlock) == sizeof(foundation::uint32) * 3);

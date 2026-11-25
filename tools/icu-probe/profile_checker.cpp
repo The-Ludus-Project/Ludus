@@ -131,7 +131,8 @@ public:
     [[nodiscard]] bool ReadWord(uint32& outValue) noexcept
     {
         if (mBytes.size() - mCursor < sizeof(uint32) ||
-            foundation::TryReadLittleEndian(mBytes.subspan(mCursor, sizeof(uint32)), outValue) == false)
+            foundation::TryReadLittleEndian(foundation::MakeBorrowedView(mBytes.subspan(mCursor, sizeof(uint32))),
+                                            outValue) == false)
         {
             return false;
         }
@@ -373,7 +374,7 @@ public:
     [[nodiscard]] bool WriteWord(uint32 value) noexcept
     {
         uint8 encoded[sizeof(uint32)] = {};
-        return foundation::TryWriteLittleEndian(value, std::span<uint8>(encoded)) == true &&
+        return foundation::TryWriteLittleEndian(value, encoded) == true &&
                mBytes.TryAddRange(BorrowedView<const uint8>(encoded)) == true;
     }
 

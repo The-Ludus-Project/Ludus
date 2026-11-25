@@ -64,6 +64,11 @@ enum class ResourceKind : foundation::uint8
     ConstantBuffer,     ///< `ConstantBuffer<S>`: uniform values of a struct.
     StructuredBuffer,   ///< `StructuredBuffer<T>`: read by index.
     RWStructuredBuffer, ///< `RWStructuredBuffer<T>`: read and written by index.
+    Texture3D,          ///< `Texture3D<T>`: sampled or loaded volume.
+    TextureCube,        ///< `TextureCube<T>`: sampled by direction.
+    Texture2DArray,     ///< `Texture2DArray<T>`: sampled or loaded by layer.
+    DepthTexture2D,     ///< `DepthTexture2D`: depth texture for comparison sampling.
+    ComparisonSampler,  ///< `SamplerComparisonState`: comparison state for SampleCmp.
 };
 
 /// The pipeline stage an entry point runs in.
@@ -175,6 +180,12 @@ struct Symbol final
     ParameterDirection Direction = ParameterDirection::Unmarked;
     /// True for a `static const` or `const` variable, an enumerator, or a constant parameter default.
     bool IsConstant = false;
+    /// True for a function-local `const` variable whose initializer is not a constant expression,
+    /// such as a function call. It is read-only like every constant and is evaluated each time
+    /// execution reaches its declaration, but it is not a constant expression: it cannot size an
+    /// array, decide a `static_assert` or initialize a compile-time constant, and HasIntegerValue
+    /// is false.
+    bool IsRuntimeConstant = false;
     /// True when declared inside an `extern slang` block.
     bool IsExtern = false;
     /// True for an `extern slang` struct declared without a body (`struct Name;`), whose layout

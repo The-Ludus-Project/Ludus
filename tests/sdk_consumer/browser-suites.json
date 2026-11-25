@@ -3,11 +3,19 @@
     {"title": "Test installed portable raster pixels, API selection and failures",
      "script": "raster-browser-test.mjs", "results": "raster"},
     {"title": "Check addressed-random GPU parity on WebGPU against the Wasm CPU reference",
-     "script": "random-parity-browser-test.mjs", "results": "random-parity"}
+     "script": "random-parity-browser-test.mjs", "results": "random-parity"},
+    {"title": "Check R12a indirect draws and dispatches on WebGPU, without indirect-first-instance and through the WebGL 2 direct variant",
+     "script": "indirect-browser-test.mjs", "results": "indirect"},
+    {"title": "Render the installed LUSL fullscreen diagnostic on forced WebGPU, forced WebGL 2, Auto and Auto without WebGPU",
+     "script": "browser-test.mjs", "results": "fullscreen-diagnostic"}
   ],
   "renderer-baseline": [
     {"title": "Test installed L0/L1/L2/L3/L4 renderer against direct and cross-backend image oracles",
      "script": "renderer-browser-test.mjs", "results": "renderer"},
+    {"title": "Qualify U1 UiRender paint and hit clipping on WebGPU and WebGL 2 at two scales and after a resize",
+     "script": "ui-render-browser-test.mjs", "results": "ui-render"},
+    {"title": "Qualify U1 UiText labels inside UiRender's clipped runs on WebGPU and WebGL 2 at two scales and after a resize",
+     "script": "ui-text-browser-test.mjs", "results": "ui-text"},
     {"title": "Activate an installed RG3 runtime generation on WebGPU and compare its exported pixels",
      "script": "render-graph-runtime-browser-test.mjs", "results": "render-graph-runtime"},
     {"title": "Share one managed bilinear upscale pipeline on WebGPU and compare exported pixels with the unshared pass",

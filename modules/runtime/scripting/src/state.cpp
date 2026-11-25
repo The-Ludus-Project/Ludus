@@ -21,7 +21,9 @@ constexpr usize STATE_VERSION_OFFSET = 4;
 constexpr usize STATE_SCHEMA_OFFSET = 8;
 constexpr usize STATE_COUNT_OFFSET = 12;
 constexpr usize STATE_HEADER_BYTES = 16;
-constexpr usize FIELD_RECORD_BYTES = 12;
+constexpr usize FIELD_KIND_OFFSET = sizeof(uint32);
+constexpr usize FIELD_VALUE_OFFSET = FIELD_KIND_OFFSET + sizeof(uint32);
+constexpr usize FIELD_RECORD_BYTES = FIELD_VALUE_OFFSET + sizeof(uint32);
 bool Valid(const StateRecord& record) noexcept
 {
     if (record.Schema == 0 || record.Count > 16)
@@ -55,16 +57,19 @@ bool EncodeState(const StateRecord& record, std::span<uint8> output, usize& writ
     {
         return false;
     }
-    (void)TryWriteLittleEndian(MAGIC, output);
-    (void)TryWriteLittleEndian(uint32{1}, output.subspan(STATE_VERSION_OFFSET));
-    (void)TryWriteLittleEndian(record.Schema, output.subspan(STATE_SCHEMA_OFFSET));
-    (void)TryWriteLittleEndian(record.Count, output.subspan(STATE_COUNT_OFFSET));
+    (void)TryWriteLittleEndian(MAGIC, {output.data(), output.size()});
+    (void)TryWriteLittleEndian(uint32{1}, {output.data() + STATE_VERSION_OFFSET, output.size() - STATE_VERSION_OFFSET});
+    (void)TryWriteLittleEndian(record.Schema,
+                               {output.data() + STATE_SCHEMA_OFFSET, output.size() - STATE_SCHEMA_OFFSET});
+    (void)TryWriteLittleEndian(record.Count, {output.data() + STATE_COUNT_OFFSET, output.size() - STATE_COUNT_OFFSET});
     for (uint32 i = 0; i < record.Count; ++i)
     {
         auto bytes = output.subspan(16 + static_cast<usize>(i) * 12, 12);
-        (void)TryWriteLittleEndian(record.Fields[i].Id, bytes);
-        (void)TryWriteLittleEndian(static_cast<uint32>(record.Fields[i].Kind), bytes.subspan(4));
-        (void)TryWriteLittleEndian(record.Fields[i].Value, bytes.subspan(8));
+        (void)TryWriteLittleEndian(record.Fields[i].Id, {bytes.data(), bytes.size()});
+        (void)TryWriteLittleEndian(static_cast<uint32>(record.Fields[i].Kind),
+                                   {bytes.data() + FIELD_KIND_OFFSET, bytes.size() - FIELD_KIND_OFFSET});
+        (void)TryWriteLittleEndian(record.Fields[i].Value,
+                                   {bytes.data() + FIELD_VALUE_OFFSET, bytes.size() - FIELD_VALUE_OFFSET});
     }
     written = size;
     return true;
@@ -75,10 +80,15 @@ bool DecodeState(std::span<const uint8> bytes, StateRecord& output) noexcept
     uint32 magic = 0;
     uint32 version = 0;
     StateRecord result;
-    if (bytes.size() < STATE_HEADER_BYTES || TryReadLittleEndian(bytes, magic) == false || magic != MAGIC ||
-        TryReadLittleEndian(bytes.subspan(STATE_VERSION_OFFSET), version) == false || version != 1 ||
-        TryReadLittleEndian(bytes.subspan(STATE_SCHEMA_OFFSET), result.Schema) == false ||
-        TryReadLittleEndian(bytes.subspan(STATE_COUNT_OFFSET), result.Count) == false ||
+    if (bytes.size() < STATE_HEADER_BYTES || TryReadLittleEndian({bytes.data(), bytes.size()}, magic) == false ||
+        magic != MAGIC ||
+        TryReadLittleEndian({bytes.data() + STATE_VERSION_OFFSET, bytes.size() - STATE_VERSION_OFFSET}, version) ==
+            false ||
+        version != 1 ||
+        TryReadLittleEndian({bytes.data() + STATE_SCHEMA_OFFSET, bytes.size() - STATE_SCHEMA_OFFSET}, result.Schema) ==
+            false ||
+        TryReadLittleEndian({bytes.data() + STATE_COUNT_OFFSET, bytes.size() - STATE_COUNT_OFFSET}, result.Count) ==
+            false ||
         result.Count > MAX_STATE_FIELDS ||
         bytes.size() != STATE_HEADER_BYTES + static_cast<usize>(result.Count) * FIELD_RECORD_BYTES)
     {
@@ -88,14 +98,15 @@ bool DecodeState(std::span<const uint8> bytes, StateRecord& output) noexcept
     {
         const auto field = bytes.subspan(16 + static_cast<usize>(i) * 12, 12);
         uint32 kind = 0;
-        (void)TryReadLittleEndian(field, result.Fields[i].Id);
-        (void)TryReadLittleEndian(field.subspan(4), kind);
+        (void)TryReadLittleEndian({field.data(), field.size()}, result.Fields[i].Id);
+        (void)TryReadLittleEndian({field.data() + FIELD_KIND_OFFSET, field.size() - FIELD_KIND_OFFSET}, kind);
         if (kind != 1 && kind != 2)
         {
             return false;
         }
         result.Fields[i].Kind = static_cast<FieldKind>(kind);
-        (void)TryReadLittleEndian(field.subspan(8), result.Fields[i].Value);
+        (void)TryReadLittleEndian({field.data() + FIELD_VALUE_OFFSET, field.size() - FIELD_VALUE_OFFSET},
+                                  result.Fields[i].Value);
     }
     if (Valid(result) == false)
     {

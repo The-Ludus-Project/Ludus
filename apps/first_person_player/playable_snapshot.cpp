@@ -8,6 +8,8 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/strings/utf8.hpp>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 
 namespace ludus::first_person
 {
@@ -34,6 +36,64 @@ bool MatchesDigest(std::string_view encoded, const content::Digest& digest) noex
             return false;
         }
     }
+    return true;
+}
+
+/// Decode the manifest's climate member: null means no climate; otherwise lowercase hex LUWTH bytes whose SHA-256
+/// matches, admitted by the runtime loader with the same rules as the Editor's cooker.
+bool ReadClimate(JsonValue value, gameplay::weather::Climate& outClimate) noexcept
+{
+    if (value.Null() == true)
+    {
+        outClimate = {};
+        return true;
+    }
+    std::string_view hex;
+    std::string_view digest;
+    if (value.Fields({"bytes", "sha256"}) == false || value.Get("bytes").String(hex) == false ||
+        value.Get("sha256").String(digest) == false || hex.size() % 2 != 0 ||
+        hex.size() / 2 > content::weather_format::MAX_CLIMATE_BYTES)
+    {
+        return false;
+    }
+    constexpr uint8 NIBBLE_BITS = 4;
+    constexpr uint8 DECIMAL_DIGITS = 10;
+    const auto readNibble = [](char digit, uint8& outNibble) noexcept {
+        if (digit >= '0' && digit <= '9')
+        {
+            outNibble = static_cast<uint8>(digit - '0');
+            return true;
+        }
+        if (digit >= 'a' && digit <= 'f')
+        {
+            outNibble = static_cast<uint8>(digit - 'a' + DECIMAL_DIGITS);
+            return true;
+        }
+        return false;
+    };
+    Array<uint8> bytes;
+    if (bytes.TryResize(hex.size() / 2) == false)
+    {
+        return false;
+    }
+    for (usize i = 0; i < bytes.GetSize(); ++i)
+    {
+        uint8 high = 0;
+        uint8 low = 0;
+        if (readNibble(hex[i * 2], high) == false || readNibble(hex[i * 2 + 1], low) == false)
+        {
+            return false;
+        }
+        bytes[i] = static_cast<uint8>((high << NIBBLE_BITS) | low);
+    }
+    gameplay::weather::Climate climate;
+    if (MatchesDigest(digest, content::Hash(std::span<const uint8>(bytes.GetData(), bytes.GetSize()))) == false ||
+        gameplay::weather::TryLoadClimate({bytes.GetData(), bytes.GetSize()}, climate) !=
+            content::weather_format::WeatherFormatStatus::Success)
+    {
+        return false;
+    }
+    outClimate = Move(climate);
     return true;
 }
 
@@ -86,6 +146,40 @@ bool ReadVector(JsonValue value, math::Vector3& outValue) noexcept
            ReadScalar(value.At(1), outValue.Y) == true && ReadScalar(value.At(2), outValue.Z) == true;
 }
 
+/// A snapshot written before the cloud layer existed has no "clouds" object and keeps the layer off.
+bool ReadCloudLayer(JsonValue clouds, graphics::renderer::CloudLayerDescription& outClouds) noexcept
+{
+    if (clouds.Valid() == false)
+    {
+        outClouds = {};
+        return true;
+    }
+    return clouds.Get("enabled").Boolean(outClouds.IsEnabled) == true &&
+           ReadScalar(clouds.Get("baseMetres"), outClouds.BaseHeightMetres) == true &&
+           ReadScalar(clouds.Get("thicknessMetres"), outClouds.ThicknessMetres) == true &&
+           ReadScalar(clouds.Get("sizeXMetres"), outClouds.SizeXMetres) == true &&
+           ReadScalar(clouds.Get("sizeZMetres"), outClouds.SizeZMetres) == true &&
+           ReadScalar(clouds.Get("edgeFadeMetres"), outClouds.EdgeFadeMetres) == true &&
+           ReadScalar(clouds.Get("density"), outClouds.Density) == true &&
+           ReadScalar(clouds.Get("extinctionPerMetre"), outClouds.ExtinctionPerMetre) == true &&
+           ReadScalar(clouds.Get("albedo"), outClouds.SingleScatteringAlbedo) == true &&
+           ReadScalar(clouds.Get("phaseAsymmetry"), outClouds.PhaseAsymmetry) == true &&
+           ReadVector(clouds.Get("axisXWorld"), outClouds.AxisXWorld) == true;
+}
+
+bool ReadAuroraLayer(JsonValue aurora, graphics::renderer::AuroraLayerDescription& outAurora) noexcept
+{
+    if (aurora.Valid() == false)
+    {
+        outAurora = {};
+        return true;
+    }
+    return aurora.Get("enabled").Boolean(outAurora.IsEnabled) == true &&
+           ReadScalar(aurora.Get("emissionPerMetre"), outAurora.EmissionPerMetre) == true &&
+           ReadScalar(aurora.Get("timeSeconds"), outAurora.TimeSeconds) == true &&
+           ReadVector(aurora.Get("axisXWorld"), outAurora.AxisXWorld) == true;
+}
+
 bool ReadAtmosphere(JsonValue sky, graphics::renderer::AtmosphereDescription& outSky) noexcept
 {
     graphics::renderer::CelestialBackgroundDescription& celestial = outSky.Celestial;
@@ -118,7 +212,9 @@ bool ReadAtmosphere(JsonValue sky, graphics::renderer::AtmosphereDescription& ou
            ReadScalar(sky.Get("milkyWayRadiance"), celestial.MilkyWayRadiance) == true &&
            ReadVector(sky.Get("galacticNorthWorld"), celestial.GalacticNorthWorld) == true &&
            ReadVector(sky.Get("galacticCenterWorld"), celestial.GalacticCenterWorld) == true &&
-           ReadVector(sky.Get("toSunAtMoonWorld"), celestial.DirectionToSunAtMoonWorld) == true;
+           ReadVector(sky.Get("toSunAtMoonWorld"), celestial.DirectionToSunAtMoonWorld) == true &&
+           ReadCloudLayer(sky.Get("clouds"), outSky.Clouds) == true &&
+           ReadAuroraLayer(sky.Get("aurora"), outSky.Aurora) == true;
 }
 
 bool ReadSpawn(JsonValue value, std::string_view key, PlayerSpawn& outSpawn) noexcept
@@ -180,6 +276,18 @@ bool ReadBindings(JsonValue root, PlayableSnapshot& inoutSnapshot) noexcept
         {
             return false;
         }
+        const JsonValue rasterShadows = entity.Get("light").Get("rasterShadows");
+        if (rasterShadows.Valid() == true)
+        {
+            bool shouldCastRasterShadows = true;
+            uint64 sourceId = 0;
+            if (rasterShadows.Boolean(shouldCastRasterShadows) == false ||
+                ReadSourceId(entity.Get("lightSourceId"), sourceId) == false ||
+                (shouldCastRasterShadows == false && inoutSnapshot.RasterUnshadowedLightIds.TryAdd(sourceId) == false))
+            {
+                return false;
+            }
+        }
         const JsonValue value = entity.Get("spawn");
         if (value.Valid() == true)
         {
@@ -210,18 +318,21 @@ bool ReadBindings(JsonValue root, PlayableSnapshot& inoutSnapshot) noexcept
     return inoutSnapshot.Spawns.GetSize() != 0;
 }
 } // namespace
-bool DecodePlayableSnapshot(BorrowedView<const uint8> bytes, PlayableSnapshot& outSnapshot) noexcept
+void DecodePlayableSnapshot(BorrowedView<const uint8> bytes,
+                            PlayableSnapshot& outSnapshot,
+                            PlayableSnapshotDiagnostic& outDiagnostic) noexcept
 {
-    if (bytes.IsValid() == false || bytes.IsEmpty() == true ||
-        bytes.GetSize() > format::MAX_PLAYABLE_MANIFEST_BYTES + 1 + format::MAX_ASSEMBLED_BUNDLE_BYTES)
+    outDiagnostic = {};
+    outDiagnostic.Status = PlayableSnapshotStatus::Unreadable;
+    if (bytes.IsValid() == false || bytes.IsEmpty() == true || bytes.GetSize() > MAX_PLAYABLE_SNAPSHOT_BYTES)
     {
-        return false;
+        return;
     }
     const std::string_view encoded(reinterpret_cast<const char*>(bytes.GetDataOrNull()), bytes.GetSize());
     const usize end = encoded.substr(0, format::MAX_PLAYABLE_MANIFEST_BYTES + 1).find('\n');
     if (end == std::string_view::npos)
     {
-        return false;
+        return;
     }
     PlayableSnapshot candidate;
     parsing::ParseError error;
@@ -232,7 +343,7 @@ bool DecodePlayableSnapshot(BorrowedView<const uint8> bytes, PlayableSnapshot& o
     limits.MaxObjectMembers = parsing::MAX_JSON_OBJECT_MEMBERS;
     if (candidate.Manifest.Read(encoded.substr(0, end), error, limits) != parsing::ParseStatus::Ok)
     {
-        return false;
+        return;
     }
     const JsonValue root = candidate.Manifest.Root();
     if (root.Fields({"version",
@@ -246,34 +357,62 @@ bool DecodePlayableSnapshot(BorrowedView<const uint8> bytes, PlayableSnapshot& o
                      "artifacts",
                      "warnings",
                      "earthObserver",
-                     "atmosphere"}) == false)
+                     "atmosphere",
+                     "climate"}) == false)
     {
-        return false;
+        return;
     }
     std::string_view source;
     if (root.Get("source").String(source) == false || source.empty() == true ||
         IsDigestText(root.Get("worldSha256")) == false || HasValidArtifacts(root.Get("artifacts")) == false ||
         root.Get("warnings").Array() == false || root.Get("earthObserver").Object() == false)
     {
-        return false;
+        return;
     }
     uint64 version = 0;
     std::string_view renderer;
     std::string_view world;
     std::string_view digest;
     const std::span<const uint8> bundle(bytes.GetDataOrNull() + end + 1, bytes.GetSize() - end - 1);
+    // Separate an unsupported renderer from an unreadable file: once the manifest header is well-formed and names
+    // a valid renderer string, a renderer other than raster is a World the player cannot draw, not a corrupt file.
     if (root.Get("version").Integer(version) == false || version != format::PLAYABLE_WORLD_VERSION ||
-        root.Get("renderer").String(renderer) == false || renderer != format::PLAYABLE_RASTER_RENDERER ||
-        root.Get("world").String(world) == false || world.empty() == true ||
+        root.Get("renderer").String(renderer) == false)
+    {
+        return;
+    }
+    if (renderer != format::PLAYABLE_RASTER_RENDERER)
+    {
+        outDiagnostic.Status = PlayableSnapshotStatus::UnsupportedRenderer;
+        // The renderer came from the parsed manifest, so it is valid UTF-8; keep a bounded copy for the caller,
+        // truncating an improbably long name on a code-point boundary rather than dropping it.
+        foundation::Utf8View name;
+        usize errorOffset = 0;
+        if (foundation::ValidateUtf8(renderer, name, errorOffset) == foundation::StringStatus::Ok)
+        {
+            bool isTruncated = false;
+            outDiagnostic.Renderer.AssignTruncatedUtf8(name, isTruncated);
+        }
+        return;
+    }
+    if (root.Get("world").String(world) == false || world.empty() == true ||
         root.Get("sceneSha256").String(digest) == false || bundle.size() > format::MAX_ASSEMBLED_BUNDLE_BYTES ||
         MatchesDigest(digest, content::Hash(bundle)) == false ||
         (bundle.empty() == false &&
          resources::SceneDefinition::Decode(bundle.data(), bundle.size(), candidate.Scene) != resources::Status::Ok) ||
-        ReadAtmosphere(root.Get("atmosphere"), candidate.Atmosphere) == false || ReadBindings(root, candidate) == false)
+        ReadAtmosphere(root.Get("atmosphere"), candidate.Atmosphere) == false ||
+        ReadClimate(root.Get("climate"), candidate.Climate) == false || ReadBindings(root, candidate) == false)
     {
-        return false;
+        return;
     }
+    outDiagnostic.Status = PlayableSnapshotStatus::Ok;
     outSnapshot = Move(candidate);
-    return true;
+}
+
+bool DecodePlayableSnapshot(BorrowedView<const uint8> bytes, PlayableSnapshot& outSnapshot) noexcept
+{
+    PlayableSnapshotDiagnostic diagnostic;
+    DecodePlayableSnapshot(bytes, outSnapshot, diagnostic);
+    return diagnostic.Status == PlayableSnapshotStatus::Ok;
 }
 } // namespace ludus::first_person

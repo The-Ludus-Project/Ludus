@@ -1,7 +1,6 @@
 """Headless verification driver; source compilation uses Ludus's pinned recipe."""
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 
 import numpy as np
@@ -10,6 +9,9 @@ from benchmark import OWNER, ROOT
 from scene import normalize, read_gold_ior
 from sms import prepare_smoothing
 import layout
+
+sys.path.insert(0, str(ROOT / 'scripts/python'))
+import lusl_compute  # noqa: E402
 
 
 def pack_scene(scene, upstream):
@@ -36,17 +38,18 @@ def pack_scene(scene, upstream):
     return records, slopes
 
 
-def compile_entry(output, compiler, source_name, entry, includes=()):
+def compile_entry(output, compiler, luslc, source_name, entry, includes=()):
+    """Lower the LUSL source ``source_name`` and compile ``entry`` to WGSL.
+
+    ``includes`` are the Slang files the sources name with ``extern slang`` beyond FoundationMath.
+    Returns the WGSL text and the binding slots keyed by constant name (lusl_compute.py).
+    """
     source_directory = output / 'source'
     source_directory.mkdir(parents=True)
-    for source in [ROOT / 'modules/foundation/math/shaders/math.slang',
-                   ROOT / 'modules/graphics/rhi/shaders/raster_bindings.slang',
-                   *sorted((OWNER / 'shaders').glob('*.slang')), *includes]:
+    for source in [ROOT / 'modules/foundation/math/shaders/math.luslh',
+                   ROOT / 'modules/foundation/math/shaders/math.slang',
+                   *sorted((OWNER / 'shaders').glob('*.lusl*')), *includes]:
         shutil.copyfile(source, source_directory / source.name)
     layout.write_shader_layout(source_directory)
-    subprocess.run([sys.executable, str(ROOT / 'cmake/shaders/compile_shader.py'),
-                    '--source', str(source_directory / source_name), '--output', str(output / 'compile'),
-                    '--name', entry, '--compiler', str(compiler),
-                    '--lock', str(ROOT / 'config/shader_toolchain.json'),
-                    '--graph-stage', 'compute', '--graph-target', 'wgsl'], check=True)
-    return (output / 'compile/artifact.wgsl').read_text()
+    return lusl_compute.compile_compute(lusl_compute.resolve_luslc(luslc), compiler, source_directory,
+                                        source_name, entry, output / 'compile')

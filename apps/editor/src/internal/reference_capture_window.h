@@ -30,6 +30,7 @@ class QTabWidget;
 namespace ludus::editor
 {
 class CapturedImageView;
+class CelestialTimeLapseWindow;
 class GraphComparisonWindow;
 class RenderGraphCaptureProfile;
 class RenderGraphLibraryCapture;
@@ -205,7 +206,8 @@ private:
     [[nodiscard]] ViewportDisplayTransform
     resolveDisplayTransform(const graphics::renderer::ViewDescription& view) const;
     [[nodiscard]] bool startRasterCapture(const QSize& requestedSize, QSize& outExtent, QString& outError);
-    [[nodiscard]] bool startGraphCapture(const QSize& requestedSize, QSize& outExtent, QString& outError);
+    [[nodiscard]] bool
+    startGraphCapture(const QSize& requestedSize, foundation::uint32 samples, QSize& outExtent, QString& outError);
     [[nodiscard]] bool startGraphSource();
     [[nodiscard]] QString describeRaster() const;
     [[nodiscard]] bool saveComparison(const QString& hdrPath, QString& outError) const;
@@ -215,6 +217,11 @@ private:
     ViewportDisplayTransform mDisplay{};
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     void openGraphComparison();
+    void openTimeLapse();
+    [[nodiscard]] bool
+    resolveGraphSource(ViewportRasterSource& outSource, QString& outProfilePath, QString& outError) const;
+    QPointer<CelestialTimeLapseWindow> mTimeLapse;
+    QPushButton* mTimeLapseButtonOrNull = nullptr;
     QPointer<GraphComparisonWindow> mGraphComparison;
     QPushButton* mCompareGraphsOrNull = nullptr;
     QPointer<RendererWorkspace> mProjectWorkspace;
@@ -261,6 +268,9 @@ private:
     // Child widgets, created in the constructor and owned by this window.
     QSpinBox* const mLongSide;
     QSpinBox* const mSamples;
+    QComboBox* const mSamplePreset;
+    QLabel* const mSamplePresetDescription;
+    QSpinBox* const mGraphSamples;
     QSpinBox* const mMaxDepth;
     QComboBox* const mTraversal;
     QCheckBox* const mCenterRays;

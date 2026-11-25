@@ -141,6 +141,12 @@ explicit little-endian prefixes. Keep its existing byte format and limits.
 
 ## Use at boundaries
 
+The endian codecs accept `BorrowedView<const uint8>` for reads and
+`BorrowedView<uint8>` for writes. A null pointer with a nonzero extent or a
+short view fails before any output changes. Construct a view from storage and
+its extent, pass a built-in byte array directly, or use `MakeBorrowedView`
+from the opt-in span adapter when the storage already arrives as a span.
+
 ```cpp
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/base/byte_order.hpp>

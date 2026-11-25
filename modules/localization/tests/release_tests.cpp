@@ -51,13 +51,13 @@ struct FailingHeap final
 uint32 ReadField(std::span<const uint8> bytes, usize offset)
 {
     uint32 value{};
-    REQUIRE(TryReadLittleEndian(bytes.subspan(offset), value));
+    REQUIRE(TryReadLittleEndian(ludus::foundation::MakeBorrowedView(bytes.subspan(offset)), value));
     return value;
 }
 
 void WriteField(std::span<uint8> bytes, usize offset, uint32 value)
 {
-    REQUIRE(TryWriteLittleEndian(value, bytes.subspan(offset)));
+    REQUIRE(TryWriteLittleEndian(value, ludus::foundation::MakeBorrowedView(bytes.subspan(offset))));
 }
 
 Catalog Load(std::span<const uint8> bytes)

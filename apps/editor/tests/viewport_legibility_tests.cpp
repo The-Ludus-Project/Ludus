@@ -239,10 +239,9 @@ TEST_CASE("Empty viewport letters its axes in a colour that keeps text contrast"
         {
             continue;
         }
-        const QColor axisColour =
-            QColor::fromRgbF(static_cast<qreal>(ludus::foundation::math::EncodeSrgb(lines[i].Color.X)),
-                             static_cast<qreal>(ludus::foundation::math::EncodeSrgb(lines[i].Color.Y)),
-                             static_cast<qreal>(ludus::foundation::math::EncodeSrgb(lines[i].Color.Z)));
+        const QColor axisColour = QColor::fromRgbF(ludus::foundation::math::EncodeSrgb(lines[i].Color.X),
+                                                   ludus::foundation::math::EncodeSrgb(lines[i].Color.Y),
+                                                   ludus::foundation::math::EncodeSrgb(lines[i].Color.Z));
         const QRgb letterColour = GetAxisLetterColour(axisColour).rgb();
         CHECK(ContrastRatio(letterColour, BACKGROUND) >= MINIMUM_TEXT_CONTRAST);
         CHECK(IsAxisLetterPixel(axisColour.rgb(), letterColour, axisColour.rgb()) == false);

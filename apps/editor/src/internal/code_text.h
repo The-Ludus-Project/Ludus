@@ -8,12 +8,19 @@
 
 #include <QByteArray>
 #include <QString>
+#include <QStringView>
 
 namespace ludus::editor
 {
 /// Decode valid UTF-8 for Qt, normalizing CRLF/CR paragraph boundaries to LF.
 /// Failure preserves output; no other Unicode normalization is performed.
 [[nodiscard]] bool DecodeCodeText(const QByteArray& bytes, QString& outText);
+/// Replace U+2028 in Slang code with the supplied LF or CRLF. Preserve literals and comments.
+/// An empty result means there was no repair. The Qt overload also accepts paragraph boundaries
+/// from QTextDocument::toRawText() and leaves them intact.
+[[nodiscard]] QString RepairSlangLineSeparators(QStringView source, QStringView newline);
+/// Repair a valid UTF-8 shader draft using its existing newline convention, preserving other bytes.
+[[nodiscard]] QByteArray RepairSlangLineSeparators(const QByteArray& source);
 /// Map between normalized Qt UTF-16 boundaries and original UTF-8 bytes.
 /// @pre bytes contains validated UTF-8.
 /// Invalid/interior scalar or CRLF positions are rejected; output survives failure.

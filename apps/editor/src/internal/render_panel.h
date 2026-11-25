@@ -22,6 +22,14 @@ namespace ludus::editor
 class RenderLoadJob;
 class PreviewViewport;
 class PlayViewportSource;
+
+/// The host publishes an address on success or a user-facing repair on refusal.
+struct PlayViewportStartResult final
+{
+    QString Address{};
+    QString Reason{};
+};
+
 class RenderPanel final : public QWidget
 {
     Q_OBJECT
@@ -55,15 +63,11 @@ public:
     {
         return *mViewportMenuButton;
     }
-    /// @brief Begin Play in the viewport: the game launched with outAddress opens in this viewport.
-    ///
-    /// Keeps the edit preview's device (the game's frames are imported onto it) and starts a
-    /// play source. The viewport keeps the edit image until the game's first frame arrives,
-    /// then presents the game and forwards input to it. Native builds only.
-    /// @param outAddress The `LUDUS_HOSTED_WINDOW` value for the game, set on success.
-    /// @param outReason Why Play cannot open in the viewport, set on failure.
-    /// @return True when the game's window will be this viewport.
-    [[nodiscard]] bool BeginPlay(QString& outAddress, QString& outReason);
+    /// Start a host for the bound edit viewport. Native builds keep its edit frame and
+    /// input until the game presents its first frame. A refusal reports how to continue.
+    [[nodiscard]] PlayViewportStartResult BeginPlay();
+    /// Start the same host for a different edit viewport owned by this World workspace.
+    [[nodiscard]] PlayViewportStartResult BeginPlayOn(PreviewViewport& inoutViewport, RenderPreview& inoutPreview);
     /// End Play in the viewport: present edit frames again and close the game's window.
     void EndPlay() noexcept;
     /// Close the game's window, as clicking a native window's close button would.
@@ -134,6 +138,8 @@ private:
     PreviewViewport* Viewport_;
     void updatePlay();
     PlayViewportSource* mPlayOrNull = nullptr;
+    PreviewViewport* mPlayViewportOrNull = nullptr;
+    RenderPreview* mPlayPreviewOrNull = nullptr;
     bool mIsPlaying = false;
     bool mIsPlayingElsewhere = false;
     QString mPlayUnavailableReason;

@@ -261,6 +261,16 @@ public:
     /// Package of the active graph, including a raster fallback when selected.
     [[nodiscard]] const QString& GetActivePackagePath() const noexcept;
     [[nodiscard]] const QString& GetRasterFallbackPath() const noexcept;
+    /// Package selected for the latest attempted load, including a rejected raster fallback.
+    [[nodiscard]] const QString& GetAttemptedPackagePath() const noexcept;
+    /// True if a different, readable raster package can be selected by this preview.
+    [[nodiscard]] bool HasRasterRecovery() const;
+    /// Failure from the newest load when it stopped before staging. Empty after a successful decode and stage.
+    [[nodiscard]] const QString& GetLoadProblem() const noexcept;
+    /// The attached GPU session has stopped accepting work and must be recreated before retrying.
+    [[nodiscard]] bool HasFailedDevice() const noexcept;
+    /// Whether the engine raster package can be opened after resetting the preview.
+    [[nodiscard]] bool HasReadableRasterFallback() const;
     /// True when the requested package draws and Force raster would replace it with the authored raster
     /// fallback (the engine default raster graph in the World viewport).
     [[nodiscard]] bool CanSwitchToRasterFallback() const noexcept;
@@ -411,7 +421,8 @@ public:
 
 Q_SIGNALS:
     void PreparingSubmission();
-    void SubmissionRecorded();
+    /// Exact cooked-package SHA-256 of the graph that submitted this frame.
+    void SubmissionRecorded(const QByteArray& runtimeIdentity);
     /// A new complete GPU snapshot or CPU fallback image replaced the presented frame.
     void FramePresented();
     /// Activation or candidate state changed; the status text may differ.

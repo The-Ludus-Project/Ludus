@@ -4,7 +4,6 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
-#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
 namespace ludus::content::terrain
@@ -102,11 +101,11 @@ void WriteHeightCode(int64 code, BorrowedView<uint8> outBytes) noexcept
 {
     if (outBytes.GetSize() == sizeof(uint16))
     {
-        LUDUS_REQUIRE(foundation::TryWriteLittleEndian(static_cast<uint16>(code), foundation::MakeSpan(outBytes)));
+        LUDUS_REQUIRE(foundation::TryWriteLittleEndian(static_cast<uint16>(code), outBytes));
     }
     else
     {
-        LUDUS_REQUIRE(foundation::TryWriteLittleEndian(static_cast<uint32>(code), foundation::MakeSpan(outBytes)));
+        LUDUS_REQUIRE(foundation::TryWriteLittleEndian(static_cast<uint32>(code), outBytes));
     }
 }
 
@@ -115,11 +114,11 @@ int64 ReadHeightCode(BorrowedView<const uint8> bytes) noexcept
     if (bytes.GetSize() == sizeof(uint16))
     {
         uint16 code = 0;
-        LUDUS_REQUIRE(foundation::TryReadLittleEndian(foundation::MakeSpan(bytes), code));
+        LUDUS_REQUIRE(foundation::TryReadLittleEndian(bytes, code));
         return code;
     }
     uint32 code = 0;
-    LUDUS_REQUIRE(foundation::TryReadLittleEndian(foundation::MakeSpan(bytes), code));
+    LUDUS_REQUIRE(foundation::TryReadLittleEndian(bytes, code));
     // C++23 defines this conversion modulo the destination width, including negative two's-complement codes.
     return static_cast<int32>(code);
 }
@@ -309,5 +308,25 @@ float64 internal::DecodeTerrainTileHeight(const TerrainTile& tile, uint32 column
 {
     const TerrainTileDescription description = tile.GetDescription();
     return DecodeHeight(description.Codec, ReadTileHeightCode(tile, description, column, row));
+}
+
+int64 internal::ReadTerrainTileHeightCode(const TerrainTile& tile, uint32 column, uint32 row) noexcept
+{
+    return ReadTileHeightCode(tile, tile.GetDescription(), column, row);
+}
+
+float64 internal::DecodeTerrainHeight(const TerrainHeightCodec& codec, int64 code) noexcept
+{
+    return DecodeHeight(codec, code);
+}
+
+bool internal::TryEncodeTerrainHeight(const TerrainHeightCodec& codec, float64 heightMetres, int64& outCode) noexcept
+{
+    return TryEncodeHeight(codec, heightMetres, outCode);
+}
+
+TerrainTileStatus internal::ValidateTerrainTileDescription(const TerrainTileDescription& description) noexcept
+{
+    return ValidateTileDescription(description);
 }
 } // namespace ludus::content::terrain
