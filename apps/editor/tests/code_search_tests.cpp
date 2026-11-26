@@ -176,6 +176,28 @@ TEST_CASE("The search worker enumerates roots and skips the excluded tree", "[co
     CHECK(outcome.TotalMatches == 2);
 }
 
+TEST_CASE("The search worker publishes the first matching file before batching later files", "[code-editor][search]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).absoluteFilePath();
+    static_cast<void>(WriteFile(root, QStringLiteral("a.txt"), QByteArray("needle\nneedle\n")));
+    static_cast<void>(WriteFile(root, QStringLiteral("b.txt"), QByteArray("needle\nneedle\n")));
+    static_cast<void>(WriteFile(root, QStringLiteral("c.txt"), QByteArray("needle\nneedle\n")));
+
+    CodeSearchService service;
+    QSignalSpy batches(&service, &CodeSearchService::BatchReady);
+    CodeSearchQuery query;
+    query.Pattern = QStringLiteral("needle");
+    const SearchOutcome outcome = RunSearch(service, {root}, {}, query, {});
+    CHECK(outcome.Files.size() == 3);
+    CHECK(outcome.TotalMatches == 6);
+    REQUIRE(batches.size() == 2);
+    const QList<CodeSearchFileResult> firstBatch = batches.first().first().value<QList<CodeSearchFileResult>>();
+    REQUIRE(firstBatch.size() == 1);
+    CHECK(firstBatch.first().Matches.size() == 2);
+}
+
 TEST_CASE("The worker skips binary and oversize files and searches dirty buffers", "[code-editor][search]")
 {
     QTemporaryDir directory;

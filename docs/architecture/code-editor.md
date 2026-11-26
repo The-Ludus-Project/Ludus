@@ -405,8 +405,9 @@ Replace preserves case when asked. Replace All is one `EditSet`.
   preset build directories), `.git`, binary files and files above the search
   size limit. It respects `.gitignore` when Git is available.
 - It searches dirty buffers in place of the files on disk.
-- It streams results in batches to a Search tool window grouped by file, with
-  cancellation, a limit of 10,000 matches, and include/exclude glob fields.
+- It shows the first matching file in the Search tool window as soon as the
+  worker finds it, then streams later results in batches grouped by file. It
+  supports cancellation, a limit of 10,000 matches, and include/exclude glob fields.
 - **Replace in Files** previews every change. It applies through the workspace
   edit path, so nothing is written until Save All.
 

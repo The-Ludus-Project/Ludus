@@ -170,12 +170,14 @@ protected:
 
         int32 remaining = CODE_SEARCH_MAX_MATCHES;
         bool wasTruncated = false;
+        bool hasPublishedBatch = false;
         QList<CodeSearchFileResult> batch;
         int32 batchMatches = 0;
         const auto flush = [&]() {
             if (batch.isEmpty() == false)
             {
                 Q_EMIT BatchReady(batch);
+                hasPublishedBatch = true;
                 batch.clear();
                 batchMatches = 0;
             }
@@ -220,7 +222,7 @@ protected:
                 }
                 batch.append(CodeSearchFileResult{ .AbsolutePath = path, .Matches = std::move(matches) });
                 batchMatches += found;
-                if (batchMatches >= CODE_SEARCH_RESULT_BATCH)
+                if (hasPublishedBatch == false || batchMatches >= CODE_SEARCH_RESULT_BATCH)
                 {
                     flush();
                 }

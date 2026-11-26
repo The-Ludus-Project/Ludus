@@ -93,8 +93,9 @@ public:
     [[nodiscard]] bool IsRunning() const noexcept;
 
 Q_SIGNALS:
-    /// A bounded batch of per-file results (at most CODE_SEARCH_RESULT_BATCH
-    /// matches across the batch), delivered on the UI thread.
+    /// Per-file results delivered on the UI thread. The first matching file is
+    /// sent immediately. Later batches flush at CODE_SEARCH_RESULT_BATCH matches
+    /// or when the search ends, keeping each file's matches together.
     void BatchReady(const QList<CodeSearchFileResult>& batch);
     /// The search ended. `wasCancelled` is true when Cancel stopped it;
     /// `wasTruncated` is true when it hit CODE_SEARCH_MAX_MATCHES;
