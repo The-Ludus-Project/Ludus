@@ -311,6 +311,8 @@ protected:
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
+    /// Scrolling moves the viewport's child widgets with the scene; the Tidy notice is pinned back to its corner.
+    void scrollContentsBy(int deltaX, int deltaY) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
@@ -346,6 +348,8 @@ private:
     /// Pin the availability notice to the viewport's top edge, above the scene.
     void placeAvailabilityNotice();
     void placeTidyNotice();
+    /// Width the Tidy notice leaves free for the minimap's corner; zero while the minimap is hidden.
+    [[nodiscard]] foundation::int32 getMinimapReserve() const;
     /// Display-only placement of cards without saved positions; saved cards and interface boxes stay put.
     void placeDisplayCards(const QSet<QString>& savedCards);
     /// View-time nudge for saved cards that touch or overlap at the current card size. The offsets are worked out
@@ -384,6 +388,8 @@ private:
     QFrame* mTidyNotice;
     QLabel* mTidyNoticeText;
     QSet<QString> mDismissedTidyLayouts;
+    /// The minimap reserve the Tidy notice was last fitted to, so it is refitted only when the minimap changes.
+    foundation::int32 mTidyNoticeReserve = 0;
     /// A saved card's view-time nudge and the saved position it was worked out for.
     struct DisplayNudge final
     {

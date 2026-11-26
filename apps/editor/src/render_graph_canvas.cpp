@@ -176,6 +176,9 @@ constexpr float64 QUICK_ADD_PORT_GAP = COLUMN_SPACING - NODE_WIDTH;
 /// Saved cards closer than this, in scene units, are nudged apart when a configuration is first shown; a tidy
 /// layout with ordinary gaps is never touched. Smaller than NODE_ROW_GAP on purpose: only touching cards move.
 constexpr float64 AUTHORED_CARD_MINIMUM_GAP = 12;
+/// Widest the Tidy notice grows, in pixels; a narrower viewport wraps its text instead.
+constexpr int32 TIDY_NOTICE_MAXIMUM_WIDTH = 760;
+constexpr int32 TIDY_NOTICE_MINIMUM_WIDTH = 300;
 /// Below this many crossings a saved layout reads fine; Tidy layout is not worth suggesting.
 constexpr int32 TIDY_MINIMUM_CROSSINGS = 20;
 /// Tidy layout is suggested only when Auto Layout keeps at most this share of the current crossings.
@@ -1083,6 +1086,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
         row->setSpacing(design::SPACING_SMALL);
         mTidyNoticeText->setObjectName(QStringLiteral("renderGraphTidyNoticeText"));
         mTidyNoticeText->setTextFormat(Qt::PlainText);
+        mTidyNoticeText->setWordWrap(true);
         row->addWidget(mTidyNoticeText, 1);
         QPushButton* tidy = new QPushButton(QStringLiteral("Tidy layout"), mTidyNotice);
         tidy->setObjectName(QStringLiteral("renderGraphTidyButton"));
@@ -1296,6 +1300,10 @@ void RenderGraphCanvas::placeMinimap()
     mMinimapOrNull->move(viewport()->width() - mMinimapOrNull->width() - design::SPACING_MEDIUM,
                          viewport()->height() - mMinimapOrNull->height() - design::SPACING_MEDIUM);
     mMinimapOrNull->raise();
+    if (mTidyNotice->isVisibleTo(this) == true && getMinimapReserve() != mTidyNoticeReserve)
+    {
+        placeTidyNotice();
+    }
 }
 
 void RenderGraphCanvas::placeAvailabilityNotice()
@@ -1307,11 +1315,39 @@ void RenderGraphCanvas::placeAvailabilityNotice()
     mAvailabilityNotice->raise();
 }
 
+int32 RenderGraphCanvas::getMinimapReserve() const
+{
+    const bool hasMinimap = mMinimapOrNull != nullptr && mMinimapOrNull->isVisibleTo(this) == true;
+    return hasMinimap == true ? mMinimapOrNull->width() + design::SPACING_MEDIUM : 0;
+}
+
 void RenderGraphCanvas::placeTidyNotice()
 {
-    mTidyNotice->adjustSize();
+    // The text wraps, so the notice (and its buttons) always fits the viewport beside the minimap's corner,
+    // however narrow the dock.
+    const int32 minimapReserve = getMinimapReserve();
+    mTidyNoticeReserve = minimapReserve;
+    mTidyNotice->setFixedWidth(
+        qMin(TIDY_NOTICE_MAXIMUM_WIDTH,
+             qMax(TIDY_NOTICE_MINIMUM_WIDTH,
+                  viewport()->width() - static_cast<int32>(2 * design::SPACING_MEDIUM) - minimapReserve)));
+    // Wrapped text needs the height for this width; the plain size hint is for the unwrapped line.
+    const int32 noticeWidth = mTidyNotice->width();
+    mTidyNotice->resize(
+        noticeWidth,
+        qMax(mTidyNotice->sizeHint().height(), mTidyNotice->layout()->totalHeightForWidth(noticeWidth)));
     mTidyNotice->move(design::SPACING_MEDIUM, viewport()->height() - mTidyNotice->height() - design::SPACING_MEDIUM);
     mTidyNotice->raise();
+}
+
+void RenderGraphCanvas::scrollContentsBy(int deltaX, int deltaY)
+{
+    QGraphicsView::scrollContentsBy(deltaX, deltaY);
+    if (mTidyNotice->isVisibleTo(this) == true)
+    {
+        mTidyNotice->move(design::SPACING_MEDIUM,
+                          viewport()->height() - mTidyNotice->height() - design::SPACING_MEDIUM);
+    }
 }
 
 void RenderGraphCanvas::SetDeviceProfile(const RenderGraphDeviceProfile& profile)
@@ -1335,6 +1371,7 @@ void RenderGraphCanvas::SetMinimapVisible(bool isVisible)
     mMinimapAction->setChecked(isVisible);
     mMinimapOrNull->setVisible(isVisible == true && mNodes.isEmpty() == false);
     placeMinimap();
+    placeTidyNotice();
 }
 
 bool RenderGraphCanvas::IsMinimapVisible() const noexcept

@@ -28,6 +28,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QProcess>
+#include <QScrollBar>
 #include <QSet>
 #include <QStandardPaths>
 #include <QStringView>
@@ -982,6 +983,29 @@ TEST_CASE("saved cards that overlap are nudged apart on screen without rewriting
     REQUIRE(text != nullptr);
     CHECK(text->text().contains(QStringLiteral("2 overlapping cards are shown moved apart")) == true);
     CHECK(text->text().contains(QStringLiteral("unchanged")) == true);
+    // The notice wraps instead of running off a narrow canvas, so its buttons stay reachable.
+    constexpr int32 NARROW_WIDTH = 520;
+    canvas.resize(NARROW_WIDTH, 650);
+    QCoreApplication::processEvents();
+    const QWidget* notice = canvas.findChild<QWidget*>(QStringLiteral("renderGraphTidyNotice"));
+    REQUIRE(notice != nullptr);
+    CHECK(notice->geometry().left() >= 0);
+    CHECK(notice->geometry().right() <= canvas.viewport()->width());
+    CHECK(notice->geometry().bottom() <= canvas.viewport()->height());
+    // The minimap keeps the corner, so the notice's buttons are never under it.
+    const QWidget* minimap = canvas.findChild<QWidget*>(QStringLiteral("renderGraphMinimap"));
+    if (minimap != nullptr && minimap->isVisibleTo(&canvas) == true)
+    {
+        CHECK(notice->geometry().right() < minimap->geometry().left());
+    }
+    // Panning the scene moves the viewport's child widgets; the notice stays in its corner.
+    const QRect pinned = notice->geometry();
+    canvas.horizontalScrollBar()->setValue(canvas.horizontalScrollBar()->value() + NARROW_WIDTH / 2);
+    canvas.verticalScrollBar()->setValue(canvas.verticalScrollBar()->value() + NARROW_WIDTH / 2);
+    QCoreApplication::processEvents();
+    CHECK(notice->geometry() == pinned);
+    canvas.resize(1000, 650);
+    QCoreApplication::processEvents();
     // A rebuild (every edit makes one) leaves the nudged cards where they were instead of sliding them again.
     const QPointF nudged = canvas.GetNodePosition(QStringLiteral("depth"));
     canvas.Rebuild();
