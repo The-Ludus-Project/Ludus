@@ -718,18 +718,12 @@ rhi::RasterStatus EvaluateWaveEdgeConnection(const ReferenceSceneData& scene,
                                              AddWaveEdgeRegionFields addRegionFields,
                                              WaveField& outField) noexcept
 {
-    WaveConnectionChain chain;
-    chain.Legs[0] =
-    {
-        .BeginWorld = sourceWorld,
-        .EndWorld = receiverWorld,
-        .DirectionWorld = directionWorld,
-        .LengthWorld = distanceWorld,
-        .RefractiveIndex = 1,
-        .IsReflectedEntry = false,
-    };
-    chain.LegCount = 1;
-    return EvaluateWaveEdgeChain(scene, chain, wavelengthWorld, addRegionFields, outField);
+    return EvaluateWaveEdgeChain(
+        scene,
+        MakeStraightWaveConnectionChain(sourceWorld, receiverWorld, directionWorld, distanceWorld),
+        wavelengthWorld,
+        addRegionFields,
+        outField);
 }
 rhi::RasterStatus EvaluateUtdChainConnection(const ReferenceSceneData& scene,
                                              const WaveConnectionChain& chain,

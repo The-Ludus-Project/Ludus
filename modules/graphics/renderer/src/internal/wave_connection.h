@@ -104,6 +104,12 @@ struct WaveConnectionChain final
     StaticArray<WaveConnectionLeg, WAVE_MAX_CONNECTION_LEGS> Legs{};
     uint32 LegCount = 0;
 };
+/// The one-leg chain of a straight connection in air from sourceWorld to receiverWorld, of length distanceWorld
+/// along the unit directionWorld. Inputs are not validated here; the chain evaluators reject invalid legs.
+[[nodiscard]] WaveConnectionChain MakeStraightWaveConnectionChain(math::Vector3d sourceWorld,
+                                                                  math::Vector3d receiverWorld,
+                                                                  math::Vector3d directionWorld,
+                                                                  float64 distanceWorld) noexcept;
 /// Append the leg from beginWorld to endWorld. Returns false, leaving the chain unchanged, when it is full, the
 /// endpoints coincide or are not finite, or refractiveIndex is not finite and positive.
 [[nodiscard]] bool TryAppendWaveConnectionLeg(WaveConnectionChain& inoutChain,

@@ -63,10 +63,10 @@ void AddTriangle(internal::ReferenceSceneData& inoutScene,
                  math::Vector3d second,
                  math::Vector3d third)
 {
-    internal::ReferenceTriangle triangle;
-    triangle.Positions[0] = NarrowVector(first);
-    triangle.Positions[1] = NarrowVector(second);
-    triangle.Positions[2] = NarrowVector(third);
+    internal::ReferenceTriangle triangle
+    {
+        .Positions = {NarrowVector(first), NarrowVector(second), NarrowVector(third)},
+    };
     triangle.Area = 1;
     triangle.GeometricNormal = {0, 0, 1};
     REQUIRE(inoutScene.Triangles.TryAdd(triangle) == true);

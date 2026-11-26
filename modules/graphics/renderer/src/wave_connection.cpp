@@ -767,13 +767,10 @@ rhi::RasterStatus EvaluateWaveChainConnection(const ReferenceSceneData& scene,
     outField = result;
     return rhi::RasterStatus::Ready;
 }
-rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& scene,
-                                                   math::Vector3d sourceWorld,
-                                                   math::Vector3d receiverWorld,
-                                                   math::Vector3d directionWorld,
-                                                   float64 distanceWorld,
-                                                   float64 wavelengthWorld,
-                                                   WaveField& outField) noexcept
+WaveConnectionChain MakeStraightWaveConnectionChain(math::Vector3d sourceWorld,
+                                                    math::Vector3d receiverWorld,
+                                                    math::Vector3d directionWorld,
+                                                    float64 distanceWorld) noexcept
 {
     WaveConnectionChain chain;
     chain.Legs[0] =
@@ -786,7 +783,21 @@ rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& sce
         .IsReflectedEntry = false,
     };
     chain.LegCount = 1;
-    return EvaluateWaveChainConnection(scene, chain, wavelengthWorld, outField);
+    return chain;
+}
+rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& scene,
+                                                   math::Vector3d sourceWorld,
+                                                   math::Vector3d receiverWorld,
+                                                   math::Vector3d directionWorld,
+                                                   float64 distanceWorld,
+                                                   float64 wavelengthWorld,
+                                                   WaveField& outField) noexcept
+{
+    return EvaluateWaveChainConnection(
+        scene,
+        MakeStraightWaveConnectionChain(sourceWorld, receiverWorld, directionWorld, distanceWorld),
+        wavelengthWorld,
+        outField);
 }
 rhi::RasterStatus EvaluateWaveConnection(const ReferenceSceneData& scene,
                                          math::Vector3d sourceWorld,
