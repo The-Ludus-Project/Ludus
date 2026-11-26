@@ -209,6 +209,9 @@ TEST_CASE("Explorer rows show document names, tell shared names apart by folder 
     WriteExplorerFile(QDir(root).filePath(QStringLiteral("graphs/forward/main.lurender.json")));
     WriteExplorerFile(QDir(root).filePath(QStringLiteral("shaders/sky.lushader.json")));
     WriteExplorerFile(QDir(root).filePath(QStringLiteral("shaders/sky.slang")));
+    WriteExplorerFile(QDir(root).filePath(QStringLiteral("shaders/water.slang")));
+    WriteExplorerFile(QDir(root).filePath(QStringLiteral("scripts/door.luau")));
+    WriteExplorerFile(QDir(root).filePath(QStringLiteral("scripts/intro.luseq.json")));
     ProjectExplorer explorer;
     explorer.SetProject(root, QStringLiteral("Test"));
     QTreeWidget* tree = explorer.findChild<QTreeWidget*>(QStringLiteral("projectExplorerTree"));
@@ -216,6 +219,8 @@ TEST_CASE("Explorer rows show document names, tell shared names apart by folder 
     QTreeWidgetItem* worlds = FindExplorerItem(tree->topLevelItem(0), QStringLiteral("Worlds"));
     QTreeWidgetItem* graphs = FindExplorerItem(tree->topLevelItem(0), QStringLiteral("Render Graphs"));
     QTreeWidgetItem* shaders = FindExplorerItem(tree->topLevelItem(0), QStringLiteral("Shaders"));
+    QTreeWidgetItem* scripts = FindExplorerItem(tree->topLevelItem(0), QStringLiteral("Scripts"));
+    REQUIRE(scripts != nullptr);
     REQUIRE(worlds != nullptr);
     REQUIRE(graphs != nullptr);
     REQUIRE(shaders != nullptr);
@@ -252,11 +257,29 @@ TEST_CASE("Explorer rows show document names, tell shared names apart by folder 
     }
     graphQualifiers.sort();
     CHECK(graphQualifiers == QStringList{QStringLiteral("deferred"), QStringLiteral("forward")});
-    // Shader manifests drop their suffix; Slang sources keep their extension, so the two stay distinct.
-    CHECK(FindExplorerItem(shaders, QStringLiteral("sky")) != nullptr);
-    CHECK(FindExplorerItem(shaders, QStringLiteral("sky.slang")) != nullptr);
-    CHECK(FindExplorerItem(shaders, QStringLiteral("sky"))->data(0, DOCUMENT_QUALIFIER_ROLE).toString().isEmpty() ==
-          true);
+    // No row shows its extension, whatever its kind: the group and icon say what it is and the tooltip has the
+    // whole file name. A manifest and a Slang source that share a name and a folder are told apart by type.
+    for (QTreeWidgetItemIterator iterator(tree); *iterator != nullptr; ++iterator)
+    {
+        INFO((*iterator)->text(0).toStdString());
+        CHECK((*iterator)->text(0).contains(QLatin1Char('.')) == false);
+    }
+    QStringList skyQualifiers;
+    for (ludus::foundation::int32 index = 0; index < shaders->childCount(); ++index)
+    {
+        if (shaders->child(index)->text(0) == QStringLiteral("sky"))
+        {
+            skyQualifiers.append(shaders->child(index)->data(0, DOCUMENT_QUALIFIER_ROLE).toString());
+        }
+    }
+    skyQualifiers.sort();
+    CHECK(skyQualifiers == QStringList{QStringLiteral("Slang"), QStringLiteral("manifest")});
+    QTreeWidgetItem* water = FindExplorerItem(shaders, QStringLiteral("water"));
+    REQUIRE(water != nullptr);
+    CHECK(water->data(0, DOCUMENT_QUALIFIER_ROLE).toString().isEmpty() == true);
+    CHECK(water->toolTip(0) == QDir::toNativeSeparators(QStringLiteral("shaders/water.slang")));
+    CHECK(FindExplorerItem(scripts, QStringLiteral("door")) != nullptr);
+    CHECK(FindExplorerItem(scripts, QStringLiteral("intro")) != nullptr);
 
     // Every row, groups and the project included, is a name that elides at its end ("main · Hybrid…") rather than
     // a path that elides in its middle, and has its whole text in a tooltip.

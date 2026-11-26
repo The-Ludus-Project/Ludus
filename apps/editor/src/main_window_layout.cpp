@@ -388,14 +388,14 @@ void MainWindow::BuildUi()
     QHBoxLayout* runLayout = new QHBoxLayout(run);
     runLayout->setContentsMargins(0, 0, 0, 0);
     runLayout->setSpacing(design::SPACING_SMALL);
-    ProjectRunButton_ = new QPushButton(QStringLiteral("Build and run"), run);
+    ProjectRunButton_ = new QPushButton(QStringLiteral("Build and launch"), run);
     ProjectRunButton_->setObjectName(QStringLiteral("projectBuildRun"));
     runLayout->addWidget(ProjectRunButton_);
     ProjectStopButton_ = new QPushButton(QStringLiteral("Stop"), run);
     ProjectStopButton_->setObjectName(QStringLiteral("projectStop"));
     runLayout->addWidget(ProjectStopButton_);
     runLayout->addStretch();
-    build.addRow(QStringLiteral("Run"), run);
+    build.addRow(QStringLiteral("Launch"), run);
     connect(ProjectCheckButton_, &QPushButton::clicked, this, [this]() { CheckSetupAction_->trigger(); });
     connect(ProjectRepairButton_, &QPushButton::clicked, this, [this]() { SetupProjectAction_->trigger(); });
     connect(ProjectSaveButton_, &QPushButton::clicked, this, [this]() { (void)SaveProjectSettings(); });
@@ -1021,6 +1021,12 @@ void MainWindow::syncDockTabIcons()
     const QList<QDockWidget*> docks = findChildren<QDockWidget*>(Qt::FindDirectChildrenOnly);
     for (QTabBar* tabBar : findChildren<QTabBar*>(Qt::FindDirectChildrenOnly))
     {
+        // macOS clips a dock tab's label mid-word ("Live Inspec") where the other platforms elide it. Labels that
+        // do not fit turn into icons (EditorStyle); a label is only ever elided when even that is too wide.
+        if (tabBar->elideMode() != Qt::ElideRight)
+        {
+            tabBar->setElideMode(Qt::ElideRight);
+        }
         for (int index = 0; index < tabBar->count(); ++index)
         {
             for (const QDockWidget* dock : docks)
@@ -1181,7 +1187,8 @@ void MainWindow::setViewportFocused(bool isFocused)
         {
             dock->hide();
         }
-        for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_, mRenderGraphToolbar, mSetupNoticeOrNull})
+        for (QToolBar* toolbar :
+             {mStandardToolbar, GameToolbar_, mRenderGraphToolbar, mSessionToolbar, mSetupNoticeOrNull})
         {
             toolbar->hide();
         }

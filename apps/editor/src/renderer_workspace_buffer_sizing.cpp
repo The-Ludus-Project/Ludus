@@ -242,7 +242,7 @@ private:
 
 QStringList FindDeclaredStructs(const QByteArray& source)
 {
-    // The picker lists local declarations. Build Graph preprocesses the source and verifies its storage layout.
+    // The picker lists local declarations. Compile Shaders preprocesses the source and verifies its storage layout.
     static const QRegularExpression COMMENTS_AND_STRINGS(
         QStringLiteral(R"expression(/\*[\s\S]*?(?:\*/|\z)|//[^\r\n]*|"(?:\\.|[^"\\])*")expression"));
     static const QRegularExpression STRUCTURE_OR_BRACE(

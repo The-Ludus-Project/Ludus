@@ -110,6 +110,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
       mRecordProfileAction(CreateEditorCommand(PROFILING_RECORD_COMMAND, this)),
       mStandardToolbar(new QToolBar(QStringLiteral("Standard"), this)),
       mRenderGraphToolbar(new QToolBar(QStringLiteral("Render Graph"), this)),
+      mSessionToolbar(new QToolBar(QStringLiteral("Live Play Session"), this)),
       mNewGraphAction(CreateEditorCommand(RENDER_GRAPH_NEW_COMMAND, this)),
       mOpenGraphAction(CreateEditorCommand(RENDER_GRAPH_OPEN_COMMAND, this)),
       mRemoveUnusedShadersAction(CreateEditorCommand(RENDER_GRAPH_REMOVE_UNUSED_SHADERS_COMMAND, this)),
@@ -146,8 +147,8 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     InitializeWorkspace();
     connect(mDocuments, &DocumentWell::ActiveDocumentChanged, this, &MainWindow::renderActiveDocument);
     connect(mDocuments, &DocumentWell::LayoutChanged, this, &MainWindow::updateContextStrip);
-    // Restoring a saved layout, resetting it or leaving Focus Viewport can show or hide the strip; the queued
-    // check follows the documents currently shown in the tab groups.
+    // Restoring a saved layout (one saved while the strip was hidden, for example), resetting it or leaving Focus
+    // Viewport can hide the strip; the queued check shows it again outside Focus Viewport.
     connect(mRenderGraphToolbar,
             &QToolBar::visibilityChanged,
             this,
@@ -483,15 +484,25 @@ void MainWindow::BuildMenus()
 #endif
     QMenu* buildMenu = menuBar()->addMenu(QStringLiteral("&Build"));
     ConfigureAction_ = buildMenu->addAction(QStringLiteral("&Configure / Refresh Targets"));
-    BuildAction_ = buildMenu->addAction(QStringLiteral("&Build"));
-    BuildRunAction_ = buildMenu->addAction(QStringLiteral("Build and &Run"));
+    // Each command that starts the game says what it starts (see the toolbar below): Build Game compiles only,
+    // Launch runs the built program on its own, Debug runs it under RAD, and Live Play (Play menu) runs it in
+    // an editor session that can pause, inspect and reload code. Render-graph shaders compile separately.
+    BuildAction_ = buildMenu->addAction(QStringLiteral("&Build Game"));
+    BuildAction_->setObjectName(QStringLiteral("buildGameAction"));
+    BuildAction_->setToolTip(QStringLiteral("Compile the game's code with the saved build profile. Nothing starts."));
+    BuildRunAction_ = buildMenu->addAction(QStringLiteral("Build and La&unch"));
+    BuildRunAction_->setObjectName(QStringLiteral("buildLaunchAction"));
+    BuildRunAction_->setToolTip(QStringLiteral("Build the game, then start it as its own program, the way "
+                                               "players run it. Use Live Play to edit it while it runs."));
     BuildDebugAction_ = buildMenu->addAction(QStringLiteral("Build && &Debug in RAD..."));
     BuildDebugAction_->setObjectName(QStringLiteral("buildDebugAction"));
-    BuildDebugAction_->setToolTip(QStringLiteral("Debug native games in RAD. Optional setup is offered when missing."));
+    BuildDebugAction_->setToolTip(
+        QStringLiteral("Build the game, then start it in the RAD debugger. Optional setup is offered when missing."));
     BuildDebugAction_->setShortcut(QKeySequence(Qt::Key_F5));
     connect(BuildDebugAction_, &QAction::triggered, this, [this]() { launchAfterPreview(LaunchAction::Debug); });
     connect(Controller_, &EditorController::DebuggerSetupRequested, this, &MainWindow::OnDebuggerSetupRequested);
     StopAction_ = buildMenu->addAction(QStringLiteral("&Stop"));
+    StopAction_->setToolTip(QStringLiteral("Stop the running build, game or Live Play session."));
     // Render-graph commands: one QAction each, shared with the Render Graph toolbar.
     buildMenu->addSeparator();
     for (QAction* action : {mValidateGraphAction,
@@ -555,7 +566,8 @@ void MainWindow::BuildMenus()
     GameToolbar_ = addToolBar(QStringLiteral("Game"));
     GameToolbar_->setObjectName(QStringLiteral("gameToolbar"));
     GameToolbar_->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    BuildRunAction_->setIconText(QStringLiteral("Run"));
+    BuildAction_->setIconText(QStringLiteral("Build Game"));
+    BuildRunAction_->setIconText(QStringLiteral("Launch"));
     BuildDebugAction_->setIconText(QStringLiteral("Debug"));
 
     QMenu* releaseMenu = menuBar()->addMenu(QStringLiteral("&Release"));
@@ -569,16 +581,19 @@ void MainWindow::BuildMenus()
     connect(SetupReleaseAction_, &QAction::triggered, this, &MainWindow::OnSetupRelease);
     connect(PackageReleaseAction_, &QAction::triggered, this, &MainWindow::OnPackageRelease);
     QMenu* playMenu = menuBar()->addMenu(QStringLiteral("&Play"));
-    PlayAction_ = playMenu->addAction(QStringLiteral("Build and Play"));
+    PlayAction_ = playMenu->addAction(QStringLiteral("Build and Start &Live Play"));
     PlayAction_->setObjectName(QStringLiteral("play.start"));
-    PlayAction_->setIconText(QStringLiteral("Play"));
+    PlayAction_->setIconText(QStringLiteral("Live Play"));
+    PlayAction_->setToolTip(QStringLiteral("Build the game, then play it in an editor session where you "
+                                           "can pause, step, inspect values and reload changed code."));
 #if defined(Q_OS_WASM)
     PlayAction_->setText(QStringLiteral("Play Web Sample"));
     PlayAction_->setToolTip(
         QStringLiteral("Play the shipped web build. Workspace source edits require a desktop rebuild."));
 #endif
 #if defined(Q_OS_MACOS)
-    PlayAction_->setToolTip(QStringLiteral("Build and Play uses the saved macOS Debug or Development profile."));
+    PlayAction_->setToolTip(PlayAction_->toolTip() +
+                            QStringLiteral(" Uses the saved macOS Debug or Development profile."));
     BuildDebugAction_->setToolTip(QStringLiteral("RAD debugging is available on Linux x64 only."));
 #endif
     BuildReloadAction_ = playMenu->addAction(QStringLiteral("Build and Reload Code"));
@@ -641,24 +656,19 @@ void MainWindow::BuildMenus()
     connect(mFastForwardAction, &QAction::triggered, Controller_, &EditorController::TogglePlayFastForward);
     connect(RefreshPropertiesAction_, &QAction::triggered, Controller_, &EditorController::RefreshProperties);
 
-    // Run, Launch and Session each get a toolbar group. The
-    // session commands are only meaningful while a game is running or paused, so RenderCapabilities shows them
-    // only then, together with their separator.
-    GameToolbar_->addAction(PlayAction_);
+    // The toolbar row never changes with the active document, so nothing moves under the pointer when tabs
+    // change. Global groups come first, in workflow order: File and History, then the game (Build Game, then the
+    // three ways to start it and Stop), then the render graph. The only contextual group is the Live Play
+    // session's, which appears last, after everything else, while a session runs (RenderCapabilities).
     GameToolbar_->addAction(BuildAction_);
-    GameToolbar_->addAction(StopAction_);
     GameToolbar_->addSeparator();
+    GameToolbar_->addAction(PlayAction_);
     GameToolbar_->addAction(BuildRunAction_);
     GameToolbar_->addAction(BuildDebugAction_);
-    mSessionSeparatorActionOrNull = GameToolbar_->addSeparator();
-    GameToolbar_->addAction(PauseAction_);
-    GameToolbar_->addAction(StepAction_);
-    GameToolbar_->addAction(ResumeAction_);
-    GameToolbar_->addAction(mFastForwardAction);
-    GameToolbar_->addAction(BuildReloadAction_);
+    GameToolbar_->addAction(StopAction_);
 
-    // The Render Graph toolbar is the context strip: it shows only while a render graph is the active document
-    // (updateContextStrip), so a World tab keeps one row of commands about the project and the game.
+    // The Render Graph group is global like the game's: its commands act on the project's render graph, which
+    // also draws the World viewport, and they work from every tab (menu and shortcuts included).
     mRenderGraphToolbar->setObjectName(QStringLiteral("renderGraphToolbar"));
     mRenderGraphToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     mRenderGraphToolbar->setIconSize(QSize(EDITOR_ICON_SIZE, EDITOR_ICON_SIZE));
@@ -669,8 +679,8 @@ void MainWindow::BuildMenus()
     mCancelGraphAction->setIcon(GetEditorIcon(EditorIcon::Cancel));
     addToolBar(mRenderGraphToolbar);
     mRenderGraphToolbar->addAction(mValidateGraphAction);
-    // Build Graph and Build & Preview are one split button: the button runs Build Graph and its arrow offers
-    // Build & Preview. Live Preview is a separate toggle that shows its state.
+    // Compile Shaders and Build & Preview are one split button: the button compiles the graph's shaders and its
+    // arrow offers Build & Preview. Live Preview is a separate toggle that shows its state.
     QToolButton* buildButton = new QToolButton(mRenderGraphToolbar);
     buildButton->setObjectName(QStringLiteral("renderGraphBuildButton"));
     buildButton->setDefaultAction(mBuildGraphAction);
@@ -685,6 +695,18 @@ void MainWindow::BuildMenus()
     mRenderGraphToolbar->addAction(mLivePreviewGraphAction);
     mRenderGraphToolbar->addAction(mCancelGraphAction);
 
+    // The Live Play session's commands only mean something while a session runs or is paused, so their toolbar
+    // shows only then (RenderCapabilities). It sits after every global group, so appearing moves nothing.
+    mSessionToolbar->setObjectName(QStringLiteral("sessionToolbar"));
+    mSessionToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    addToolBar(mSessionToolbar);
+    mSessionToolbar->addAction(PauseAction_);
+    mSessionToolbar->addAction(StepAction_);
+    mSessionToolbar->addAction(ResumeAction_);
+    mSessionToolbar->addAction(mFastForwardAction);
+    mSessionToolbar->addAction(BuildReloadAction_);
+    mSessionToolbar->hide();
+
     // One icon set for every toolbar command (docs/architecture/editor-art-direction.md, Iconography). Primary
     // commands show their icon beside the label; secondary commands that sit in a run of peers (Undo, Redo, Pause,
     // Step, Resume, Fast-forward) are icon-only and keep their name and shortcut in the tooltip. The action keeps its
@@ -697,7 +719,7 @@ void MainWindow::BuildMenus()
             button->setToolButtonStyle(style);
         }
     };
-    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_})
+    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_, mSessionToolbar})
     {
         toolbar->setIconSize(QSize(EDITOR_ICON_SIZE, EDITOR_ICON_SIZE));
     }
@@ -712,11 +734,11 @@ void MainWindow::BuildMenus()
     useIcon(GameToolbar_, BuildDebugAction_, EditorIcon::Debug, labelled);
     useIcon(GameToolbar_, PlayAction_, EditorIcon::Play, labelled);
     useIcon(GameToolbar_, StopAction_, EditorIcon::Stop, labelled);
-    useIcon(GameToolbar_, PauseAction_, EditorIcon::Pause, iconOnly);
-    useIcon(GameToolbar_, StepAction_, EditorIcon::Step, iconOnly);
-    useIcon(GameToolbar_, ResumeAction_, EditorIcon::Play, iconOnly);
-    useIcon(GameToolbar_, mFastForwardAction, EditorIcon::Profiling, iconOnly);
-    useIcon(GameToolbar_, BuildReloadAction_, EditorIcon::ReloadCode, labelled);
+    useIcon(mSessionToolbar, PauseAction_, EditorIcon::Pause, iconOnly);
+    useIcon(mSessionToolbar, StepAction_, EditorIcon::Step, iconOnly);
+    useIcon(mSessionToolbar, ResumeAction_, EditorIcon::Play, iconOnly);
+    useIcon(mSessionToolbar, mFastForwardAction, EditorIcon::Profiling, iconOnly);
+    useIcon(mSessionToolbar, BuildReloadAction_, EditorIcon::ReloadCode, labelled);
 
     // Output commands live on the Output tool window's own toolbar.
     ClearAction_ = new QAction(QStringLiteral("&Clear Output"), this);
@@ -774,7 +796,8 @@ void MainWindow::BuildMenus()
     addToolWindowCommand(VIEW_PROFILING_COMMAND, mProfilingDock);
     viewMenu->addSeparator();
     QMenu* toolbars = viewMenu->addMenu(QStringLiteral("&Toolbars"));
-    // The context strip follows the active document, so it has no entry here.
+    // The Render Graph group stays in place outside Focus Viewport, and the Live Play session group follows the
+    // session, so neither has an entry here.
     for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_})
     {
         toolbars->addAction(toolbar->toggleViewAction());
@@ -1548,9 +1571,10 @@ void MainWindow::RenderCapabilities()
     {
         action->setVisible(isSessionLive);
     }
-    if (mSessionSeparatorActionOrNull != nullptr)
+    // Focus Viewport hides every toolbar; leaving it restores the session toolbar with the rest.
+    if (mIsViewportFocused == false && mSessionToolbar->isHidden() == isSessionLive)
     {
-        mSessionSeparatorActionOrNull->setVisible(isSessionLive);
+        mSessionToolbar->setVisible(isSessionLive);
     }
     PauseAction_->setEnabled(debuggerStopped == false && play == PlayPhase::Running);
     ResumeAction_->setEnabled(debuggerStopped == false && play == PlayPhase::Paused);
@@ -1960,8 +1984,9 @@ void MainWindow::RenderStatus()
     }
     else if (Controller_->PlayState().Phase != PlayPhase::Stopped)
     {
-        next = QStringLiteral("A live session is open. Use its inspector and Play controls, or Stop before repairing "
-                              "setup or starting a separate build and run.");
+        next =
+            QStringLiteral("A live session is open. Use its inspector and Live Play controls, or Stop before repairing "
+                           "setup or launching the game separately.");
     }
     else if (state.Dirty())
     {
@@ -1971,13 +1996,13 @@ void MainWindow::RenderStatus()
     else if (project.Version != 2 || project.ProviderKind != Provider::Cmake)
     {
         next = QStringLiteral("This project owns its engine and build setup. Use Build → Configure / Refresh Targets "
-                              "to discover executables, then Build and run. SDK repair is available for version-2 "
+                              "to discover executables, then Build and Launch. SDK repair is available for version-2 "
                               "CMake game projects. Build and launch details exposes this project's settings.");
     }
     else
     {
         next = QStringLiteral("Check setup to verify this computer's tools and engine. Repair setup fixes missing or "
-                              "stale settings and verifies a build and tests. Build and run launches the saved target "
+                              "stale settings and verifies a build and tests. Build and launch starts the saved target "
                               "in a separate window. Open Content, Scene, Audio or Scripts to work on game content.");
     }
 #endif
@@ -2017,46 +2042,57 @@ void MainWindow::RenderStatus()
             break;
     }
 
-    // Each problem is said once: the banner and Error List carry the full text, so this line keeps
-    // the short reason (the result code and a pointer to the repair) and nothing that repeats it.
-    QString status = phase;
+    // The line is a glance, not a log: the state, then at most a short result and a short setup state, each a
+    // phrase. Each problem is said once: the banner and Error List carry the full text, and the tooltip keeps
+    // every detail this line leaves out (the result's message and the whole setup status).
+    QStringList parts{state.OperationPhase == Phase::Idle ? QStringLiteral("Ready") : phase};
     // A failed setup check is described by the setup problem below, in its own words; a generic code
     // description beside it would say something different about the same event.
     const bool isResultExplainedBySetup = hasSetupProblem == true && state.Result.Kind == Outcome::Failed;
-    if (state.Result.Kind != Outcome::None && isResultExplainedBySetup == false)
+    const QString setupSummary = ReplaceResultCodeNames(state.SetupStatus.section(QLatin1Char('\n'), 0, 0));
+    const QString resultSummary = ReplaceResultCodeNames(state.Result.Message.section(QLatin1Char('\n'), 0, 0));
+    // Only a message's headline, the part before any colon: "Setup checked: presets, SDKs, tools…" reads
+    // "Setup checked". The tooltip keeps the rest.
+    const auto headline = [](const QString& text) { return text.section(QStringLiteral(": "), 0, 0).trimmed(); };
+    if (state.Result.Kind == Outcome::Success && resultSummary.isEmpty() == false)
     {
-        status += QStringLiteral("  —  last result: %1").arg(DescribeResultCode(state.Result.Code));
-        if (hasSetupProblem == false && state.Result.Message.isEmpty() == false)
-        {
-            status += QStringLiteral(" (%1)").arg(
-                ReplaceResultCodeNames(state.Result.Message.section(QLatin1Char('\n'), 0, 0)));
-        }
+        parts.append(headline(resultSummary));
+    }
+    else if (state.Result.Kind != Outcome::None && isResultExplainedBySetup == false)
+    {
+        parts.append(QStringLiteral("Last result: %1").arg(DescribeResultCode(state.Result.Code)));
     }
     if (state.OperationPhase == Phase::CleanupUnknown)
     {
-        status += QStringLiteral("  —  operator recovery required; see Copy Job Details");
+        parts.append(QStringLiteral("Recovery required; see Copy Job Details"));
     }
-    const QString setupSummary = ReplaceResultCodeNames(state.SetupStatus.section(QLatin1Char('\n'), 0, 0));
-    const QString resultSummary = ReplaceResultCodeNames(state.Result.Message.section(QLatin1Char('\n'), 0, 0));
     if (hasSetupProblem == true)
     {
         // The banner already shows the problem with its Repair button; only a hidden banner
         // leaves this line to say what is wrong.
-        status += QStringLiteral("  —  ") +
-                  (isSetupNoticeShown == true
-                       ? (mSetupNoticeStage == SetupNoticeStage::Working ? QStringLiteral("Setup in progress")
-                                                                         : QStringLiteral("Setup needs repair"))
-                       : DescribeSetupProblem(state.SetupProblem).Headline);
+        parts.append(isSetupNoticeShown == true
+                         ? (mSetupNoticeStage == SetupNoticeStage::Working ? QStringLiteral("Setup in progress")
+                                                                           : QStringLiteral("Setup needs repair"))
+                         : DescribeSetupProblem(state.SetupProblem).Headline);
     }
     else if (setupSummary.isEmpty() == false &&
              (resultSummary.isEmpty() == true || setupSummary.contains(resultSummary) == false))
     {
-        status += QStringLiteral("  —  ") + setupSummary;
+        parts.append(headline(setupSummary));
     }
+    const QString status = parts.join(GetDocumentQualifierSeparator());
     StatusLabel_->setText(status);
     renderActivity();
-    StatusLabel_->setToolTip(status + QStringLiteral("\n") + ReplaceResultCodeNames(state.Result.Message) +
-                             QStringLiteral("\n") + ReplaceResultCodeNames(state.SetupStatus));
+    QStringList details{status};
+    for (const QString& detail :
+         {ReplaceResultCodeNames(state.Result.Message), ReplaceResultCodeNames(state.SetupStatus)})
+    {
+        if (detail.isEmpty() == false)
+        {
+            details.append(detail);
+        }
+    }
+    StatusLabel_->setToolTip(details.join(QLatin1Char('\n')));
 
     if (state.OperationPhase == Phase::Debugging)
     {

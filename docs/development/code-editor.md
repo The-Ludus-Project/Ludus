@@ -29,7 +29,7 @@ once; each view keeps its own caret, selection, scroll position and wrap.
 From a graph, choose **Open Source** to open its selected node's shader
 or its graph JSON in **Code**. The package file picker also opens the shader
 manifest and other files in the same draft. **Shader API** is available for
-shader programs, and **Build Graph** uses the package shown in Code.
+shader programs, and **Compile Shaders** uses the package shown in Code.
 Choose **Return to Graph** to restore the canvas and node you came from.
 
 **Edit Declaration** and cross-file shader definitions use the same tabs.

@@ -942,7 +942,10 @@ namespace
         {
             return false;
         }
-        fullWidth += metrics.horizontalAdvance(tabBar->tabText(index)) + iconSize + TAB_ICON_GAP + padding;
+        // The icon-only padding is slack for platform styles that frame a tab more widely than this estimate, so
+        // a label that would only just fit becomes an icon rather than losing its last letters.
+        fullWidth += metrics.horizontalAdvance(tabBar->tabText(index)) + iconSize + TAB_ICON_GAP + padding +
+                     ICON_ONLY_TAB_PADDING;
     }
     return fullWidth > tabBar->width();
 }

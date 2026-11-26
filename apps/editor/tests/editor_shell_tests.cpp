@@ -535,8 +535,9 @@ TEST_CASE("Window menu shows hides and resets every tool window", "[editor][layo
         REQUIRE(toolbar != nullptr);
         CHECK(toolbar->isHidden() == false);
     }
-    // The context strip follows the active document, and a World is not a render graph.
-    CHECK(window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"))->isHidden() == true);
+    // The render-graph group stays in the row whatever document is active; the session group waits for a session.
+    CHECK(window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"))->isHidden() == false);
+    CHECK(window.findChild<QToolBar*>(QStringLiteral("sessionToolbar"))->isHidden() == true);
 }
 
 TEST_CASE("Tool windows and document groups restore and corrupt layouts fall back", "[editor][layout][shell]")
@@ -1752,11 +1753,14 @@ TEST_CASE("Every toolbar command has an icon, primary ones beside the label, and
         // An icon without a label still says what it is, and what key does it.
         CHECK(foundOrNull->toolTip().isEmpty() == false);
     };
+    QToolBar* session = window.findChild<QToolBar*>(QStringLiteral("sessionToolbar"));
+    REQUIRE(session != nullptr);
     // Commands that start something or choose a destination carry their label...
-    for (const char* label : {"Build", "Run", "Debug", "Play", "Stop", "Reload Code"})
+    for (const char* label : {"Build Game", "Live Play", "Launch", "Debug", "Stop"})
     {
         checkButton(game, QString::fromLatin1(label), Qt::ToolButtonTextBesideIcon);
     }
+    checkButton(session, QStringLiteral("Reload Code"), Qt::ToolButtonTextBesideIcon);
     for (const char* label : {"Open", "Save"})
     {
         checkButton(standard, QString::fromLatin1(label), Qt::ToolButtonTextBesideIcon);
@@ -1764,7 +1768,7 @@ TEST_CASE("Every toolbar command has an icon, primary ones beside the label, and
     // ...and the peers in a run of symmetric commands are icon-only.
     for (const char* label : {"Pause", "Step", "Resume", "Fast-forward"})
     {
-        checkButton(game, QString::fromLatin1(label), Qt::ToolButtonIconOnly);
+        checkButton(session, QString::fromLatin1(label), Qt::ToolButtonIconOnly);
     }
     for (const char* label : {"Undo", "Redo"})
     {
@@ -1781,7 +1785,7 @@ TEST_CASE("Every toolbar command has an icon, primary ones beside the label, and
     CHECK(rowCount > 0);
 }
 
-TEST_CASE("Toolbars group commands, hide session commands until a game runs and show graph commands only for graphs",
+TEST_CASE("Toolbars keep one stable row: game and graph groups on every tab, session commands only in a session",
           "[editor][layout][shell][toolbars]")
 {
     QTemporaryDir directory;
@@ -1794,9 +1798,11 @@ TEST_CASE("Toolbars group commands, hide session commands until a game runs and 
     QToolBar* standard = window.findChild<QToolBar*>(QStringLiteral("standardToolbar"));
     QToolBar* game = window.findChild<QToolBar*>(QStringLiteral("gameToolbar"));
     QToolBar* strip = window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"));
+    QToolBar* session = window.findChild<QToolBar*>(QStringLiteral("sessionToolbar"));
     REQUIRE(standard != nullptr);
     REQUIRE(game != nullptr);
     REQUIRE(strip != nullptr);
+    REQUIRE(session != nullptr);
     const auto labels = [](const QToolBar* toolbar) {
         QStringList names;
         for (const QAction* action : toolbar->actions())
@@ -1811,36 +1817,62 @@ TEST_CASE("Toolbars group commands, hide session commands until a game runs and 
                                           QStringLiteral("|"),
                                           QStringLiteral("Undo"),
                                           QStringLiteral("Redo")});
-    // Run leads, then Launch, then the session commands.
-    const QStringList gameLabels = labels(game);
-    REQUIRE(gameLabels.size() >= 3);
-    CHECK(gameLabels.mid(0, 3) == QStringList{QStringLiteral("Play"), QStringLiteral("Build"), QStringLiteral("Stop")});
-    CHECK(gameLabels.count(QStringLiteral("|")) == 2);
-    // No game is running: the session commands and their separator are hidden.
-    for (const QString& label :
-         {QStringLiteral("Pause"), QStringLiteral("Step"), QStringLiteral("Resume"), QStringLiteral("Reload Code")})
+    // Build Game, then the three ways to start the game and Stop. Every verb is distinct: nothing else in the row
+    // is called Build or Run, and the render graph's build is Compile Shaders.
+    CHECK(labels(game) == QStringList{QStringLiteral("Build Game"),
+                                      QStringLiteral("|"),
+                                      QStringLiteral("Live Play"),
+                                      QStringLiteral("Launch"),
+                                      QStringLiteral("Debug"),
+                                      QStringLiteral("Stop")});
+    CHECK(Action(window, QStringLiteral("renderGraph.build"))->iconText() == QStringLiteral("Compile Shaders"));
+    // Each says what it does, so the two ways of playing are told apart before either is tried.
+    for (const QAction* action : game->actions())
     {
-        for (const QAction* action : game->actions())
-        {
-            if (action->iconText() == label)
-            {
-                CHECK(action->isVisible() == false);
-            }
-        }
+        INFO(action->iconText().toStdString());
+        CHECK((action->isSeparator() == true || action->toolTip() != action->iconText()) == true);
+    }
+    CHECK(Action(window, QStringLiteral("play.start"))->toolTip().contains(QStringLiteral("reload")) == true);
+    CHECK(Action(window, QStringLiteral("buildLaunchAction"))->toolTip().contains(QStringLiteral("own program")) ==
+          true);
+    // No game is running: the session group, and every command in it, is hidden. It is the last toolbar, so its
+    // appearing moves nothing else.
+    CHECK(session->isHidden() == true);
+    CHECK(labels(session) == QStringList{QStringLiteral("Pause"),
+                                         QStringLiteral("Step"),
+                                         QStringLiteral("Resume"),
+                                         QStringLiteral("Fast-forward"),
+                                         QStringLiteral("Reload Code")});
+    for (const QAction* action : session->actions())
+    {
+        CHECK(action->isVisible() == false);
     }
     const QAction* fastForward = Action(window, QStringLiteral("playFastForward"));
     CHECK(fastForward->isVisible() == false);
     CHECK(fastForward->isEnabled() == false);
-    // The context strip appears for a render graph and goes away for a World.
-    CHECK(strip->isHidden() == true);
+    const QList<QToolBar*> toolbars = window.findChildren<QToolBar*>(Qt::FindDirectChildrenOnly);
+    // The render-graph group is in the row before any graph is opened, and nothing moves as documents change.
+    CHECK(strip->isHidden() == false);
     RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
     WorldWorkspace* world = window.findChild<WorldWorkspace*>();
     REQUIRE(renderer != nullptr);
     REQUIRE(world != nullptr);
+    const auto geometries = [&toolbars]() {
+        QList<QRect> rectangles;
+        for (const QToolBar* toolbar : toolbars)
+        {
+            rectangles.append(toolbar->isHidden() == true ? QRect() : toolbar->geometry());
+        }
+        return rectangles;
+    };
+    REQUIRE(Well(window).OpenDocument(world) == true);
+    Settle();
+    const QList<QRect> worldRow = geometries();
     REQUIRE(Well(window).OpenDocument(renderer) == true);
     Settle();
+    CHECK(geometries() == worldRow);
     CHECK(strip->isHidden() == false);
-    // Every strip command carries an icon beside its label; Build Graph and Build & Preview are one split
+    // Every strip command carries an icon beside its label; Compile Shaders and Build & Preview are one split
     // button, and Live Preview is a checkable toggle of its own.
     QAction* validate = Action(window, QStringLiteral("renderGraph.validate"));
     QAction* build = Action(window, QStringLiteral("renderGraph.build"));
@@ -1865,12 +1897,13 @@ TEST_CASE("Toolbars group commands, hide session commands until a game runs and 
           Qt::ToolButtonTextBesideIcon);
     REQUIRE(Well(window).OpenDocument(world) == true);
     Settle();
-    CHECK(strip->isHidden() == true);
-    // It cannot be forced on by restoring or toggling visibility outside the rule.
-    strip->show();
+    CHECK(strip->isHidden() == false);
+    CHECK(geometries() == worldRow);
+    // A restored layout that hid it cannot leave it out of the row.
+    strip->hide();
     Settle();
-    CHECK(strip->isHidden() == true);
-    // Its entry is not in View > Toolbars.
+    CHECK(strip->isHidden() == false);
+    // Neither the render-graph group nor the session group is in View > Toolbars.
     for (const QAction* action : window.menuBar()->actions())
     {
         if (action->menu() != nullptr && action->text().remove(QLatin1Char('&')) == QStringLiteral("View"))
@@ -1880,6 +1913,7 @@ TEST_CASE("Toolbars group commands, hide session commands until a game runs and 
                 if (entry->menu() != nullptr && entry->text().remove(QLatin1Char('&')) == QStringLiteral("Toolbars"))
                 {
                     CHECK(entry->menu()->actions().contains(strip->toggleViewAction()) == false);
+                    CHECK(entry->menu()->actions().contains(session->toggleViewAction()) == false);
                     CHECK(entry->menu()->actions().contains(game->toggleViewAction()) == true);
                 }
             }

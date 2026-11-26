@@ -74,7 +74,9 @@ class AndroidSetupTests(unittest.TestCase):
                 patch.object(init_android, "host_key", return_value="Darwin-arm64"), \
                 patch.object(init_android, "install_java", return_value=Path("/java")), \
                 patch.object(init_android, "install_sdkmanager", return_value=Path("/sdkmanager")), \
+                patch.object(init_android, "existing_sdk_roots", return_value=[]), \
                 patch.object(init_android, "install_packages") as install:
+            # No host SDK to reuse from: a runner image's preinstalled platform-tools must not satisfy the request.
             with self.assertRaisesRegex(engine.EngineError, f"ndk;{self.pins['ndk']}"):
                 init_android.install_android(self.root, engine, is_license_accepted=True)
         self.assertIn("platform-tools", install.call_args.args[4])

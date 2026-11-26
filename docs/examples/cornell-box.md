@@ -68,7 +68,7 @@ See [project setup](../development/project-sdk-workflow.md) for those contracts.
 
 ## 2. Run your first frame
 
-1. Choose **Build → Build and Run**, or **Build and Run** on the toolbar.
+1. Choose **Build → Build and Launch**, or **Launch** on the toolbar.
 2. Wait for the application window. Compare it with the opening screenshot:
    red left wall, green right wall, two white blocks and shadows on the floor.
 3. Resize the window. The scene keeps its proportions as the framebuffer aspect
@@ -80,13 +80,13 @@ See [project setup](../development/project-sdk-workflow.md) for those contracts.
 `Cornell box rendered. Close the window to exit.` A process starting is not proof
 that a frame appeared. This sample runs in its own native window. Use **Build and
 Run** throughout this tutorial; its fullscreen application does not implement
-GameHost's **Build and Play** or live gameplay editing workflow.
+GameHost's **Live Play** or live gameplay editing workflow.
 
 ## 3. Separate materials from lighting
 
 1. In **Project settings → Run arguments**, select **Add argument**, enter
    `--flat` as a single item, and press Enter. Do not add quotes.
-2. Use **File → Save Project Settings** (**Ctrl+S**), then **Build and Run**.
+2. Use **File → Save Project Settings** (**Ctrl+S**), then **Launch**.
 3. Compare the result below with the lit scene.
 
 ![Flat materials: colored walls, white surfaces and the ceiling patch](images/cornell-box-materials.png)
@@ -133,7 +133,7 @@ float32x3(1.0, 0.0, 0.0), float32x3(0.63, 0.065, 0.05), inout hit);
 float32x3(1.0, 0.0, 0.0), float32x3(0.05, 0.12, 0.63), inout hit);
 ```
 
-Save, then **Build and Run**.
+Save, then **Launch**.
 
 ![The material exercise: the left wall is now blue](images/cornell-box-blue-wall.png)
 
@@ -159,7 +159,7 @@ float32x3(-0.15, 0.36, 0.35)
 The center is `(x, y, z)` in this sample's normalized world units. Positive x
 moves the short block toward the right. The next `float32x3(0.30, 0.36, 0.30)` gives
 its half extents, not its full dimensions. Its y center equals its y half extent,
-so its bottom still rests on the floor at y = 0. Save, then **Build and Run**.
+so its bottom still rests on the floor at y = 0. Save, then **Launch**.
 
 ![The placement exercise: the short block moves toward the center](images/cornell-box-moved-block.png)
 
@@ -182,7 +182,7 @@ return hit.Albedo * (0.035 + illumination * (EMITTER_WIDTH * EMITTER_DEPTH * 12.
 return hit.Albedo * (0.035 + illumination * (EMITTER_WIDTH * EMITTER_DEPTH * 6.0 / (16.0 * SAMPLE_PI)));
 ```
 
-Save, then **Build and Run**. **Checkpoint:** lit surfaces become dimmer, while
+Save, then **Launch**. **Checkpoint:** lit surfaces become dimmer, while
 the light's shape, block positions and shadow locations stay the same. The image
 will not become exactly half as bright because the shader also adds ambient
 light and applies tone mapping and display encoding. The visible ceiling patch
@@ -201,7 +201,7 @@ call:
 // blocks(point, toLight, shadow);
 ```
 
-Save, then **Build and Run**. **Checkpoint:** the blocks still render, but their
+Save, then **Launch**. **Checkpoint:** the blocks still render, but their
 cast shadows disappear. Surface-facing light still shades their faces. You have
 removed the visibility test between each surface and each ceiling-light sample;
 you have not removed the blocks from the camera's scene query.

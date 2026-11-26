@@ -1266,7 +1266,7 @@ For a shared declaration, **Storage size** in Buffer sizing and the Buffer's
 from the current draft. The preview multiplies the stride by the element
 capacity and rounds up to a 16-byte word. The total updates as you change
 **Element capacity**, even when an unrelated shader prevents the graph from
-building. Save the sizing and declaration changes and run **Build Graph** to
+building. Save the sizing and declaration changes and run **Compile Shaders** to
 apply the new allocation.
 
 An ordered Slang shader can declare the struct in its existing program file.
@@ -1682,7 +1682,7 @@ texture written earlier in the same ordered sequence. Keep a separate
 allocation for each texture this pass writes.
 
 Use **Shader API → Add Resource Access** or add a final
-`<FunctionName>Resources resources` parameter to the shader. **Build Graph**
+`<FunctionName>Resources resources` parameter to the shader. **Compile Shaders**
 generates a read-only texture member from each connected port, with its first
 letter capitalized. For example, Slang exposes `diffraction` as
 `Texture2D<float4> Diffraction` in `resources`. The graph owns the binding.
@@ -1929,7 +1929,7 @@ prefixed IDs and sources under `restir_di/main_shaders/`. No shader copying or
 pasting is required. Import captures every declared ray shader and its transitive
 local includes before committing the draft. If an embedded source is missing,
 application fails with its path instead of publishing a manifest that cannot build.
-Explicit **Build Graph** includes these new files in its immutable draft snapshot
+Explicit **Compile Shaders** includes these new files in its immutable draft snapshot
 before Save; building does not publish them to the project. Existing callbacks remain unchanged; a shared custom payload
 keeps its fields and gains `RayLaunch Launch`. Importing upgrades unchanged Raster
 admission defaults to the ReSTIR template capacity of 16 programs, so an existing
@@ -2182,7 +2182,7 @@ interface version, still reports its repair and preserves the draft.
 Newly created **ReSTIR DI** and **ReSTIR GI** packages provide the **StochasticPairwise**
 configuration in its root graph and reusable library. Select this configuration
 on the ReSTIR Subgraph (the configuration field is available on the canvas),
-then **Build Graph** and select the built graph for the viewport. From the CLI,
+then **Compile Shaders** and select the built graph for the viewport. From the CLI,
 create the editable package with `--template restir-di` or `--template restir-gi` and build with
 `--configuration StochasticPairwise`. Existing copied packages keep their authored
 sources; create a fresh package to obtain this configuration.
@@ -4872,12 +4872,12 @@ part of the source snapshot. The renderer uploads it once and binds it read-only
 at slot 13 when the linked kernel actually reads it. Version 25 runtime
 packages record that binding in one scene resource word.
 
-In a package that uses native ray stages, Build Graph links the callbacks
+In a package that uses native ray stages, Compile Shaders links the callbacks
 reachable from each configuration separately when these helpers are enabled.
 The native Metal shader includes only callbacks selected for hardware RT.
 A configuration that never reads the table runs without allocating it, even
 when other configurations need it. A compute-invoked pass can read the table
-in a configuration that also has hardware RT passes. Build Graph rejects a
+in a configuration that also has hardware RT passes. Compile Shaders rejects a
 hardware RT shader only if its compiled code reads the table. The shared flag
 is a Boolean that exposes the helpers. The
 [RIS and projected-solid-angle template](#resample-many-area-lights-with-projected-solid-angle-sampling)
@@ -8806,7 +8806,7 @@ and on the Render Graph toolbar (see the
   [in-app source editing](#edit-shader-sources-inside-ludus) for commands,
   undo grouping and native shader formatting. Generated wrappers and packages
   are build products and never editable sources.
-- An explicit **Build Graph** or **Build & Preview** registers missing techniques
+- An explicit **Compile Shaders** or **Build & Preview** registers missing techniques
   for complete pipelines in older graph packages as one undoable draft edit.
   **Save** publishes the repaired manifest; shader sources are preserved. Automatic
   saved-source Live Preview does not rewrite the saved package.
@@ -9153,7 +9153,7 @@ Choose **Open Source** from the graph to work in **Code**. The selected node's
 shader opens when one is assigned. The package file picker opens other shaders,
 editable graph JSON and the shader manifest. All tabs edit the same package
 draft that the canvas uses. **Return to Graph** restores the node selection.
-**Validate**, **Build Graph** and **Live Preview** are available while a package
+**Validate**, **Compile Shaders** and **Live Preview** are available while a package
 tab is shown, including when reading generated source.
 
 The editor provides line numbers, Slang coloring, current-line and matching-bracket
@@ -9487,7 +9487,7 @@ ordinary-line and plain-Qt comparison probes are opt-in `[.benchmark]` tests in
    for dependencies such as a nested record declared in another header.
 4. Add your declarations or helpers in the shared file. You can edit the
    quoted include manually using a path relative to the source. **Save**
-   publishes the draft. Run **Build Graph** to check the includes.
+   publishes the draft. Run **Compile Shaders** to check the includes.
 
 For a layout that sets a Buffer's capacity, use the [struct sizing
 workflow](#size-an-ordered-buffer-from-a-shader-struct), which also accepts

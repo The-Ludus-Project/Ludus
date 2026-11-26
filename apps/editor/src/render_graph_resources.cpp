@@ -443,7 +443,7 @@ RenderGraphResourceFeedback DescribeRenderGraphResource(const RenderGraphDocumen
         if (resource.StructType.isEmpty() == false)
         {
             return {QStringLiteral("%1 × %2").arg(resource.Count, resource.StructType),
-                    QStringLiteral("Build Graph resolves the byte capacity from the shared Slang struct.")};
+                    QStringLiteral("Compile Shaders resolves the byte capacity from the shared Slang struct.")};
         }
         const QString count = resource.Count == QStringLiteral("ColorTarget") ? QStringLiteral("one per output pixel")
                               : resource.Count == QStringLiteral("RenderSize")

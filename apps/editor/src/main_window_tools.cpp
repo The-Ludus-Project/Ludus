@@ -387,8 +387,9 @@ void MainWindow::updateContextStrip()
                           mDocuments->GetGroupIndex(mCodeArea) != mDocuments->GetGroupIndex(World_) &&
                           mDocuments->GetSplitOrientation() == Qt::Horizontal;
     World_->SetChromeVisible(mIsViewportFocused == false && isPaired == false);
-    const bool shouldShow =
-        mIsViewportFocused == false && (mDocuments->IsDocumentCurrent(Renderer_) == true || isCodeCurrent == true);
+    // The render-graph group stays in place whichever document is active, so switching tabs never reflows the
+    // toolbar row; only Focus Viewport hides it, with every other toolbar.
+    const bool shouldShow = mIsViewportFocused == false;
     if (mRenderGraphToolbar->isHidden() == shouldShow)
     {
         mRenderGraphToolbar->setVisible(shouldShow);

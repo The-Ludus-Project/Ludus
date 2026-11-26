@@ -302,7 +302,7 @@ On macOS, the launcher defaults to `macos-clang-development`:
 ```
 
 The macOS port includes New/Open/Save, SDK setup/check/repair, Configure/Build,
-Build and Run, Stop, project profile selection, layout/history, audio authoring
+Build and Launch, Stop, project profile selection, layout/history, audio authoring
 and preview, and Configuration. Qt supplies native Cocoa windows, text input,
 file pickers, and platform shortcuts. Games run separately using their own
 platform/RHI backend, including Metal. Version-2 descriptors expose all three
@@ -330,7 +330,7 @@ tables, lists and trees, and rebuild a combo box after a client reads its items;
 they require the Cocoa platform plugin.
 
 Live Play and native reload support macOS Debug/Development profiles with
-validated Mach-O UUIDs and immutable detached DWARF symbols. Build and Play,
+validated Mach-O UUIDs and immutable detached DWARF symbols. Live Play,
 Build and Reload, Pause/Step, live edits and opt-in source watching share the
 existing isolated host supervisor; see [native live editing](project-live-reload.md#macos-setup-and-symbols).
 RAD debugging remains disabled on macOS, with a backend error if invoked directly.
@@ -394,7 +394,7 @@ anything; if the editor is not built it prints the preparation commands above.
 Opening a descriptor reads metadata and queues a read-only setup check for v2
 SDK projects. The check uses the selected CMake to list presets and reports
 missing/stale setup in the status area and Output. It never configures, builds,
-downloads, runs project hooks, or changes files. Configure, Build, Build and Run,
+downloads, runs project hooks, or changes files. Configure, Build Game, Build and Launch,
 and Stop remain explicit actions.
 
 ### Startup sound
@@ -610,21 +610,34 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   the column never elides "Message". The Code column is hidden while no visible
   row has a code. A details pane under the table shows the selected description
   only when its row cannot: multi-line or elided descriptions.
-- **Toolbars** share the menus' commands, in groups told apart by a separator: Standard
-  holds File (Open, Save) and History (Undo, Redo); Game holds Run (Play, Build, Stop),
-  Launch (Run, Debug) and Session (Pause, Step, Resume, Fast-forward, Reload Code). The Session group
-  is shown only while a game is running or paused. The Render Graph toolbar is the
-  context strip: it appears while a render graph is shown in any document group, so a World
-  shown alone keeps one row of commands. Its buttons show an icon beside the label: Validate,
-  a **Build Graph** split button whose arrow offers Build & Preview, a **Live Preview**
-  toggle that keeps an accent edge while it is on, and Cancel. Toolbar buttons use short labels
-  so a 1280-pixel window shows them all; tooltips give the full name and
-  shortcut. The primary commands (Open, Save, Build, Run, Play, Stop) and the Render Graph
-  strip also show an icon beside the label; every other button stays text only. Project Explorer
+- **Toolbars** share the menus' commands in one row that stays the same on every
+  document tab, so switching tabs never moves a button. Groups, in workflow order:
+  Standard holds File (Open, Save) and History (Undo, Redo). Game holds **Build Game**,
+  then the three ways to start the game and **Stop**. Render Graph holds Validate, a
+  **Compile Shaders** split button whose arrow offers Build & Preview, a **Live Preview**
+  toggle that keeps an accent edge while it is on, and Cancel; these act on the current
+  graph document from any tab, including the World that previews it. The Live Play
+  Session group (Pause, Step, Resume, Fast-forward, Reload Code) is the only contextual
+  group: it is shown last, after every other group, and only while a Live Play session is
+  running or paused, so its appearing moves nothing. Each command's verb is distinct:
+
+  | Button | What it does |
+  |---|---|
+  | **Build Game** | Compiles the game's code with the saved build profile. Nothing starts. |
+  | **Live Play** | Builds the game as a reloadable module and plays it in an editor session: pause, step, inspect values and reload changed code while it runs. |
+  | **Launch** | Builds the game, then starts it as its own program, the way players run it. |
+  | **Debug** | Builds the game, then starts it in the RAD debugger. |
+  | **Compile Shaders** | Compiles the render graph's shaders into `out/render-graph`. Game code is not built. |
+
+  Toolbar buttons use short labels; tooltips say what each does. The primary
+  commands (Open, Save, Build Game, Live Play, Launch, Debug, Stop) and the Render Graph
+  group also show an icon beside the label; every other button stays text only. Project Explorer
   rows and the Error List severities carry icons too. The icons are Lucide
   drawings (ISC), drawn in the palette's button text colour; see
   [Editor icons](#editor-icons) for attribution and contribution instructions.
-  **View → Toolbars** hides or shows the Standard and Game toolbars. Documents have no
+  **View → Toolbars** hides or shows the Standard and Game toolbars. Explorer rows show
+  document names without file extensions, whatever their kind; the tooltip keeps the whole
+  file name, and two rows that share a name and a folder name their type. Documents have no
   command rows of their own: **File → New Render Graph...** and **Open Render
   Graph...** open graphs, and the **Build** menu holds every render-graph
   command, including Cook Render Graph Runtime and Cancel Render Graph Job.
@@ -1122,10 +1135,10 @@ keeps the window and its draft open.
 | Ctrl+W | Close the active document tab (its draft stays open) |
 | Ctrl+Shift+T (Cmd+Shift+T on macOS) | Reopen the most recently closed workspace tab |
 | Ctrl+Shift+W | Close Project |
-| Ctrl+Shift+B | Build |
-| Ctrl+F5 / F5 | Build and Run / Build and Debug in RAD |
-| F6 / Shift+F6 | Build and Play / Stop |
-| Ctrl+F7 / F7 | Validate Render Graph / Build Render Graph |
+| Ctrl+Shift+B | Build Game |
+| Ctrl+F5 / F5 | Build and Launch / Build and Debug in RAD |
+| F6 / Shift+F6 | Build and Start Live Play / Stop |
+| Ctrl+F7 / F7 | Validate Render Graph / Compile Render Graph Shaders |
 | Shift+F7 / Ctrl+Shift+F7 | Build Render Graph and Preview / toggle Live Render Graph Preview |
 | Ctrl+Break | Cancel the running render-graph job (also turns Live Preview off) |
 | Ctrl+Alt+L / F4 | Show Project Explorer / Properties |
@@ -2509,7 +2522,7 @@ eclipses. Games can pass their own simulation time to the
 [GameplayWorld celestial sampler](../architecture/game-world.md#earth-celestial-transforms).
 
 During a supported hosted Play session, choose **Fast-forward (4×)** in the
-**Play** menu or Game toolbar to advance the game by four fixed ticks per
+**Play** menu or Live Play Session toolbar to advance the game by four fixed ticks per
 rendered frame. **Normal speed (1×)** restores the usual rate. **Pause** still
 freezes simulation and **Step** advances one tick. Game code that samples
 celestial motion from the host's simulation clock sees the same speed change
@@ -4151,7 +4164,7 @@ folders and plays shipped web sample builds through separate browser adapters.
 
 ## Debug a native game
 
-The Game toolbar and Build menu offer **Build & Debug in RAD** (F5 in the Editor)
+The Game toolbar (**Debug**) and Build menu offer **Build & Debug in RAD** (F5 in the Editor)
 for a clean, saved Debug or Development project. It builds the selected target
 and verifies native symbols before opening RAD. RAD stays optional for all other
 project operations. If it is missing, choose **Set Up RAD**, **Choose Existing

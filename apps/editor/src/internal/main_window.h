@@ -334,6 +334,8 @@ private:
     QAction* mRecordProfileAction;
     QToolBar* mStandardToolbar;
     QToolBar* mRenderGraphToolbar;
+    /// The Live Play session's Pause, Step, Resume, Fast-forward and Reload Code; shown only while a session runs.
+    QToolBar* mSessionToolbar;
     QAction* mNewGraphAction;
     QAction* mOpenGraphAction;
     QAction* mRemoveUnusedShadersAction;
@@ -359,7 +361,6 @@ private:
     QToolBar* GameToolbar_ = nullptr;
     StatusActivityBar* mActivityBarOrNull = nullptr;
     CodeStatusBar* mCodeStatusBarOrNull = nullptr;
-    QAction* mSessionSeparatorActionOrNull = nullptr;
     // Build output is parsed for the Error List after it stops changing briefly.
     QTimer mBuildErrorsTimer;
     QString mParsedBuildOutput;

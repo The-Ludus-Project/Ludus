@@ -179,7 +179,7 @@ prove interactive stepping or correct DWARF evaluation.
 
 ## From the Ludus Editor
 
-Use **Build & Debug** in the Game toolbar or Build menu (F5 inside the Editor).
+Use **Debug** in the Game toolbar or **Build & Debug in RAD** in the Build menu (F5 inside the Editor).
 The saved native Debug or Development profile is configured and built before
 launching RAD. The executable must contain DWARF symbols and an .eh_frame_hdr
 section. Both engine targets and independent SDK game projects are supported.

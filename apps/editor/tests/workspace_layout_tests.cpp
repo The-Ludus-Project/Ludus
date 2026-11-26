@@ -144,13 +144,16 @@ TEST_CASE("Workspace panels recover without changing project state and share Pla
 "source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json");
     REQUIRE(descriptor.write(bytes) == bytes.size());
     descriptor.close();
-    auto* toolbar = window.findChild<QToolBar*>(QStringLiteral("gameToolbar"));
-    REQUIRE(toolbar != nullptr);
+    QToolBar* game = window.findChild<QToolBar*>(QStringLiteral("gameToolbar"));
+    QToolBar* session = window.findChild<QToolBar*>(QStringLiteral("sessionToolbar"));
+    REQUIRE(game != nullptr);
+    REQUIRE(session != nullptr);
     for (const auto& name : {QStringLiteral("play.start"), QStringLiteral("play.reload")})
     {
         auto* action = window.findChild<QAction*>(name);
         REQUIRE(action != nullptr);
-        CHECK(toolbar->actions().contains(action));
+        // Live Play starts from the game group; Reload Code belongs to the session it reloads.
+        CHECK((game->actions().contains(action) || session->actions().contains(action)) == true);
         CHECK_FALSE(action->isEnabled()); // Empty projects cannot launch work.
     }
     controller.OpenProject(descriptor.fileName());
@@ -166,10 +169,10 @@ TEST_CASE("Workspace panels recover without changing project state and share Pla
     CHECK_FALSE(inspector->isHidden());
     inspector->setFloating(true);
     Dock(window, QStringLiteral("outputDock"))->hide();
-    toolbar->hide();
+    game->hide();
     Reset(window);
     CheckDefaultPanels(window);
-    CHECK_FALSE(toolbar->isHidden());
+    CHECK_FALSE(game->isHidden());
     CHECK(controller.State().ProjectEpoch == epoch);
     CHECK(controller.State().Document == DocumentState::ProjectLoaded);
     CHECK(controller.State().Dirty());
@@ -449,7 +452,7 @@ TEST_CASE("Focus Viewport hides chrome around the World viewport and restores th
         // A personal arrangement: one tool window moved, one closed, one toolbar hidden.
         window.addDockWidget(Qt::LeftDockWidgetArea, Dock(window, QStringLiteral("outputDock")));
         Dock(window, QStringLiteral("liveInspectorDock"))->hide();
-        window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"))->hide();
+        window.findChild<QToolBar*>(QStringLiteral("gameToolbar"))->hide();
         QApplication::processEvents();
 
         QAction* focus = window.findChild<QAction*>(QStringLiteral("view.focusViewport"));
@@ -495,7 +498,7 @@ TEST_CASE("Focus Viewport hides chrome around the World viewport and restores th
     CHECK(window.dockWidgetArea(Dock(window, QStringLiteral("outputDock"))) == Qt::LeftDockWidgetArea);
     CHECK(Dock(window, QStringLiteral("liveInspectorDock"))->isHidden() == true);
     CHECK(Dock(window, QStringLiteral("projectExplorerDock"))->isHidden() == false);
-    CHECK(window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"))->isHidden() == true);
+    CHECK(window.findChild<QToolBar*>(QStringLiteral("gameToolbar"))->isHidden() == true);
     CHECK(window.findChild<QToolBar*>(QStringLiteral("standardToolbar"))->isHidden() == false);
 
     // Leaving Focus Viewport returns the exact dock state and the previously active document.

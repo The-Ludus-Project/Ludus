@@ -81,10 +81,11 @@ inline constexpr EditorCommand RENDER_GRAPH_VALIDATE_COMMAND
 inline constexpr EditorCommand RENDER_GRAPH_BUILD_COMMAND
 {
     .Id = "renderGraph.build",
-    .Text = "Build Render &Graph",
-    .ToolbarText = "Build Graph",
+    .Text = "Compile Render &Graph Shaders",
+    .ToolbarText = "Compile Shaders",
     .Shortcut = "F7",
-    .Help = "Build the render-graph draft's shaders into the project's out/render-graph tree.",
+    .Help = "Compile the render-graph draft's shaders into the project's out/render-graph tree. The game's code "
+            "is not built; Build Game does that.",
     .IsCheckable = false,
 };
 inline constexpr EditorCommand RENDER_GRAPH_BUILD_PREVIEW_COMMAND
