@@ -65,6 +65,7 @@
   --ludus-radius-group: 6px;
   --ludus-radius-card: 8px;
   --ludus-size-checkbox: 14px;
+  --ludus-size-tooltipMaximumWidth: 320px;
 }
 @media (prefers-color-scheme: light) {
   :root {

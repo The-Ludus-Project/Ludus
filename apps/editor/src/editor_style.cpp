@@ -5,6 +5,7 @@
 #include "internal/tab_modified.h"
 #include "internal/theme_fonts.h"
 #include "internal/theme_preferences.h"
+#include "internal/tooltip_text.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -1597,6 +1598,8 @@ void InstallEditorStyle()
     {
         style = new EditorStyle;
         QApplication::setStyle(style);
+        // Tooltips wrap at the design token's width wherever the editor runs; the style outlives every widget.
+        QApplication::instance()->installEventFilter(new TooltipWidthFilter(style));
     }
     style->Refresh();
 }

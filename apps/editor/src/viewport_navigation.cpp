@@ -1,3 +1,4 @@
+#include "design_tokens.h"
 #include "internal/preview_viewport.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/ray_path_inspection.h"
@@ -185,7 +186,12 @@ void PreviewViewport::contextMenuEvent(QContextMenuEvent* event)
     // The tracked gesture opens the menu on release, after we know it was not a drag.
     if (event->reason() == QContextMenuEvent::Keyboard && mIsFlying == false && mHasContextPress == false)
     {
-        Q_EMIT WorldContextMenuRequested(mapToGlobal(rect().center()), {});
+        // No pointer position exists, so the menu opens at the frame's top-left corner instead of over the
+        // framed subject at its centre.
+        const QRectF frame = getInteractionFrame();
+        const QPoint corner = frame.isEmpty() == true ? QPoint() : frame.toAlignedRect().topLeft();
+        Q_EMIT WorldContextMenuRequested(mapToGlobal(corner + QPoint(design::SPACING_LARGE, design::SPACING_LARGE)),
+                                         {});
     }
     event->accept();
 }

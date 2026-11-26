@@ -144,12 +144,9 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     mTargets->setProperty("visualRole", QStringLiteral("ghost"));
     mTargets->setAccessibleName(QStringLiteral("Render graph output"));
     mTargets->setToolTip(
-        QStringLiteral("Final output and every render-graph attachment, then built-in debug views. A debug view "
-                       "draws the World with the editor's raster renderer, regardless of what the project's graph "
-                       "draws, showing one material, geometry or lighting quantity per pixel (albedo, normals, "
-                       "depth, wireframe…). Lighting views follow: the graph's own resolve draws one term of its "
-                       "lighting, such as one light, the sky or its shadow coverage. Other special views use "
-                       "configurations authored in the project's graph."));
+        QStringLiteral("Final output, every render-graph attachment, then debug views. A debug view draws the "
+                       "World with the editor's raster renderer, one quantity per pixel (albedo, normals, depth, "
+                       "wireframe…). Hover an entry for what it shows."));
     mStatistics->setObjectName(QStringLiteral("worldGraphStatisticsOverlay"));
     mStatistics->setTextFormat(Qt::PlainText);
     mStatistics->move(STATISTICS_MARGIN_PIXEL, STATISTICS_MARGIN_PIXEL);
@@ -450,7 +447,6 @@ void WorldGraphView::refreshStatistics()
     mFullStatisticsText = FormatGraphViewportStatistics(mPreview.GetStatistics(), deviceStatistics, nowNanoseconds);
     mStatistics->SetStatisticsText(
         FormatCompactGraphViewportStatistics(mPreview.GetStatistics(), deviceStatistics, nowNanoseconds),
-        mFullStatisticsText,
         FormatGraphViewportStatisticsSummary(mPreview.GetStatistics(), nowNanoseconds));
     mStatistics->raise();
     Q_EMIT StatisticsChanged();

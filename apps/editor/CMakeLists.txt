@@ -742,7 +742,8 @@ ludus_editor_add_objects(ludus_editor_presentation
     src/internal/chip_strip.h src/chip_strip.cpp
     src/internal/action_strip.h src/action_strip.cpp
     src/internal/editor_icons.h src/editor_icons.cpp
-    src/internal/theme_fonts.h src/theme_fonts.cpp)
+    src/internal/theme_fonts.h src/theme_fonts.cpp
+    src/internal/tooltip_text.h src/tooltip_text.cpp)
 target_link_libraries(ludus_editor_presentation PUBLIC Qt6::Widgets Ludus::FoundationBase Ludus::FoundationContainers)
 
 # The Renderer tab's authoring panels that need no viewport device. The
@@ -1405,6 +1406,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/world_properties_layout_tests.cpp
         tests/world_start_view_tests.cpp
         tests/viewport_debug_tests.cpp
+        tests/tooltip_text_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
         tests/viewport_pacing.cpp

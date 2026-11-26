@@ -34,6 +34,9 @@ inline constexpr int VIEWPORT_STATISTICS_PADDING = design::SPACING_EXTRA_SMALL;
 /// Prefix compactText with a disclosure mark, or replace it with the collapsed one-line chip.
 [[nodiscard]] QString MakeStatisticsOverlayText(const QString& compactText, const QString& summary);
 
+/// The overlay's whole tooltip: what a click does now. Short on purpose, so hovering never covers the frame.
+[[nodiscard]] QString GetStatisticsOverlayHint();
+
 /// Space between the label and value columns, in logical pixels.
 [[nodiscard]] qreal GetViewportHudColumnGap();
 
@@ -54,9 +57,10 @@ class HudGridLabel final : public QLabel
 public:
     explicit HudGridLabel(QWidget* parent);
 
-    /// compactText is the mean-times grid; fullText is the tooltip (with p95 and max); summary is the
-    /// collapsed chip. The label paints the compact grid or the chip, and a click toggles that state.
-    void SetStatisticsText(const QString& compactText, const QString& fullText, const QString& summary);
+    /// compactText is the mean-times grid and summary is the collapsed chip. The label paints the grid or the
+    /// chip, and a click toggles that state. The tooltip is only the click hint: the grid already is the
+    /// detail, so a second copy of it would cover the picture.
+    void SetStatisticsText(const QString& compactText, const QString& summary);
 
     [[nodiscard]] QSize sizeHint() const override;
     [[nodiscard]] QSize minimumSizeHint() const override;
@@ -68,7 +72,6 @@ protected:
 private:
     void applyStatisticsDisplay();
     QString mCompactText;
-    QString mFullText;
     QString mSummary;
 };
 } // namespace ludus::editor

@@ -1043,8 +1043,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     addObject->setIcon(GetEditorIcon(EditorIcon::Add));
     addObject->setToolButtonStyle(Qt::ToolButtonIconOnly);
     addObject->setAutoRaise(true);
-    addObject->setToolTip(QStringLiteral("Add World Preset: geometry, lights, a GI probe volume, a player spawn or an "
-                                         "aperture."));
+    addObject->setToolTip(QStringLiteral("Add World Preset"));
     addObject->setPopupMode(QToolButton::InstantPopup);
     QMenu* objectMenu = new QMenu(addObject->text(), addObject);
     mEntityMenu->addSeparator();
@@ -1080,8 +1079,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         action->setObjectName(QStringLiteral("worldCreate") + QString(preset).remove(QLatin1Char(' ')));
         connect(objectMenu, &QMenu::aboutToShow, action, [this, action]() {
             action->setEnabled(mAddEntity->isEnabled() == true && IsBuiltInWorld(Document_) == true);
-            action->setToolTip(
-                QStringLiteral("Create an object in a default World. Project schemas define their own components."));
+            // No tooltip: a tip beside the open menu would cover the viewport. The status line says it instead.
+            action->setStatusTip(QStringLiteral("Create an object in a default World."));
         });
         connect(action, &QAction::triggered, this, [this, preset]() {
             QString id;
@@ -2691,9 +2690,7 @@ void WorldWorkspace::addCoatedDiffuseControls(QFormLayout& inoutRows,
     QPushButton* assign = new QPushButton(QStringLiteral("Make Coated Diffuse…"), group);
     assign->setObjectName(QStringLiteral("worldMakeCoatedDiffuse"));
     assign->setEnabled(Pending_ == false && SceneBusy() == false);
-    assign->setToolTip(
-        QStringLiteral("Create and assign an ordered dielectric coat over a diffuse substrate (this slot's base "
-                       "colour). Edit the coat IOR, optical thickness and GGX alpha in the Material document."));
+    assign->setToolTip(QStringLiteral("Add a clear coat over this slot's base colour."));
     connect(assign, &QPushButton::clicked, this, [this, source]() {
         createImportedMaterial(source, QString::fromLatin1(CREATED_MATERIAL_COATED_DIFFUSE));
     });
@@ -2719,9 +2716,7 @@ void WorldWorkspace::addHairCardControls(QFormLayout& inoutRows,
         }
         QPushButton* assign = new QPushButton(QStringLiteral("Make Hair Card"), group);
         assign->setObjectName(QStringLiteral("worldAssignHairCard"));
-        assign->setToolTip(
-            QStringLiteral("Shade this slot as a two-sided hair card whose highlights follow an authored "
-                           "strand direction. Its base colour, roughness, textures and mask are kept."));
+        assign->setToolTip(QStringLiteral("Shade this slot as a two-sided hair card with strand-aligned highlights."));
         connect(assign, &QPushButton::clicked, this, [this]() { assignHairCard(true); });
         inoutRows.addRow(assign);
         return;
@@ -2902,10 +2897,7 @@ void WorldWorkspace::addSkinControls(QFormLayout& inoutRows,
         }
         QPushButton* assign = new QPushButton(QStringLiteral("Make Skin"), group);
         assign->setObjectName(QStringLiteral("worldAssignSkin"));
-        assign->setToolTip(
-            QStringLiteral("Shade this slot as skin, whose diffuse light spreads under the surface over a per-channel "
-                           "scattering distance. Its base colour, roughness, emission and textures are kept; "
-                           "skin is not metallic."));
+        assign->setToolTip(QStringLiteral("Shade this slot as skin: light spreads under the surface."));
         connect(assign, &QPushButton::clicked, this, [this]() { assignSkin(true); });
         inoutRows.addRow(assign);
         return;

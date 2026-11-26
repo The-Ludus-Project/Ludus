@@ -600,6 +600,49 @@ TEST_CASE("World context menu creates entities in the viewport and edits the hie
     menuOrNull->close();
 }
 
+TEST_CASE("World viewport tips and menus stay off the picture", "[editor][world][context-menu][tooltip]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    WorldWorkspace workspace;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("tips.world.json"))) == true);
+    workspace.resize(1100, 720);
+    workspace.show();
+    QApplication::processEvents();
+    PreviewViewport* viewportOrNull = workspace.findChild<PreviewViewport*>(QStringLiteral("worldViewport"));
+    QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("worldEntityContextMenu"));
+    REQUIRE(viewportOrNull != nullptr);
+    REQUIRE(menuOrNull != nullptr);
+
+    // Hovering the picture shows nothing: the navigation help lives on its own button.
+    CHECK(viewportOrNull->toolTip().isEmpty() == true);
+    const QToolButton* hintOrNull = viewportOrNull->findChild<QToolButton*>(QStringLiteral("viewportNavigationHint"));
+    REQUIRE(hintOrNull != nullptr);
+    CHECK(hintOrNull->toolTip().contains(QStringLiteral("orbit")) == true);
+    CHECK(hintOrNull->toolTip().count(QLatin1Char('\n')) <= 2);
+
+    // Preset actions carry no tooltip of their own, so none can open beside the menu.
+    QAction* cubeOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateCube"));
+    REQUIRE(cubeOrNull != nullptr);
+    QMenu* presetsOrNull = qobject_cast<QMenu*>(cubeOrNull->parent());
+    REQUIRE(presetsOrNull != nullptr);
+    Q_EMIT presetsOrNull->aboutToShow();
+    CHECK(cubeOrNull->toolTip() == cubeOrNull->text());
+    CHECK(cubeOrNull->statusTip().isEmpty() == false);
+
+    // The keyboard menu key has no pointer position; the menu opens at the frame's corner, not on the subject.
+    const QPoint centreGlobal = viewportOrNull->mapToGlobal(viewportOrNull->rect().center());
+    QContextMenuEvent keyboard(QContextMenuEvent::Keyboard, QPoint(), QPoint());
+    QApplication::sendEvent(viewportOrNull, &keyboard);
+    REQUIRE(menuOrNull->isVisible() == true);
+    CHECK(menuOrNull->geometry().contains(centreGlobal) == false);
+    CHECK(menuOrNull->geometry().left() < centreGlobal.x());
+    CHECK(menuOrNull->geometry().top() < centreGlobal.y());
+    menuOrNull->close();
+}
+
 TEST_CASE("Double-clicking a World entity frames it from the viewport or hierarchy", "[editor][world][framing]")
 {
     using namespace ludus::foundation;
