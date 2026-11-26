@@ -375,6 +375,11 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/directional_near_render_tests.cpp tests/render_graph_default_render_tests.cpp tests/render_graph_hair_card_render_tests.cpp tests/render_graph_skin_render_tests.cpp tests/render_graph_reload_render_tests.cpp tests/render_graph_pool_render_tests.cpp tests/render_graph_ordered_render_tests.cpp tests/selection_outline_render_tests.cpp
         tests/hybrid_shadow_tests.cpp tests/hybrid_area_shadow_tests.cpp tests/hybrid_reflection_tests.cpp tests/hybrid_indirect_diffuse_tests.cpp)
     target_sources(ludus_renderer_render_tests PRIVATE tests/wave_tracing_parity_tests.cpp tests/large_world_sky_tests.cpp)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # lavapipe's compute workers take the default thread stack; the CI driver profile's unoptimized shader
+        # frames outgrow glibc's 8 MiB default (see the source).
+        target_sources(ludus_renderer_render_tests PRIVATE tests/software_vulkan_thread_stack.cpp)
+    endif()
     target_sources(ludus_renderer_render_tests PRIVATE tests/viewport_antialiasing_coverage_tests.cpp
         "$<TARGET_OBJECTS:ludus_renderer_earth_sky_quadrature>")
     target_include_directories(ludus_renderer_render_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests/support" ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
