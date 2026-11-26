@@ -1,3 +1,5 @@
+#include "baseline_renderer_grid.h"
+#include "baseline_renderer_overlay.h"
 #include "internal/readback.h"
 #include "l0_scene.h"
 #include "l1_scene.h"
@@ -13,6 +15,7 @@
 #include "renderer_lit_shadow.h"
 #include "renderer_output.h"
 #include "renderer_overlay.h"
+#include "renderer_overlay_slots.h"
 #include "renderer_shadow.h"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -22,16 +25,19 @@
 #include <cstring>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/views.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/lifetime.h>
+#include <ludus/graphics/rhi/measurement.h>
 #include <ludus/graphics/rhi/raster.h>
 namespace rhi = ludus::graphics::rhi;
 namespace rr = ludus::graphics::renderer;
 using namespace ludus::foundation;
 namespace timing = ludus::foundation::time;
+namespace threading = ludus::foundation::threading;
 TEST_CASE("L0 optimized packets match unsorted direct pixels with depth, errors and painter overlays",
           "[renderer][gpu]")
 {
@@ -336,6 +342,70 @@ TEST_CASE("L1 Fill crops logical offscreen pixels once and matches direct output
         sample(89, 11, {255, 0, 255});
     }
 }
+namespace
+{
+constexpr uint32 L2_WIDTH = 96;
+constexpr uint32 L2_HEIGHT = 64;
+using L2Image = uint8[L2_WIDTH * L2_HEIGHT * 4];
+/// Draw the L2 overlay list with the overlay stages `vertex` and `fragment` and read the surface.
+void RenderL2Overlay(rhi::DeviceHandle device,
+                     rhi::SurfaceHandle surface,
+                     const rhi::RasterShaderDescription& vertex,
+                     const rhi::RasterShaderDescription& fragment,
+                     L2Image& outImage)
+{
+    rr::OverlayRenderer overlays;
+    const rhi::RasterStatus initialized = overlays.Initialize(device, vertex, fragment);
+    REQUIRE((initialized == rhi::RasterStatus::Ready || initialized == rhi::RasterStatus::Pending));
+    rhi::RasterStatus setup = initialized;
+    for (usize i = 0; i < 100000 && setup == rhi::RasterStatus::Pending; ++i)
+    {
+        setup = overlays.Poll();
+    }
+    REQUIRE(setup == rhi::RasterStatus::Ready);
+    rr::OverlayList list;
+    ludus::graphics::text::CoverageAtlas atlas;
+    REQUIRE(ludus::qa::BuildL2List(list, atlas) == rhi::RasterStatus::Ready);
+    rhi::TextureHandle texture;
+    const rhi::RasterStatus published = atlas.Publish(device, texture);
+    REQUIRE((published == rhi::RasterStatus::Ready || published == rhi::RasterStatus::Pending));
+    bool textureReady = false;
+    for (usize i = 0; i < 100000 && textureReady == false; ++i)
+    {
+        REQUIRE(overlays.Poll() == rhi::RasterStatus::Ready);
+        const rhi::RasterStatus status = rhi::GetStatus(device, texture);
+        REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
+        textureReady = status == rhi::RasterStatus::Ready;
+    }
+    REQUIRE(textureReady);
+    rr::PreparedOverlay prepared;
+    const rhi::RasterStatus preparedStatus = overlays.Prepare(list, texture, prepared);
+    REQUIRE((preparedStatus == rhi::RasterStatus::Ready || preparedStatus == rhi::RasterStatus::Pending));
+    // Bounded nonblocking poll; native transfer completion may lag submission.
+    bool ready = false;
+    for (usize i = 0; i < 100000 && ready == false; ++i)
+    {
+        REQUIRE(overlays.Poll() == rhi::RasterStatus::Ready);
+        const rhi::RasterStatus status = overlays.GetStatus(prepared);
+        REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
+        ready = status == rhi::RasterStatus::Ready;
+    }
+    REQUIRE(ready);
+    // Logical atlas/CPU release cannot invalidate prepared version.
+    REQUIRE(rhi::Destroy(device, texture) == rhi::RasterStatus::Ready);
+    atlas.Reset();
+    list.Clear();
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    rhi::RasterPassDescription pass;
+    pass.DepthStore = rhi::RasterStore::Store;
+    REQUIRE(rhi::BeginRasterPass(device, pass) == rhi::RasterStatus::Ready);
+    REQUIRE(overlays.Draw(prepared, pass) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::EndFrame(device, completion) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(outImage));
+    REQUIRE(overlays.Release(prepared) == rhi::RasterStatus::Ready);
+}
+} // namespace
 TEST_CASE("L2 R8 coverage orientation, painter scissors and clipped thick lines have independent pixel oracles",
           "[renderer][l2][gpu]")
 {
@@ -360,58 +430,12 @@ TEST_CASE("L2 R8 coverage orientation, painter scissors and clipped thick lines 
     }
 #endif
     REQUIRE(started == rhi::DeviceStatus::Ready);
-    rr::OverlayRenderer overlays;
-    const auto initialized = overlays.Initialize(device,
-                                                 ludus::shaders::renderer_overlay::Vertex(),
-                                                 ludus::shaders::renderer_overlay::Fragment());
-    REQUIRE((initialized == rhi::RasterStatus::Ready || initialized == rhi::RasterStatus::Pending));
-    auto setup = initialized;
-    for (usize i = 0; i < 100000 && setup == rhi::RasterStatus::Pending; ++i)
-    {
-        setup = overlays.Poll();
-    }
-    REQUIRE(setup == rhi::RasterStatus::Ready);
-    rr::OverlayList list;
-    ludus::graphics::text::CoverageAtlas atlas;
-    REQUIRE(ludus::qa::BuildL2List(list, atlas) == rhi::RasterStatus::Ready);
-    rhi::TextureHandle texture;
-    const auto published = atlas.Publish(device, texture);
-    REQUIRE((published == rhi::RasterStatus::Ready || published == rhi::RasterStatus::Pending));
-    bool textureReady = false;
-    for (usize i = 0; i < 100000 && textureReady == false; ++i)
-    {
-        REQUIRE(overlays.Poll() == rhi::RasterStatus::Ready);
-        const auto status = rhi::GetStatus(device, texture);
-        REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
-        textureReady = status == rhi::RasterStatus::Ready;
-    }
-    REQUIRE(textureReady);
-    rr::PreparedOverlay prepared;
-    const auto preparedStatus = overlays.Prepare(list, texture, prepared);
-    REQUIRE((preparedStatus == rhi::RasterStatus::Ready || preparedStatus == rhi::RasterStatus::Pending));
-    // Bounded nonblocking poll; native transfer completion may lag submission.
-    bool ready = false;
-    for (usize i = 0; i < 100000 && ready == false; ++i)
-    {
-        REQUIRE(overlays.Poll() == rhi::RasterStatus::Ready);
-        const auto status = overlays.GetStatus(prepared);
-        REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
-        ready = status == rhi::RasterStatus::Ready;
-    }
-    REQUIRE(ready);
-    // Logical atlas/CPU release cannot invalidate prepared version.
-    REQUIRE(rhi::Destroy(device, texture) == rhi::RasterStatus::Ready);
-    atlas.Reset();
-    list.Clear();
-    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
-    rhi::RasterPassDescription pass;
-    pass.DepthStore = rhi::RasterStore::Store;
-    REQUIRE(rhi::BeginRasterPass(device, pass) == rhi::RasterStatus::Ready);
-    REQUIRE(overlays.Draw(prepared, pass) == rhi::RasterStatus::Ready);
-    rhi::SubmissionToken completion;
-    REQUIRE(rhi::EndFrame(device, completion) == rhi::RasterStatus::Ready);
     uint8 image[96 * 64 * 4];
-    REQUIRE(rhi::backend::ReadHeadlessPixels(image));
+    RenderL2Overlay(device,
+                    surface,
+                    ludus::shaders::renderer_overlay::Vertex(),
+                    ludus::shaders::renderer_overlay::Fragment(),
+                    image);
     const auto color = [&](uint32 x, uint32 y, const uint8(&rgb)[3]) {
         const usize offset = (static_cast<usize>(y) * 96 + x) * 4;
         CHECK(image[offset] == rgb[0]);
@@ -431,7 +455,57 @@ TEST_CASE("L2 R8 coverage orientation, painter scissors and clipped thick lines 
     color(80, 28, {0, 0, 0});
     color(60, 16, {0, 0, 255});
     color(32, 16, {0, 0, 0});
-    REQUIRE(overlays.Release(prepared) == rhi::RasterStatus::Ready);
+}
+TEST_CASE("The LUSL overlay recipe renders its Slang original's pixels", "[renderer][l2][gpu][lusl]")
+{
+    // LUSL L5d wave 2: the L2 overlay list drawn by renderer_overlay and by its Slang original
+    // (shaders/renderer_overlay.slang) on one device; every byte must match.
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::StartupInfo failure;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = L2_WIDTH, .Height = L2_HEIGHT }, description, device, surface, &failure);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    const rhi::RasterShaderDescription fragment = ludus::shaders::renderer_overlay::Fragment();
+    REQUIRE(fragment.Bindings.GetSize() == 2);
+    CHECK(fragment.Bindings[0].Binding == ludus::shaders::renderer_overlay::slots::COVERAGE_ATLAS);
+    CHECK(fragment.Bindings[0].Kind == rhi::RasterBindingKind::Texture2D);
+    CHECK(fragment.Bindings[1].Binding == ludus::shaders::renderer_overlay::slots::COVERAGE_SAMPLER);
+    CHECK(fragment.Bindings[1].Kind == rhi::RasterBindingKind::Sampler);
+    L2Image slang;
+    L2Image lusl;
+    RenderL2Overlay(device,
+                    surface,
+                    ludus::shaders::baseline_renderer_overlay::Vertex(),
+                    ludus::shaders::baseline_renderer_overlay::Fragment(),
+                    slang);
+    RenderL2Overlay(device, surface, ludus::shaders::renderer_overlay::Vertex(), fragment, lusl);
+    usize differing = 0;
+    for (usize i = 0; i < sizeof(L2Image); ++i)
+    {
+        differing += slang[i] != lusl[i] ? 1 : 0;
+    }
+    CHECK(differing == 0);
+    // The list draws solid red and white text coverage, so equality is not vacuous.
+    const usize red = (usize{48} * L2_WIDTH + 8) * 4;
+    CHECK(lusl[red] == 255);
+    CHECK(lusl[red + 1] == 0);
 }
 #include "l3_color.h"
 #include "l3_scene.h"
@@ -1503,6 +1577,188 @@ TEST_CASE("Analytic world grids draw antialiased lines, axes and fades behind ne
     CHECK(differing > 0);
     CHECK(differing > ribbonOnly * 4);
     CHECK(differing > analyticOnly / 2);
+}
+
+namespace
+{
+/// Alternating blocks of the in-process A/B timing of a ported recipe against its Slang original.
+constexpr uint32 RECIPE_AB_BLOCKS = 12;
+/// Untimed frames per variant at the start of each block.
+constexpr uint32 RECIPE_AB_WARMUP_FRAMES = 3;
+/// Timed frames per variant in each block.
+constexpr uint32 RECIPE_AB_FRAMES = 20;
+/// Bound on the polls of a pending GPU timing sample after its frame completed.
+constexpr usize POLL_LIMIT = 1000000;
+
+/// Median of `count` values, which it sorts in place.
+uint64 GetMedian(uint64* inoutValues, usize count) noexcept
+{
+    for (usize i = 1; i < count; ++i)
+    {
+        for (usize j = i; j > 0 && inoutValues[j - 1] > inoutValues[j]; --j)
+        {
+            const uint64 swapped = inoutValues[j - 1];
+            inoutValues[j - 1] = inoutValues[j];
+            inoutValues[j] = swapped;
+        }
+    }
+    const uint64 low = inoutValues[(count - 1) / 2];
+    // Halve the gap rather than the sum, which can overflow for offset signed values.
+    return low + (inoutValues[count / 2] - low) / 2;
+}
+} // namespace
+
+TEST_CASE("The LUSL grid recipe renders its Slang original's pixels", "[renderer][grid][gpu][lusl]")
+{
+    // LUSL L5d wave 2: the same scene as the analytic grid test, drawn by renderer_grid and by its
+    // Slang original (shaders/renderer_grid.slang) on one device, each beside the same flat quad. With
+    // LUDUS_RENDERER_BENCHMARK set it draws 1080p frames and times the two programs A/B in
+    // alternating blocks, swapping the order each block, because clocks drift between runs.
+    const bool isBenchmark = std::getenv("LUDUS_RENDERER_BENCHMARK") != nullptr;
+    const uint32 width = isBenchmark ? 1920U : GRID_WIDTH;
+    const uint32 height = isBenchmark ? 1080U : GRID_HEIGHT;
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::StartupInfo failure;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.EnableGpuTiming = isBenchmark;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = width, .Height = height }, description, device, surface, &failure);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    struct Program final
+    {
+        const char* Name;
+        rhi::RasterShaderDescription GridVertex;
+        rhi::RasterShaderDescription GridFragment;
+    };
+    const Program programs[2]{
+        {"slang", ludus::shaders::baseline_renderer_grid::Vertex(), ludus::shaders::baseline_renderer_grid::Fragment()},
+        {"lusl", ludus::shaders::renderer_grid::Vertex(), ludus::shaders::renderer_grid::Fragment()}};
+    rr::SceneItem item;
+    rr::Renderer renderers[2];
+    rr::Mesh meshes[2];
+    rr::Snapshot snapshots[2];
+    rr::PreparedView views[2];
+    for (usize variant = 0; variant < 2; ++variant)
+    {
+        rr::Renderer& renderer = renderers[variant];
+        REQUIRE(renderer.Initialize(device,
+                                    ludus::shaders::renderer_flat::Vertex(),
+                                    ludus::shaders::renderer_flat::Fragment()) == rhi::RasterStatus::Ready);
+        REQUIRE(renderer.InitializeGrid(programs[variant].GridVertex, programs[variant].GridFragment) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(renderer.CreateMesh({ludus::qa::L0_QUAD, 4, ludus::qa::L0_INDICES, 6}, meshes[variant]) ==
+                rhi::RasterStatus::Ready);
+        item.Geometry = meshes[variant];
+        item.SourceId = 1;
+        item.Transform.Columns[0] = {2, 0, 0};
+        item.Transform.Columns[1] = {0, 0, 2};
+        item.Transform.Columns[2] = {0, 1, 0};
+        item.Transform.Translation = {3, 2, 0};
+        item.Material.Color = {1, 0, 0, 1};
+        REQUIRE(renderer.CreateSnapshot(&item, 1, snapshots[variant]) == rhi::RasterStatus::Ready);
+        rr::ViewReport report;
+        REQUIRE(renderer.PrepareView(snapshots[variant], MakeGridView(width, height, true), views[variant], report) ==
+                rhi::RasterStatus::Ready);
+        CHECK(report.Draws == 3U);
+    }
+    Array<uint8> images[2];
+    for (usize variant = 0; variant < 2; ++variant)
+    {
+        REQUIRE(images[variant].TryResize(static_cast<usize>(width) * height * GRID_CHANNELS) == true);
+        rhi::SubmissionToken completion;
+        REQUIRE(renderers[variant].Submit(views[variant], surface, completion) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::backend::ReadHeadlessPixels({images[variant].GetData(), images[variant].GetSize()}));
+    }
+    usize differingBytes = 0;
+    usize gridPixels = 0;
+    // MakeGridView shows 2 * GRID_HALF_HEIGHT world units over the target height at either size.
+    const uint32 unit = static_cast<uint32>(static_cast<float32>(height) / (2 * GRID_HALF_HEIGHT));
+    const usize background = GetGridPixel(width, width / 2 + unit / 2, height / 2 + unit / 2);
+    for (usize i = 0; i < images[0].GetSize(); ++i)
+    {
+        differingBytes += images[0][i] != images[1][i] ? 1 : 0;
+    }
+    for (usize pixel = 0; pixel < static_cast<usize>(width) * height; ++pixel)
+    {
+        gridPixels += images[1][pixel * GRID_CHANNELS + 1] != images[1][background + 1] ? 1 : 0;
+    }
+    CHECK(differingBytes == 0);
+    // Equality is not vacuous: the grid draws lines, and the quad in front hides part of them in item red.
+    CHECK(gridPixels > 0);
+    const usize occluded = GetGridPixel(width, width / 2 + 3 * unit - 1, height / 2 + unit / 4);
+    CHECK(images[1][occluded] == 255);
+    CHECK(images[1][occluded + 1] == 0);
+    if (isBenchmark == false)
+    {
+        return;
+    }
+    // Per-block mean GPU frame time of each variant: the device-clock interval of the frame's clear
+    // and draws (rhi::ArmGpuTiming), without the readback that follows it.
+    uint64 blockMeans[2][RECIPE_AB_BLOCKS]{};
+    uint64 differences[RECIPE_AB_BLOCKS]{};
+    for (uint32 block = 0; block < RECIPE_AB_BLOCKS; ++block)
+    {
+        for (uint32 order = 0; order < 2; ++order)
+        {
+            const usize variant = (block + order) % 2;
+            uint64 total = 0;
+            for (uint32 frame = 0; frame < RECIPE_AB_WARMUP_FRAMES + RECIPE_AB_FRAMES; ++frame)
+            {
+                REQUIRE(rhi::ArmGpuTiming(device) == rhi::RasterStatus::Ready);
+                rhi::SubmissionToken completion;
+                REQUIRE(renderers[variant].Submit(views[variant], surface, completion) == rhi::RasterStatus::Ready);
+                REQUIRE(rhi::backend::ReadHeadlessPixels({images[variant].GetData(), images[variant].GetSize()}));
+                rhi::GpuTiming gpu;
+                REQUIRE(rhi::GetGpuTiming(device, gpu) == rhi::RasterStatus::Ready);
+                for (usize poll = 0; poll < POLL_LIMIT && gpu.State == rhi::GpuTimingState::Pending; ++poll)
+                {
+                    threading::YieldThread();
+                    REQUIRE(rhi::GetGpuTiming(device, gpu) == rhi::RasterStatus::Ready);
+                }
+                REQUIRE(gpu.State == rhi::GpuTimingState::Available);
+                if (frame >= RECIPE_AB_WARMUP_FRAMES)
+                {
+                    total += static_cast<uint64>(gpu.DurationNanoseconds);
+                }
+            }
+            blockMeans[variant][block] = total / RECIPE_AB_FRAMES;
+        }
+        differences[block] = blockMeans[1][block] - blockMeans[0][block];
+    }
+    // Unsigned differences wrap; recentre them so the median orders signed values correctly.
+    constexpr uint64 SIGN_OFFSET = uint64{1} << 63U;
+    for (uint64& difference : differences)
+    {
+        difference += SIGN_OFFSET;
+    }
+    const uint64 slang = GetMedian(blockMeans[0], RECIPE_AB_BLOCKS);
+    const uint64 lusl = GetMedian(blockMeans[1], RECIPE_AB_BLOCKS);
+    const int64 difference = static_cast<int64>(GetMedian(differences, RECIPE_AB_BLOCKS) - SIGN_OFFSET);
+    std::printf(
+        "RECIPEAB,grid,%ux%u,%u blocks x %u frames,GPU frame slang=%llu ns,lusl=%llu ns,median difference=%lld ns\n",
+        width,
+        height,
+        RECIPE_AB_BLOCKS,
+        RECIPE_AB_FRAMES,
+        static_cast<unsigned long long>(slang),
+        static_cast<unsigned long long>(lusl),
+        static_cast<long long>(difference));
 }
 
 #if defined(LUDUS_TEST_RAY)

@@ -135,7 +135,7 @@ private:
 /// Renderer composition adapter for generic solid and coverage triangle lists.
 /// Single RHI owner thread. Four owned versions and shared RHI transfer/resource
 /// quotas impose backpressure; no waits, reshaping or allocation while drawing.
-/// Shader source is installed as renderer_overlay.slang. Reset between frames;
+/// Shader source is installed as renderer_overlay.lusl. Reset between frames;
 /// device loss invalidates GPU versions and requires explicit Initialize/rebuild.
 class OverlayRenderer final
 {

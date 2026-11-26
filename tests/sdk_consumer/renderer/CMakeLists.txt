@@ -9,6 +9,8 @@ if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     enable_testing()
     add_subdirectory(../light_transformer light-transformer)
     add_subdirectory(../lusl_layout lusl-layout)
+    # The renderer_composite recipe fixture bound by its generated slots (LUSL L5d wave 2).
+    add_subdirectory(../composite_recipe composite-recipe)
 endif()
 
 add_executable(ludus_sdk_renderer_consumer ../renderer.cpp)

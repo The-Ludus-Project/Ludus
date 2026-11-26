@@ -38,7 +38,7 @@ struct WorldGridLine final
     /// Straight linear RGBA guide color; alpha is one.
     foundation::math::Vector4 Color{};
 };
-/// Camera-relative plane of an adaptive world grid, drawn analytically by renderer_grid.slang.
+/// Camera-relative plane of an adaptive world grid, drawn analytically by renderer_grid.lusl.
 /// Lines sit at integer multiples of SpacingWorld along the two unit axes; every tenth is major.
 struct WorldGridPlane final
 {

@@ -695,8 +695,8 @@ target profiles gate them when LUSL lowers to Slang.
 
 Standalone shaders declare their resources; the compiler assigns their slots and
 their stage locations ([design](../../architecture/shading-language.md#resources-and-bindings)).
-`modules/graphics/renderer/tests/lusl_composite.lusl` is the composite shader
-written this way:
+The renderer's composite recipe, `modules/graphics/renderer/shaders/renderer_composite.lusl`,
+is written this way:
 
 ```c
 Texture2D<float32x4> image;    // slot 0
@@ -932,9 +932,19 @@ ludus_compile_shader(TARGET my_game NAME composite
 
   Names are the LUSL names in upper snake case: `imageSampler` becomes
   `IMAGE_SAMPLER`, `input.PositionUv` becomes `INPUT_POSITION_UV`.
-- **Evidence:** a GPU test composites `rg2_bound` with the LUSL composite and
-  with `renderer_composite.slang`, compares every pixel, and checks the slot
-  constants against the reflected bindings.
+- **Slots without a compile.** Code that binds a shader its callers compile,
+  such as a library, takes the same table from `ludus_generate_shader_slots`
+  (`TARGET`, `NAME`, a `.lusl` `SOURCE`, and the `INCLUDES` and `DEFINES` the
+  shader is compiled with). It lowers the source with `luslc` only, needs no
+  Slang compiler, and adds `<NAME>_slots.h` to the target's private include
+  path. `ludus_generate_renderer_shader_slots(TARGET ... SHADERS ...)` does this
+  for built-in LUSL recipes with the recipe roots; the renderer binds
+  `renderer_composite`, `renderer_overlay`, `renderer_grid` and the selection
+  recipes this way, from the same sources its callers compile.
+- **Evidence:** a GPU test composites `rg2_bound` with the LUSL
+  `renderer_composite` recipe and with its Slang original
+  (`modules/graphics/renderer/shaders/renderer_composite.slang`), compares every pixel,
+  and checks the slot constants against the reflected bindings.
 
 Renderer recipes can include `point_search_layout.luslh`,
 `scene_shader_layout.luslh`, `renderer_gpu_preview_layout.luslh`, and

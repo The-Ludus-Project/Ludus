@@ -25,27 +25,27 @@
     "fragment": "fragmentMain"
   },
   "renderer_composite": {
-    "source": "renderer_composite.slang",
-    "vertex": "vertexMain",
-    "fragment": "fragmentMain"
+    "source": "renderer_composite.lusl",
+    "vertex": "VertexMain",
+    "fragment": "FragmentMain"
   },
   "renderer_overlay": {
-    "source": "renderer_overlay.slang",
-    "vertex": "vertexMain",
-    "fragment": "fragmentMain"
+    "source": "renderer_overlay.lusl",
+    "vertex": "VertexMain",
+    "fragment": "FragmentMain"
   },
   "renderer_grid": {
-    "source": "renderer_grid.slang",
+    "source": "renderer_grid.lusl",
     "vertex": "GridVertexMain",
     "fragment": "GridFragmentMain"
   },
   "renderer_selection_mask": {
-    "source": "renderer_selection_mask.slang",
+    "source": "renderer_selection_mask.lusl",
     "vertex": "MaskVertexMain",
     "fragment": "MaskFragmentMain"
   },
   "renderer_selection_outline": {
-    "source": "renderer_selection_outline.slang",
+    "source": "renderer_selection_outline.lusl",
     "vertex": "EdgeVertexMain",
     "fragment": "EdgeFragmentMain"
   },

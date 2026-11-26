@@ -216,6 +216,8 @@ def main():
     parser.add_argument('--include-directory', action='append', default=[])
     parser.add_argument('--define', action='append', default=[])
     parser.add_argument('--style', default='strict', choices=('strict', 'warn', 'off'))
+    # The build output the depfile names; the lowered module unless only the slots are an output.
+    parser.add_argument('--depfile-target')
     args = parser.parse_args()
     if IDENTIFIER.match(args.name) is None:
         fail(f"'{args.name}' is not a shader name")
@@ -242,8 +244,9 @@ def main():
         generated = remap_slang_includes(generated, files, Path(args.output).parent)
     publish(Path(args.slots), slots)
     inputs = ' '.join(depfile_path(path) for path in sorted(set(files.values())))
-    # Ninja reads one target per depfile: the generated module, written last.
-    publish(Path(args.depfile), depfile_path(Path(args.output)) + f': {inputs}\n')
+    # Ninja reads one target per depfile: the generated module, written last, or --depfile-target.
+    target = Path(args.depfile_target if args.depfile_target else args.output)
+    publish(Path(args.depfile), depfile_path(target) + f': {inputs}\n')
     publish(Path(args.output), generated)
     return 0
 

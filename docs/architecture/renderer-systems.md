@@ -80,14 +80,12 @@ It depends on FoundationMath and GraphicsRhi, with FoundationContainers privatel
 application adapters provide ordinary values without an ECS, UI or gameplay-camera
 link. Native and browser builds export the same component.
 
-Compile the installed flat shader during the application build:
+Compile the installed flat recipe during the application build:
 
 ```cmake
 find_package(Ludus CONFIG REQUIRED COMPONENTS GraphicsRenderer)
 target_link_libraries(my_app PRIVATE Ludus::GraphicsRenderer)
-ludus_compile_shader(TARGET my_app NAME renderer_flat RASTER
-    SOURCE "${Ludus_DIR}/shaders/renderer_flat.slang"
-    VERTEX vertexMain FRAGMENT fragmentMain)
+ludus_compile_renderer_shaders(TARGET my_app SHADERS renderer_flat)
 ```
 
 Create a ready portable-raster device, then initialize `Renderer` with the generated
@@ -252,7 +250,8 @@ its own expanded list using that view's clip coordinates and actual viewport siz
 World-unit widths, joins, persistent timed commands, worker merging and x-ray
 convenience helpers remain later debug features.
 
-Cook installed `renderer_overlay.slang` with the existing shader helper. Initialize
+Cook the installed `renderer_overlay` recipe (`renderer_overlay.lusl`) with
+`ludus_compile_renderer_shaders`. Initialize
 `OverlayRenderer`, then poll its fixed pipelines. `Prepare` copies the complete list
 and captures an exact R8 atlas view/binding; four logical versions share existing
 RHI quotas. `GetStatus` completes upload ownership and binding setup between frames.
@@ -329,8 +328,8 @@ viewport's selection.
   texture, and needs only one extra texture. A larger width than `MAX_STROKE_WIDTH_PIXELS` is rejected.
 - **Portability.** It uses the portable raster profile only: vertex and index buffers, one per-instance
   stream, one sampled texture with a sampler, premultiplied blending, and surface or RGBA8 linear
-  attachments as targets. The Slang sources are `renderer_selection_mask.slang` and
-  `renderer_selection_outline.slang`, cooked with the shader helper like the other renderer recipes,
+  attachments as targets. The LUSL sources are `renderer_selection_mask.lusl` and
+  `renderer_selection_outline.lusl`, cooked with the shader helper like the other renderer recipes,
   and the same pipelines serve the native and browser backends.
 
 Initialize with the four stages, poll until Ready, then `SetMesh` once per selected mesh and `Prepare`

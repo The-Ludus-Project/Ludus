@@ -1,6 +1,7 @@
-// The LUSL port of ../shaders/renderer_composite.slang: linear target composition with
-// top-left UVs. Its bindings and locations are assigned by the LUSL compiler, and a GPU test
-// compares its pixels with the Slang original (docs/architecture/shading-language.md).
+// Linear target composition: top-left UVs, explicit clip-space crop geometry.
+// The LUSL compiler assigns the bindings and the vertex input location; the renderer binds them by
+// the generated renderer_composite_slots.h constants. A renderer GPU test compares its pixels with
+// its Slang original, renderer_composite.slang, which stays as the differential oracle (L5d wave 2).
 Texture2D<float32x4> image;
 SamplerState imageSampler;
 

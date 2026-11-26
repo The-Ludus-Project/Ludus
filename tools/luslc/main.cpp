@@ -206,6 +206,15 @@ struct Options final
             outOptions.Paths[outOptions.PathCount] = argument;
             ++outOptions.PathCount;
         }
+        else if (argument.starts_with("--") == false)
+        {
+            Line line;
+            line.Append("luslc: one call takes at most ");
+            line.AppendUnsigned(compiler::MAX_SOURCE_FILES);
+            line.Append(" FILE arguments, the shader snapshot limit; split the list into several calls\n");
+            WriteError(line.GetView());
+            return false;
+        }
         else
         {
             return false;

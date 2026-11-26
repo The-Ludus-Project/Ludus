@@ -140,6 +140,32 @@ class LowerLuslTests(unittest.TestCase):
                 self.assertIn('--define DIAGNOSTIC_SCALE=0.5 --define FAST=1 --define LUDUS_GLSL_ES=' + glsl_es, call)
             self.assertIn('SETTINGS = 0;', (output / 'sample_slots.h').read_text())
 
+    def test_depfile_names_the_requested_target(self):
+        """ludus_generate_shader_slots builds only the slot header, so its depfile must name it."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            luslc = root / 'luslc'
+            luslc.write_text(f'#!{sys.executable}\n'
+                             'import sys\n'
+                             'arguments = sys.argv[1:]\n'
+                             'value = lambda key: arguments[arguments.index(key) + 1]\n'
+                             'open(value("--output"), "w").write("// lowered\\n")\n'
+                             'open(value("--report"), "w").write("binding\\tmain.lusl:1\\timage\\tTexture2D\\t0\\n")\n')
+            luslc.chmod(0o755)
+            shaders = root / 'shaders'
+            shaders.mkdir()
+            (shaders / 'main.lusl').write_text('Texture2D<float32x4> image;\n')
+            output = root / 'out'
+            common = ['lower_lusl.py', '--luslc', str(luslc), '--root', str(shaders), '--source', 'main.lusl',
+                      '--name', 'sample', '--output', str(output / 'sample.lusl.slang'),
+                      '--slots', str(output / 'sample_slots.h'), '--depfile', str(output / 'lusl.d')]
+            for extra, target in (([], output / 'sample.lusl.slang'),
+                                  (['--depfile-target', str(output / 'sample_slots.h')], output / 'sample_slots.h')):
+                with self.subTest(target=target.name), mock.patch.object(sys, 'argv', common + extra):
+                    self.assertEqual(lower_lusl.main(), 0)
+                    self.assertTrue((output / 'lusl.d').read_text().startswith(lower_lusl.depfile_path(target) + ':'))
+                    self.assertIn('IMAGE = 0;', (output / 'sample_slots.h').read_text())
+
 
 class LuslComputeSlotTests(unittest.TestCase):
     """The benchmark drivers bind by the slots lusl_compute.py reads back from this helper's header."""

@@ -1,0 +1,34 @@
+// One ordered triangle path for debug solids and single-channel glyph coverage. The overlay
+// renderer binds the atlas, its sampler and the vertex inputs by the generated
+// renderer_overlay_slots.h constants.
+Texture2D<float32x4> coverageAtlas;
+SamplerState coverageSampler;
+
+struct OverlayInput
+{
+    float32x4 Clip;
+    float32x4 Coverage;
+    float32x4 Color;
+};
+
+struct OverlayVarying
+{
+    float32x4 Position : ClipPosition;
+    float32x3 Coverage;
+    float32x4 Color;
+};
+
+[stage(vertex)]
+OverlayVarying VertexMain(in OverlayInput input)
+{
+    OverlayVarying output = { .Position = input.Clip, .Coverage = input.Coverage.xyz, .Color = input.Color };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in OverlayVarying input)
+{
+    float32 mask = lerp(1.0, coverageAtlas.Sample(coverageSampler, input.Coverage.xy).r, input.Coverage.z);
+    float32 alpha = input.Color.a * mask;
+    return float32x4(input.Color.rgb * alpha, alpha);
+}

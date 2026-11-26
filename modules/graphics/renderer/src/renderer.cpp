@@ -36,6 +36,11 @@
 #include "internal/uniform_set_table.h"
 #include "internal/visibility_buffer.h"
 
+// Slot tables of the LUSL recipes the renderer binds, generated from the recipe sources
+// (ludus_generate_renderer_shader_slots; docs/architecture/shading-language.md#resources-and-bindings).
+#include "renderer_composite_slots.h"
+#include "renderer_grid_slots.h"
+
 namespace ludus::graphics::renderer
 {
 using namespace foundation;
@@ -315,6 +320,9 @@ struct Instance final
     math::Vector4 Color;
     math::Vector4 WorldRows[3], NormalRows[3], Eye;
 };
+namespace composite_slots = ludus::shaders::renderer_composite::slots;
+/// renderer_composite's fragment bindings: the image and its sampler.
+constexpr usize COMPOSITE_BINDING_COUNT = 2;
 constexpr usize FLAT_STREAM_COUNT = 2;
 constexpr usize FLAT_ATTRIBUTE_COUNT = 6;
 constexpr StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT> FLAT_STREAMS{{
@@ -330,24 +338,34 @@ constexpr StaticArray<rhi::RasterVertexAttribute, FLAT_ATTRIBUTE_COUNT> FLAT_ATT
     {5, 1, 4 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
 }};
 // Analytic grid pipelines read the same buffers through twelve attributes: position, the four
-// world-to-clip rows, then the instance's colour, world and normal rows (see renderer_grid.slang).
+// world-to-clip rows, then the instance's colour, world and normal rows (see renderer_grid.lusl).
 constexpr usize GRID_ATTRIBUTE_COUNT = 12;
 constexpr usize GRID_COLOR_OFFSET = 4 * sizeof(math::Vector4);
 constexpr usize GRID_WORLD_ROWS_OFFSET = 5 * sizeof(math::Vector4);
 constexpr usize GRID_NORMAL_ROWS_OFFSET = 8 * sizeof(math::Vector4);
+namespace grid_locations = ludus::shaders::renderer_grid::locations;
 constexpr StaticArray<rhi::RasterVertexAttribute, GRID_ATTRIBUTE_COUNT> GRID_ATTRIBUTES{{
-    {0, 0, 0, rhi::RasterVertexFormat::Float3},
-    {1, 1, 0, rhi::RasterVertexFormat::Float4},
-    {2, 1, sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
-    {3, 1, 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
-    {4, 1, 3 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
-    {5, 1, GRID_COLOR_OFFSET, rhi::RasterVertexFormat::Float4},
-    {6, 1, GRID_WORLD_ROWS_OFFSET, rhi::RasterVertexFormat::Float4},
-    {7, 1, GRID_WORLD_ROWS_OFFSET + sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
-    {8, 1, GRID_WORLD_ROWS_OFFSET + 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
-    {9, 1, GRID_NORMAL_ROWS_OFFSET, rhi::RasterVertexFormat::Float4},
-    {10, 1, GRID_NORMAL_ROWS_OFFSET + sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
-    {11, 1, GRID_NORMAL_ROWS_OFFSET + 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {grid_locations::INPUT_POSITION_WORLD, 0, 0, rhi::RasterVertexFormat::Float3},
+    {grid_locations::INPUT_ROW0, 1, 0, rhi::RasterVertexFormat::Float4},
+    {grid_locations::INPUT_ROW1, 1, sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {grid_locations::INPUT_ROW2, 1, 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {grid_locations::INPUT_ROW3, 1, 3 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {grid_locations::INPUT_MINOR_COLOR, 1, GRID_COLOR_OFFSET, rhi::RasterVertexFormat::Float4},
+    {grid_locations::INPUT_MAJOR_SPACING, 1, GRID_WORLD_ROWS_OFFSET, rhi::RasterVertexFormat::Float4},
+    {grid_locations::INPUT_AXIS_U, 1, GRID_WORLD_ROWS_OFFSET + sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {grid_locations::INPUT_AXIS_V,
+     1,
+     GRID_WORLD_ROWS_OFFSET + 2 * sizeof(math::Vector4),
+     rhi::RasterVertexFormat::Float4},
+    {grid_locations::INPUT_CENTER, 1, GRID_NORMAL_ROWS_OFFSET, rhi::RasterVertexFormat::Float4},
+    {grid_locations::INPUT_AXIS_COLOR_U,
+     1,
+     GRID_NORMAL_ROWS_OFFSET + sizeof(math::Vector4),
+     rhi::RasterVertexFormat::Float4},
+    {grid_locations::INPUT_AXIS_COLOR_V,
+     1,
+     GRID_NORMAL_ROWS_OFFSET + 2 * sizeof(math::Vector4),
+     rhi::RasterVertexFormat::Float4},
 }};
 constexpr usize VISIBILITY_ATTRIBUTE_COUNT = 8;
 constexpr usize VISIBILITY_PRIMITIVE_LOCATION = 6;
@@ -400,7 +418,7 @@ struct WorldGridScratch final
     StaticArray<Instance, WORLD_GRID_LINE_CAPACITY> Instances{};
 };
 constexpr usize WORLD_GRID_ANALYTIC_VERTEX_COUNT = 2 * WORLD_GRID_VERTEX_COUNT;
-/// Packs the plane into the instance fields renderer_grid.slang reads; the ribbons precede it.
+/// Packs the plane into the instance fields renderer_grid.lusl reads; the ribbons precede it.
 Instance PackWorldGridPlane(const math::Matrix4& worldToClip, const WorldGridPlane& plane) noexcept
 {
     Instance instance{};
@@ -1483,7 +1501,8 @@ Status Renderer::InitializeGrid(const rhi::RasterShaderDescription& vertex,
     }
     for (usize i = 0; i < GRID_ATTRIBUTE_COUNT; ++i)
     {
-        if (vertex.Inputs[i].Location != i || vertex.Inputs[i].Format != GRID_ATTRIBUTES[i].Format)
+        if (vertex.Inputs[i].Location != GRID_ATTRIBUTES[i].Location ||
+            vertex.Inputs[i].Format != GRID_ATTRIBUTES[i].Format)
         {
             return Status::InvalidDescription;
         }
@@ -1517,16 +1536,17 @@ Status Renderer::InitializeViews(const rhi::RasterShaderDescription& vertex,
         return Status::InvalidState;
     }
     if (vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
-        vertex.Inputs.GetSize() != 1 || vertex.Inputs[0].Location != 0 ||
+        vertex.Inputs.GetSize() != 1 ||
+        vertex.Inputs[0].Location != ludus::shaders::renderer_composite::locations::INPUT_POSITION_UV ||
         vertex.Inputs[0].Format != rhi::RasterVertexFormat::Float4 || vertex.Bindings.IsEmpty() == false ||
-        fragment.Inputs.IsEmpty() == false || fragment.Bindings.GetSize() != 2)
+        fragment.Inputs.IsEmpty() == false || fragment.Bindings.GetSize() != COMPOSITE_BINDING_COUNT)
     {
         return Status::InvalidDescription;
     }
     const auto& texture = fragment.Bindings[0];
     const auto& sampler = fragment.Bindings[1];
-    if (texture.Binding != 0 || texture.Kind != rhi::RasterBindingKind::Texture2D ||
-        texture.Visibility != rhi::RasterVisibility::Fragment || sampler.Binding != 1 ||
+    if (texture.Binding != composite_slots::IMAGE || texture.Kind != rhi::RasterBindingKind::Texture2D ||
+        texture.Visibility != rhi::RasterVisibility::Fragment || sampler.Binding != composite_slots::IMAGE_SAMPLER ||
         sampler.Kind != rhi::RasterBindingKind::Sampler || sampler.Visibility != rhi::RasterVisibility::Fragment ||
         texture.MinSize != 0 || sampler.MinSize != 0)
     {
@@ -1566,7 +1586,8 @@ Status Renderer::PollViews() noexcept
     const usize attributeCount =
         mState->HasVisibilityInputs == true ? VISIBILITY_ATTRIBUTE_COUNT : FLAT_ATTRIBUTE_COUNT;
     const rhi::RasterVertexStream quadStreams[]{{16, false}};
-    const rhi::RasterVertexAttribute quadAttributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float4}};
+    const rhi::RasterVertexAttribute quadAttributes[]{
+        {ludus::shaders::renderer_composite::locations::INPUT_POSITION_UV, 0, 0, rhi::RasterVertexFormat::Float4}};
     for (;;)
     {
         auto status = Status::Ready;
@@ -1580,8 +1601,11 @@ Status Renderer::PollViews() noexcept
             if (status == Status::Ready)
             {
                 const rhi::RasterBinding entries[]{
-                    {0, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
-                    {1, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0}};
+                    {composite_slots::IMAGE, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
+                    {composite_slots::IMAGE_SAMPLER,
+                     rhi::RasterBindingKind::Sampler,
+                     rhi::RasterVisibility::Fragment,
+                     0}};
                 status = rhi::CreateBindingLayout(s.Device, entries, s.CompositeLayout);
                 if (Accepted(status))
                 {
@@ -2421,8 +2445,10 @@ Status Renderer::GetStatus(Presentation handle) noexcept
     {
         if (p->Phase == 0)
         {
-            const rhi::RasterBindingResource resources[]{{ .Binding = 0, .Texture = p->Texture },
-                                                         { .Binding = 1, .Sampler = s.CompositeSampler }};
+            const rhi::RasterBindingResource resources[]{
+                { .Binding = composite_slots::IMAGE, .Texture = p->Texture },
+                { .Binding = composite_slots::IMAGE_SAMPLER, .Sampler = s.CompositeSampler },
+            };
             status = rhi::CreateBindingSet(s.Device, s.CompositeLayout, resources, p->Bindings);
             if (Accepted(status) == false)
             {

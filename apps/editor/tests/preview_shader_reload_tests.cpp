@@ -562,6 +562,16 @@ TEST_CASE("Live shader snapshots capture only the recipes' include closure", "[e
     CHECK(snapshot.Names.contains(QStringLiteral("nested/inner.slang")) == true);
     CHECK(snapshot.Names.contains(QStringLiteral("nested/sibling.h")) == true);
     CHECK(snapshot.Names.contains(QStringLiteral("sibling.h")) == false);
+    // A LUSL recipe is captured, and so is the Slang file its `extern slang` block declares.
+    const QString grid = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_grid.lusl"));
+    const QByteArray gridSource = tests::ReadText(grid);
+    tests::WriteText(root.filePath(QStringLiteral("nested/declared.slang")), QByteArrayLiteral("// Declared.\n"));
+    tests::WriteText(grid, QByteArrayLiteral("extern slang \"nested/declared.slang\"\n{\n};\n") + gridSource);
+    PreviewShaderSnapshot declared;
+    REQUIRE(CapturePreviewShaderSnapshot(sources, recipes, declared, error) == true);
+    CHECK(declared.Names.contains(QStringLiteral("renderer_grid.lusl")) == true);
+    CHECK(declared.Names.contains(QStringLiteral("nested/declared.slang")) == true);
+    tests::WriteText(grid, gridSource);
     // A closure beyond the limit still fails and keeps the previous snapshot.
     tests::WriteText(lit, includes + original);
     const QStringList names = snapshot.Names;
