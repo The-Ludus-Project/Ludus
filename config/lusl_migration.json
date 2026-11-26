@@ -59,12 +59,28 @@
       "reason": "Differential oracle of the LUSL recipe renderer_overlay.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
     },
     {
+      "path": "modules/graphics/renderer/shaders/renderer_point_neighbors.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_point_neighbors.lusl (L5d wave 2): the point-neighbor GPU suite runs both on one device and requires identical results"
+    },
+    {
       "path": "modules/graphics/renderer/shaders/renderer_selection_mask.slang",
       "reason": "Differential oracle of the LUSL recipe renderer_selection_mask.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
     },
     {
       "path": "modules/graphics/renderer/shaders/renderer_selection_outline.slang",
       "reason": "Differential oracle of the LUSL recipe renderer_selection_outline.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_skin_blur.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_skin_blur.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_skin_composite.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_skin_composite.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_skin_diffusion.slang",
+      "reason": "Shared diffusion code of the retained Slang originals renderer_skin_blur.slang and renderer_skin_composite.slang; renderer_skin_diffusion.luslh is its LUSL port (L5d wave 2)"
     },
     {
       "path": "scripts/python/fixtures",

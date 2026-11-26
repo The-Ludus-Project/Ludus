@@ -20,6 +20,8 @@
 #    include "renderer_skin_composite.h"
 #    include "renderer_skin_deferred.h"
 #endif
+#include "renderer_skin_blur_slots.h"
+#include "renderer_skin_composite_slots.h"
 
 namespace ludus::graphics::renderer::internal
 {
@@ -39,6 +41,23 @@ constexpr usize SKIN_LIGHTING_TARGET_COUNT = 2;
 constexpr usize SKIN_STAGE_COUNT = 4;
 /// Column of a homogeneous transform that holds its translation.
 constexpr usize TRANSLATION_COLUMN = 3;
+namespace skin_slots = ludus::shaders::renderer_skin_composite::slots;
+namespace blur_slots = ludus::shaders::renderer_skin_blur::slots;
+// The skin recipes declare every binding in one shared order (renderer_skin_diffusion.luslh), so one binding table
+// serves the blur and the composite.
+static_assert(blur_slots::SKIN_SOURCE_TEXTURE == skin_slots::SKIN_SOURCE_TEXTURE &&
+              blur_slots::SKIN_RADIANCE_TEXTURE == skin_slots::SKIN_RADIANCE_TEXTURE &&
+              blur_slots::SKIN_NORMAL_TEXTURE == skin_slots::SKIN_NORMAL_TEXTURE &&
+              blur_slots::SKIN_BASE_TEXTURE == skin_slots::SKIN_BASE_TEXTURE &&
+              blur_slots::SKIN_DEPTH_TEXTURE == skin_slots::SKIN_DEPTH_TEXTURE &&
+              blur_slots::SKIN_VIEW == skin_slots::SKIN_VIEW && blur_slots::SKIN_KERNEL == skin_slots::SKIN_KERNEL &&
+              blur_slots::SKIN_PROFILES == skin_slots::SKIN_PROFILES);
+/// The profile table is the recipes' last binding.
+constexpr usize SKIN_BINDING_COUNT = skin_slots::SKIN_PROFILES + 1;
+#if defined(LUDUS_RENDERER_TEST_READBACK) && defined(LUDUS_RENDERER_SKIN_SHADERS)
+bool hasSkinShadersForTesting = false;
+SkinDiffusionShaders skinShadersForTesting{};
+#endif
 constexpr float32 ORTHOGRAPHIC_EYE_FLAGS =
     3; // Valid eye plus direction-vector encoding, matching Renderer::PrepareView.
 struct ViewParameters final
@@ -172,6 +191,16 @@ Status SelectBindings(BorrowedView<const rhi::RasterBinding> declared,
 }
 } // namespace
 
+#if defined(LUDUS_RENDERER_TEST_READBACK)
+void SetSkinDiffusionShadersForTesting([[maybe_unused]] const SkinDiffusionShaders* shadersOrNull) noexcept
+{
+    // Without offline shader tools the renderer builds no skin programs, so there is nothing to override.
+#    if defined(LUDUS_RENDERER_SKIN_SHADERS)
+    hasSkinShadersForTesting = shadersOrNull != nullptr;
+    skinShadersForTesting = shadersOrNull != nullptr ? *shadersOrNull : SkinDiffusionShaders{};
+#    endif
+}
+#endif
 RenderGraphDeferredProgram::~RenderGraphDeferredProgram() noexcept
 {
     for (SkinStageResources& stage : mSkinStages)
@@ -336,12 +365,21 @@ Status RenderGraphDeferredProgram::PrepareSkin() noexcept
     {
         mHasSkinResources = true;
 #if defined(LUDUS_RENDERER_SKIN_SHADERS)
-        const StaticArray<rhi::RasterShaderDescription, SKIN_STAGE_COUNT> descriptions{
+        StaticArray<rhi::RasterShaderDescription, SKIN_STAGE_COUNT> descriptions{
             {shaders::renderer_skin_deferred::Fragment(),
              shaders::renderer_atmosphere_skin_deferred::Fragment(),
              shaders::renderer_skin_blur::Fragment(),
              shaders::renderer_skin_composite::Fragment()}};
-        Status status = rhi::CreateRasterShader(mDevice, shaders::renderer_skin_blur::Vertex(), mSkinVertex);
+        rhi::RasterShaderDescription vertex = shaders::renderer_skin_blur::Vertex();
+#    if defined(LUDUS_RENDERER_TEST_READBACK)
+        if (hasSkinShadersForTesting == true)
+        {
+            vertex = skinShadersForTesting.Vertex;
+            descriptions[static_cast<usize>(SkinStage::Blur)] = skinShadersForTesting.Blur;
+            descriptions[static_cast<usize>(SkinStage::Composite)] = skinShadersForTesting.Composite;
+        }
+#    endif
+        Status status = rhi::CreateRasterShader(mDevice, vertex, mSkinVertex);
         for (usize index = 0; index < SKIN_STAGE_COUNT && IsAccepted(status) == true; ++index)
         {
             SkinStageResources& stage = mSkinStages[index];
@@ -935,43 +973,47 @@ Status RenderGraphDeferredPass::pollSkin() noexcept
         // G-buffer targets follow their resolve slots from DEFERRED_NORMAL_BINDING.
         constexpr usize NORMAL_TARGET = 0;
         constexpr usize BASE_TARGET = DEFERRED_BASE_BINDING - DEFERRED_NORMAL_BINDING;
-        StaticArray<rhi::RasterBindingResource, LUDUS_SKIN_BINDING_COUNT> diffusion{};
-        diffusion[LUDUS_SKIN_SOURCE_BINDING] =
+        StaticArray<rhi::RasterBindingResource, SKIN_BINDING_COUNT> diffusion{};
+        diffusion[skin_slots::SKIN_SOURCE_TEXTURE] =
         {
-            .Binding = LUDUS_SKIN_SOURCE_BINDING,
+            .Binding = skin_slots::SKIN_SOURCE_TEXTURE,
             .Texture = targets.mSkinSampled[DIFFUSE],
         };
-        diffusion[LUDUS_SKIN_RADIANCE_BINDING] =
+        diffusion[skin_slots::SKIN_RADIANCE_TEXTURE] =
         {
-            .Binding = LUDUS_SKIN_RADIANCE_BINDING,
+            .Binding = skin_slots::SKIN_RADIANCE_TEXTURE,
             .Texture = targets.mSkinSampled[RADIANCE],
         };
-        diffusion[LUDUS_SKIN_NORMAL_BINDING] =
+        diffusion[skin_slots::SKIN_NORMAL_TEXTURE] =
         {
-            .Binding = LUDUS_SKIN_NORMAL_BINDING,
+            .Binding = skin_slots::SKIN_NORMAL_TEXTURE,
             .Texture = targets.mSampled[NORMAL_TARGET],
         };
-        diffusion[LUDUS_SKIN_BASE_BINDING] =
+        diffusion[skin_slots::SKIN_BASE_TEXTURE] =
         {
-            .Binding = LUDUS_SKIN_BASE_BINDING,
+            .Binding = skin_slots::SKIN_BASE_TEXTURE,
             .Texture = targets.mSampled[BASE_TARGET],
         };
-        diffusion[LUDUS_SKIN_PROFILE_BINDING] =
+        diffusion[skin_slots::SKIN_PROFILES] =
         {
-            .Binding = LUDUS_SKIN_PROFILE_BINDING,
+            .Binding = skin_slots::SKIN_PROFILES,
             .Buffer = mSkinProfiles,
             .Size = sizeof(DeferredMaterialBindings::SkinProfiles),
         };
-        diffusion[LUDUS_SKIN_DEPTH_BINDING] = { .Binding = LUDUS_SKIN_DEPTH_BINDING, .Texture = targets.mDepth };
-        diffusion[LUDUS_SKIN_VIEW_BINDING] =
+        diffusion[skin_slots::SKIN_DEPTH_TEXTURE] =
         {
-            .Binding = LUDUS_SKIN_VIEW_BINDING,
+            .Binding = skin_slots::SKIN_DEPTH_TEXTURE,
+            .Texture = targets.mDepth,
+        };
+        diffusion[skin_slots::SKIN_VIEW] =
+        {
+            .Binding = skin_slots::SKIN_VIEW,
             .Buffer = mParameters,
             .Size = VIEW_BYTES,
         };
-        diffusion[LUDUS_SKIN_KERNEL_BINDING] =
+        diffusion[skin_slots::SKIN_KERNEL] =
         {
-            .Binding = LUDUS_SKIN_KERNEL_BINDING,
+            .Binding = skin_slots::SKIN_KERNEL,
             .Buffer = program.mSkinKernel,
             .Size = sizeof(SkinDiffusionKernel::Words),
         };
@@ -986,7 +1028,7 @@ Status RenderGraphDeferredPass::pollSkin() noexcept
                 rhi::CreateBindingSet(program.mDevice, blur.Layout, {selected.GetData(), count}, mSkinBlurBindings);
         }
         // The composite spreads the horizontal blur vertically.
-        diffusion[LUDUS_SKIN_SOURCE_BINDING].Texture = targets.mSkinSampled[BLURRED];
+        diffusion[skin_slots::SKIN_SOURCE_TEXTURE].Texture = targets.mSkinSampled[BLURRED];
         const RenderGraphDeferredProgram::SkinStageResources& composite = program.getSkinStage(Stage::Composite);
         if (IsAccepted(status) == true)
         {

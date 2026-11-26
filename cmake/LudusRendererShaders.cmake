@@ -64,8 +64,14 @@ function(ludus_compile_renderer_shaders)
         if(NOT fragment_error AND fragment_storage)
             list(APPEND stages FRAGMENT_STORAGE)
         endif()
+        set(recipe_includes ${includes})
+        if(source MATCHES "\\.lusl$" AND NOT directory IN_LIST includes)
+            # The lowered module compiles from the build tree, so the recipe directory, which holds the
+            # Slang files its extern slang blocks name, becomes an include root as it is for Slang recipes.
+            list(APPEND recipe_includes "${directory}")
+        endif()
         ludus_compile_shader(TARGET "${RENDERER_TARGET}" NAME "${name}"
-            SOURCE "${directory}/${source}" ${stages} INCLUDES ${includes} DEPENDS "${manifest}")
+            SOURCE "${directory}/${source}" ${stages} INCLUDES ${recipe_includes} DEPENDS "${manifest}")
     endforeach()
 endfunction()
 

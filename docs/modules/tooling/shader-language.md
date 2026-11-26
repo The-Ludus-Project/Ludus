@@ -939,17 +939,21 @@ ludus_compile_shader(TARGET my_game NAME composite
   Slang compiler, and adds `<NAME>_slots.h` to the target's private include
   path. `ludus_generate_renderer_shader_slots(TARGET ... SHADERS ...)` does this
   for built-in LUSL recipes with the recipe roots; the renderer binds
-  `renderer_composite`, `renderer_overlay`, `renderer_grid` and the selection
-  recipes this way, from the same sources its callers compile.
+  `renderer_composite`, `renderer_overlay`, `renderer_grid`, the selection
+  recipes and `renderer_point_neighbors` this way, from the same sources its
+  callers compile. It compiles the skin diffusion recipes itself and binds their
+  slot tables.
 - **Evidence:** a GPU test composites `rg2_bound` with the LUSL
   `renderer_composite` recipe and with its Slang original
   (`modules/graphics/renderer/shaders/renderer_composite.slang`), compares every pixel,
   and checks the slot constants against the reflected bindings.
 
 Renderer recipes can include `point_search_layout.luslh`,
-`scene_shader_layout.luslh`, `renderer_gpu_preview_layout.luslh`, and
-`renderer_reference_layout.luslh`. These headers expose shared layout macros
-from the corresponding C++ headers. After changing an owner, run
+`scene_shader_layout.luslh`, `renderer_gpu_preview_layout.luslh`,
+`renderer_reference_layout.luslh`, `deferred_layout.luslh` (with its
+`deferred_binding_slots.luslh`) and `skin_diffusion_layout.luslh`. These headers
+expose shared layout macros and `static const` layout constants from the
+corresponding C++ headers. After changing an owner, run
 `python3 cmake/shaders/generate_lusl_layouts.py` and commit the regenerated
 headers. The generated-source check rejects drift. The preview layout exposes
 the host header's default workgroup dimensions. The SDK ships the same

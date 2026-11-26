@@ -1,0 +1,207 @@
+// Screen-space diffusion of skin's diffuse lighting in the clustered deferred profile, shared by the
+// renderer_skin_blur and renderer_skin_composite recipes. Thanks to Jorge Jimenez et al., "Separable
+// Subsurface Scattering", Computer Graphics Forum 34(6), 2015, https://iryoku.com/separable-sss/: the
+// pre-integrated kernel of section 4 applied as a horizontal then a vertical convolution of the diffuse
+// layer only, with the specular layer composited afterwards (section 6), and seven taps shared by the
+// three channels and placed by the dominant channel (section 6, "Importance sampling"). The kernel's
+// footprint is its world-space extent at the pixel's depth. A skin pixel stores -(its one-based profile
+// slot) in the G-buffer's metallic channel, and the slot's scattering distance comes from the view's
+// profile table (DEFERRED_MAX_SKIN_PROFILES). A tap counts only on skin and on the centre's surface
+// (LUDUS_SKIN_SURFACE_SLOPE_LIMIT), and the weights of the taps that count are renormalized, so
+// silhouettes and other materials neither bleed in nor darken the edge. The spread light is pre-scatter
+// textured by the square root of the albedo and multiplied by the centre's square root afterwards
+// (RemoveSkinPreScatterAlbedo in renderer_deferred_lighting.slang). The kernel tables and their CPU
+// mirror are in src/internal/skin_diffusion.h.
+//
+// Both recipes declare every binding below in this order, so they share one slot table, which is also
+// the manual layout of the Slang original (renderer_skin_diffusion.slang, skin_diffusion_layout.h). The
+// renderer binds the generated renderer_skin_blur_slots.h and renderer_skin_composite_slots.h constants.
+// The blur does not read skinRadianceTexture.
+#pragma once
+
+#include "deferred_layout.luslh"
+#include "renderer_deferred_fullscreen.luslh"
+#include "skin_diffusion_layout.luslh"
+
+struct SkinViewParameters
+{
+    float32x4 ClipToWorldRows[DEFERRED_VIEW_ROWS];
+    float32x4 EyeWorld;
+    float32x4 TargetSizePixel;
+    // Z: graph ToneMap exposure; zero writes clamped linear colour. W: its ToneCurve code.
+    float32x4 Options;
+    float32x4 LightingView;
+};
+
+static const uint32 SKIN_KERNEL_WORDS = LUDUS_SKIN_KERNEL_WORDS;
+struct SkinKernelParameters
+{
+    float32x4 Words[SKIN_KERNEL_WORDS];
+};
+
+// Linear RGB scattering distance in metres (xyz) of each profile slot, in slot order from slot one.
+struct SkinProfileParameters
+{
+    float32x4 Distances[DEFERRED_MAX_SKIN_PROFILES];
+};
+
+Texture2D<float32x4> skinSourceTexture;
+Texture2D<float32x4> skinRadianceTexture;
+Texture2D<float32x4> skinNormalTexture;
+Texture2D<float32x4> skinBaseTexture;
+Texture2D<float32> skinDepthTexture;
+ConstantBuffer<SkinViewParameters> skinView;
+ConstantBuffer<SkinKernelParameters> skinKernel;
+ConstantBuffer<SkinProfileParameters> skinProfiles;
+
+static const uint32 SKIN_SIDE_TAPS = LUDUS_SKIN_KERNEL_SIDE_TAPS;
+static const uint32 SKIN_ENERGY_ENTRIES = LUDUS_SKIN_ENERGY_ENTRIES;
+static const float32 SKIN_ENERGY_LOG2_MIN = LUDUS_SKIN_ENERGY_LOG2_MIN;
+static const float32 SKIN_ENERGY_LOG2_MAX = LUDUS_SKIN_ENERGY_LOG2_MAX;
+static const float32 SKIN_SURFACE_SLOPE_LIMIT = LUDUS_SKIN_SURFACE_SLOPE_LIMIT;
+static const uint32 SKIN_KERNEL_BOUNDARY_WORD = LUDUS_SKIN_KERNEL_BOUNDARY_WORD;
+static const uint32 SKIN_KERNEL_OFFSET_WORD = LUDUS_SKIN_KERNEL_OFFSET_WORD;
+static const uint32 FLOAT4_COMPONENTS = 4;
+static const float32 SKIN_HALF = 0.5;
+
+float32 GetSkinWordComponent(in float32x4 word, in uint32 component)
+{
+    return component == 0 ? word.x : (component == 1 ? word.y : (component == 2 ? word.z : word.w));
+}
+
+float32 GetSkinEnergyEntry(in uint32 entry)
+{
+    return GetSkinWordComponent(skinKernel.Words[entry / FLOAT4_COMPONENTS], entry % FLOAT4_COMPONENTS);
+}
+
+// LookupSkinStripEnergy in skin_diffusion.cpp: the share of a channel's energy within u scattering distances.
+float32 LookupSkinStripEnergy(in float32 halfWidthPerDistance)
+{
+    if ((halfWidthPerDistance > 0.0) == false)
+    {
+        return 0.0;
+    }
+    float32 last = float32(SKIN_ENERGY_ENTRIES - 1);
+    float32 position =
+        (log2(halfWidthPerDistance) - SKIN_ENERGY_LOG2_MIN) / (SKIN_ENERGY_LOG2_MAX - SKIN_ENERGY_LOG2_MIN) * last;
+    if (position <= 0.0)
+    {
+        return GetSkinEnergyEntry(0) * halfWidthPerDistance / exp2(SKIN_ENERGY_LOG2_MIN);
+    }
+    if (position >= last)
+    {
+        return GetSkinEnergyEntry(SKIN_ENERGY_ENTRIES - 1);
+    }
+    uint32 index = uint32(position);
+    float32 fraction = position - float32(index);
+    float32 low = GetSkinEnergyEntry(index);
+    float32 high = GetSkinEnergyEntry(index + 1);
+    return low + (high - low) * fraction;
+}
+
+// The channel's unnormalized weight of side tap `side` (zero: the centre), for its distance over the dominant one.
+float32 ComputeSkinTapWeight(in uint32 side, in float32 distanceRatio)
+{
+    if ((distanceRatio > 0.0) == false)
+    {
+        return side == 0 ? 1.0 : 0.0;
+    }
+    float32x4 boundaries = skinKernel.Words[SKIN_KERNEL_BOUNDARY_WORD];
+    float32 outer = LookupSkinStripEnergy(GetSkinWordComponent(boundaries, side) / distanceRatio);
+    if (side == 0)
+    {
+        return outer;
+    }
+    float32 inner = LookupSkinStripEnergy(GetSkinWordComponent(boundaries, side - 1) / distanceRatio);
+    return (outer - inner) / 2.0;
+}
+
+float32x3 ReconstructSkinWorld(in float32x2 positionPixel, in float32 depth)
+{
+    float32x2 positionClip =
+        positionPixel / skinView.TargetSizePixel.xy * float32x2(2.0, -2.0) + float32x2(-1.0, 1.0);
+    float32x4 positionHomogeneousClip = float32x4(positionClip, depth, 1.0);
+    float32x4 positionHomogeneousWorld = float32x4(dot(skinView.ClipToWorldRows[0], positionHomogeneousClip),
+                                                   dot(skinView.ClipToWorldRows[1], positionHomogeneousClip),
+                                                   dot(skinView.ClipToWorldRows[2], positionHomogeneousClip),
+                                                   dot(skinView.ClipToWorldRows[3], positionHomogeneousClip));
+    return positionHomogeneousWorld.xyz / positionHomogeneousWorld.w;
+}
+
+// A skin pixel's metallic channel holds -(its one-based profile slot); every other pixel's is a metallic fraction in
+// [0, 1], and an uncovered pixel's is the cleared zero.
+bool IsSkinPixel(in int32x2 positionPixel)
+{
+    return skinBaseTexture.Load(int32x3(positionPixel, 0)).w < 0.0;
+}
+
+float32x3 GetSkinDistance(in int32x2 positionPixel)
+{
+    int32 slot = int32(-skinBaseTexture.Load(int32x3(positionPixel, 0)).w + SKIN_HALF) - 1;
+    return skinProfiles.Distances[clamp(slot, 0, int32(DEFERRED_MAX_SKIN_PROFILES) - 1)].xyz;
+}
+
+// One 1D pass of the kernel along axisPixel (one pixel horizontally or vertically) over skinSourceTexture. A pixel
+// that is not skin, or has no scattering distance, keeps its own value.
+float32x3 SpreadSkinDiffuse(in int32x2 centrePixel, in float32x2 axisPixel)
+{
+    float32x3 centreValue = skinSourceTexture.Load(int32x3(centrePixel, 0)).xyz;
+    if (IsSkinPixel(centrePixel) == false)
+    {
+        return centreValue;
+    }
+    float32x3 scatteringDistance = GetSkinDistance(centrePixel);
+    float32 dominant = max(max(scatteringDistance.x, scatteringDistance.y), scatteringDistance.z);
+    if ((dominant > 0.0) == false)
+    {
+        return centreValue;
+    }
+    float32 depth = skinDepthTexture.Load(int32x3(centrePixel, 0));
+    float32x2 centrePosition = float32x2(centrePixel) + SKIN_HALF;
+    float32x3 centreWorld = ReconstructSkinWorld(centrePosition, depth);
+    // The kernel's world extent becomes pixels through the footprint of one pixel at this depth.
+    float32 metresPerPixel = length(ReconstructSkinWorld(centrePosition + axisPixel, depth) - centreWorld);
+    float32x3 normal = skinNormalTexture.Load(int32x3(centrePixel, 0)).xyz;
+    float32 normalLength = length(normal);
+    if ((metresPerPixel > 0.0) == false || (normalLength > 0.0) == false)
+    {
+        return centreValue;
+    }
+    float32x3 normalWorld = normal / normalLength;
+    float32x3 ratio = scatteringDistance / dominant;
+    float32x3 centreWeight =
+        float32x3(ComputeSkinTapWeight(0, ratio.x), ComputeSkinTapWeight(0, ratio.y), ComputeSkinTapWeight(0, ratio.z));
+    float32x3 sum = centreValue * centreWeight;
+    float32x3 total = centreWeight;
+    float32x4 offsets = skinKernel.Words[SKIN_KERNEL_OFFSET_WORD];
+    int32x2 extentPixel = int32x2(skinView.TargetSizePixel.xy);
+    for (uint32 side = 1; side <= SKIN_SIDE_TAPS; ++side)
+    {
+        float32 offsetMetres = GetSkinWordComponent(offsets, side - 1) * dominant;
+        float32 offsetPixels = offsetMetres / metresPerPixel;
+        float32x3 weight = float32x3(ComputeSkinTapWeight(side, ratio.x),
+                                     ComputeSkinTapWeight(side, ratio.y),
+                                     ComputeSkinTapWeight(side, ratio.z));
+        for (int32 direction = -1; direction <= 1; direction += 2)
+        {
+            int32x2 tapPixel = int32x2(floor(centrePosition + axisPixel * (float32(direction) * offsetPixels)));
+            if (any(tapPixel < int32x2(0)) == true || any(tapPixel >= extentPixel) == true)
+            {
+                continue;
+            }
+            if (IsSkinPixel(tapPixel) == false)
+            {
+                continue;
+            }
+            float32 tapDepth = skinDepthTexture.Load(int32x3(tapPixel, 0));
+            float32x3 tapWorld = ReconstructSkinWorld(float32x2(tapPixel) + SKIN_HALF, tapDepth);
+            if (abs(dot(normalWorld, tapWorld - centreWorld)) > SKIN_SURFACE_SLOPE_LIMIT * offsetMetres)
+            {
+                continue;
+            }
+            sum += skinSourceTexture.Load(int32x3(tapPixel, 0)).xyz * weight;
+            total += weight;
+        }
+    }
+    return sum / total;
+}

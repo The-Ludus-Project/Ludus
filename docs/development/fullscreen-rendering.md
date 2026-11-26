@@ -1290,7 +1290,7 @@ outside the extent initialize their shared slots with suitable padding and
 participate in the same group barriers as the other invocations. Predicate
 out-of-range resource accesses. [Group barrier reference](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/groupmemorybarrierwithgroupsync).
 
-The [point-neighbor kernel](../../modules/graphics/renderer/shaders/renderer_point_neighbors.slang)
+The [point-neighbor kernel](../../modules/graphics/renderer/shaders/renderer_point_neighbors.lusl)
 shows a 1D bounds check. For a 2D example, the [generated scene compute
 entry point](render-graph-authoring.md#author-scene-compute-passes) handles
 dispatch coordinates and edge groups before calling authored shader functions.

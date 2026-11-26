@@ -27,6 +27,20 @@ struct DeferredMaterialBindings final
     /// which no pixel references.
     foundation::StaticArray<foundation::math::Vector4, DEFERRED_MAX_SKIN_PROFILES> SkinProfiles{};
 };
+/// Skin diffusion programs a test draws in place of the built-in renderer_skin_blur and renderer_skin_composite
+/// recipes, such as their retained Slang originals (LUSL L5d wave 2).
+struct SkinDiffusionShaders final
+{
+    rhi::RasterShaderDescription Vertex{};    ///< Fullscreen vertex stage shared by every skin stage.
+    rhi::RasterShaderDescription Blur{};      ///< Horizontal blur fragment.
+    rhi::RasterShaderDescription Composite{}; ///< Vertical blur and composite fragment.
+};
+/// Test builds only (LUDUS_RENDERER_TEST_READBACK): deferred programs whose skin resources are created after this call
+/// draw with shadersOrNull's programs instead of the built-in recipes; nullptr restores the recipes. The programs must
+/// keep the recipes' binding slots (renderer_skin_composite_slots.h). The descriptions are copied; the artifacts they
+/// borrow must outlive the programs. Owner thread only, between graph preparations. Without offline shader tools
+/// (LUDUS_RENDERER_SKIN_SHADERS undefined) the renderer has no skin programs and the call does nothing.
+void SetSkinDiffusionShadersForTesting(const SkinDiffusionShaders* shadersOrNull) noexcept;
 /// Graph-owned fullscreen geometry, shaders and immutable lighting/depth-copy pipelines.
 class RenderGraphDeferredProgram final
 {
@@ -157,7 +171,7 @@ struct DeferredResolveLights final
 /// Per-view camera uniform and common light bindings; owns no mutable scene data. The operation's
 /// ToneMap exposure and curve, when nonzero, are applied by the lighting resolve before RGBA8 output. A view with skin
 /// resolves into the targets' skin targets, spreads the skin diffuse horizontally, then vertically while compositing
-/// and tone mapping into the output (renderer_skin_diffusion.slang).
+/// and tone mapping into the output (renderer_skin_diffusion.luslh).
 class RenderGraphDeferredPass final
 {
 public:

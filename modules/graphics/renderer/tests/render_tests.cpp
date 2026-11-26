@@ -6,6 +6,7 @@
 #include "l2_scene.h"
 #include "l4_scene.h"
 #include "l5_scene.h"
+#include "recipe_ab_timing.h"
 #include "renderer_clustered.h"
 #include "renderer_clustered_shadow.h"
 #include "renderer_composite.h"
@@ -1579,42 +1580,13 @@ TEST_CASE("Analytic world grids draw antialiased lines, axes and fades behind ne
     CHECK(differing > analyticOnly / 2);
 }
 
-namespace
-{
-/// Alternating blocks of the in-process A/B timing of a ported recipe against its Slang original.
-constexpr uint32 RECIPE_AB_BLOCKS = 12;
-/// Untimed frames per variant at the start of each block.
-constexpr uint32 RECIPE_AB_WARMUP_FRAMES = 3;
-/// Timed frames per variant in each block.
-constexpr uint32 RECIPE_AB_FRAMES = 20;
-/// Bound on the polls of a pending GPU timing sample after its frame completed.
-constexpr usize POLL_LIMIT = 1000000;
-
-/// Median of `count` values, which it sorts in place.
-uint64 GetMedian(uint64* inoutValues, usize count) noexcept
-{
-    for (usize i = 1; i < count; ++i)
-    {
-        for (usize j = i; j > 0 && inoutValues[j - 1] > inoutValues[j]; --j)
-        {
-            const uint64 swapped = inoutValues[j - 1];
-            inoutValues[j - 1] = inoutValues[j];
-            inoutValues[j] = swapped;
-        }
-    }
-    const uint64 low = inoutValues[(count - 1) / 2];
-    // Halve the gap rather than the sum, which can overflow for offset signed values.
-    return low + (inoutValues[count / 2] - low) / 2;
-}
-} // namespace
-
 TEST_CASE("The LUSL grid recipe renders its Slang original's pixels", "[renderer][grid][gpu][lusl]")
 {
     // LUSL L5d wave 2: the same scene as the analytic grid test, drawn by renderer_grid and by its
     // Slang original (shaders/renderer_grid.slang) on one device, each beside the same flat quad. With
     // LUDUS_RENDERER_BENCHMARK set it draws 1080p frames and times the two programs A/B in
     // alternating blocks, swapping the order each block, because clocks drift between runs.
-    const bool isBenchmark = std::getenv("LUDUS_RENDERER_BENCHMARK") != nullptr;
+    const bool isBenchmark = rr::testing::IsRecipeBenchmark();
     const uint32 width = isBenchmark ? 1920U : GRID_WIDTH;
     const uint32 height = isBenchmark ? 1080U : GRID_HEIGHT;
     rhi::Shutdown();
@@ -1708,57 +1680,12 @@ TEST_CASE("The LUSL grid recipe renders its Slang original's pixels", "[renderer
     {
         return;
     }
-    // Per-block mean GPU frame time of each variant: the device-clock interval of the frame's clear
-    // and draws (rhi::ArmGpuTiming), without the readback that follows it.
-    uint64 blockMeans[2][RECIPE_AB_BLOCKS]{};
-    uint64 differences[RECIPE_AB_BLOCKS]{};
-    for (uint32 block = 0; block < RECIPE_AB_BLOCKS; ++block)
-    {
-        for (uint32 order = 0; order < 2; ++order)
-        {
-            const usize variant = (block + order) % 2;
-            uint64 total = 0;
-            for (uint32 frame = 0; frame < RECIPE_AB_WARMUP_FRAMES + RECIPE_AB_FRAMES; ++frame)
-            {
-                REQUIRE(rhi::ArmGpuTiming(device) == rhi::RasterStatus::Ready);
-                rhi::SubmissionToken completion;
-                REQUIRE(renderers[variant].Submit(views[variant], surface, completion) == rhi::RasterStatus::Ready);
-                REQUIRE(rhi::backend::ReadHeadlessPixels({images[variant].GetData(), images[variant].GetSize()}));
-                rhi::GpuTiming gpu;
-                REQUIRE(rhi::GetGpuTiming(device, gpu) == rhi::RasterStatus::Ready);
-                for (usize poll = 0; poll < POLL_LIMIT && gpu.State == rhi::GpuTimingState::Pending; ++poll)
-                {
-                    threading::YieldThread();
-                    REQUIRE(rhi::GetGpuTiming(device, gpu) == rhi::RasterStatus::Ready);
-                }
-                REQUIRE(gpu.State == rhi::GpuTimingState::Available);
-                if (frame >= RECIPE_AB_WARMUP_FRAMES)
-                {
-                    total += static_cast<uint64>(gpu.DurationNanoseconds);
-                }
-            }
-            blockMeans[variant][block] = total / RECIPE_AB_FRAMES;
-        }
-        differences[block] = blockMeans[1][block] - blockMeans[0][block];
-    }
-    // Unsigned differences wrap; recentre them so the median orders signed values correctly.
-    constexpr uint64 SIGN_OFFSET = uint64{1} << 63U;
-    for (uint64& difference : differences)
-    {
-        difference += SIGN_OFFSET;
-    }
-    const uint64 slang = GetMedian(blockMeans[0], RECIPE_AB_BLOCKS);
-    const uint64 lusl = GetMedian(blockMeans[1], RECIPE_AB_BLOCKS);
-    const int64 difference = static_cast<int64>(GetMedian(differences, RECIPE_AB_BLOCKS) - SIGN_OFFSET);
-    std::printf(
-        "RECIPEAB,grid,%ux%u,%u blocks x %u frames,GPU frame slang=%llu ns,lusl=%llu ns,median difference=%lld ns\n",
-        width,
-        height,
-        RECIPE_AB_BLOCKS,
-        RECIPE_AB_FRAMES,
-        static_cast<unsigned long long>(slang),
-        static_cast<unsigned long long>(lusl),
-        static_cast<long long>(difference));
+    // Per-block mean GPU frame time of each variant: the frame's clear and draws, without the readback.
+    rr::testing::RunRecipeAbTiming(device, "grid", width, height, [&](usize variant) {
+        rhi::SubmissionToken completion;
+        REQUIRE(renderers[variant].Submit(views[variant], surface, completion) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::backend::ReadHeadlessPixels({images[variant].GetData(), images[variant].GetSize()}));
+    });
 }
 
 #if defined(LUDUS_TEST_RAY)
