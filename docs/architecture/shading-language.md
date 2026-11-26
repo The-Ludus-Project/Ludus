@@ -1117,6 +1117,28 @@ L5 completes when no repository-owned Slang source remains outside the
 retained list, the changed-source gate enforces it, Sample builds without
 Slang sources, and the shader guides describe LUSL as the default.
 
+#### Investigate a hot-pass timing regression
+
+Repeat the paired test with the same scene, inputs, device, driver, optimization
+settings and pipeline state. Interleave the Slang and LUSL runs and include a
+baseline-against-itself control to estimate timing noise. Save the stage,
+entry point, artifact hashes and emitted code for both versions. Compare native
+instruction counts, register allocation and spills where the target tools
+expose them. Treat those counts as clues and use GPU counters to establish
+changes in runtime occupancy or stalls. Time optimized runs with capture and
+shader dumps disabled.
+
+For a regression in edit turnaround, cook time or app startup, use the
+[shader and pipeline cost qualification](https://github.com/The-Ludus-Project/Ludus/issues/1253)
+to measure host compilation, native pipeline readiness and GPU execution.
+Link each timing to its corresponding artifact and record the cache conditions
+for cold and warm runs.
+
+Thanks to Charu Chandrasekaran and Marcello Maggioni for the distinctions
+between compiler cost, resource use and GPU time, and for examples of how
+inlining and unrolling affect code size and register pressure.
+[Apple LLVM GPU Compiler: Embedded Dragons, 2017 LLVM Developers’ Meeting, slides 7, 19–22, 24–39 and 70](https://llvm.org/devmtg/2017-10/slides/Chandrasekaran-Maggioni-Apple%20LLVM%20GPU%20Compiler.pdf#page=7)
+
 ## Delivery plan
 
 | Phase | Scope | Acceptance |
