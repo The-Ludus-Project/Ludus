@@ -279,6 +279,16 @@ ProjectSetupSummary DescribeProjectSetup(const QString& setupStatus, const QStri
             summary.Chip = QStringLiteral("Not checked");
             first = QStringLiteral("The setup check starts in a moment.");
         }
+        // A stale bootstrap is a routine update: keep the warning tone, but say "Out of date"
+        // rather than "Needs attention", which reads as a broken project.
+        if (first.contains(QStringLiteral("out of date"), Qt::CaseInsensitive) == true)
+        {
+            summary.Chip = QStringLiteral("Out of date");
+            if (summary.Tone != StatusTone::Danger)
+            {
+                summary.Tone = StatusTone::Warning;
+            }
+        }
         summary.Summary = Capitalize(first);
         for (const QString& line : lines)
         {

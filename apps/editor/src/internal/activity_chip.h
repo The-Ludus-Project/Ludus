@@ -38,8 +38,9 @@ public:
     /// Show label with a static dot, or with a bar filled to progressOrNegative (0 to 1) when it is not negative.
     /// An empty label hides the job part. Changes are applied at most every ACTIVITY_UPDATE_INTERVAL_MILLISECONDS.
     void SetActivity(const QString& label, double progressOrNegative);
-    /// Show the problem counts, applied together with the activity.
-    void SetCounts(foundation::int32 errors, foundation::int32 warnings);
+    /// Show the problem counts, applied together with the activity. When hasProblemReport is false and both
+    /// counts are zero, the buttons say "Not checked" instead of "0 Problems", because nothing has been validated.
+    void SetCounts(foundation::int32 errors, foundation::int32 warnings, bool hasProblemReport = true);
     /// Apply any pending change now.
     void Flush();
 
@@ -73,6 +74,7 @@ private:
     double mPendingProgress = -1.0;
     foundation::int32 mPendingErrors = 0;
     foundation::int32 mPendingWarnings = 0;
+    bool mHasProblemReport = true;
     double mShownProgress = -1.0;
     foundation::int32 mAppliedChangeCount = 0;
     bool mHasPending = false;

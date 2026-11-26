@@ -302,8 +302,8 @@ print(json.dumps(dict(protocol=1, type='result', job=request['job'],
     REQUIRE(detail != nullptr);
     CHECK(detail->text().contains(QStringLiteral("changed since this project was set up")));
     CHECK(message->toolTip().contains(QStringLiteral("SDK or tool inputs changed")));
-    // A stale setup is fixed by repair, so the notice offers it rather than the settings file.
-    CHECK(repair->text() == QStringLiteral("Repair project"));
+    // A stale setup is a routine update, so the notice offers Update setup rather than the settings file.
+    CHECK(repair->text() == QStringLiteral("Update setup"));
     CHECK(repair->isEnabled());
     ProjectDescriptor draft = controller.State().Draft;
     draft.Name = QStringLiteral("Changed project settings");

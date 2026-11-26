@@ -155,6 +155,9 @@ TEST_CASE("canvas diagnostic counts exclude summaries and navigation wraps over 
     RenderGraphCanvas& canvas = workspace.GetCanvas();
     RenderGraphDiagnostics& diagnostics = canvas.GetDiagnostics();
     CHECK(diagnostics.GetFreshness() == RenderGraphDiagnosticFreshness::None);
+    QLabel* countsOrNull = workspace.findChild<QLabel*>(QStringLiteral("renderGraphDiagnosticCounts"));
+    REQUIRE(countsOrNull != nullptr);
+    CHECK(countsOrNull->text() == QStringLiteral("Not checked"));
     CHECK(diagnostics.Next() == false);
     QJsonObject first = MakeLocation(QStringLiteral("first"));
     first.insert(QStringLiteral("port"), QStringLiteral("color"));
@@ -169,6 +172,7 @@ TEST_CASE("canvas diagnostic counts exclude summaries and navigation wraps over 
     workspace.AcceptResult(result);
     CHECK(diagnostics.GetErrorCount() == 3);
     CHECK(diagnostics.GetWarningCount() == 2);
+    CHECK(countsOrNull->text() == QStringLiteral("Errors 3 · Warnings 2"));
     CHECK(diagnostics.GetAvailableCount() == 3);
     CHECK(diagnostics.GetFreshness() == RenderGraphDiagnosticFreshness::Current);
     const uint64 revision = workspace.GetDocument().GetRevision();
@@ -203,6 +207,34 @@ TEST_CASE("canvas diagnostic counts exclude summaries and navigation wraps over 
     CHECK(diagnostics.GetWarningCount() == 2);
     REQUIRE(diagnostics.Next() == true);
     CHECK(diagnostics.GetCurrentRow() == 1);
+}
+
+TEST_CASE("diagnostic counts say Not checked until a clean report exists",
+          "[editor][render-graph][diagnostic-navigation]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenWorkspace(workspace, project);
+    RenderGraphDiagnostics& diagnostics = workspace.GetCanvas().GetDiagnostics();
+    QLabel* countsOrNull = workspace.findChild<QLabel*>(QStringLiteral("renderGraphDiagnosticCounts"));
+    REQUIRE(countsOrNull != nullptr);
+    CHECK(diagnostics.GetFreshness() == RenderGraphDiagnosticFreshness::None);
+    CHECK(countsOrNull->text() == QStringLiteral("Not checked"));
+    RenderGraphJobResult result;
+    result.Request.ProjectEpoch = 1;
+    result.Request.Revision = workspace.GetDocument().GetRevision();
+    result.Request.InputIdentity = GetIdentity(workspace);
+    result.Request.Action = QStringLiteral("validate");
+    result.IsSuccessful = true;
+    result.Code = QStringLiteral("Ok");
+    workspace.AcceptResult(result);
+    CHECK(diagnostics.GetFreshness() == RenderGraphDiagnosticFreshness::Current);
+    CHECK(diagnostics.GetErrorCount() == 0);
+    CHECK(diagnostics.GetWarningCount() == 0);
+    CHECK(countsOrNull->text() == QStringLiteral("No problems"));
+    diagnostics.Reset();
+    CHECK(diagnostics.GetFreshness() == RenderGraphDiagnosticFreshness::None);
+    CHECK(countsOrNull->text() == QStringLiteral("Not checked"));
 }
 
 TEST_CASE("same-configuration diagnostic visits restore prior selection pan zoom and trace with Back",

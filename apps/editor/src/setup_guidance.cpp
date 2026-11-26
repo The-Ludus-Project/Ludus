@@ -49,6 +49,8 @@ constexpr int32 IDENTIFIER_CAPITALS = 2;
             return QStringLiteral("Open the project with a newer Ludus, or ask its owner for a compatible copy.");
         case ResultCode::MissingDebugger:
             return QStringLiteral("Debugging needs a Linux x64 computer with the pinned debugger.");
+        case ResultCode::BootstrapStale:
+            return QStringLiteral("Update the setup to refresh this project's build settings and caches.");
         case ResultCode::Conflict:
             return QStringLiteral("Reload the project to pick up the file's current contents.");
         case ResultCode::Busy:
@@ -56,7 +58,6 @@ constexpr int32 IDENTIFIER_CAPITALS = 2;
         case ResultCode::Ok:
         case ResultCode::DebuggerFailed:
         case ResultCode::MissingTools:
-        case ResultCode::BootstrapStale:
         case ResultCode::ConfigureFailed:
         case ResultCode::TargetInvalid:
         case ResultCode::ReplyInvalid:
@@ -184,12 +185,18 @@ SetupGuidance DescribeSetupProblem(const QString& problem)
         guidance.PlainCause = GetPlainCause(code);
         guidance.Fix = GetFix(code);
         guidance.IsRepairable = IsRepairable(code);
+        guidance.IsOutOfDate = code == ResultCode::BootstrapStale;
+        guidance.StatusPhrase = guidance.IsOutOfDate == true
+                                    ? QStringLiteral("Setup is out of date")
+                                    : (guidance.IsRepairable == true ? QStringLiteral("Setup needs repair")
+                                                                     : QStringLiteral("Setup needs attention"));
     }
     else
     {
         guidance.Headline = summary.isEmpty() == true ? QStringLiteral("This project needs a quick repair.")
                                                       : ReplaceResultCodeNames(summary);
         guidance.Fix = GetFix(ResultCode::Ok);
+        guidance.StatusPhrase = QStringLiteral("Setup needs repair");
     }
     if (laterLines.isEmpty() == false)
     {
@@ -246,6 +253,8 @@ SetupNoticeContent DescribeSetupNotice(const QString& problem, const QString& re
     const SetupGuidance guidance = DescribeSetupProblem(problem);
     SetupNoticeContent content;
     content.Headline = guidance.Headline;
+    content.IsOutOfDate = guidance.IsOutOfDate;
+    content.StatusPhrase = guidance.StatusPhrase;
     const QString cause =
         guidance.PlainCause.isEmpty() == true ? guidance.Detail.section(QLatin1Char('\n'), 0, 0) : guidance.PlainCause;
     const auto withCause = [&cause](const QString& sentence) {
@@ -261,7 +270,8 @@ SetupNoticeContent DescribeSetupNotice(const QString& problem, const QString& re
     }
     else
     {
-        content.ActionLabel = QStringLiteral("Repair project");
+        content.ActionLabel =
+            guidance.IsOutOfDate == true ? QStringLiteral("Update setup") : QStringLiteral("Repair project");
         content.IsActionEnabled = repairBlocker.isEmpty() == true;
         content.ActionTooltip =
             content.IsActionEnabled == true
@@ -269,10 +279,13 @@ SetupNoticeContent DescribeSetupNotice(const QString& problem, const QString& re
                                  "tools, then builds and tests the project to confirm it works. It can take a few "
                                  "minutes the first time; you can keep working while it runs.")
                 : repairBlocker;
-        content.Detail = withCause(content.IsActionEnabled == true
-                                       ? QStringLiteral("Repair project refreshes its build settings, then checks "
-                                                        "that it builds.")
-                                       : repairBlocker);
+        content.Detail = withCause(
+            content.IsActionEnabled == true
+                ? (guidance.IsOutOfDate == true
+                       ? QStringLiteral("Update setup refreshes its build settings and caches, then builds and "
+                                        "tests the project.")
+                       : QStringLiteral("Repair project refreshes its build settings, then checks that it builds."))
+                : repairBlocker);
     }
     const QString toolDetail = guidance.Detail.isEmpty() == true ? ReplaceResultCodeNames(problem) : guidance.Detail;
     content.Tooltip =

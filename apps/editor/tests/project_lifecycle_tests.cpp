@@ -383,7 +383,14 @@ TEST_CASE("Project setup status reads as a chip, one sentence and detail rows", 
     const ProjectSetupSummary attention =
         DescribeProjectSetup(QStringLiteral("CMake setup needs attention: run repair"), {});
     CHECK(attention.Tone == StatusTone::Warning);
+    CHECK(attention.Chip == QStringLiteral("Needs attention"));
     CHECK(attention.Summary == QStringLiteral("Run repair"));
+    const ProjectSetupSummary outOfDate =
+        DescribeProjectSetup(QStringLiteral("CMake setup needs attention: This project's build setup is out of date: "
+                                            "SDK or tool inputs changed; run repair to refresh presets and caches"),
+                             {});
+    CHECK(outOfDate.Tone == StatusTone::Warning);
+    CHECK(outOfDate.Chip == QStringLiteral("Out of date"));
     const ProjectSetupSummary unavailable =
         DescribeProjectSetup(QStringLiteral("Setup validation unavailable: managed editor tooling is missing"), {});
     CHECK(unavailable.Chip == QStringLiteral("Unavailable"));

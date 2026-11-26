@@ -88,11 +88,18 @@ QToolButton* MakeCountButton(QWidget* parent, const QString& name, EditorIcon ic
 }
 
 /// Show count compactly, as the bare number beside the button's icon, so the status bar's right edge never clips
-/// it; the accessible name and tooltip say it in words ("2 Problems").
-void ShowCount(QToolButton& inoutButton, foundation::int32 count, const QString& singular, const QString& plural)
+/// it; the accessible name and tooltip say it in words ("2 Problems"). When there is no report and the count is
+/// zero, a dash and "Not checked" stand in, so a missing check is not read as a clean project.
+void ShowCount(QToolButton& inoutButton,
+               foundation::int32 count,
+               const QString& singular,
+               const QString& plural,
+               bool hasProblemReport)
 {
-    const QString words = FormatProblemCount(count, singular, plural);
-    inoutButton.setText(QString::number(count));
+    const bool isUnchecked = hasProblemReport == false && count == 0;
+    const QString words =
+        isUnchecked == true ? QStringLiteral("Not checked") : FormatProblemCount(count, singular, plural);
+    inoutButton.setText(isUnchecked == true ? QStringLiteral("–") : QString::number(count));
     inoutButton.setAccessibleName(words);
     inoutButton.setToolTip(QStringLiteral("%1. Show the Error List").arg(words));
     // The button is never narrower than its icon, gap and number in its own font, whatever the platform style
@@ -102,6 +109,7 @@ void ShowCount(QToolButton& inoutButton, foundation::int32 count, const QString&
         STATUS_ICON_SIZE + CHIP_SPACING + metrics.horizontalAdvance(inoutButton.text()) + 2 * COUNT_BUTTON_PADDING;
     inoutButton.setMinimumWidth(std::max(inoutButton.sizeHint().width(), contentWidth));
 }
+
 } // namespace
 
 QString GetActivityLabel(Phase phase, bool isImporting, bool isGraphJobActive)
@@ -170,8 +178,8 @@ StatusActivityBar::StatusActivityBar(QWidget* parentOrNull)
     mPendingLabel.clear();
     // The bar keeps its own width: the status line beside it gives way first.
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
-    ShowCount(*mProblems, 0, QStringLiteral("Problem"), QStringLiteral("Problems"));
-    ShowCount(*mWarnings, 0, QStringLiteral("Warning"), QStringLiteral("Warnings"));
+    ShowCount(*mProblems, 0, QStringLiteral("Problem"), QStringLiteral("Problems"), false);
+    ShowCount(*mWarnings, 0, QStringLiteral("Warning"), QStringLiteral("Warnings"), false);
 }
 
 void StatusActivityBar::SetActivity(const QString& label, double progressOrNegative)
@@ -181,10 +189,11 @@ void StatusActivityBar::SetActivity(const QString& label, double progressOrNegat
     schedule();
 }
 
-void StatusActivityBar::SetCounts(foundation::int32 errors, foundation::int32 warnings)
+void StatusActivityBar::SetCounts(foundation::int32 errors, foundation::int32 warnings, bool hasProblemReport)
 {
     mPendingErrors = errors;
     mPendingWarnings = warnings;
+    mHasProblemReport = hasProblemReport;
     schedule();
 }
 
@@ -233,7 +242,7 @@ void StatusActivityBar::applyPending()
     mShownProgress = mPendingProgress;
     static_cast<ActivityMarker*>(mMarker)->SetProgress(mPendingProgress);
     mActivityGroup->setVisible(mPendingLabel.isEmpty() == false);
-    ShowCount(*mProblems, mPendingErrors, QStringLiteral("Problem"), QStringLiteral("Problems"));
-    ShowCount(*mWarnings, mPendingWarnings, QStringLiteral("Warning"), QStringLiteral("Warnings"));
+    ShowCount(*mProblems, mPendingErrors, QStringLiteral("Problem"), QStringLiteral("Problems"), mHasProblemReport);
+    ShowCount(*mWarnings, mPendingWarnings, QStringLiteral("Warning"), QStringLiteral("Warnings"), mHasProblemReport);
 }
 } // namespace ludus::editor

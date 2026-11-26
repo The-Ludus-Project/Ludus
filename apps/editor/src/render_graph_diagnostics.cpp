@@ -186,15 +186,31 @@ void RenderGraphDiagnostics::Refresh(RenderGraphDiagnosticFreshness freshness)
 
 void RenderGraphDiagnostics::refreshControls()
 {
-    // A clean report is one quiet phrase; counts appear only when there is something to count.
-    mCounts->setText(mErrors == 0 && mWarnings == 0
-                         ? QStringLiteral("No problems")
-                         : QStringLiteral("Errors %1 · Warnings %2").arg(mErrors).arg(mWarnings));
-    mCounts->setToolTip(QStringLiteral("Report errors: %1; warnings: %2; available canvas targets: %3. "
-                                       "Source-only or unavailable targets remain in Error List.")
-                            .arg(mErrors)
-                            .arg(mWarnings)
-                            .arg(mAvailableRows.size()));
+    // "No problems" is only for a report that exists and is clean. With no report, say so plainly.
+    const bool hasReport = mFreshness != RenderGraphDiagnosticFreshness::None;
+    if (hasReport == false)
+    {
+        mCounts->setText(QStringLiteral("Not checked"));
+        mCounts->setToolTip(QStringLiteral("No report yet. The graph has not been validated, so this is not a clean "
+                                           "bill of health."));
+    }
+    else if (mErrors == 0 && mWarnings == 0)
+    {
+        mCounts->setText(QStringLiteral("No problems"));
+        mCounts->setToolTip(
+            QStringLiteral("The current report has no errors or warnings. Available canvas targets: %1. "
+                           "Source-only or unavailable targets remain in Error List.")
+                .arg(mAvailableRows.size()));
+    }
+    else
+    {
+        mCounts->setText(QStringLiteral("Errors %1 · Warnings %2").arg(mErrors).arg(mWarnings));
+        mCounts->setToolTip(QStringLiteral("Report errors: %1; warnings: %2; available canvas targets: %3. "
+                                           "Source-only or unavailable targets remain in Error List.")
+                                .arg(mErrors)
+                                .arg(mWarnings)
+                                .arg(mAvailableRows.size()));
+    }
     // Previous and Next take toolbar room only when there is a canvas target to step to.
     for (QAction* action : {mPrevious, mNext})
     {

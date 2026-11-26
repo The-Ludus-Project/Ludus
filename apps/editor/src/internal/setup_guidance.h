@@ -28,6 +28,10 @@ struct SetupGuidance final
     QString Fix;
     /// Whether Repair project is expected to help. Settings-file and version problems are not repairable.
     bool IsRepairable = true;
+    /// Whether this is a routine out-of-date setup (BootstrapStale), not a broken project.
+    bool IsOutOfDate = false;
+    /// Short status-bar phrase that matches the banner, for example "Setup is out of date".
+    QString StatusPhrase;
 };
 
 /// What, besides the controller's own answer, decides whether Repair project can start now.
@@ -62,6 +66,10 @@ struct SetupNoticeContent final
     bool IsActionEnabled = false;
     /// Whether the action opens Project Settings rather than repairing.
     bool IsOpeningSettings = false;
+    /// Whether this is a routine out-of-date setup (BootstrapStale), not a broken project.
+    bool IsOutOfDate = false;
+    /// Short status-bar phrase that matches the banner, for example "Setup is out of date".
+    QString StatusPhrase;
 };
 
 /// The setup banner for a problem as the controller stores it, given why repair can't start (empty when it can).
