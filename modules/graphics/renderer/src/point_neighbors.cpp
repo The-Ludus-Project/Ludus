@@ -4,6 +4,8 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
+#include "renderer_point_neighbors_slots.h"
+
 namespace ludus::graphics::renderer
 {
 using namespace foundation;
@@ -12,6 +14,10 @@ namespace
 constexpr usize BUFFER_COUNT = POINT_NEIGHBOR_RESULT_BUFFER + 1;
 constexpr usize PARAMETER_COUNT = 4;
 constexpr uint32 QUERY_GROUP_SIZE = LUDUS_POINT_SEARCH_GROUP_SIZE;
+namespace point_slots = ludus::shaders::renderer_point_neighbors::slots;
+/// Binding slot of each workload buffer, in buffer order, from the recipe's generated slot table.
+constexpr StaticArray<uint32, BUFFER_COUNT> BUFFER_SLOTS{
+    {point_slots::PARAMETERS, point_slots::NODES, point_slots::QUERIES, point_slots::RESULTS}};
 template <typename Element>
 BorrowedView<const uint8> GetBytes(BorrowedView<const Element> values) noexcept
 {
@@ -78,11 +84,7 @@ rhi::RasterStatus PreparePointNeighborWorkload(rhi::DeviceHandle device,
     StaticArray<rhi::ComputeWorkloadBinding, BUFFER_COUNT> bindings{};
     for (usize i = 0; i < BUFFER_COUNT; ++i)
     {
-        bindings[i] = {static_cast<uint32>(i),
-                       static_cast<uint32>(i),
-                       0,
-                       buffers[i].Size,
-                       i == POINT_NEIGHBOR_RESULT_BUFFER};
+        bindings[i] = {BUFFER_SLOTS[i], static_cast<uint32>(i), 0, buffers[i].Size, i == POINT_NEIGHBOR_RESULT_BUFFER};
     }
     rhi::ComputeWorkloadKernel kernel;
     kernel.NameOrNull = "Point nearest neighbors";

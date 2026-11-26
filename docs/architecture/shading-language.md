@@ -1103,16 +1103,32 @@ listed in the retained list with its reason:
 
 **Wave 2 status.** The self-contained raster recipes are LUSL:
 `renderer_composite`, `renderer_overlay`, `renderer_grid`,
-`renderer_selection_mask` and `renderer_selection_outline`. The renderer binds
-them by their generated `<NAME>_slots.h` constants, which its build takes from
-the recipe sources with `ludus_generate_renderer_shader_slots` (lowering only,
-see the [module guide](../modules/tooling/shader-language.md#resources-and-bindings)).
+`renderer_selection_mask` and `renderer_selection_outline`. So are the skin
+diffusion passes of the clustered deferred profile, `renderer_skin_blur` and
+`renderer_skin_composite`, and the point-neighbor kernel,
+`renderer_point_neighbors`. The renderer binds them by their generated
+`<NAME>_slots.h` constants. For the recipes its callers compile, its build takes
+the tables from the recipe sources with `ludus_generate_renderer_shader_slots`
+(lowering only, see the [module guide](../modules/tooling/shader-language.md#resources-and-bindings)).
 Their Slang originals stay unchanged beside them, out of the recipe manifest and the installed
 SDK, and the retained list names each one. In the same run, the renderer GPU suites draw each recipe
-and its original on one device and require identical bytes. The composite comparison is in
+and its original on one device and require identical bytes. The composite and skin comparisons are in
 the render-graph pixel suite, which also runs on Direct3D 12 (WARP). The others run in the
-Vulkan and Metal renderer suite. The grid case has an in-process A/B timing mode
+Vulkan and Metal renderer suites. The grid and skin cases have an in-process A/B timing mode
 (`LUDUS_RENDERER_BENCHMARK`), which alternates GPU-timed blocks of the two programs.
+
+The skin recipes share `renderer_skin_diffusion.luslh`, the port of the originals'
+`renderer_skin_diffusion.slang`, and the fullscreen vertex stage
+`renderer_deferred_fullscreen.luslh`. The header declares every binding in the original's order,
+so the blur and the composite share one slot table, which is also the original's manual layout.
+The composite reaches `display_tone_mapping.slang` through `extern slang`. The other deferred
+recipes still include it and `renderer_deferred_fullscreen.slang`. The point-neighbor kernel
+reaches FoundationGeometry's `point_search.slang` through `extern slang` and defines the
+`ReadPointSearchNodeWord` callback that the library calls. Lowering writes the library's
+`#include` above the callback, which Slang resolves because global declarations need no
+particular order. `cmake/shaders/generate_lusl_layouts.py` also generates
+`deferred_layout.luslh` and `skin_diffusion_layout.luslh` from their C++ owners. LUSL needs
+`static const` array bounds, which an `extern slang` constant cannot provide.
 The Editor's live viewport shaders capture `.lusl` recipes and their includes, and the shader
 worker lowers them from the same snapshot. Interface varyings that the Slang originals marked
 `nointerpolation` travel as `asuint` bit patterns in integer fields, which LUSL interpolates
@@ -1124,12 +1140,14 @@ sampler, binds by the generated slots, and checks every pixel against the image 
 the fixture inputs. The original must produce the same bytes. A linear sampler, standing in
 for a wrong sampler binding, must change the pixels next to each texel edge. The macOS batch
 plan builds and runs the same fixture from a relocated copy of the installed SDK. That run
-prints the reflected binding kinds, and both runs print the image's hash. `renderer_flat`
-stays Slang for now. The render-graph forward profile (`scripts/python/ludus_tools/render_graph_forward.py`)
-includes its source in generated Slang wrappers and calls its entry points by name, so it
-migrates with that profile. The remaining recipes, the lit, material, output, deferred,
-atmosphere, skin, light transformer, point search, GPU preview and reference programs, need
-their renderer-local helper libraries ported first and migrate in later wave 2 changes. The renderer shader directory joins the
+prints the reflected binding kinds, and both runs print the image's hash. `renderer_flat`,
+`renderer_shadow` and `renderer_deferred_depth` stay Slang for now. The render-graph forward profile
+(`scripts/python/ludus_tools/render_graph_forward.py`) includes their sources in generated Slang
+wrappers and calls their entry points by name (`ForwardFlatShadow`, `DeferredDepthCopy`), and
+`cmake/LudusRenderGraph.cmake` stages their sources as render-graph helpers. They migrate with
+that profile. The remaining recipes, the lit, material, output, deferred lighting and material,
+atmosphere, skin resolve, light transformer, GPU preview and reference programs, need their
+renderer-local helper libraries ported first and migrate in later wave 2 changes. The renderer shader directory joins the
 migrated scope with the last of them.
 
 ### Acceptance

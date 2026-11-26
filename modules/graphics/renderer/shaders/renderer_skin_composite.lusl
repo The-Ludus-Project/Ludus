@@ -1,0 +1,46 @@
+// Vertical skin diffusion pass of the clustered deferred profile (renderer_skin_diffusion.luslh),
+// composited with the rest of the radiance and the graph's ToneMap. A renderer GPU test compares its
+// pixels with its Slang original, renderer_skin_composite.slang, which stays as the differential oracle
+// (L5d wave 2).
+#include "renderer_skin_diffusion.luslh"
+
+extern slang "display_tone_mapping.slang"
+{
+    float32x3 MapSceneToDisplay(in float32x3 sceneColor, in float32 exposure, in uint32 curve);
+};
+
+struct SkinCompositeOutput
+{
+    float32x4 Color;
+    float32 Depth : Depth;
+};
+
+[stage(fragment)]
+SkinCompositeOutput SkinCompositeMain(in DeferredVarying value)
+{
+    int32x2 positionPixel = int32x2(value.PositionClip.xy);
+    // The skin resolve writes an opaque radiance for every covered pixel; the cleared zero alpha is uncovered.
+    float32x4 resolved = skinRadianceTexture.Load(int32x3(positionPixel, 0));
+    if (resolved.w == 0.0)
+    {
+        discard;
+    }
+    float32x3 radiance = resolved.xyz;
+    if (IsSkinPixel(positionPixel) == true)
+    {
+        // Post-scatter texturing: the spread light is diffuse / sqrt(albedo) (RemoveSkinPreScatterAlbedo).
+        float32x3 baseColor = skinBaseTexture.Load(int32x3(positionPixel, 0)).xyz;
+        radiance += SpreadSkinDiffuse(positionPixel, float32x2(0.0, 1.0)) * sqrt(max(baseColor, float32x3(0.0)));
+    }
+    // The graph's ToneMap, fused here as the ordinary resolve fuses it.
+    if (skinView.Options.z > 0.0)
+    {
+        radiance = MapSceneToDisplay(radiance, skinView.Options.z, uint32(skinView.Options.w + SKIN_HALF));
+    }
+    SkinCompositeOutput output =
+    {
+        .Color = float32x4(radiance, 1.0),
+        .Depth = skinDepthTexture.Load(int32x3(positionPixel, 0)),
+    };
+    return output;
+}

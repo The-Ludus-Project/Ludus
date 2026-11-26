@@ -1,0 +1,10 @@
+// Horizontal skin diffusion pass of the clustered deferred profile (renderer_skin_diffusion.luslh): it
+// spreads the lighting pass's skin diffuse target along each row. A renderer GPU test compares its pixels
+// with its Slang original, renderer_skin_blur.slang, which stays as the differential oracle (L5d wave 2).
+#include "renderer_skin_diffusion.luslh"
+
+[stage(fragment)]
+float32x4 SkinBlurMain(in DeferredVarying value)
+{
+    return float32x4(SpreadSkinDiffuse(int32x2(value.PositionClip.xy), float32x2(1.0, 0.0)), 1.0);
+}

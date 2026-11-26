@@ -13,6 +13,9 @@ OWNERS = (
     (RENDERER_SHADERS / 'renderer_reference_layout.h', ('renderer_gpu_preview_layout.luslh',)),
     (RENDERER_HEADERS / 'scene_shader_layout.h', ()),
     (GEOMETRY_HEADERS / 'point_search_layout.h', ()),
+    (RENDERER_HEADERS / 'detail' / 'deferred_binding_slots.inc', ()),
+    (RENDERER_HEADERS / 'deferred_layout.h', ('deferred_binding_slots.luslh',)),
+    (RENDERER_SHADERS / 'skin_diffusion_layout.h', ()),
 )
 # The preview owner includes the scene failure reason count for C++ and Slang.
 # The generated view includes its LUSL counterpart through OWNERS.
@@ -33,6 +36,13 @@ PREVIEW_DEFAULT = re.compile(
     r'#ifndef (LUDUS_GPU_PREVIEW_TRANSPORT_GROUP_(?:WIDTH|HEIGHT))\n'
     r'# *define \1 ([0-9]+)\n#endif\n'
 )
+# The deferred owner selects its binding-slot include, opens its C++ namespace and checks the
+# authored binding count under __cplusplus. The generated view includes deferred_binding_slots.luslh
+# through OWNERS; its constants use only that header and each other.
+CPLUSPLUS_BLOCK = re.compile(r'#ifdef __cplusplus\n.*?#endif\n', re.S)
+LIGHTING_INCLUDE = '#include "lighting_layout.h"\n'
+# A shared constant, `static const LightingLayoutValue NAME = expression;`, possibly over several lines.
+CONSTANT = re.compile(r'static const LightingLayoutValue ([A-Z_0-9]+) = (\S.*);')
 UNSIGNED_SUFFIX = re.compile(r"\b(0[xX][0-9a-fA-F]+|[0-9]+)[uU]\b")
 DEFINE = re.compile(r'#define (LUDUS_[A-Z_0-9]+)[ \t]+(\S.*)')
 
@@ -42,15 +52,29 @@ def render(source, owner, includes):
     if owner.name == 'renderer_gpu_preview_layout.h':
         source = PREVIEW_DECLARATIONS.sub('', source)
         source = PREVIEW_DEFAULT.sub(r'#define \1 \2\n', source)
+    if owner.name == 'deferred_layout.h':
+        source = CPLUSPLUS_BLOCK.sub('', source.replace(LIGHTING_INCLUDE, ''))
 
     lines = [f'// Generated from {owner.name} by generate_lusl_layouts.py. Edit the owner.',
              '#pragma once', '']
     if includes:
         lines.extend(f'#include "{name}"' for name in includes)
         lines.append('')
+    statement = ''
     for line in source.splitlines():
         line = line.partition('//')[0].strip()
         if line in ('', '#pragma once'):
+            continue
+        if statement != '' or line.startswith('static const '):
+            statement = f'{statement} {line}'.strip()
+            if not statement.endswith(';'):
+                continue
+            match = CONSTANT.fullmatch(statement)
+            statement = ''
+            if match is None:
+                raise ValueError(f'{owner}: expected a shared layout constant, got {line!r}')
+            name, expression = match.groups()
+            lines.append(f'static const uint32 {name} = {" ".join(expression.split())};')
             continue
         match = DEFINE.fullmatch(line)
         if match is None:
@@ -58,6 +82,8 @@ def render(source, owner, includes):
         name, expression = match.groups()
         expression = UNSIGNED_SUFFIX.sub(r"\1", expression)
         lines.append(f'#define {name} {" ".join(expression.split())}')
+    if statement != '':
+        raise ValueError(f'{owner}: unterminated shared layout constant {statement!r}')
     return '\n'.join([*lines, ''])
 
 

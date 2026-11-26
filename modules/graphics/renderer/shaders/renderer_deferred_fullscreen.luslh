@@ -1,0 +1,21 @@
+// Fullscreen vertex stage of the clustered deferred passes, for LUSL recipes. The renderer draws
+// its quad from one Float4 stream of clip-space positions. It mirrors renderer_deferred_fullscreen.slang,
+// which the Slang deferred recipes still include (LUSL L5d wave 2).
+#pragma once
+
+struct DeferredInput
+{
+    float32x4 PositionUv;
+};
+
+struct DeferredVarying
+{
+    float32x4 PositionClip : ClipPosition;
+};
+
+[stage(vertex)]
+DeferredVarying DeferredVertexMain(in DeferredInput input)
+{
+    DeferredVarying output = { .PositionClip = float32x4(input.PositionUv.xy, 0.0, 1.0) };
+    return output;
+}

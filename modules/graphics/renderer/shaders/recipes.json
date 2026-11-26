@@ -16,7 +16,7 @@
     "compute": "ComputeMain"
   },
   "renderer_point_neighbors": {
-    "source": "renderer_point_neighbors.slang",
+    "source": "renderer_point_neighbors.lusl",
     "compute": "ComputeMain"
   },
   "renderer_flat": {
@@ -259,12 +259,12 @@
     "fragment_storage": true
   },
   "renderer_skin_blur": {
-    "source": "renderer_skin_blur.slang",
+    "source": "renderer_skin_blur.lusl",
     "vertex": "DeferredVertexMain",
     "fragment": "SkinBlurMain"
   },
   "renderer_skin_composite": {
-    "source": "renderer_skin_composite.slang",
+    "source": "renderer_skin_composite.lusl",
     "vertex": "DeferredVertexMain",
     "fragment": "SkinCompositeMain"
   },

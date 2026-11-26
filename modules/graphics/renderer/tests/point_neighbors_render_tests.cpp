@@ -1,10 +1,14 @@
+#include "baseline_renderer_point_neighbors.h"
 #include "renderer_point_neighbors.h"
+#include "renderer_point_neighbors_slots.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/random.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/point_neighbors.hpp>
+
+#include <bit>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -25,49 +29,47 @@ bool IsAccepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
 }
-} // namespace
-TEST_CASE("Portable GPU point queries agree with the independent exhaustive-qualified CPU tree",
-          "[renderer][gpu][point-neighbors]")
+using Results = StaticArray<geometry::PointNeighbor, QUERY_COUNT * NEIGHBOR_COUNT>;
+struct PointScene final
 {
-    rhi::Shutdown();
-    struct Guard final
-    {
-        ~Guard() noexcept
-        {
-            rhi::Shutdown();
-        }
-    } guard;
-    rhi::DeviceHandle device;
-    rhi::SurfaceHandle surface;
-    rhi::DeviceDescription description;
-    description.Required.Compute = true;
-    const rhi::DeviceStatus started = rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, description, device, surface);
-#if defined(LUDUS_TEST_METAL)
-    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
-        SKIP("No Metal adapter");
-#endif
-    REQUIRE(started == rhi::DeviceStatus::Ready);
-    StaticArray<math::Vector3, POINT_COUNT> positionsWorld{};
-    StaticArray<math::Vector3, QUERY_COUNT> queriesWorld{};
+    StaticArray<math::Vector3, POINT_COUNT> PositionsWorld{};
+    StaticArray<math::Vector3, QUERY_COUNT> QueriesWorld{};
+    geometry::PointSearchTree Tree;
+};
+// Random points and queries, with a duplicated point that one query sits on.
+void MakePointScene(PointScene& outScene)
+{
     math::RandomStream random;
-    for (math::Vector3& positionWorld : positionsWorld)
+    for (math::Vector3& positionWorld : outScene.PositionsWorld)
+    {
         positionWorld = {random.NextFloat01() * POINT_SPREAD,
                          random.NextFloat01() * POINT_SPREAD,
                          random.NextFloat01() * POINT_SPREAD};
-    for (math::Vector3& positionWorld : queriesWorld)
+    }
+    for (math::Vector3& positionWorld : outScene.QueriesWorld)
+    {
         positionWorld = {random.NextFloat01() * POINT_SPREAD,
                          random.NextFloat01() * POINT_SPREAD,
                          random.NextFloat01() * POINT_SPREAD};
-    positionsWorld[1] = positionsWorld[0];
-    queriesWorld[0] = positionsWorld[0];
-    geometry::PointSearchTree tree;
-    REQUIRE(tree.Build({positionsWorld.GetData(), positionsWorld.GetSize()}) == geometry::GeometryStatus::Success);
+    }
+    outScene.PositionsWorld[1] = outScene.PositionsWorld[0];
+    outScene.QueriesWorld[0] = outScene.PositionsWorld[0];
+    REQUIRE(outScene.Tree.Build({outScene.PositionsWorld.GetData(), outScene.PositionsWorld.GetSize()}) ==
+            geometry::GeometryStatus::Success);
+}
+// Dispatch `shader` over the scene's queries on `device` and read its query-major results back.
+void FindNeighbors(rhi::DeviceHandle device,
+                   rhi::SurfaceHandle surface,
+                   const PointScene& scene,
+                   const rhi::RasterShaderDescription& shader,
+                   Results& outResults)
+{
     rhi::ComputeWorkload workload;
     Status status = renderer::PreparePointNeighborWorkload(device,
-                                                           tree,
-                                                           {queriesWorld.GetData(), queriesWorld.GetSize()},
+                                                           scene.Tree,
+                                                           {scene.QueriesWorld.GetData(), scene.QueriesWorld.GetSize()},
                                                            NEIGHBOR_COUNT,
-                                                           ludus::shaders::renderer_point_neighbors::Compute(),
+                                                           shader,
                                                            BUDGET,
                                                            workload);
     REQUIRE(IsAccepted(status) == true);
@@ -87,26 +89,68 @@ TEST_CASE("Portable GPU point queries agree with the independent exhaustive-qual
     rhi::SubmissionToken completion;
     status = rhi::ExecuteOrderedGraph(device, surface, graph, completion);
     while (status == Status::NotReady && time::NowTicks() - start < TIMEOUT)
+    {
         status = rhi::ExecuteOrderedGraph(device, surface, graph, completion);
+    }
     REQUIRE(status == Status::Ready);
     rhi::BufferHandle resultBuffer;
     REQUIRE(workload.GetBuffer(renderer::POINT_NEIGHBOR_RESULT_BUFFER, resultBuffer) == Status::Ready);
-    StaticArray<geometry::PointNeighbor, QUERY_COUNT * NEIGHBOR_COUNT> actual{};
     rhi::ReadbackTicket ticket;
-    status = rhi::RequestBufferReadback(device, resultBuffer, 0, sizeof(actual), ticket);
+    status = rhi::RequestBufferReadback(device, resultBuffer, 0, sizeof(outResults), ticket);
     while (status == Status::Pending && time::NowTicks() - start < TIMEOUT)
     {
         REQUIRE(rhi::PollLifetime(device) == Status::Ready);
         status = rhi::GetStatus(device, ticket);
     }
     REQUIRE(status == Status::Ready);
-    REQUIRE(rhi::CopyReadback(device, ticket, reinterpret_cast<uint8*>(actual.GetData()), sizeof(actual)) ==
+    REQUIRE(rhi::CopyReadback(device, ticket, reinterpret_cast<uint8*>(outResults.GetData()), sizeof(outResults)) ==
             Status::Ready);
     REQUIRE(rhi::Release(device, ticket) == Status::Ready);
+}
+// A compute-capable 8x8 device, or SKIP without a Metal adapter.
+void StartComputeDevice(rhi::DeviceHandle& outDevice, rhi::SurfaceHandle& outSurface)
+{
+    rhi::DeviceDescription description;
+    description.Required.Compute = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, description, outDevice, outSurface);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+}
+struct RhiSession final
+{
+    RhiSession() noexcept
+    {
+        rhi::Shutdown();
+    }
+    ~RhiSession() noexcept
+    {
+        rhi::Shutdown();
+    }
+    RhiSession(const RhiSession&) = delete;
+    RhiSession& operator=(const RhiSession&) = delete;
+};
+} // namespace
+TEST_CASE("Portable GPU point queries agree with the independent exhaustive-qualified CPU tree",
+          "[renderer][gpu][point-neighbors]")
+{
+    const RhiSession session;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    StartComputeDevice(device, surface);
+    PointScene scene;
+    MakePointScene(scene);
+    Results actual{};
+    FindNeighbors(device, surface, scene, ludus::shaders::renderer_point_neighbors::Compute(), actual);
     for (usize query = 0; query < QUERY_COUNT; ++query)
     {
         StaticArray<geometry::PointNeighbor, NEIGHBOR_COUNT> expected{};
-        REQUIRE(tree.FindNearest(queriesWorld[query], {expected.GetData(), expected.GetSize()}) ==
+        REQUIRE(scene.Tree.FindNearest(scene.QueriesWorld[query], {expected.GetData(), expected.GetSize()}) ==
                 geometry::GeometryStatus::Success);
         for (usize i = 0; i < NEIGHBOR_COUNT; ++i)
         {
@@ -116,4 +160,38 @@ TEST_CASE("Portable GPU point queries agree with the independent exhaustive-qual
                   DISTANCE_RELATIVE_TOLERANCE * math::Max(1.F, expected[i].DistanceSquared));
         }
     }
+}
+
+TEST_CASE("The LUSL point-neighbor recipe returns its Slang original's results",
+          "[renderer][gpu][point-neighbors][lusl]")
+{
+    // LUSL L5d wave 2: the same tree and queries searched by renderer_point_neighbors and by its Slang original
+    // (shaders/renderer_point_neighbors.slang) on one device; every result byte must match. Both bind the workload's
+    // buffers through the LUSL recipe's slots, the Slang original's manual layout.
+    static_assert(ludus::shaders::renderer_point_neighbors::slots::PARAMETERS == 0 &&
+                  ludus::shaders::renderer_point_neighbors::slots::NODES == 1 &&
+                  ludus::shaders::renderer_point_neighbors::slots::QUERIES == 2 &&
+                  ludus::shaders::renderer_point_neighbors::slots::RESULTS == renderer::POINT_NEIGHBOR_RESULT_BUFFER);
+    const RhiSession session;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    StartComputeDevice(device, surface);
+    PointScene scene;
+    MakePointScene(scene);
+    Results slang{};
+    Results lusl{};
+    FindNeighbors(device, surface, scene, ludus::shaders::baseline_renderer_point_neighbors::Compute(), slang);
+    FindNeighbors(device, surface, scene, ludus::shaders::renderer_point_neighbors::Compute(), lusl);
+    usize differing = 0;
+    usize found = 0;
+    for (usize i = 0; i < lusl.GetSize(); ++i)
+    {
+        differing += lusl[i].PointIndex != slang[i].PointIndex ? 1 : 0;
+        differing +=
+            std::bit_cast<uint32>(lusl[i].DistanceSquared) != std::bit_cast<uint32>(slang[i].DistanceSquared) ? 1 : 0;
+        found += lusl[i].PointIndex < POINT_COUNT ? 1 : 0;
+    }
+    CHECK(differing == 0);
+    // Equality is not vacuous: every query found its neighbours, none the absent sentinel.
+    CHECK(found == lusl.GetSize());
 }

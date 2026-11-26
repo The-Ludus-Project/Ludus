@@ -1,0 +1,70 @@
+// k nearest neighbours of each query point in a balanced point tree (FoundationGeometry point_search.slang).
+// parameters = {nodeCount, queryCount, neighborCount, root}. The output is query-major
+// {original point index, asuint(squared world distance)}. Invalid trees yield sentinel indices;
+// decoding must reject them rather than substituting neighbours. The LUSL compiler assigns the four
+// buffer slots in declaration order and the renderer binds the generated renderer_point_neighbors_slots.h
+// constants. A renderer GPU test compares its results with its Slang original, renderer_point_neighbors.slang,
+// which stays as the differential oracle (L5d wave 2).
+#include "math.luslh"
+#include "point_search_layout.luslh"
+
+StructuredBuffer<uint32x4> parameters;
+StructuredBuffer<uint32x4> nodes;
+StructuredBuffer<float32x4> queries;
+RWStructuredBuffer<uint32x2> results;
+
+static const uint32 MAX_NEIGHBORS = LUDUS_MAX_POINT_NEIGHBORS;
+static const float32 MAX_COORDINATE = LUDUS_MAX_POINT_SEARCH_COORDINATE;
+static const uint32 ABSENT_NODE = LUDUS_ABSENT_POINT_NODE;
+
+// The tree query reads node words through this callback, which point_search.slang declares the kernel
+// provides; the kernel keeps the buffer, so the library needs no target-specific pointer type.
+uint32x4 ReadPointSearchNodeWord(in uint32 index)
+{
+    return nodes[index];
+}
+
+// FoundationGeometry's Slang query, which migrates with the shared libraries (L5d wave 5).
+extern slang "point_search.slang"
+{
+    struct PointNeighbor
+    {
+        uint32 PointIndex;
+        float32 DistanceSquared;
+    };
+
+    bool FindPointNeighbors(in uint32 nodeCount,
+                            in uint32 root,
+                            in float32x3 positionWorld,
+                            in uint32 neighborCount,
+                            out PointNeighbor outNeighbors[MAX_NEIGHBORS]);
+};
+
+[stage(compute), threads(LUDUS_POINT_SEARCH_GROUP_SIZE, 1, 1)]
+void ComputeMain(in uint32x3 dispatchThreadId : DispatchThreadId)
+{
+    // PreparePointNeighborWorkload validates these counts against every bound allocation before
+    // uploading parameters. No native buffer-length query is needed.
+    uint32x4 counts = parameters[0];
+    uint32 query = dispatchThreadId.x;
+    uint32 neighborCount = counts.z;
+    if (query >= counts.y || neighborCount == 0 || neighborCount > MAX_NEIGHBORS)
+    {
+        return;
+    }
+    // Read only when the query succeeds; LUSL zero-fills it so every path assigns it.
+    PointNeighbor neighbors[MAX_NEIGHBORS] = 0;
+    float32x3 positionWorld = queries[query].xyz;
+    bool isValid = counts.x > 0 && neighborCount <= counts.x && IsFiniteBits(positionWorld) == true &&
+        all(abs(positionWorld) <= float32x3(MAX_COORDINATE)) == true;
+    if (isValid == true)
+    {
+        isValid = FindPointNeighbors(counts.x, counts.w, positionWorld, neighborCount, out neighbors);
+    }
+    for (uint32 i = 0; i < neighborCount; ++i)
+    {
+        results[query * neighborCount + i] = isValid == true
+            ? uint32x2(neighbors[i].PointIndex, asuint(neighbors[i].DistanceSquared))
+            : uint32x2(ABSENT_NODE, 0);
+    }
+}
