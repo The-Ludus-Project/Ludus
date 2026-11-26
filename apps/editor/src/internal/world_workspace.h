@@ -244,7 +244,12 @@ private:
                                          QByteArray& outSchema,
                                          QString& outError,
                                          bool isWorldDemo = false) const;
-    [[nodiscard]] bool reportOpenFailure(const QString& path, const QString& reason, const QString& nextStep = {});
+    struct WorldOpenFailure final
+    {
+        QString Reason;
+        QString NextStep = {};
+    };
+    [[nodiscard]] bool reportOpenFailure(const QString& path, const WorldOpenFailure& failure);
     void clearOpenFailure();
     enum class WorldCloseDecision : foundation::uint8
     {

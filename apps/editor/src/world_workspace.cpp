@@ -1564,15 +1564,15 @@ bool WorldWorkspace::loadProjectSchema(WorldDocument& inoutCandidate,
     return true;
 }
 
-bool WorldWorkspace::reportOpenFailure(const QString& path, const QString& reason, const QString& nextStep)
+bool WorldWorkspace::reportOpenFailure(const QString& path, const WorldOpenFailure& failure)
 {
     mFailedOpenPath = path;
-    const QString repair = nextStep.isEmpty() == true
+    const QString repair = failure.NextStep.isEmpty() == true
                                ? QStringLiteral("Open a working backup from this project, or restore a known-good "
                                                 "copy from version control and retry.")
-                               : nextStep;
+                               : failure.NextStep;
     const QString message =
-        QStringLiteral("Could not open “%1”. %2 %3").arg(QFileInfo(path).fileName(), reason, repair);
+        QStringLiteral("Could not open “%1”. %2 %3").arg(QFileInfo(path).fileName(), failure.Reason, repair);
     mOpenProblemText->setText(message);
     mOpenProblem->show();
     Q_EMIT OpenProblemChanged(path, message);
@@ -1604,36 +1604,44 @@ bool WorldWorkspace::Open(const QString& path)
     if (isSceneWorkerActive() == true)
     {
         return reportOpenFailure(path,
-                                 QStringLiteral("A scene operation is still running."),
-                                 QStringLiteral("Wait for it to finish or cancel it, then retry."));
+                                 {
+                                     .Reason = QStringLiteral("A scene operation is still running."),
+                                     .NextStep = QStringLiteral("Wait for it to finish or cancel it, then retry."),
+                                 });
     }
     if (Inside(path, true) == false)
     {
         const QString reason = QFileInfo::exists(path) == true
                                    ? QStringLiteral("This location is outside the project or is a symbolic link.")
                                    : QStringLiteral("The file is missing.");
-        return reportOpenFailure(path,
-                                 reason,
-                                 QStringLiteral("Choose a regular file inside the project, or restore it at this "
-                                                "location and retry."));
+        return reportOpenFailure(
+            path,
+            {
+                .Reason = reason,
+                .NextStep = QStringLiteral("Choose a regular file inside the project, or restore it at this "
+                                           "location and retry."),
+            });
     }
     if (path.endsWith(LEVEL_FILE_SUFFIX) == true)
     {
         const QString destination = path.chopped(LEVEL_FILE_SUFFIX.size()) + WORLD_FILE_SUFFIX;
         if (Inside(destination, false) == false)
         {
-            return reportOpenFailure(path,
-                                     QStringLiteral("Conversion needs a new sibling file named “%1”.")
-                                         .arg(QFileInfo(destination).fileName()),
-                                     QStringLiteral("Open the sibling World if it already exists, or copy the "
-                                                    "level to a new name inside the project and retry."));
+            return reportOpenFailure(
+                path,
+                {
+                    .Reason = QStringLiteral("Conversion needs a new sibling file named “%1”.")
+                                  .arg(QFileInfo(destination).fileName()),
+                    .NextStep = QStringLiteral("Open the sibling World if it already exists, or copy the "
+                                               "level to a new name inside the project and retry."),
+                });
         }
         WorldDocument candidate;
         QByteArray schema;
         QString error;
         if (loadProjectSchema(candidate, schema, error) == false || candidate.New(error) == false)
         {
-            return reportOpenFailure(path, error);
+            return reportOpenFailure(path, { .Reason = error });
         }
         const WorldCloseDecision decision = requestCloseDecision();
         if (decision == WorldCloseDecision::Cancel)
@@ -1642,7 +1650,7 @@ bool WorldWorkspace::Open(const QString& path)
         }
         mConversionSource = path;
         mShouldDiscardOnConversion = decision == WorldCloseDecision::Discard;
-        ConversionSchema_ = schema;
+        ConversionSchema_ = foundation::Move(schema);
         SceneGeneration_ = DocumentGeneration_;
         Importing_ = true;
         Scene_->SetWorldSnapshot(candidate);
@@ -1651,7 +1659,7 @@ bool WorldWorkspace::Open(const QString& path)
             Importing_ = false;
             mConversionSource.clear();
             mShouldDiscardOnConversion = false;
-            return reportOpenFailure(path, Scene_->StatusText());
+            return reportOpenFailure(path, { .Reason = Scene_->StatusText() });
         }
         Changed(QStringLiteral("Converting the level to a World document; the original level is preserved."));
         return true;
@@ -1665,17 +1673,23 @@ bool WorldWorkspace::Open(const QString& path)
         const foundation::int64 size = QFileInfo(path).size();
         if (size > WorldDocument::MAX_BYTES)
         {
-            return reportOpenFailure(path,
-                                     QStringLiteral("The file is %1 bytes. This Editor can open Worlds up to %2 bytes.")
-                                         .arg(size)
-                                         .arg(WorldDocument::MAX_BYTES),
-                                     QStringLiteral("Open a smaller backup, or use the Editor version that saved "
-                                                    "this World."));
+            return reportOpenFailure(
+                path,
+                {
+                    .Reason = QStringLiteral("The file is %1 bytes. This Editor can open Worlds up to %2 bytes.")
+                                  .arg(size)
+                                  .arg(WorldDocument::MAX_BYTES),
+                    .NextStep = QStringLiteral("Open a smaller backup, or use the Editor version that saved "
+                                               "this World."),
+                });
         }
-        return reportOpenFailure(path,
-                                 QStringLiteral("The file could not be read."),
-                                 QStringLiteral("Check that you have read access or choose a working backup, "
-                                                "then retry."));
+        return reportOpenFailure(
+            path,
+            {
+                .Reason = QStringLiteral("The file could not be read."),
+                .NextStep = QStringLiteral("Check that you have read access or choose a working backup, "
+                                           "then retry."),
+            });
     }
     const QJsonObject incoming = QJsonDocument::fromJson(bytes).object();
     const bool isLegacy =
@@ -1684,7 +1698,7 @@ bool WorldWorkspace::Open(const QString& path)
                         incoming.value(QStringLiteral("schema")) == QJsonValue(QStringLiteral("ludus.world-demo.v1"));
     if (loadProjectSchema(candidate, schema, error, isDemo) == false)
     {
-        return reportOpenFailure(path, error);
+        return reportOpenFailure(path, { .Reason = error });
     }
     const QString destination =
         isLegacy == true
@@ -1694,13 +1708,16 @@ bool WorldWorkspace::Open(const QString& path)
     {
         return reportOpenFailure(
             path,
-            QStringLiteral("Conversion needs a new sibling file named “%1”.").arg(QFileInfo(destination).fileName()),
-            QStringLiteral("Open the sibling World if it already exists, or copy the "
-                           "legacy document to a new name inside the project and retry."));
+            {
+                .Reason = QStringLiteral("Conversion needs a new sibling file named “%1”.")
+                              .arg(QFileInfo(destination).fileName()),
+                .NextStep = QStringLiteral("Open the sibling World if it already exists, or copy the "
+                                           "legacy document to a new name inside the project and retry."),
+            });
     }
     if ((isLegacy == true ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
     {
-        return reportOpenFailure(path, error);
+        return reportOpenFailure(path, { .Reason = error });
     }
     const WorldCloseDecision decision = requestCloseDecision();
     if (decision == WorldCloseDecision::Cancel)
@@ -1716,13 +1733,16 @@ bool WorldWorkspace::Open(const QString& path)
         Inside(path, true) == false || (isLegacy == true && Inside(destination, false) == false) ||
         Read(path, bytes, WorldDocument::MAX_BYTES) == false)
     {
-        return reportOpenFailure(path,
-                                 QStringLiteral("The World file or project schema changed while opening."),
-                                 QStringLiteral("Wait for the file to finish updating, then retry."));
+        return reportOpenFailure(
+            path,
+            {
+                .Reason = QStringLiteral("The World file or project schema changed while opening."),
+                .NextStep = QStringLiteral("Wait for the file to finish updating, then retry."),
+            });
     }
     if ((isLegacy == true ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
     {
-        return reportOpenFailure(path, error);
+        return reportOpenFailure(path, { .Reason = error });
     }
     if (decision == WorldCloseDecision::Discard)
     {
@@ -2128,7 +2148,7 @@ void WorldWorkspace::SceneCompleted(bool accepted)
         Render();
         if (isConverting == true)
         {
-            static_cast<void>(reportOpenFailure(conversionSource, SceneError_));
+            static_cast<void>(reportOpenFailure(conversionSource, { .Reason = SceneError_ }));
         }
         else if (Document_.Draft().contains(QStringLiteral("scene")) == false)
         {
@@ -2163,9 +2183,13 @@ void WorldWorkspace::SceneCompleted(bool accepted)
             RefreshScene();
             static_cast<void>(reportOpenFailure(
                 conversionSource,
-                error.isEmpty() == true ? QStringLiteral("The destination or project schema changed during conversion.")
-                                        : error,
-                QStringLiteral("If the sibling World now exists, open it directly. Otherwise retry conversion.")));
+                {
+                    .Reason = error.isEmpty() == true
+                                  ? QStringLiteral("The destination or project schema changed during conversion.")
+                                  : error,
+                    .NextStep = QStringLiteral(
+                        "If the sibling World now exists, open it directly. Otherwise retry conversion."),
+                }));
             return;
         }
         if (shouldDiscard == true)
