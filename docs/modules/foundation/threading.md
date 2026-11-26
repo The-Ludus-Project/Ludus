@@ -52,12 +52,18 @@ The graph outcome is Failed if any job failed, otherwise Cancelled if any job wa
 cancelled. GetOutcome and Snapshot expose progress; Cancel and Snapshot may also be
 called from callbacks.
 
-Build/reset and pool lifecycle belong to one application owner. Wait may help
-execute CPU work on its caller; use `help=false` to preserve caller responsiveness
-or TLS expectations. Jobs never wait on jobs or synchronous I/O and never call
-pool lifecycle methods. The owner retains immutable inputs and exclusive output
-ranges through Wait, then applies results in stable order. All errors use statuses;
-the engine library compiles with exceptions disabled.
+Build/reset and pool lifecycle belong to one application owner. `Wait` blocks until
+the graph resolves. Pass `shouldHelp=false` to keep callbacks on workers when the
+caller cannot run them. For a responsive owner loop with native workers, poll
+`Snapshot` across ticks and release the graph with `Wait` after all jobs resolve.
+Observing `Succeeded` through `GetOutcome` publishes that callback's writes. Keep
+its output range valid and free of further writes while reading it, and coordinate
+with the owner before the next submission can reuse the range. With zero workers,
+`Submit` runs the entire graph on the caller, so bound the work to fit the tick.
+Jobs never wait on jobs or synchronous I/O and never call pool lifecycle methods.
+The owner retains immutable inputs and exclusive output ranges through `Wait`,
+then applies results in stable order. All errors use statuses. The engine library
+compiles with exceptions disabled.
 
 ## Execution traces
 
