@@ -205,7 +205,7 @@ if(LUDUS_BUILD_TESTS AND TARGET ludus-shader-worker)
     add_test(NAME ludus_shader_compiler_tests COMMAND ludus_shader_compiler_tests "[shader][compiler]")
     add_test(NAME ludus_shader_worker_protocol COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tools/shader-worker/test_worker.py" --worker "$<TARGET_FILE:ludus-shader-worker>"
-        --client "$<TARGET_FILE:ludus_shader_compiler_tests>")
+        --client "$<TARGET_FILE:ludus_shader_compiler_tests>" --luslc "$<TARGET_FILE:luslc>")
     set_tests_properties(ludus_shader_compiler_tests ludus_shader_worker_protocol PROPERTIES
         LABELS "unit;shader;tooling" TIMEOUT 120)
 endif()
