@@ -86,6 +86,13 @@ constexpr float64 RESTING_EDGE_WIDTH = 1.5;
 /// DENSE_EDGE_OPACITY so cards and the hovered or selected card's wires stand out of the weave.
 constexpr qsizetype DENSE_GRAPH_EDGE_COUNT = 40;
 constexpr float64 DENSE_EDGE_OPACITY = 0.55;
+/// In a dense configuration, resting wires are drawn finer than FOCUSED_EDGE_WIDTH and RESTING_EDGE_WIDTH, so many
+/// of them read as a weave of hairlines instead of a thick tangle.
+constexpr float64 DENSE_EDGE_WIDTH = 1;
+/// Wires rest under the cards at the depth below; a focused wire is lifted over the resting ones (but still under
+/// every card), so its whole path stays readable where it crosses dim wires.
+constexpr float64 RESTING_EDGE_DEPTH = -1;
+constexpr float64 FOCUSED_EDGE_DEPTH = -0.75;
 /// A card with this many wires or more is a hub (scene, camera, view). Its wires rest dimmed until it is selected
 /// or hovered, so the structure between ordinary cards stays readable instead of one fan of equal lines.
 constexpr qsizetype HUB_EDGE_COUNT = 6;
@@ -99,6 +106,24 @@ constexpr float64 PORT_RADIUS = 6;
 constexpr float64 PORT_HIT_RADIUS = 11;
 constexpr float64 NODE_PADDING = 8;
 constexpr float64 COLUMN_SPACING = 250;
+/// A wire spanning this much horizontal distance or more crosses several columns: in a dense configuration it
+/// rests at LONG_EDGE_OPACITY_SHARE of the resting opacity, because these wires make most of the tangle while
+/// the short wires between neighbouring cards carry the structure. Measured when wires are laid out, not per frame.
+constexpr float64 LONG_EDGE_OPACITY_SHARE = 0.55;
+constexpr float64 LONG_EDGE_SPAN = COLUMN_SPACING * 2;
+/// In a dense configuration, wires from an output with at least BUNDLE_MINIMUM_WIRES share a straight stub: the
+/// shorter of BUNDLE_STUB_LENGTH and BUNDLE_STUB_SHARE of the nearest consumer's gap, and never under
+/// BUNDLE_MINIMUM_STUB, below which a bus line would not read.
+constexpr qsizetype BUNDLE_MINIMUM_WIRES = 4;
+constexpr float64 BUNDLE_STUB_LENGTH = 80;
+constexpr float64 BUNDLE_STUB_SHARE = 0.4;
+constexpr float64 BUNDLE_MINIMUM_STUB = 16;
+/// What the wires leaving one output have in common, for bundling.
+struct BundleStats final
+{
+    qsizetype WireCount = 0;
+    float64 NearestGap = 0; ///< Horizontal gap of the nearest forward consumer; zero when there is none.
+};
 constexpr float64 ROW_SPACING = 140;
 constexpr float64 EDGE_HIT_WIDTH = 8;
 /// A wire leaves and enters its ports horizontally for this share of the horizontal gap it spans, so long wires
@@ -148,6 +173,9 @@ constexpr float64 LINK_HINT_OFFSET = 16;
 constexpr float64 NODE_ROW_GAP = 30;
 // Clicking an output offers Quick Add for a node one ordinary column gap to its right.
 constexpr float64 QUICK_ADD_PORT_GAP = COLUMN_SPACING - NODE_WIDTH;
+/// Saved cards closer than this, in scene units, are nudged apart when a configuration is first shown; a tidy
+/// layout with ordinary gaps is never touched. Smaller than NODE_ROW_GAP on purpose: only touching cards move.
+constexpr float64 AUTHORED_CARD_MINIMUM_GAP = 12;
 /// Below this many crossings a saved layout reads fine; Tidy layout is not worth suggesting.
 constexpr int32 TIDY_MINIMUM_CROSSINGS = 20;
 /// Tidy layout is suggested only when Auto Layout keeps at most this share of the current crossings.
@@ -935,6 +963,8 @@ struct RenderGraphCanvas::EdgeView final
     /// Scene-owned path item; nonnull for the view's lifetime (until the next Rebuild).
     QGraphicsPathItem* Path;
     bool IsEditable = true;
+    /// Horizontal distance between its ports, set when the wire is laid out; a backward link counts as long.
+    float64 Span = 0;
 };
 
 RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidget* parentOrNull)
@@ -1713,6 +1743,9 @@ void RenderGraphCanvas::Rebuild()
     const QJsonObject record = configuration();
     if (record.isEmpty() == true)
     {
+        mNudgeKey.clear();
+        mNudges.clear();
+        mNudgedCardCount = 0;
         rebuildNavigation();
         updateFramingControls();
         updateSemanticZoom(true);
@@ -1959,13 +1992,14 @@ void RenderGraphCanvas::Rebuild()
         {
             savedCards.insert(iterator.key());
         }
+        settleAuthoredCards(authored);
         placeDisplayCards(savedCards);
     }
     mReroutesOrNull->Rebuild(record);
     for (EdgeView* edge : std::as_const(mEdges))
     {
         mReroutesOrNull->BindWire(edge->From, edge->To, *edge->Path);
-        edge->Path->setZValue(-1);
+        edge->Path->setZValue(RESTING_EDGE_DEPTH);
         if (edge->IsEditable == false)
         {
             edge->Path->setPen(
@@ -2349,24 +2383,64 @@ void RenderGraphCanvas::RefreshCommentPresentation()
 
 void RenderGraphCanvas::updateEdges()
 {
-    for (EdgeView* edge : std::as_const(mEdges))
+    // In a dense configuration the wires leaving one output share a straight stub before they fork, so a hub's
+    // fan reads as one bus line instead of a spray. Port positions are read once per wire for both passes.
+    struct Ends final
     {
+        QPointF From;
+        QPointF To;
+    };
+    QVector<Ends> ends;
+    ends.reserve(mEdges.size());
+    QHash<QString, BundleStats> bundles;
+    const bool isDense = mEdges.size() >= DENSE_GRAPH_EDGE_COUNT;
+    for (const EdgeView* edge : std::as_const(mEdges))
+    {
+        const QPointF from = GetPortPosition(edge->From, true);
+        const QPointF to = GetPortPosition(edge->To, false);
+        ends.append({from, to});
+        if (isDense == true && from.isNull() == false && to.isNull() == false)
+        {
+            BundleStats& stats = bundles[edge->From];
+            ++stats.WireCount;
+            if (to.x() > from.x())
+            {
+                stats.NearestGap =
+                    stats.NearestGap == 0 ? to.x() - from.x() : qMin(stats.NearestGap, to.x() - from.x());
+            }
+        }
+    }
+    for (qsizetype index = 0; index < mEdges.size(); ++index)
+    {
+        EdgeView* edge = mEdges.at(index);
         const QString sourceStage = mCommentsOrNull->GetCollapsedFrame(GetEndpointNode(edge->From));
         const QString destinationStage = mCommentsOrNull->GetCollapsedFrame(GetEndpointNode(edge->To));
         edge->Path->setVisible(sourceStage.isEmpty() == true || sourceStage != destinationStage);
-        const QPointF from = GetPortPosition(edge->From, true);
-        const QPointF to = GetPortPosition(edge->To, false);
+        const QPointF from = ends.at(index).From;
+        const QPointF to = ends.at(index).To;
         if (from.isNull() == true || to.isNull() == true)
         {
             // A dangling endpoint stays visible as a short stub; validation names it.
             edge->Path->setPath(QPainterPath());
             continue;
         }
+        edge->Span = to.x() >= from.x() ? to.x() - from.x() : LONG_EDGE_SPAN;
         QPainterPath path(from);
         QPointF previous = from;
         const QVector<QPointF> points = IsWireCollapsed(edge->From, edge->To) == true
                                             ? QVector<QPointF>{}
                                             : mReroutesOrNull->GetPoints(edge->From, edge->To);
+        if (points.isEmpty() == true && isDense == true && to.x() > from.x())
+        {
+            // Authored reroute points are never replaced; a forward wire from a busy output joins its bus.
+            const BundleStats stats = bundles.value(edge->From);
+            const float64 stub = qMin(BUNDLE_STUB_LENGTH, stats.NearestGap * BUNDLE_STUB_SHARE);
+            if (stats.WireCount >= BUNDLE_MINIMUM_WIRES && stub >= BUNDLE_MINIMUM_STUB)
+            {
+                previous = from + QPointF(stub, 0);
+                path.lineTo(previous);
+            }
+        }
         for (QPointF point : points)
         {
             path.connectPath(MakeCurve(previous, point));
@@ -2660,12 +2734,17 @@ void RenderGraphCanvas::updateConnectionHighlight()
                 : destinationOrNull->ActivityOpacity;
         const bool isHubWire =
             wireCounts.value(source) >= HUB_EDGE_COUNT || wireCounts.value(destination) >= HUB_EDGE_COUNT;
-        edge->Path->setOpacity(isHighlighted == true || isSelected == true ? 1
-                               : hasFocus == true                          ? UNRELATED_EDGE_OPACITY
+        const bool isFocused = isHighlighted == true || isSelected == true;
+        const float64 spanOpacity = isDense == true && edge->Span >= LONG_EDGE_SPAN ? LONG_EDGE_OPACITY_SHARE : 1;
+        edge->Path->setOpacity(isFocused == true   ? 1
+                               : hasFocus == true  ? UNRELATED_EDGE_OPACITY
                                : isHubWire == true ? math::Min(activityOpacity, hubOpacity)
-                                                   : math::Min(activityOpacity, restingOpacity));
-        QPen pen(isHighlighted == true || isSelected == true ? GetSelectionColour() : GetEdgeColour(),
-                 isHighlighted == true || isSelected == true ? FOCUSED_EDGE_WIDTH : RESTING_EDGE_WIDTH);
+                                                   : math::Min(activityOpacity, restingOpacity * spanOpacity));
+        edge->Path->setZValue(isFocused == true ? FOCUSED_EDGE_DEPTH : RESTING_EDGE_DEPTH);
+        QPen pen(isFocused == true ? GetSelectionColour() : GetEdgeColour(),
+                 isFocused == true ? FOCUSED_EDGE_WIDTH
+                 : isDense == true ? DENSE_EDGE_WIDTH
+                                   : RESTING_EDGE_WIDTH);
         pen.setCosmetic(true);
         if (edge->IsEditable == false)
         {
@@ -2945,6 +3024,71 @@ bool RenderGraphCanvas::ApplyLayout(RenderGraphLayoutOperation operation, bool s
     return true;
 }
 
+void RenderGraphCanvas::settleAuthoredCards(const QHash<QString, QPointF>& authored)
+{
+    mNudgedCardCount = 0;
+    const QString key = mDocument.GetPackageRoot() + QLatin1Char('|') + mFile + QLatin1Char('#') + mConfiguration;
+    if (mNudgeKey != key)
+    {
+        // First time this configuration is shown: move only cards that touch, keep their order, and remember
+        // how far, so later rebuilds (every edit rebuilds) do not make cards slide again.
+        mNudgeKey = key;
+        mNudges.clear();
+        QVector<const NodeView*> cards;
+        QVector<QRectF> fixedCards;
+        for (const NodeView* view : std::as_const(mNodes))
+        {
+            if (view->IsMovable == true && authored.contains(view->Id) == true)
+            {
+                cards.append(view);
+            }
+            else if (view->IsMovable == false)
+            {
+                fixedCards.append(view->Frame->sceneBoundingRect());
+            }
+        }
+        // Reading order: the card nearer the top keeps its place and the one below it makes way.
+        foundation::Sort(cards.data(),
+                         static_cast<usize>(cards.size()),
+                         [](const NodeView* left, const NodeView* right) {
+                             const QPointF leftPosition = left->Frame->pos();
+                             const QPointF rightPosition = right->Frame->pos();
+                             if (leftPosition.y() != rightPosition.y())
+                             {
+                                 return leftPosition.y() < rightPosition.y();
+                             }
+                             return leftPosition.x() != rightPosition.x() ? leftPosition.x() < rightPosition.x()
+                                                                          : left->Id < right->Id;
+                         });
+        QVector<QRectF> bounds;
+        for (const NodeView* view : std::as_const(cards))
+        {
+            bounds.append(view->Frame->sceneBoundingRect());
+        }
+        const QVector<QRectF> original = bounds;
+        ResolveRenderGraphOverlaps(fixedCards, AUTHORED_CARD_MINIMUM_GAP, bounds);
+        for (qsizetype index = 0; index < cards.size(); ++index)
+        {
+            const QPointF offset = bounds.at(index).topLeft() - original.at(index).topLeft();
+            if (offset.isNull() == false)
+            {
+                mNudges.insert(cards.at(index)->Id, {cards.at(index)->Frame->pos(), offset});
+            }
+        }
+    }
+    for (QHash<QString, DisplayNudge>::const_iterator iterator = mNudges.cbegin(); iterator != mNudges.cend();
+         ++iterator)
+    {
+        NodeView* viewOrNull = mNodes.value(iterator.key(), nullptr);
+        if (viewOrNull != nullptr && authored.contains(iterator.key()) == true &&
+            viewOrNull->Frame->pos() == iterator.value().SavedPosition)
+        {
+            viewOrNull->Frame->setPos(iterator.value().SavedPosition + iterator.value().Offset);
+            ++mNudgedCardCount;
+        }
+    }
+}
+
 void RenderGraphCanvas::placeDisplayCards(const QSet<QString>& savedCards)
 {
     QVector<RenderGraphLayoutWire> wires;
@@ -3094,6 +3238,25 @@ void RenderGraphCanvas::refreshTidySuggestion()
     {
         return;
     }
+    // Card colours follow the theme at each rebuild; the notice matches them.
+    const auto showNotice = [this](const QString& text) {
+        mTidyNoticeText->setText(text);
+        QPalette palette = mTidyNotice->palette();
+        palette.setColor(QPalette::Window, GetNodeBackground());
+        palette.setColor(QPalette::WindowText, GetLabelColour());
+        mTidyNotice->setPalette(palette);
+        mTidyNotice->show();
+        placeTidyNotice();
+    };
+    if (mNudgedCardCount > 0)
+    {
+        showNotice(
+            QStringLiteral("%1 overlapping %2 shown moved apart; your saved positions are unchanged. Tidy layout "
+                           "saves a clean arrangement and you can undo it.")
+                .arg(mNudgedCardCount)
+                .arg(mNudgedCardCount == 1 ? QStringLiteral("card is") : QStringLiteral("cards are")));
+        return;
+    }
     QVector<RenderGraphLayoutNode> cards;
     for (const NodeView* view : std::as_const(mNodes))
     {
@@ -3132,17 +3295,10 @@ void RenderGraphCanvas::refreshTidySuggestion()
     {
         return;
     }
-    mTidyNoticeText->setText(QStringLiteral("Wires cross %1 times in this layout. Tidy layout brings that down to %2; "
-                                            "you can undo it.")
-                                 .arg(current.Crossings)
-                                 .arg(tidied.Crossings));
-    // Card colours follow the theme at each rebuild; the notice matches them.
-    QPalette palette = mTidyNotice->palette();
-    palette.setColor(QPalette::Window, GetNodeBackground());
-    palette.setColor(QPalette::WindowText, GetLabelColour());
-    mTidyNotice->setPalette(palette);
-    mTidyNotice->show();
-    placeTidyNotice();
+    showNotice(QStringLiteral("Wires cross %1 times in this layout. Tidy layout brings that down to %2; "
+                              "you can undo it.")
+                   .arg(current.Crossings)
+                   .arg(tidied.Crossings));
 }
 
 void RenderGraphCanvas::appendUnsavedPositions(QVector<RenderGraphNodePosition>& inoutPositions) const

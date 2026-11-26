@@ -10162,8 +10162,20 @@ Leaving the canvas restores the selection highlight; clearing selection restores
 normal activity styling. In a dense configuration (40 or more wires) resting wires
 are drawn fainter, and fainter still in the overview, where the cards are the
 subject; the wires of the hovered or selected card stay at full strength. Long
-wires leave and enter their ports horizontally and bend softly in between. Highlighting never edits the draft or changes undo
+wires leave and enter their ports horizontally and bend softly in between. A dense configuration also draws
+resting wires as hairlines and rests wires that span two or more columns quieter than short ones, because the long
+wires make most of the tangle while the short wires between neighbouring cards carry the structure. A focused wire is
+lifted over the resting wires (still under every card). These styles are set when wires are laid out or when focus
+changes, never per frame, and there is no per-wire routing. Highlighting never edits the draft or changes undo
 history. It describes connectivity, independently of validation or execution.
+
+When a configuration is first shown, saved cards that touch or overlap at the current card size (closer than 12 scene
+units) are nudged straight down, in top-to-bottom order and by the smallest whole-unit step that clears them, so a
+layout saved before a card grew taller is readable again. Cards that already clear each other never move. The nudge is
+view-only: the saved positions are not rewritten, and a notice says how many cards are shown moved apart and offers
+**Tidy layout**, which saves a clean arrangement as one undo step. Later edits keep the nudged cards where they
+are; a card you move is kept exactly where you drop it, even over another card, and **Keep my layout** hides the
+notice.
 
 Each node has a draft-route label. **Inactive branch** nodes and their incoming
 wires are dimmed: they have no route to an exposed configuration output,

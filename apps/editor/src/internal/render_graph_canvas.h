@@ -348,6 +348,10 @@ private:
     void placeTidyNotice();
     /// Display-only placement of cards without saved positions; saved cards and interface boxes stay put.
     void placeDisplayCards(const QSet<QString>& savedCards);
+    /// View-time nudge for saved cards that touch or overlap at the current card size. The offsets are worked out
+    /// once when a configuration is first shown and reapplied on later rebuilds while a card's saved position is
+    /// unchanged, so a card the author moves stays exactly where it was dropped. Never edits the document.
+    void settleAuthoredCards(const QHash<QString, QPointF>& authored);
     /// Offer Tidy layout when the saved layout is tangled and Auto Layout would untangle it.
     void refreshTidySuggestion();
     /// A first move in a configuration fixes every shown card where it is, so no card jumps to a new spot.
@@ -380,6 +384,17 @@ private:
     QFrame* mTidyNotice;
     QLabel* mTidyNoticeText;
     QSet<QString> mDismissedTidyLayouts;
+    /// A saved card's view-time nudge and the saved position it was worked out for.
+    struct DisplayNudge final
+    {
+        QPointF SavedPosition;
+        QPointF Offset;
+    };
+    /// "file#configuration" the nudges below belong to; empty before the first rebuild.
+    QString mNudgeKey;
+    QHash<QString, DisplayNudge> mNudges;
+    /// Cards shown away from their saved position by the last rebuild.
+    qsizetype mNudgedCardCount = 0;
     RenderGraphDeviceProfile mDeviceProfile;
     RenderGraphConfigurationAvailability mAvailability;
     foundation::float64 mPresentedScale = 0;
