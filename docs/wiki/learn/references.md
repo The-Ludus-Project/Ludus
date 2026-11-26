@@ -167,6 +167,32 @@ depth matched across the CPU oracle and GPU compute captures. Compare raw
 scene-linear output under the [reference parity contract](../../architecture/renderer-systems.md#cpu-and-gpu-reference-implementation-requirement).
 The sample-count exercise above explores convergence within one traversal.
 
+### Trace a material from mesh to frame
+
+Amplify Creations' beginner overview introduces shader stages, physically based
+shading, mesh data, materials and textures together. Follow those relationships
+in a Ludus World and a separate SDK app. [Rendering and Shaders Overview](https://wiki.amplify.pt/index.php?title=Unity_Products%3AAmplify_Shader_Editor%2FTutorials%2FRendering_Shaders_Overview)
+
+1. Open Light Court on the desktop and find **Satin copper** in the World's
+   **Materials** tab. The plate's mesh supplies positions, normals, tangents and
+   UV coordinates. The slot supplies the material factors and maps. UVs locate
+   texels in the maps, and the tangent frame orients the normal map on the plate.
+   Roughness controls how broadly the material reflects light. [Inspect the Light Court materials](../../examples/light-court.md#inspect-the-materials)
+2. Keep the camera fixed and compare **Debug: Albedo**, **Normal**, **Roughness**
+   and **Final output** in the viewport's output selector. The debug views show
+   the built-in raster renderer's interpretation of the World inputs. Return to
+   **Final output** and rotate the Sun. Check how the bright reflection and shadow
+   change while albedo stays fixed. [Viewport output selector](../../development/render-graph-authoring.md#world-viewport-output-selector) · [Rotate the Sun](../../examples/light-court.md#rotate-the-sun)
+3. Follow the authored masked raster example to see where the graph selects
+   programs. The vertex stage transforms mesh vertices to clip space and supplies
+   values for interpolation. The fragment stage consumes interpolated values to
+   shade or discard samples. Color and depth passes share a coverage function so
+   their cutout silhouettes agree. [Masked coverage](../../development/render-graph-authoring.md#masked-coverage)
+4. Run the native Cornell box SDK sample in lit and `--flat` modes. Keep the
+   camera fixed and check that wall colors remain while shadows disappear in
+   `--flat`. This app owns its fullscreen shader and chooses its display mode
+   through a run argument. [Separate materials from lighting](../../examples/cornell-box.md#3-separate-materials-from-lighting)
+
 ## Explore the larger local catalog
 
 The [ranked editor reading guide](../../architecture/editor-reference-reading-guide.md)
