@@ -58,15 +58,15 @@ math::Vector3 NarrowVector(math::Vector3d value)
 {
     return {static_cast<float32>(value.X), static_cast<float32>(value.Y), static_cast<float32>(value.Z)};
 }
-void AddTriangle(internal::ReferenceSceneData& inoutScene,
-                 math::Vector3d first,
-                 math::Vector3d second,
-                 math::Vector3d third)
+constexpr usize TRIANGLE_CORNERS = 3;
+using TriangleCorners = StaticArray<math::Vector3d, TRIANGLE_CORNERS>;
+void AddTriangle(internal::ReferenceSceneData& inoutScene, const TriangleCorners& cornersWorld)
 {
-    internal::ReferenceTriangle triangle
+    internal::ReferenceTriangle triangle;
+    for (usize corner = 0; corner < TRIANGLE_CORNERS; ++corner)
     {
-        .Positions = {NarrowVector(first), NarrowVector(second), NarrowVector(third)},
-    };
+        triangle.Positions[corner] = NarrowVector(cornersWorld[corner]);
+    }
     triangle.Area = 1;
     triangle.GeometricNormal = {0, 0, 1};
     REQUIRE(inoutScene.Triangles.TryAdd(triangle) == true);
@@ -86,8 +86,8 @@ void AddRectangle(internal::ReferenceSceneData& inoutScene,
                   float64 z,
                   PlaceFrame place)
 {
-    AddTriangle(inoutScene, place({left, bottom, z}), place({right, bottom, z}), place({right, top, z}));
-    AddTriangle(inoutScene, place({left, bottom, z}), place({right, top, z}), place({left, top, z}));
+    AddTriangle(inoutScene, {{place({left, bottom, z}), place({right, bottom, z}), place({right, top, z})}});
+    AddTriangle(inoutScene, {{place({left, bottom, z}), place({right, top, z}), place({left, top, z})}});
 }
 /// A half plane covering x >= edge (frame coordinates) at depth z.
 void AddKnifeEdge(internal::ReferenceSceneData& inoutScene, float64 edge, float64 z, PlaceFrame place)
