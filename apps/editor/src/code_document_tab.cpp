@@ -5,9 +5,11 @@
 #include "internal/code_file_document.h"
 #include "internal/code_language_registry.h"
 #include "internal/code_structure_view.h"
+#include "internal/code_text.h"
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
+#include <QEvent>
 #include <QScrollBar>
 #include <QVBoxLayout>
 
@@ -20,6 +22,7 @@ namespace ludus::editor
 {
 using foundation::BorrowedView;
 using foundation::int32;
+using foundation::isize;
 
 namespace
 {
@@ -28,9 +31,17 @@ constexpr const char* VIEW_STATE_PREVIEW = "preview";
 constexpr const char* VIEW_STATE_ANCHOR = "anchor";
 constexpr const char* VIEW_STATE_CARET = "caret";
 constexpr const char* VIEW_STATE_SCROLL = "scroll";
+// In the native open profile, 40,000 short lines already took about 100 ms.
+constexpr foundation::usize STAGED_OPEN_LINE_COUNT = 32768;
+constexpr int32 FIRST_PAINT_LINES = 128;
+constexpr isize PROJECTION_SLICE_UNITS = 16384;
+constexpr int32 PROJECTION_YIELD_MILLISECONDS = 1;
 } // namespace
 
-CodeDocumentTab::CodeDocumentTab(CodeFileDocument* hostOrNull, const QString& absolutePath, QWidget* parentOrNull)
+CodeDocumentTab::CodeDocumentTab(CodeFileDocument* hostOrNull,
+                                 const QString& absolutePath,
+                                 QWidget* parentOrNull,
+                                 bool shouldStageOpening)
     : QWidget(parentOrNull), mEditor(new CodeEditor(this)), mController(new CodeDocumentController(*mEditor, this)),
       mBanner(new CodeConflictBanner(this)), mHostOrNull(hostOrNull), mPath(absolutePath)
 {
@@ -80,7 +91,10 @@ CodeDocumentTab::CodeDocumentTab(CodeFileDocument* hostOrNull, const QString& ab
         }
     });
 
-    bindHost();
+    if (shouldStageOpening == false || beginStagedOpen() == false)
+    {
+        bindHost();
+    }
 }
 
 CodeDocumentTab::~CodeDocumentTab()
@@ -89,11 +103,141 @@ CodeDocumentTab::~CodeDocumentTab()
     mController = nullptr;
 }
 
-void CodeDocumentTab::bindHost()
+bool CodeDocumentTab::IsOpening() const noexcept
+{
+    return mOpeningText.isEmpty() == false;
+}
+
+bool CodeDocumentTab::beginStagedOpen()
+{
+    if (mHostOrNull == nullptr || mHostOrNull->IsReadOnly() == true ||
+        mHostOrNull->GetProfile().SizeMode != CodeFileSizeMode::Normal ||
+        mHostOrNull->GetProfile().LineCount < STAGED_OPEN_LINE_COUNT)
+    {
+        return false;
+    }
+    const CodeDocumentSnapshot snapshot = mHostOrNull->GetSnapshot();
+    const QByteArray bytes =
+        QByteArray::fromRawData(snapshot.Text.GetDataOrNull(), static_cast<isize>(snapshot.Text.GetSize()));
+    if (DecodeCodeText(bytes, mOpeningText) == false || mOpeningText.isEmpty() == true)
+    {
+        return false;
+    }
+    mOpeningIdentity = snapshot.Identity;
+    const QStringView prefix = QStringView(mOpeningText).left(qMin(PROJECTION_SLICE_UNITS, mOpeningText.size()));
+    for (int32 line = 0; line < FIRST_PAINT_LINES; ++line)
+    {
+        const isize newline = prefix.indexOf(QLatin1Char('\n'), mProjectedUnits);
+        if (newline < 0)
+        {
+            mProjectedUnits = prefix.size();
+            break;
+        }
+        mProjectedUnits = newline + 1;
+    }
+    if (mProjectedUnits < mOpeningText.size() && mOpeningText.at(mProjectedUnits).isLowSurrogate() == true)
+    {
+        --mProjectedUnits;
+    }
+    mEditor->SetDocumentHistory(true);
+    mEditor->SetLargeFileMode(true);
+    mEditor->setReadOnly(true);
+    mEditor->ReplaceHostedText(mOpeningText.first(mProjectedUnits));
+    mBanner->ShowExplanation(tr("Preparing editor…"));
+    mOpeningTimer.setSingleShot(true);
+    connect(&mOpeningTimer, &QTimer::timeout, this, &CodeDocumentTab::advanceStagedOpen);
+    mEditor->installEventFilter(this);
+    mEditor->viewport()->installEventFilter(this);
+    return true;
+}
+
+bool CodeDocumentTab::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == mEditor->viewport() && event->type() == QEvent::Paint)
+    {
+        mEditor->viewport()->removeEventFilter(this);
+        mOpeningTimer.start(PROJECTION_YIELD_MILLISECONDS);
+    }
+    else if (watched == mEditor && (event->type() == QEvent::KeyPress || event->type() == QEvent::InputMethod))
+    {
+        // Bind before Qt handles the original input so it edits the authoritative draft.
+        FinishStagedOpen();
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void CodeDocumentTab::appendOpeningText(isize lastUnit)
+{
+    if (lastUnit < mOpeningText.size() && mOpeningText.at(lastUnit).isLowSurrogate() == true)
+    {
+        --lastUnit;
+    }
+    if (lastUnit > mProjectedUnits)
+    {
+        QTextCursor cursor(mEditor->document());
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertText(mOpeningText.sliced(mProjectedUnits, lastUnit - mProjectedUnits));
+        mProjectedUnits = lastUnit;
+    }
+}
+
+void CodeDocumentTab::advanceStagedOpen()
+{
+    appendOpeningText(qMin(mProjectedUnits + PROJECTION_SLICE_UNITS, mOpeningText.size()));
+    if (mProjectedUnits < mOpeningText.size())
+    {
+        mOpeningTimer.start(PROJECTION_YIELD_MILLISECONDS);
+    }
+    else
+    {
+        FinishStagedOpen();
+    }
+}
+
+void CodeDocumentTab::FinishStagedOpen()
+{
+    if (IsOpening() == false)
+    {
+        return;
+    }
+    const CodeDocumentIdentity projectedIdentity = mOpeningIdentity;
+    if (mHostOrNull != nullptr && mHostOrNull->GetSnapshot().Identity == projectedIdentity)
+    {
+        appendOpeningText(mOpeningText.size());
+    }
+    CancelStagedOpen();
+    if (mBanner->IsShowingConflict() == false)
+    {
+        mBanner->Dismiss();
+    }
+    bindHost(&projectedIdentity);
+    Q_EMIT OpeningFinished();
+}
+
+void CodeDocumentTab::CancelStagedOpen()
+{
+    if (IsOpening() == true)
+    {
+        mOpeningTimer.stop();
+        mEditor->removeEventFilter(this);
+        mEditor->viewport()->removeEventFilter(this);
+        mOpeningText.clear();
+        mProjectedUnits = 0;
+    }
+}
+
+void CodeDocumentTab::bindHost(const CodeDocumentIdentity* projectedIdentityOrNull)
 {
     mEditor->SetDocumentHistory(mHostOrNull != nullptr);
     mEditor->SetLargeFileMode(mHostOrNull != nullptr && mHostOrNull->GetProfile().SizeMode != CodeFileSizeMode::Normal);
-    mController->Bind(mHostOrNull);
+    if (projectedIdentityOrNull != nullptr && mHostOrNull != nullptr)
+    {
+        mController->BindProjectedText(*mHostOrNull, *projectedIdentityOrNull);
+    }
+    else
+    {
+        mController->Bind(mHostOrNull);
+    }
     if (mHostOrNull != nullptr)
     {
         mEditor->setReadOnly(mHostOrNull->IsReadOnly());
@@ -165,6 +309,11 @@ void CodeDocumentTab::ShowEditorControls()
 
 void CodeDocumentTab::MirrorFromHost()
 {
+    if (IsOpening() == true)
+    {
+        FinishStagedOpen();
+        return;
+    }
     // Re-read the shared host into this view's projection. Synchronize keeps the
     // view's own scroll and cursor and guards against re-emitting the delta.
     mController->Synchronize();
@@ -173,6 +322,11 @@ void CodeDocumentTab::MirrorFromHost()
 
 void CodeDocumentTab::RefreshFromHost()
 {
+    if (IsOpening() == true)
+    {
+        FinishStagedOpen();
+        return;
+    }
     if (mHostOrNull != nullptr)
     {
         mEditor->setReadOnly(mHostOrNull->IsReadOnly());

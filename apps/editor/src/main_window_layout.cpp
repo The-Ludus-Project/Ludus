@@ -604,7 +604,7 @@ void MainWindow::BuildUi()
     // The Search tool window (CE07): project-wide find and Replace in Files. Its
     // scope provider is backed by the code area's registry (for dirty buffers)
     // and the active project root, updated in the project chain. Activating a
-    // result opens the file and reveals the match through openCodeFile+GoToLine.
+    // result opens the file and reveals the match in the same action.
     mSearchScopeOrNull = new CodeAreaSearchScope(mCodeArea->GetRegistry());
     mSearchDockOrNull = new QDockWidget(QStringLiteral("Search"), this);
     mSearchDockOrNull->setObjectName(QStringLiteral("searchDock"));
@@ -615,12 +615,7 @@ void MainWindow::BuildUi()
             &SearchToolWindow::OpenRequested,
             this,
             [this](const QString& path, foundation::int32 line, foundation::int32 column) {
-                openCodeFile(path, false);
-                CodeDocumentTab* tab = mCodeArea->GetActiveTabOrNull();
-                if (tab != nullptr)
-                {
-                    tab->GetEditor().GoToLine(line, column);
-                }
+                openCodeFile(path, false, line, column);
             });
 
     // The References tool window (code editor M4): Find References in a package

@@ -90,6 +90,92 @@ struct OpenedFile final
 }
 } // namespace
 
+TEST_CASE("Project Explorer can stage a line-dense file without changing its draft", "[code-editor][staged-open]")
+{
+    constexpr int32 SOURCE_LINE_COUNT = 40000;
+    constexpr int32 OPEN_TIMEOUT_MILLISECONDS = 10000;
+    const QByteArray line = QStringLiteral("void Paint(); // 日😀\r\n").toUtf8();
+    const QByteArray source = line.repeated(SOURCE_LINE_COUNT);
+    OpenedFile opened;
+    REQUIRE(opened.Project.isValid() == true);
+    opened.Path = WriteFile(opened.Project, QStringLiteral("dense.cpp"), source);
+    opened.Area.resize(900, 640);
+    REQUIRE(opened.Area.OpenFileFromProjectExplorer(opened.Path) == true);
+    CodeDocumentTab* tabOrNull = opened.Area.GetActiveTabOrNull();
+    REQUIRE(tabOrNull != nullptr);
+    CodeDocumentTab& tab = *tabOrNull;
+    REQUIRE(tab.IsOpening() == true);
+    CHECK(tab.GetEditor().isReadOnly() == true);
+    CHECK(tab.GetEditor().blockCount() < SOURCE_LINE_COUNT);
+    CHECK(tab.GetBanner().isVisibleTo(&tab) == true);
+    CHECK(tab.IsDirty() == false);
+
+    SECTION("Completes after the visible prefix paints")
+    {
+        opened.Area.show();
+        REQUIRE(QTest::qWaitFor([&tab]() { return tab.IsOpening() == false; }, OPEN_TIMEOUT_MILLISECONDS));
+        CHECK(tab.GetBanner().isVisibleTo(&tab) == false);
+        CHECK(tab.GetController().Capture().Text == source);
+        CHECK(tab.IsDirty() == false);
+    }
+    SECTION("An early key press edits the complete draft and can be undone")
+    {
+        TypeInto(tab);
+        REQUIRE(tab.IsOpening() == false);
+        CHECK(tab.GetController().Capture().Text == QByteArrayLiteral("z") + source);
+        CHECK(tab.IsDirty() == true);
+        tab.GetEditor().Undo();
+        CHECK(tab.GetController().Capture().Text == source);
+        CHECK(tab.IsDirty() == false);
+    }
+    SECTION("A nearby search result paints at its destination before editing is ready")
+    {
+        constexpr int32 REQUESTED_LINE = 8;
+        REQUIRE(opened.Area.OpenFileAtLocation(opened.Path, REQUESTED_LINE, 1) == true);
+        CHECK(opened.Area.GetActiveTabOrNull() == &tab);
+        REQUIRE(tab.IsOpening() == true);
+        CHECK(tab.GetEditor().textCursor().blockNumber() == REQUESTED_LINE - 1);
+        opened.Area.show();
+        REQUIRE(QTest::qWaitFor([&tab]() { return tab.IsOpening() == false; }, OPEN_TIMEOUT_MILLISECONDS));
+        CHECK(tab.GetEditor().textCursor().blockNumber() == REQUESTED_LINE - 1);
+        CHECK(tab.IsPreview() == false);
+    }
+    SECTION("A distant search result receives the full projection before navigation")
+    {
+        REQUIRE(opened.Area.OpenFileAtLocation(opened.Path, SOURCE_LINE_COUNT, 1) == true);
+        CHECK(opened.Area.GetActiveTabOrNull() == &tab);
+        REQUIRE(tab.IsOpening() == false);
+        CHECK(tab.GetEditor().textCursor().blockNumber() == SOURCE_LINE_COUNT - 1);
+        CHECK(tab.IsPreview() == false);
+    }
+    REQUIRE(tab.GetEditor().isReadOnly() == false);
+    QString projected = QString::fromUtf8(source);
+    projected.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    CHECK(tab.GetEditor().toPlainText() == projected);
+    CHECK(ReadBytes(opened.Path) == source);
+}
+
+TEST_CASE("Replacing a staged preview releases its host before deferred work runs", "[code-editor][staged-open]")
+{
+    constexpr int32 SOURCE_LINE_COUNT = 40000;
+    OpenedFile opened;
+    REQUIRE(opened.Project.isValid() == true);
+    const QString dense = WriteFile(opened.Project,
+                                    QStringLiteral("dense.cpp"),
+                                    QByteArrayLiteral("int value;\n").repeated(SOURCE_LINE_COUNT));
+    const QString small = WriteFile(opened.Project, QStringLiteral("small.cpp"), QByteArrayLiteral("int small;\n"));
+    REQUIRE(opened.Area.OpenFileFromProjectExplorer(dense) == true);
+    REQUIRE(opened.Area.GetActiveTabOrNull() != nullptr);
+    REQUIRE(opened.Area.GetActiveTabOrNull()->IsOpening() == true);
+    REQUIRE(opened.Area.OpenFileFromProjectExplorer(small) == true);
+    opened.Area.show();
+    QCoreApplication::processEvents();
+    REQUIRE(opened.Area.GetTabCount() == 1);
+    REQUIRE(opened.Area.GetRegistry().GetHostCount() == 1);
+    REQUIRE(opened.Area.GetActiveTabOrNull() != nullptr);
+    CHECK(opened.Area.GetActiveTabOrNull()->GetEditor().toPlainText() == QStringLiteral("int small;\n"));
+}
+
 TEST_CASE("Saving a code tab writes the file and clears its dirty state", "[code-editor][save]")
 {
     OpenedFile opened;

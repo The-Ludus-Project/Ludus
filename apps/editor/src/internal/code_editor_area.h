@@ -75,6 +75,12 @@ public:
     /// false) opens or focuses a permanent tab. Returns false and reports through
     /// OpenFailed when the file could not be loaded. The view is focused.
     [[nodiscard]] bool OpenFile(const QString& absolutePath, bool isPreview);
+    /// Open a Project Explorer preview. Line-dense files may paint before editing is ready.
+    [[nodiscard]] bool OpenFileFromProjectExplorer(const QString& absolutePath);
+    /// Open a permanent tab at a one-based source location, completing the projection
+    /// immediately when the destination is outside the lines prepared for first paint.
+    [[nodiscard]] bool
+    OpenFileAtLocation(const QString& absolutePath, foundation::int32 line, foundation::int32 column);
 
     /// Open or focus a session-owned code tab. Session tabs share the normal
     /// preview slot and are kept out of ordinary file persistence and recovery.
@@ -170,7 +176,8 @@ private:
     void mirrorEdit(CodeDocumentTab* source);
     void updateTabDecoration(CodeDocumentTab* tab);
     void onCurrentChanged();
-    [[nodiscard]] CodeDocumentTab* openIn(foundation::int32 group, const QString& absolutePath, bool isPreview);
+    [[nodiscard]] CodeDocumentTab*
+    openIn(foundation::int32 group, const QString& absolutePath, bool isPreview, bool shouldStageOpening = false);
     [[nodiscard]] QList<CodeDocumentTab*> viewsOf(CodeFileDocument* host) const;
     /// Whether closing `tab` would close the last view of a dirty draft.
     [[nodiscard]] bool isLastDirtyView(CodeDocumentTab* tab) const;

@@ -28,6 +28,9 @@ public:
     explicit CodeDocumentController(CodeEditor& inoutEditor, QObject* parentOrNull = nullptr);
     ~CodeDocumentController() override;
     void Bind(CodeDocumentHost* hostOrNull);
+    /// Bind a host after its snapshot has already been projected into this view.
+    /// If the host changed during projection, load the current snapshot instead.
+    void BindProjectedText(CodeDocumentHost& inoutHost, const CodeDocumentIdentity& projectedIdentity);
     void Synchronize(bool shouldRestoreView = false);
     void BreakUndoGroup();
     [[nodiscard]] bool IsBound() const noexcept;
@@ -78,6 +81,8 @@ Q_SIGNALS:
     void Failed(const QString& message);
 
 private:
+    void bind(CodeDocumentHost* hostOrNull, const CodeDocumentIdentity* projectedIdentityOrNull);
+    void synchronize(bool shouldRestoreView, const CodeDocumentIdentity* projectedIdentityOrNull);
     void queueSlangLineSeparatorRepair();
     void captureSelectionChange();
     void beginOperation(CodeEditKind kind);

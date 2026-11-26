@@ -7,6 +7,7 @@
 
 #include <QJsonObject>
 #include <QString>
+#include <QTimer>
 #include <QWidget>
 
 namespace ludus::editor
@@ -24,10 +25,21 @@ class CodeDocumentTab final : public QWidget
 public:
     /// @param hostOrNull The shared file host to bind, or null for an empty tab.
     /// @param absolutePath The file's path, used as the tab identity and title.
-    CodeDocumentTab(CodeFileDocument* hostOrNull, const QString& absolutePath, QWidget* parentOrNull = nullptr);
+    /// @param shouldStageOpening Allow a line-dense file to paint before its projection is complete.
+    CodeDocumentTab(CodeFileDocument* hostOrNull,
+                    const QString& absolutePath,
+                    QWidget* parentOrNull = nullptr,
+                    bool shouldStageOpening = false);
     /// Destroys the controller before its editor: the controller's destructor
     /// restores the editor's history mode, and Qt deletes children in creation order.
     ~CodeDocumentTab() override;
+
+    /// Whether the editor is showing source while its editable projection is being prepared.
+    [[nodiscard]] bool IsOpening() const noexcept;
+    /// Finish preparing now for an input or navigation operation that requires the full document.
+    void FinishStagedOpen();
+    /// Stop the deferred work before releasing the borrowed file host.
+    void CancelStagedOpen();
 
     [[nodiscard]] CodeEditor& GetEditor() const noexcept
     {
@@ -100,9 +112,14 @@ Q_SIGNALS:
     /// A bound-edit failure message to surface without losing the draft (CE20).
     void Failed(const QString& message);
     void SessionClosed();
+    void OpeningFinished();
 
 private:
-    void bindHost();
+    void bindHost(const CodeDocumentIdentity* projectedIdentityOrNull = nullptr);
+    [[nodiscard]] bool beginStagedOpen();
+    void appendOpeningText(foundation::isize lastUnit);
+    void advanceStagedOpen();
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
     CodeEditor* mEditor;
     CodeDocumentController* mController;
@@ -111,6 +128,10 @@ private:
     CodeDocumentHost* mSessionHostOrNull = nullptr;
     QString mPath;
     QString mSessionKey;
+    QString mOpeningText;
+    CodeDocumentIdentity mOpeningIdentity;
+    foundation::isize mProjectedUnits = 0;
+    QTimer mOpeningTimer;
     bool mIsPreview = false;
 };
 } // namespace ludus::editor

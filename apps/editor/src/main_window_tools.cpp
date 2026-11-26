@@ -172,7 +172,7 @@ void MainWindow::openProjectItem(ProjectItemKind kind, const QString& path)
     }
 }
 
-void MainWindow::openCodeFile(const QString& path, bool isPreview)
+void MainWindow::openCodeFile(const QString& path, bool isPreview, foundation::int32 line, foundation::int32 column)
 {
     if (path.isEmpty() == true)
     {
@@ -188,7 +188,16 @@ void MainWindow::openCodeFile(const QString& path, bool isPreview)
     // reported by the area's OpenFailed handler, which leaves Open Externally
     // available on native hosts (the Project Explorer context menu and the
     // render-graph Source menu keep their existing Open Externally actions).
-    if (mCodeArea->OpenFile(path, isPreview) == true)
+    bool isOpened = false;
+    if (line > 0)
+    {
+        isOpened = mCodeArea->OpenFileAtLocation(path, line, column);
+    }
+    else
+    {
+        isOpened = isPreview == true ? mCodeArea->OpenFileFromProjectExplorer(path) : mCodeArea->OpenFile(path, false);
+    }
+    if (isOpened == true)
     {
         static_cast<void>(mDocuments->OpenDocument(mCodeArea));
     }
