@@ -19,6 +19,10 @@
 // Eight binary32 epsilons per world-coordinate magnitude, shared with the float64 oracle.
 #define LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE 9.5367431640625e-7
 
+// Spectral optical profiles (ReferenceOpticalSpectrum::Visible, the wave-tracing template's WT_SPECTRAL): the
+// declared optical wavelength belongs to light of this vacuum wavelength, and each sampled wavelength scales it.
+#define LUDUS_WAVE_SPECTRAL_REFERENCE_WAVELENGTH_NANOMETERS 550.0
+
 // Avoid denormal/overflow-dependent GPU Gaussian denominators at the admitted paraxial distance boundary.
 #define LUDUS_WAVE_CONNECTION_MIN_WAVELENGTH_WORLD 1e-9
 

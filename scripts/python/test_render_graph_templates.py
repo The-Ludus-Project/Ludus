@@ -979,7 +979,11 @@ class SteinbergPltTemplateTests(unittest.TestCase):
             text = shaders.joinpath(source).read_text()
             for name in ('Shlomi Steinberg', 'Ling-Qi Yan', '10.1145/3450626.3459791'):
                 self.assertIn(name, text)
-        self.assertIn('Wyman', shaders.joinpath('spectrum.slang').read_text())
+        # The spectral camera is the renderer's shared owner, not a template copy.
+        self.assertFalse(shaders.joinpath('spectrum.slang').exists())
+        self.assertIn('spectral_sensor.slang', shaders.joinpath('grating.slang').read_text())
+        sensor = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/shaders/spectral_sensor.slang'
+        self.assertIn('Wyman', sensor.read_text())
         header = shaders.joinpath('hit_record.slang').read_text()
         constant = lambda name: int(re.search(rf'static const uint {name} = (\d+);', header).group(1))
         self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_COUNT'), 2)

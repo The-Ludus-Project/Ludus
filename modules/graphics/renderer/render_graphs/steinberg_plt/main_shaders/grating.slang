@@ -1,5 +1,5 @@
 #pragma once
-#include "spectrum.slang"
+// The spectral camera (spectral_sensor.slang) arrives with the renderer's scene interface.
 // Reflection by a sinusoidal surface grating, in wave optics and in its geometric-optics limit.
 // Thanks to Shlomi Steinberg and Ling-Qi Yan, "A Generic Framework for Physical Light Transport", ACM
 // Transactions on Graphics 40(4), article 139, SIGGRAPH 2021, https://doi.org/10.1145/3450626.3459791 .

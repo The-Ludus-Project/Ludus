@@ -59,6 +59,22 @@ enum class ReferenceOpticalConnection : ludus::foundation::uint8
     /// each edge diffracts once, and only where the source and receiver see its stationary point.
     FraunhoferEdgeDiffraction,
 };
+/// Spectrum of an optical reference capture (positive OpticalWavelengthWorld). Both choices estimate the integral that
+/// render-graph-authoring.md declares for them, in "Spectral optical connections"; the CPU oracle and GPU compute
+/// traversals implement both.
+enum class ReferenceOpticalSpectrum : ludus::foundation::uint8
+{
+    /// The default: every connection evaluates at OpticalWavelengthWorld, and its scalar power scales the authored RGB
+    /// transport.
+    Monochromatic,
+    /// Spectral rendering over 380-780 nm: each path draws one uniform wavelength. The authored linear RGB emission,
+    /// reflection and transmission factors are uplifted to spectra and evaluated at that wavelength, the optical
+    /// connections and glass relays evaluate at it, and the camera's CIE 1931 sensor converts the spectral radiance to
+    /// linear RGB. OpticalWavelengthWorld is the optical wavelength of 550 nm light: each path's connections use it
+    /// scaled by the sampled wavelength over 550 nm, so 5.5e-7 is physical light and a larger value renders the same
+    /// colours as the scene shrunk by the ratio.
+    Visible,
+};
 /// RT1 RGB reflection input. Scattering selects legacy metallic/roughness,
 /// Lambertian diffuse or isotropic rough conductor with complex-IOR Fresnel.
 /// CoatedDiffuse is a rough dielectric layer over Lambertian reflection with
@@ -327,10 +343,15 @@ struct ReferenceCaptureDescription final
     /// FraunhoferEdgeDiffraction with a zero wavelength, and values outside the enumeration, are rejected as
     /// InvalidDescription.
     ReferenceOpticalConnection OpticalConnection = ReferenceOpticalConnection::AngularSpectrum;
+    /// Spectrum of the optical connections that a positive OpticalWavelengthWorld enables. Recorded in the integral
+    /// key: changing it replaces the job and resets accumulation. Visible with a zero wavelength, and values outside
+    /// the enumeration, are rejected as InvalidDescription.
+    ReferenceOpticalSpectrum OpticalSpectrum = ReferenceOpticalSpectrum::Monochromatic;
     /// Zero retains geometric reference transport. Positive metres enable scalar paraxial Gaussian-mode
     /// coupling on finite light connections, including coherent diffraction by successive scene regions.
     /// The positive range starts at one nanometre; smaller values reject before capture preparation.
-    /// Rough surface scattering stays RGB and unpolarized. Uses next-event estimation alone for light endpoints
+    /// Rough surface scattering stays classical and unpolarized, in RGB or, with OpticalSpectrum Visible, in uplifted
+    /// spectra at each path's wavelength. Uses next-event estimation alone for light endpoints
     /// reached from rough vertices: continuation emission/environment after them is omitted, avoiding double counting
     /// with optical visibility. Emission reached through glass (smooth dielectric reflection and transmission, which
     /// no light sample reaches) keeps full weight; its connection is relayed coherently back through the glass events

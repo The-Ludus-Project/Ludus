@@ -29,3 +29,7 @@
 // hold the chain's vertices (xyz) and each leg's refractive index (w), light first.
 #define LUDUS_WAVE_PARITY_CHAIN_TAG 0x43484e43
 #define LUDUS_WAVE_PARITY_CHAIN_RECORD 2
+// Spectral camera mode (spectral_sensor.slang): record 1 + i holds case i's wavelength in nanometres and a linear RGB
+// triple whose red channel is also a wavelength draw in [0, 1). Results: sensitivity xyz and the uplifted value, then
+// the CIE 1931 xyz and the sampled wavelength.
+#define LUDUS_WAVE_PARITY_SPECTRUM_TAG 0x53504543

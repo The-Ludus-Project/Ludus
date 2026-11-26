@@ -72,7 +72,7 @@ else()
 endif()
 target_sources(ludus_graphics_renderer PRIVATE src/wave_tracing.cpp src/wave_scene_queries.cpp src/wave_connection.cpp
     src/wave_edge_diffraction.cpp
-    src/wave_fraunhofer_diffraction.cpp)
+    src/wave_fraunhofer_diffraction.cpp src/spectral_sensor.cpp)
 target_sources(ludus_graphics_renderer PRIVATE src/reference_sky.cpp)
 add_library(Ludus::GraphicsRenderer ALIAS ludus_graphics_renderer)
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/pbrt/LICENSE.txt" DESTINATION "${CMAKE_INSTALL_DATADIR}/${LUDUS_ENGINE_PACKAGE_NAME}/licenses" RENAME pbrt-LICENSE)
@@ -172,7 +172,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
 endif()
 install(FILES shaders/wave_scene_layout.h shaders/wave_scene_queries.slang shaders/wave_connection_layout.h
-    shaders/wave_connection.slang shaders/wave_edge_diffraction.slang shaders/wave_fraunhofer_diffraction.slang shaders/wave_relay.slang shaders/wave_reference_scene.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+    shaders/wave_connection.slang shaders/wave_edge_diffraction.slang shaders/wave_fraunhofer_diffraction.slang shaders/wave_relay.slang shaders/wave_reference_scene.slang
+    shaders/spectral_sensor.slang shaders/spectral_sensor_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 install(FILES shaders/renderer_shadow_depth.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 install(FILES shaders/renderer_celestial_constants.h shaders/renderer_reference_sky_layout.h
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
@@ -485,13 +486,16 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
         INCLUDES "${renderer_shader_directory}" "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
                  "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wave_aperture/main_shaders"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/wave_tracing_parity_layout.h"
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wave_aperture/main_shaders/wave.slang")
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wave_aperture/main_shaders/wave.slang"
+                "${renderer_shader_directory}/spectral_sensor.slang" "${renderer_shader_directory}/spectral_sensor_layout.h")
     # Test-only kernel running the steinberg-physical-optics template's scattering core against its CPU oracle.
     set(steinberg_physical_optics_shaders "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/steinberg_physical_optics/main_shaders")
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME steinberg_physical_optics_parity
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/steinberg_physical_optics_parity.slang" COMPUTE PhysicalOpticsParityMain
         INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders" "${steinberg_physical_optics_shaders}"
-        DEPENDS "${steinberg_physical_optics_shaders}/wave_optics.slang" "${steinberg_physical_optics_shaders}/spectrum.slang"
+                 "${renderer_shader_directory}"
+        DEPENDS "${steinberg_physical_optics_shaders}/wave_optics.slang" "${renderer_shader_directory}/spectral_sensor.slang"
+                "${renderer_shader_directory}/spectral_sensor_layout.h"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/steinberg_physical_optics_parity_layout.h"
                 "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/math.slang")
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME guided_fg_parity

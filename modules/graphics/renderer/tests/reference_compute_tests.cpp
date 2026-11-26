@@ -1,3 +1,5 @@
+#include "../shaders/wave_connection_layout.h"
+#include "../src/internal/spectral_sensor.h"
 #include "l6_scene.h"
 #include "material_program_fixtures.h"
 #include "microfacet_random_walk.h"
@@ -475,6 +477,7 @@ struct ReferenceRawAovCase final
     bool HasEnvironmentMap = false;
     float32 OpticalWavelengthWorld = 0;
     rr::ReferenceOpticalConnection OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
+    rr::ReferenceOpticalSpectrum OpticalSpectrum = rr::ReferenceOpticalSpectrum::Monochromatic;
     bool IsFarConventional = false;
     rr::ReferenceLightSampling LightSampling = rr::ReferenceLightSampling::UniformArea;
     bool HasSecondDirectionalLight = false;
@@ -641,6 +644,7 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
     capture.MaxDepth = test.MaxDepth;
     capture.OpticalWavelengthWorld = test.OpticalWavelengthWorld;
     capture.OpticalConnection = test.OpticalConnection;
+    capture.OpticalSpectrum = test.OpticalSpectrum;
     capture.RouletteDepth = test.RouletteDepth;
     capture.Seed = test.Seed;
     capture.LightSampling = test.LightSampling;
@@ -861,6 +865,31 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: Fraunhofer edge diffractio
         .HasEnvironmentMap = false,
         .OpticalWavelengthWorld = 0.001F,
         .OpticalConnection = rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction,
+        .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: spectral optical scene connections",
+          "[renderer][gpu][reference-compute][wave-spectral]")
+{
+    // Every path samples its own wavelength; matching addresses give both traversals the same one.
+    const rr::ReferenceOpticalConnection connection =
+        GENERATE(rr::ReferenceOpticalConnection::AngularSpectrum,
+                 rr::ReferenceOpticalConnection::UtdEdgeDiffraction,
+                 rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction);
+    CAPTURE(connection);
+    CheckReferenceRawAovs(
+    {
+        .Name = "spectral optical scene connections",
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 883,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0.001F,
+        .OpticalConnection = connection,
+        .OpticalSpectrum = rr::ReferenceOpticalSpectrum::Visible,
         .IsFarConventional = false,
     });
 }
@@ -2386,7 +2415,10 @@ TEST_CASE("Optical connections relayed through glass match between CPU and GPU r
         GENERATE(rr::ReferenceOpticalConnection::AngularSpectrum,
                  rr::ReferenceOpticalConnection::UtdEdgeDiffraction,
                  rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction);
-    CAPTURE(connection);
+    // A spectral capture relays each path at its own wavelength, through glass whose index is evaluated there.
+    const rr::ReferenceOpticalSpectrum spectrum =
+        GENERATE(rr::ReferenceOpticalSpectrum::Monochromatic, rr::ReferenceOpticalSpectrum::Visible);
+    CAPTURE(connection, spectrum);
     rhi::Shutdown();
     struct Guard final
     {
@@ -2431,6 +2463,7 @@ TEST_CASE("Optical connections relayed through glass match between CPU and GPU r
     constexpr float32 OPTICAL_WAVELENGTH_WORLD = 550e-9F;
     capture.OpticalWavelengthWorld = OPTICAL_WAVELENGTH_WORLD;
     capture.OpticalConnection = connection;
+    capture.OpticalSpectrum = spectrum;
     math::Matrix4 view;
     math::Matrix4 projection;
     capture.CameraPosition = {.3F, .2F, -2};
@@ -2464,10 +2497,311 @@ TEST_CASE("Optical connections relayed through glass match between CPU and GPU r
     rr::ReferenceCaptureDescription geometric = capture;
     geometric.OpticalWavelengthWorld = 0;
     geometric.OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
+    geometric.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Monochromatic;
     Array<rr::ReferencePixel> classical;
     rr::ReferenceCaptureInfo classicalInfo;
     Capture(cpu, geometric, surface, classical, classicalInfo);
     CHECK(oracleInfo.VisibilityQueries > classicalInfo.VisibilityQueries);
+}
+
+namespace
+{
+/// A complex Fresnel integral.
+struct FresnelIntegral final
+{
+    float64 Real = 0;
+    float64 Imaginary = 0;
+};
+/// Integral of exp(-i pi t^2 / 2) from 0 to v, by composite Simpson quadrature; it shares no code with the operators.
+FresnelIntegral IntegrateFresnelFromZero(float64 v)
+{
+    constexpr usize INTERVALS = 2000;
+    const float64 step = v / static_cast<float64>(INTERVALS);
+    float64 real = 0;
+    float64 imaginary = 0;
+    for (usize index = 0; index <= INTERVALS; ++index)
+    {
+        const float64 t = static_cast<float64>(index) * step;
+        const float64 weight = index == 0 || index == INTERVALS ? 1 : (index % 2 == 1 ? 4 : 2);
+        const float64 phase = math::kPi * t * t / 2;
+        real += weight * math::Cos(phase);
+        imaginary -= weight * math::Sin(phase);
+    }
+    return {real * step / 3, imaginary * step / 3};
+}
+/// A point source (z < 0), a receiver (z > 0) and the x positions of a slit's edges, which run along y at z = 0, at one
+/// wavelength.
+struct SlitConnection final
+{
+    math::Vector3d SourceWorld{};
+    math::Vector3d ReceiverWorld{};
+    float64 LowerEdgeWorld = 0;
+    float64 UpperEdgeWorld = 0;
+    float64 WavelengthWorld = 1;
+};
+/// Fresnel-Kirchhoff power, relative to the unobstructed field, behind an absorbing screen with the connection's
+/// straight slit. Each edge's signed Fresnel number is 2 sqrt(excess / lambda), from the excess length of the shortest
+/// path that touches it (Keller's law), and the slit field is (1 + i)/2 times the integral of exp(-i pi t^2 / 2)
+/// between them.
+float64 EvaluateFresnelKirchhoffSlitPower(const SlitConnection& connection)
+{
+    const math::Vector3d sourceWorld = connection.SourceWorld;
+    const math::Vector3d receiverWorld = connection.ReceiverWorld;
+    const float64 wavelengthWorld = connection.WavelengthWorld;
+    const math::Vector3d deltaWorld = receiverWorld - sourceWorld;
+    const float64 distanceWorld = math::Sqrt(math::Dot(deltaWorld, deltaWorld));
+    // The straight path crosses the screen at x = crossingWorld.
+    const float64 crossingWorld = sourceWorld.X - sourceWorld.Z * deltaWorld.X / deltaWorld.Z;
+    const auto computeFresnelNumber = [&](float64 edgeWorld) {
+        const float64 sourceEdgeWorld =
+            math::Sqrt((edgeWorld - sourceWorld.X) * (edgeWorld - sourceWorld.X) + sourceWorld.Z * sourceWorld.Z);
+        const float64 edgeReceiverWorld = math::Sqrt((receiverWorld.X - edgeWorld) * (receiverWorld.X - edgeWorld) +
+                                                     receiverWorld.Z * receiverWorld.Z);
+        const float64 unfoldedWorld = sourceEdgeWorld + edgeReceiverWorld;
+        const float64 heightWorld = receiverWorld.Y - sourceWorld.Y;
+        const float64 excessWorld =
+            math::Max(math::Sqrt(unfoldedWorld * unfoldedWorld + heightWorld * heightWorld) - distanceWorld, 0.0);
+        const float64 magnitude = 2 * math::Sqrt(excessWorld / wavelengthWorld);
+        return edgeWorld < crossingWorld ? -magnitude : magnitude;
+    };
+    const FresnelIntegral lower = IntegrateFresnelFromZero(computeFresnelNumber(connection.LowerEdgeWorld));
+    const FresnelIntegral upper = IntegrateFresnelFromZero(computeFresnelNumber(connection.UpperEdgeWorld));
+    const float64 real = upper.Real - lower.Real;
+    const float64 imaginary = upper.Imaginary - lower.Imaginary;
+    // |(1 + i)/2|^2 = 1/2.
+    return (real * real + imaginary * imaginary) / 2;
+}
+} // namespace
+
+TEST_CASE("A white-light slit's colour fringes match the analytic spectral integral",
+          "[renderer][gpu][reference-compute][wave-spectral][wave-utd]")
+{
+    // Thanks to Shlomi Steinberg and Matt Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics", CGF
+    // 45(2), e70322 (2026), Section 3: diffraction is wavelength dependent, so a slit under white light separates
+    // colours. A point light shines through a 10 cm slit onto a white diffuse wall; an orthographic camera between the
+    // screen and the wall sees the fringes. The spectral UTD capture, divided by an unobstructed geometric capture,
+    // estimates each pixel's sensor-weighted spectral integral of the Fresnel-Kirchhoff slit power.
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    namespace format = ludus::content::scene_format;
+    constexpr float32 HALF_EXTENT_WORLD = 2;
+    constexpr float32 SLIT_HALF_WIDTH_WORLD = 0.05F;
+    constexpr float32 WALL_DEPTH_WORLD = 1;
+    const math::Vector3 sourceWorld{0, 0, -0.5F};
+    // Design-scale light: 5 mm at 550 nm keeps the fringes' phases exact in binary32 (render-graph-authoring.md, "UTD
+    // edge diffraction connections"); the spectrum scales it from 3.45 mm to 7.09 mm.
+    constexpr float32 OPTICAL_WAVELENGTH_WORLD = 0.005F;
+    constexpr usize SLIT_QUAD_COUNT = 3;
+    StaticArray<QuadItem, SLIT_QUAD_COUNT> quads{};
+    quads[0].CornersWorld = {{{-HALF_EXTENT_WORLD, -HALF_EXTENT_WORLD, WALL_DEPTH_WORLD},
+                              {-HALF_EXTENT_WORLD, HALF_EXTENT_WORLD, WALL_DEPTH_WORLD},
+                              {HALF_EXTENT_WORLD, HALF_EXTENT_WORLD, WALL_DEPTH_WORLD},
+                              {HALF_EXTENT_WORLD, -HALF_EXTENT_WORLD, WALL_DEPTH_WORLD}}};
+    quads[0].Model = format::MaterialModel::Diffuse;
+    quads[0].BaseColor = {0.8F, 0.8F, 0.8F};
+    for (usize side = 1; side < SLIT_QUAD_COUNT; ++side)
+    {
+        const float32 innerWorld = side == 1 ? -SLIT_HALF_WIDTH_WORLD : SLIT_HALF_WIDTH_WORLD;
+        const float32 outerWorld = side == 1 ? -HALF_EXTENT_WORLD : HALF_EXTENT_WORLD;
+        const float32 leftWorld = math::Min(innerWorld, outerWorld);
+        const float32 rightWorld = math::Max(innerWorld, outerWorld);
+        quads[side].CornersWorld = {{{leftWorld, -HALF_EXTENT_WORLD, 0},
+                                     {leftWorld, HALF_EXTENT_WORLD, 0},
+                                     {rightWorld, HALF_EXTENT_WORLD, 0},
+                                     {rightWorld, -HALF_EXTENT_WORLD, 0}}};
+        quads[side].Model = format::MaterialModel::Diffuse;
+        quads[side].BaseColor = {};
+    }
+    REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
+    REQUIRE(gpu.Renderer.Release(gpu.Snapshot) == S::Ready);
+    REQUIRE(BuildQuadSnapshot(cpu.Renderer, cpu.Program, quads.GetData(), SLIT_QUAD_COUNT, cpu.Snapshot) == S::Ready);
+    REQUIRE(BuildQuadSnapshot(gpu.Renderer, gpu.Program, quads.GetData(), SLIT_QUAD_COUNT, gpu.Snapshot) == S::Ready);
+    rr::DirectLight light;
+    light.SourceId = 1;
+    light.Kind = rr::LightKind::Point;
+    light.Position = sourceWorld;
+    light.Range = 20;
+    light.Intensity = 9;
+    rr::ReferenceCaptureDescription capture;
+    constexpr uint32 COLUMNS = 16;
+    // Captures progress one sample of every pixel at a time, so rows add samples to a column cheaply on the GPU. The
+    // CPU oracle and the GPU match sample for sample on the short capture; the tall GPU capture tightens the analytic
+    // comparison.
+    constexpr uint32 PARITY_ROWS = 4;
+    constexpr uint32 ANALYTIC_ROWS = 64;
+    constexpr uint32 SAMPLES = 1024;
+    capture.Width = COLUMNS;
+    capture.Height = PARITY_ROWS;
+    capture.TargetSamples = SAMPLES;
+    // One wall vertex: light reaches it only through the slit, and its continuation finds black screens and sky.
+    capture.MaxDepth = 1;
+    capture.RouletteDepth = 1;
+    capture.Seed = 2281;
+    capture.CenterRays = true;
+    capture.Environment = {};
+    capture.Lights = &light;
+    capture.LightCount = 1;
+    // Clip x and y span +-0.18 m and +-0.0625 m of the wall; rays start at z = 0.3, past the screen, and run along +z.
+    // The columns cross the slit's image into the geometric shadow beyond x = 0.15 m. Their connections cross the
+    // screen within 0.056 m of the axis, so at 380 nm both edges lie inside the 0.121 m Gaussian envelope that admits
+    // UTD diffraction points.
+    constexpr float32 CAMERA_DEPTH_WORLD = 0.3F;
+    constexpr float32 HALF_WIDTH_WORLD = 0.18F;
+    constexpr float32 HALF_HEIGHT_WORLD = 0.0625F;
+    capture.OrthographicCamera = true;
+    capture.WorldToClip.Columns[0].X = 1 / HALF_WIDTH_WORLD;
+    capture.WorldToClip.Columns[1].Y = 1 / HALF_HEIGHT_WORLD;
+    capture.WorldToClip.Columns[3].Z = -CAMERA_DEPTH_WORLD;
+    capture.CameraPosition = {0, 0, CAMERA_DEPTH_WORLD};
+    capture.OpticalWavelengthWorld = OPTICAL_WAVELENGTH_WORLD;
+    capture.OpticalConnection = rr::ReferenceOpticalConnection::UtdEdgeDiffraction;
+    capture.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Visible;
+    rr::ReferenceCaptureDescription tall = capture;
+    tall.Height = ANALYTIC_ROWS;
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    Array<rr::ReferencePixel> converged;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    rr::ReferenceCaptureInfo convergedInfo;
+    Capture(cpu, capture, surface, oracle, oracleInfo);
+    Capture(gpu, capture, surface, compute, computeInfo);
+    Capture(gpu, tall, surface, converged, convergedInfo);
+    CHECK(oracleInfo.InvalidContributions == 0);
+    CHECK(computeInfo.InvalidContributions == 0);
+    CHECK(convergedInfo.InvalidContributions == 0);
+    // CPU and GPU follow the same wavelengths and paths; binary32 device arithmetic keeps their means close.
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance));
+    CHECK(comparison.MaximumRadiance <= 2e-3F);
+    CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+    // The unobstructed wall under geometric transport: the spectral integral of a white light on a white wall is the
+    // same flat RGB, without wavelength noise.
+    StaticArray<QuadItem, 1> wall{{quads[0]}};
+    REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
+    REQUIRE(BuildQuadSnapshot(cpu.Renderer, cpu.Program, wall.GetData(), 1, cpu.Snapshot) == S::Ready);
+    // Analytic reference per column, averaged over its rows: midpoint quadrature over the spectrum of the sensor
+    // times the Fresnel-Kirchhoff slit power at the scaled wavelength. The same quadrature gives the deviation of the
+    // capture's one-wavelength estimates, so the bound is four standard errors plus the UTD operator's agreement with
+    // Fresnel-Kirchhoff diffraction (render-graph-authoring.md, "UTD edge diffraction connections").
+    constexpr usize SPECTRUM_STEPS = 200;
+    constexpr float64 STANDARD_ERRORS = 4;
+    constexpr float64 OPERATOR_TOLERANCE = 0.02;
+    constexpr float64 MINIMUM_TINT = 0.1;
+    const float64 range = static_cast<float64>(rr::internal::SPECTRUM_WAVELENGTH_RANGE_NANOMETERS);
+    const float64 step = range / static_cast<float64>(SPECTRUM_STEPS);
+    const auto checkAgainstAnalytic = [&](const rr::ReferenceCaptureDescription& description,
+                                          const Array<rr::ReferencePixel>& pixels,
+                                          const char* name) {
+        const uint32 rows = description.Height;
+        CAPTURE(name, rows);
+        rr::ReferenceCaptureDescription open = description;
+        open.TargetSamples = 1;
+        open.OpticalWavelengthWorld = 0;
+        open.OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
+        open.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Monochromatic;
+        Array<rr::ReferencePixel> unobstructed;
+        rr::ReferenceCaptureInfo unobstructedInfo;
+        Capture(cpu, open, surface, unobstructed, unobstructedInfo);
+        float64 largestTint = 0;
+        float64 estimatedTintAtLargest = 0;
+        for (uint32 column = 0; column < COLUMNS; ++column)
+        {
+            math::Vector3d expected{};
+            math::Vector3d actual{};
+            math::Vector3d meanSquares{};
+            for (uint32 row = 0; row < rows; ++row)
+            {
+                const usize pixel = usize{row} * COLUMNS + column;
+                const math::Vector3d receiverWorld{
+                    (2 * (static_cast<float64>(column) + 0.5) / COLUMNS - 1) * static_cast<float64>(HALF_WIDTH_WORLD),
+                    (1 - 2 * (static_cast<float64>(row) + 0.5) / rows) * static_cast<float64>(HALF_HEIGHT_WORLD),
+                    static_cast<float64>(WALL_DEPTH_WORLD)};
+                for (usize index = 0; index < SPECTRUM_STEPS; ++index)
+                {
+                    const float64 nanometers =
+                        static_cast<float64>(rr::internal::SPECTRUM_WAVELENGTH_MINIMUM_NANOMETERS) +
+                        (static_cast<float64>(index) + 0.5) * step;
+                    const float64 power = EvaluateFresnelKirchhoffSlitPower(
+                    {
+                        .SourceWorld = {0, 0, static_cast<float64>(sourceWorld.Z)},
+                        .ReceiverWorld = receiverWorld,
+                        .LowerEdgeWorld = -static_cast<float64>(SLIT_HALF_WIDTH_WORLD),
+                        .UpperEdgeWorld = static_cast<float64>(SLIT_HALF_WIDTH_WORLD),
+                        .WavelengthWorld = static_cast<float64>(OPTICAL_WAVELENGTH_WORLD) * nanometers /
+                                           LUDUS_WAVE_SPECTRAL_REFERENCE_WAVELENGTH_NANOMETERS,
+                    });
+                    const math::Vector3 sensitivity =
+                        rr::internal::EvaluateSensorSensitivity(static_cast<float32>(nanometers));
+                    const math::Vector3d weight{static_cast<float64>(sensitivity.X),
+                                                static_cast<float64>(sensitivity.Y),
+                                                static_cast<float64>(sensitivity.Z)};
+                    expected = expected + weight * (power * step / rows);
+                    // The capture's one-sample estimate is range * sensitivity * power at a uniform wavelength.
+                    meanSquares =
+                        meanSquares + math::Vector3d{weight.X * weight.X, weight.Y * weight.Y, weight.Z * weight.Z} *
+                                          (range * power * power * step / rows);
+                }
+                const math::Vector3 normalization = unobstructed[pixel].Radiance;
+                REQUIRE(normalization.X > 0);
+                REQUIRE(normalization.Y > 0);
+                REQUIRE(normalization.Z > 0);
+                REQUIRE(pixels[pixel].Samples == description.TargetSamples);
+                actual = actual + math::Vector3d{static_cast<float64>(pixels[pixel].Radiance.X / normalization.X),
+                                                 static_cast<float64>(pixels[pixel].Radiance.Y / normalization.Y),
+                                                 static_cast<float64>(pixels[pixel].Radiance.Z / normalization.Z)} *
+                                      (1.0 / rows);
+            }
+            // The rows' spread about the column mean only enlarges this deviation, keeping the bound conservative.
+            const float64 standardErrorScale =
+                STANDARD_ERRORS / math::Sqrt(static_cast<float64>(description.TargetSamples) * rows);
+            const math::Vector3d bound =
+                math::Vector3d{math::Sqrt(math::Max(meanSquares.X - expected.X * expected.X, 0.0)),
+                               math::Sqrt(math::Max(meanSquares.Y - expected.Y * expected.Y, 0.0)),
+                               math::Sqrt(math::Max(meanSquares.Z - expected.Z * expected.Z, 0.0))} *
+                    standardErrorScale +
+                math::Vector3d{OPERATOR_TOLERANCE, OPERATOR_TOLERANCE, OPERATOR_TOLERANCE};
+            INFO("column " << column << " analytic " << expected.X << "," << expected.Y << "," << expected.Z
+                           << " estimated " << actual.X << "," << actual.Y << "," << actual.Z << " bound " << bound.X
+                           << "," << bound.Y << "," << bound.Z);
+            CHECK(math::Abs(actual.X - expected.X) <= bound.X);
+            CHECK(math::Abs(actual.Y - expected.Y) <= bound.Y);
+            CHECK(math::Abs(actual.Z - expected.Z) <= bound.Z);
+            if (math::Abs(expected.X - expected.Z) > math::Abs(largestTint))
+            {
+                largestTint = expected.X - expected.Z;
+                estimatedTintAtLargest = actual.X - actual.Z;
+            }
+        }
+        // The fixture separates colours: red and blue differ by more than a tenth of the unobstructed power at some
+        // column, and the capture reproduces the sign of that fringe's tint.
+        CAPTURE(largestTint, estimatedTintAtLargest);
+        CHECK(math::Abs(largestTint) > MINIMUM_TINT);
+        CHECK(largestTint * estimatedTintAtLargest > 0);
+    };
+    checkAgainstAnalytic(capture, oracle, "CPU oracle");
+    checkAgainstAnalytic(tall, converged, "GPU compute");
 }
 
 TEST_CASE("A grain-masked closure program matches between CPU and GPU reference transport",
@@ -4143,6 +4477,10 @@ TEST_CASE("Reference captures admit only closed bounded media on the supported t
     capture.OpticalConnection = rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction;
     CHECK(begin(MakeMedium(box, {1, 1, 1})) == S::InvalidDescription);
     capture.OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
+    // The visible spectrum scales a declared optical wavelength: without one it is rejected, not ignored.
+    capture.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Visible;
+    CHECK(begin(MakeMedium(box, {1, 1, 1})) == S::InvalidDescription);
+    capture.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Monochromatic;
     // Changing the medium replaces the integral.
     const rr::ReferenceMediumDescription first = MakeMedium(box, {1, 1, 1});
     const rr::ReferenceMediumDescription second = MakeMedium(box, {2, 1, 1});
