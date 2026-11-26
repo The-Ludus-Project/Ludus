@@ -2,10 +2,11 @@
 // uniforms and LUSL callbacks, and activate runtime generations with the pixels of their compiled
 // headers. Each native backend cooks the fixtures for its own profile (SPIR-V, Metal or DXIL).
 
-#include "lusl_composite.h"
-#include "lusl_composite_slots.h"
+#include "baseline_renderer_composite.h"
+#include "composite_recipe_fixture.h"
 #include "render_graph_gpu_fixture.h"
 #include "renderer_composite.h"
+#include "renderer_composite_slots.h"
 #include "rg2_bound.h"
 #include "rg2_depth.h"
 #include "rg2_depth_display.h"
@@ -26,6 +27,8 @@
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/views.hpp>
 #include <ludus/graphics/rhi/device.h>
+
+#include <cstdio>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -536,27 +539,40 @@ TEST_CASE("Equivalent LUSL and Slang raster callbacks render the same pixels", "
     CHECK(lusl[right + 1] >= 127);
     CHECK(lusl[right + 1] <= 128);
 }
-TEST_CASE("A LUSL composite shader with compiler-assigned bindings renders the same pixels", "[render-graph][gpu]")
+TEST_CASE("The LUSL composite recipe binds its generated slots and renders the Slang original's pixels",
+          "[render-graph][gpu][lusl]")
 {
-    // lusl_composite.lusl declares the texture and sampler of renderer_composite.slang without
-    // slots; the LUSL compiler numbers them in declaration order and reports the table that
-    // lusl_composite_slots.h spells (docs/architecture/shading-language.md#resources-and-bindings).
-    static_assert(shaders::lusl_composite::slots::IMAGE == 0);
-    static_assert(shaders::lusl_composite::slots::IMAGE_SAMPLER == 1);
-    static_assert(shaders::lusl_composite::locations::INPUT_POSITION_UV == 0);
-    const rhi::RasterShaderDescription fragment = shaders::lusl_composite::Fragment();
+    // renderer_composite.lusl declares the texture and sampler without slots; the LUSL compiler
+    // numbers them in declaration order and reports the table that renderer_composite_slots.h
+    // spells (docs/architecture/shading-language.md#resources-and-bindings). The renderer binds
+    // the same constants, generated from the same recipe source.
+    namespace slots = shaders::renderer_composite::slots;
+    const rhi::RasterShaderDescription vertex = shaders::renderer_composite::Vertex();
+    const rhi::RasterShaderDescription fragment = shaders::renderer_composite::Fragment();
+    REQUIRE(vertex.Inputs.GetSize() == 1);
+    CHECK(vertex.Inputs[0].Location == shaders::renderer_composite::locations::INPUT_POSITION_UV);
+    CHECK(vertex.Bindings.IsEmpty() == true);
     REQUIRE(fragment.Bindings.GetSize() == 2);
-    CHECK(fragment.Bindings[0].Binding == shaders::lusl_composite::slots::IMAGE);
+    CHECK(fragment.Bindings[0].Binding == slots::IMAGE);
     CHECK(fragment.Bindings[0].Kind == rhi::RasterBindingKind::Texture2D);
-    CHECK(fragment.Bindings[1].Binding == shaders::lusl_composite::slots::IMAGE_SAMPLER);
+    CHECK(fragment.Bindings[1].Binding == slots::IMAGE_SAMPLER);
     CHECK(fragment.Bindings[1].Kind == rhi::RasterBindingKind::Sampler);
+    // The Slang original (shaders/renderer_composite.slang) reflects the same table.
+    const rhi::RasterShaderDescription baseline = shaders::baseline_renderer_composite::Fragment();
+    REQUIRE(baseline.Bindings.GetSize() == fragment.Bindings.GetSize());
+    for (usize i = 0; i < baseline.Bindings.GetSize(); ++i)
+    {
+        CHECK(baseline.Bindings[i].Binding == fragment.Bindings[i].Binding);
+        CHECK(baseline.Bindings[i].Kind == fragment.Bindings[i].Kind);
+    }
+    // The graph's presentation composites through the renderer with each program.
     StaticArray<uint8, PIXEL_BYTES> slang{};
     StaticArray<uint8, PIXEL_BYTES> lusl{};
     RenderBoundPackage(BOUND_PACKAGE,
-                       shaders::renderer_composite::Vertex(),
-                       shaders::renderer_composite::Fragment(),
+                       shaders::baseline_renderer_composite::Vertex(),
+                       shaders::baseline_renderer_composite::Fragment(),
                        slang);
-    RenderBoundPackage(BOUND_PACKAGE, shaders::lusl_composite::Vertex(), fragment, lusl);
+    RenderBoundPackage(BOUND_PACKAGE, vertex, fragment, lusl);
     usize differing = 0;
     for (usize i = 0; i < PIXEL_BYTES; ++i)
     {
@@ -564,6 +580,54 @@ TEST_CASE("A LUSL composite shader with compiler-assigned bindings renders the s
     }
     CHECK(differing == 0);
     CHECK(lusl[GetPixel(24, 32)] == 255);
+}
+TEST_CASE("The composite recipe fixture shows the authored crop through the generated slots",
+          "[render-graph][gpu][lusl]")
+{
+    // Issue 1736's verification fixture (tests/sdk_consumer/composite_recipe_fixture.h), which the
+    // installed SDK consumer composite_recipe.cpp also runs: an asymmetric texture through the
+    // composite stages with a cropped quad and a nearest sampler, against pixels derived from the
+    // fixture inputs. The Slang original must produce the same bytes, and a linear
+    // sampler, standing for a wrong sampler binding, must change pixels next to each texel edge.
+    namespace fixture = ludus::qa::composite_recipe;
+    GraphGpuFixture gpu;
+    fixture::Pixels expected{};
+    fixture::ComputeExpectedPixels(expected);
+    const fixture::CompositeStages lusl
+    {
+        .Vertex = shaders::renderer_composite::Vertex(),
+        .Fragment = shaders::renderer_composite::Fragment(),
+        .ImageSlot = shaders::renderer_composite::slots::IMAGE,
+        .SamplerSlot = shaders::renderer_composite::slots::IMAGE_SAMPLER,
+        .PositionUvLocation = shaders::renderer_composite::locations::INPUT_POSITION_UV,
+    };
+    fixture::CompositeStages slang = lusl;
+    slang.Vertex = shaders::baseline_renderer_composite::Vertex();
+    slang.Fragment = shaders::baseline_renderer_composite::Fragment();
+    const auto render = [&gpu](const fixture::CompositeStages& stages,
+                               rhi::RasterFilter filter,
+                               fixture::Pixels& outPixels) {
+        const char* failure = "";
+        const bool isRendered = fixture::RenderComposite(gpu.Device, gpu.Surface, stages, filter, outPixels, failure);
+        INFO("Composite fixture step failed: " << failure);
+        REQUIRE(isRendered == true);
+    };
+    fixture::Pixels luslPixels{};
+    fixture::Pixels slangPixels{};
+    fixture::Pixels linearPixels{};
+    render(lusl, rhi::RasterFilter::Nearest, luslPixels);
+    render(slang, rhi::RasterFilter::Nearest, slangPixels);
+    render(lusl, rhi::RasterFilter::Linear, linearPixels);
+    // The installed consumer prints the same line; equal hashes record that both runs drew this image.
+    std::printf("COMPOSITE_RECIPE_FIXTURE,source-tree,%016llx\n",
+                static_cast<unsigned long long>(fixture::HashPixels(luslPixels)));
+    CHECK(fixture::CountDifferingPixels(luslPixels, expected) == 0);
+    CHECK(fixture::CountDifferingPixels(slangPixels, luslPixels) == 0);
+    // Every covered pixel next to an inner texel edge blends with its neighbour under linear filtering.
+    CHECK(fixture::CountDifferingPixels(linearPixels, expected) > 0);
+    const usize edge =
+        fixture::GetPixelOffset(fixture::CROP_BEGIN + fixture::PIXELS_PER_TEXEL_X - 1, fixture::CROP_BEGIN);
+    CHECK(linearPixels[edge] != expected[edge]);
 }
 TEST_CASE("RG3 bound runtime generation carries the compiled uniform tables and renders the same pixels",
           "[render-graph][gpu][activation]")

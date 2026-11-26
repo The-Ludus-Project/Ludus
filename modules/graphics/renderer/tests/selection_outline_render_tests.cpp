@@ -1,6 +1,9 @@
+#include "baseline_renderer_selection_mask.h"
+#include "baseline_renderer_selection_outline.h"
 #include "internal/readback.h"
 #include "renderer_selection_mask.h"
 #include "renderer_selection_outline.h"
+#include "renderer_selection_outline_slots.h"
 #include "selection_outline_fixture.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
@@ -153,15 +156,24 @@ rhi::RasterStatus PrepareReady(rr::SelectionOutlineRenderer& inoutOutline,
     return rhi::RasterStatus::Pending;
 }
 
-void DrawFrame(Scene& inoutScene, const rr::PreparedSelectionOutline& prepared, BorrowedView<uint8> outImage)
+/// Clear the surface, draw `prepared` with `outline` and read the surface back.
+void DrawOutlineFrame(Scene& inoutScene,
+                      rr::SelectionOutlineRenderer& inoutOutline,
+                      const rr::PreparedSelectionOutline& prepared,
+                      BorrowedView<uint8> outImage)
 {
     REQUIRE(rhi::BeginFrame(inoutScene.Device, inoutScene.Surface) == rhi::DeviceStatus::Ready);
     const rhi::RasterPassDescription clear;
     REQUIRE(rhi::BeginRasterPass(inoutScene.Device, clear) == rhi::RasterStatus::Ready);
-    REQUIRE(inoutScene.Outline.Draw(prepared, clear) == rhi::RasterStatus::Ready);
+    REQUIRE(inoutOutline.Draw(prepared, clear) == rhi::RasterStatus::Ready);
     rhi::SubmissionToken completion;
     REQUIRE(rhi::EndFrame(inoutScene.Device, completion) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::backend::ReadHeadlessPixels({outImage.GetDataOrNull(), outImage.GetSize()}));
+}
+
+void DrawFrame(Scene& inoutScene, const rr::PreparedSelectionOutline& prepared, BorrowedView<uint8> outImage)
+{
+    DrawOutlineFrame(inoutScene, inoutScene.Outline, prepared, outImage);
 }
 
 bool IsNear(const uint8 (&image)[TARGET_WIDTH * TARGET_HEIGHT * BYTES_PER_PIXEL],
@@ -407,4 +419,58 @@ TEST_CASE("Native outline clips a perspective contour at the near, eye and side 
             REQUIRE(scene.Outline.Release(prepared) == rhi::RasterStatus::Ready);
         }
     }
+}
+
+TEST_CASE("The LUSL selection recipes render their Slang originals' pixels", "[renderer][selection-outline][gpu][lusl]")
+{
+    // LUSL L5d wave 2: the square's mask and outline drawn by renderer_selection_mask and
+    // renderer_selection_outline and by their Slang originals (shaders/*.slang) on one device.
+    ShutdownGuard guard;
+    Scene scene;
+    if (Start(scene) == false)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+    const rhi::RasterShaderDescription edgeFragment = ludus::shaders::renderer_selection_outline::Fragment();
+    REQUIRE(edgeFragment.Bindings.GetSize() == 2);
+    CHECK(edgeFragment.Bindings[0].Binding == ludus::shaders::renderer_selection_outline::slots::MASK_IMAGE);
+    CHECK(edgeFragment.Bindings[0].Kind == rhi::RasterBindingKind::Texture2D);
+    CHECK(edgeFragment.Bindings[1].Binding == ludus::shaders::renderer_selection_outline::slots::MASK_SAMPLER);
+    CHECK(edgeFragment.Bindings[1].Kind == rhi::RasterBindingKind::Sampler);
+    rr::SelectionOutlineRenderer baseline;
+    const rhi::RasterStatus initialized =
+        baseline.Initialize(scene.Device,
+                            ludus::shaders::baseline_renderer_selection_mask::Vertex(),
+                            ludus::shaders::baseline_renderer_selection_mask::Fragment(),
+                            ludus::shaders::baseline_renderer_selection_outline::Vertex(),
+                            ludus::shaders::baseline_renderer_selection_outline::Fragment());
+    REQUIRE((initialized == rhi::RasterStatus::Ready || initialized == rhi::RasterStatus::Pending));
+    rhi::RasterStatus setup = initialized;
+    for (usize i = 0; i < POLL_LIMIT && setup == rhi::RasterStatus::Pending; ++i)
+    {
+        setup = baseline.Poll();
+    }
+    REQUIRE(setup == rhi::RasterStatus::Ready);
+    rr::SelectionOutlineRenderer* outlines[2]{&baseline, &scene.Outline};
+    uint8 images[2][TARGET_WIDTH * TARGET_HEIGHT * BYTES_PER_PIXEL];
+    for (usize variant = 0; variant < 2; ++variant)
+    {
+        SetSquareMesh(*outlines[variant]);
+        rr::PreparedSelectionOutline prepared;
+        REQUIRE(PrepareReady(*outlines[variant], MakeView(0), prepared) == rhi::RasterStatus::Ready);
+        DrawOutlineFrame(scene, *outlines[variant], prepared, images[variant]);
+        REQUIRE(outlines[variant]->Release(prepared) == rhi::RasterStatus::Ready);
+    }
+    usize differing = 0;
+    for (usize i = 0; i < sizeof(images[0]); ++i)
+    {
+        differing += images[0][i] != images[1][i] ? 1 : 0;
+    }
+    CHECK(differing == 0);
+    // The stroke and casing are present, so equality is not vacuous.
+    constexpr uint32 MIDDLE_ROW = 32;
+    constexpr uint32 LEFT_EDGE = 24;
+    CHECK(IsNear(images[1], LEFT_EDGE, MIDDLE_ROW, FULL, 0, 0));
+    CHECK(IsNear(images[1], LEFT_EDGE + 1, MIDDLE_ROW, 0, 0, HALF_CASING));
+    baseline.Reset();
 }

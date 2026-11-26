@@ -229,6 +229,23 @@ python "$sample/qualify.py" "$LUDUS_LIGHTING_ROOM_PLAYER"
 python "$sample/qualify.py" "$LUDUS_LIGHTING_ROOM_PLAYER"
 out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.lighting-room-hosted]'
 """),
+    # LUSL L5d wave 2 (issue 1736): the renderer_composite recipe fixture, built against a relocated
+    # copy of the installed SDK and bound by the recipe's generated slots. The renderer GPU suite
+    # prints the same COMPOSITE_RECIPE_FIXTURE hash for its source-tree run.
+    Check('composite-recipe-sdk', 'Draw the composite recipe fixture from a relocated SDK', needs=('sdk-install',),
+          run=r"""relocated=$(mktemp -d "$RUNNER_TEMP/Ludus SDK.XXXXXX")
+ditto out/install/macos-clang-development "$relocated/sdk"
+out/host-tools/venv/bin/cmake -S tests/sdk_consumer/composite_recipe -B out/composite-recipe-sdk -G Ninja \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_CXX_COMPILER="$PWD/out/host-tools/bin/clang++" -DCMAKE_MAKE_PROGRAM="$PWD/out/host-tools/venv/bin/ninja" \
+  -DCMAKE_PREFIX_PATH="$relocated/sdk;$PWD/out/conan/macos-clang-development" \
+  -DCMAKE_OSX_SYSROOT="$PWD/out/host-tools/macos-sdk" -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+  -DCMAKE_CXX_FLAGS="-stdlib=libc++ -nostdinc++ -isystem $PWD/out/host-tools/libcxx-include" \
+  -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" \
+  -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross"
+out/host-tools/venv/bin/cmake --build out/composite-recipe-sdk
+out/host-tools/venv/bin/ctest --test-dir out/composite-recipe-sdk -V --no-tests=error -R "^ludus_sdk_composite_recipe$"
+"""),
     Check('behavior-sdk', 'Qualify relocated Behavior SDK and extracted macOS player', needs=('sdk-install',),
           run=r"""out/host-tools/venv/bin/python tools/script-provider/verify_consumer.py out/install/macos-clang-development
 """),

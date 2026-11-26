@@ -1,0 +1,103 @@
+// Selection outline, edge pass. One quad over the mesh's projected bounds reads the mask that
+// renderer_selection_mask.lusl rasterized and writes an outline of the mask's boundary into the display image.
+// A pixel at distance d from the boundary (in pixels, measured to the edge between a covered and an uncovered pixel)
+// receives the amber stroke up to d = OutlineHalfPixels and a translucent casing stroke up to d = CasingHalfPixels,
+// the same two strokes the editor overlay paints, so the outline reads on bright and dark pixels alike. The search
+// is bounded by the casing width, so the cost per pixel does not depend on the mesh.
+//
+// ABI: one vertex stream, four vertices, every field except the position repeated per vertex. The selection
+// outline binds the mask, its sampler and the vertex inputs by the generated renderer_selection_outline_slots.h
+// constants.
+//   PositionUv      xy clip position, zw top-left UV of that position in the mask
+//   OutlineColor    straight RGBA of the amber stroke, in display-encoded values
+//   CasingColor     straight RGBA of the casing stroke, in display-encoded values
+//   Params          xy UV size of one pixel, z outline half width and w casing half width, in pixels
+Texture2D<float32x4> maskImage;
+SamplerState maskSampler;
+
+struct EdgeInput
+{
+    float32x4 PositionUv;
+    float32x4 OutlineColor;
+    float32x4 CasingColor;
+    float32x4 Params;
+};
+
+// The repeated fields travel as bit patterns in integer fields, which LUSL interpolates flat, so the
+// fragment stage reads them unchanged as the Slang original's nointerpolation fields did.
+struct EdgeVarying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x2 Uv;
+    uint32x4 OutlineColorBits;
+    uint32x4 CasingColorBits;
+    uint32x4 ParamsBits;
+};
+
+// Mask value at or above which a pixel counts as covered by the mesh.
+static const float32 COVERED_THRESHOLD = 0.5;
+// Largest search radius in pixels, bounding the cost of an unusually wide stroke.
+static const int32 MAXIMUM_SEARCH_PIXELS = 8;
+// Distance beyond any stroke, meaning that no boundary is near.
+static const float32 NO_BOUNDARY_PIXELS = 1e6;
+static const float32 HALF = 0.5;
+
+[stage(vertex)]
+EdgeVarying EdgeVertexMain(in EdgeInput input)
+{
+    EdgeVarying output =
+    {
+        .PositionClip = float32x4(input.PositionUv.xy, 0.0, 1.0),
+        .Uv = input.PositionUv.zw,
+        .OutlineColorBits = asuint(input.OutlineColor),
+        .CasingColorBits = asuint(input.CasingColor),
+        .ParamsBits = asuint(input.Params),
+    };
+    return output;
+}
+
+// 1 where the mask covers `uv`, else 0.
+float32 ComputeCoverage(in float32x2 uv)
+{
+    return maskImage.SampleLevel(maskSampler, uv, 0.0).r >= COVERED_THRESHOLD ? 1.0 : 0.0;
+}
+
+[stage(fragment)]
+float32x4 EdgeFragmentMain(in EdgeVarying input)
+{
+    float32x4 outlineColor = asfloat(input.OutlineColorBits);
+    float32x4 casingColor = asfloat(input.CasingColorBits);
+    float32x4 params = asfloat(input.ParamsBits);
+    float32x2 pixelUv = params.xy;
+    float32 outlineHalfPixels = params.z;
+    float32 casingHalfPixels = params.w;
+    // The casing covers a pixel while the boundary is nearer than its half width plus half a pixel, and a pixel
+    // across the boundary is half a pixel further than the boundary itself, so every pixel offset of at most the
+    // half width, rounded up, can matter.
+    int32 searchPixels = min(int32(ceil(casingHalfPixels)), MAXIMUM_SEARCH_PIXELS);
+    float32 centre = ComputeCoverage(input.Uv);
+    float32 nearestPixels = NO_BOUNDARY_PIXELS;
+    for (int32 y = -searchPixels; y <= searchPixels; ++y)
+    {
+        for (int32 x = -searchPixels; x <= searchPixels; ++x)
+        {
+            float32x2 offsetPixels = float32x2(float32(x), float32(y));
+            float32 distancePixels = length(offsetPixels);
+            if (distancePixels < nearestPixels && ComputeCoverage(input.Uv + offsetPixels * pixelUv) != centre)
+            {
+                nearestPixels = distancePixels;
+            }
+        }
+    }
+    // The boundary lies half a pixel from the centre of the nearest pixel on the other side of it.
+    float32 boundaryPixels = nearestPixels - HALF;
+    float32 outlineAlpha = outlineColor.a * saturate(outlineHalfPixels + HALF - boundaryPixels);
+    float32 casingAlpha = casingColor.a * saturate(casingHalfPixels + HALF - boundaryPixels);
+    float32 alpha = outlineAlpha + casingAlpha * (1.0 - outlineAlpha);
+    if (alpha <= 0.0)
+    {
+        discard;
+    }
+    float32x3 color = outlineColor.rgb * outlineAlpha + casingColor.rgb * casingAlpha * (1.0 - outlineAlpha);
+    return float32x4(color, alpha);
+}

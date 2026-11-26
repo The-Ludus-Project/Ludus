@@ -101,6 +101,48 @@ class RendererShaderRecipesTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(diagnostic, result.stderr)
 
+    def configure_slots(self, names):
+        """Configure ludus_generate_renderer_shader_slots for `names` with a recording stub."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / "project"
+            project.mkdir()
+            (project / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.29)\nproject(Slots NONE)\n"
+                "add_library(renderer INTERFACE)\n"
+                "function(ludus_require_file path)\n"
+                ' if(NOT EXISTS "${path}")\n message(FATAL_ERROR "Missing ${path}")\n endif()\n'
+                "endfunction()\n"
+                "function(ludus_generate_shader_slots)\n"
+                ' cmake_parse_arguments(SLOTS "" "TARGET;NAME;SOURCE" "INCLUDES;DEFINES;DEPENDS" ${ARGN})\n'
+                ' if(NOT EXISTS "${SLOTS_SOURCE}")\n message(FATAL_ERROR "Missing source")\n endif()\n'
+                ' file(APPEND "${CMAKE_BINARY_DIR}/slots.txt" "${SLOTS_NAME}|${SLOTS_SOURCE}\\n")\n'
+                "endfunction()\n"
+                f'include("{ROOT / "cmake/LudusRendererShaders.cmake"}")\n'
+                "ludus_generate_renderer_shader_slots(TARGET renderer SHADERS " + " ".join(names) + ")\n"
+            )
+            result = subprocess.run(
+                ["cmake", "-S", str(project), "-B", str(root / "build")], text=True, capture_output=True, check=False
+            )
+            calls = root / "build/slots.txt"
+            return result, calls.read_text().splitlines() if calls.exists() else []
+
+    def test_slot_tables_come_from_lusl_recipe_sources(self):
+        recipes = json.loads((SHADERS / "recipes.json").read_text())
+        lusl = [name for name, recipe in recipes.items() if recipe["source"].endswith(".lusl")]
+        self.assertIn("renderer_composite", lusl)
+        result, calls = self.configure_slots(lusl)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([call.split("|")[0] for call in calls], lusl)
+        for call in calls:
+            name, source = call.split("|")
+            self.assertEqual(Path(source).name, recipes[name]["source"])
+        # A Slang recipe has no slot table to bind by.
+        result, calls = self.configure_slots(["renderer_lit"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is not LUSL", result.stderr)
+        self.assertEqual(calls, [])
+
     def test_consumers_do_not_duplicate_builtin_recipes(self):
         for name in [
             "apps/editor/CMakeLists.txt",

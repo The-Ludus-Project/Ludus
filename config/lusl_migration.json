@@ -48,7 +48,23 @@
     },
     {
       "path": "modules/graphics/renderer/shaders/renderer_composite.slang",
-      "reason": "Differential oracle: a renderer GPU test compares its pixels with tests/lusl_composite.lusl"
+      "reason": "Differential oracle of the LUSL recipe renderer_composite.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_grid.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_grid.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_overlay.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_overlay.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_selection_mask.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_selection_mask.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_selection_outline.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_selection_outline.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
     },
     {
       "path": "scripts/python/fixtures",

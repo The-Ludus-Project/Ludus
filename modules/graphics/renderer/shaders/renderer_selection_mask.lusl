@@ -1,0 +1,42 @@
+// Selection outline, mask pass. The selected mesh is rasterized into a single-colour mask that is white where the
+// mesh covers a pixel and black elsewhere. No depth test is used, so another object in front does not hide the
+// outline. The edge pass in renderer_selection_outline.lusl turns the mask into the outline.
+//
+// ABI: renderer_flat's vertex stream and instance stream, without the colour. No uniforms or textures. The
+// selection outline binds the vertex input locations by the generated renderer_selection_mask_slots.h constants.
+//   PositionMesh    mesh-space position
+//   Row0..Row3      mesh-to-clip rows
+struct MaskInput
+{
+    float32x3 PositionMesh;
+    float32x4 Row0;
+    float32x4 Row1;
+    float32x4 Row2;
+    float32x4 Row3;
+};
+
+struct MaskVarying
+{
+    float32x4 PositionClip : ClipPosition;
+};
+
+[stage(vertex)]
+MaskVarying MaskVertexMain(in MaskInput input)
+{
+    float32x4 positionHomogeneous = float32x4(input.PositionMesh, 1.0);
+    // Keep the projected depth so the rasterizer clips the mask to the same frustum as the selected mesh.
+    MaskVarying output =
+    {
+        .PositionClip = float32x4(dot(input.Row0, positionHomogeneous),
+                                  dot(input.Row1, positionHomogeneous),
+                                  dot(input.Row2, positionHomogeneous),
+                                  dot(input.Row3, positionHomogeneous)),
+    };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 MaskFragmentMain(in MaskVarying input)
+{
+    return float32x4(1.0, 1.0, 1.0, 1.0);
+}

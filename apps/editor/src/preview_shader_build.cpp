@@ -445,7 +445,11 @@ bool ReadPreviewShaderRecipes(const PreviewShaderSources& sources, PreviewShader
 
 QStringList GetPreviewShaderIncludePatterns()
 {
-    return {QStringLiteral("*.slang"), QStringLiteral("*.h"), QStringLiteral("*.inc")};
+    return {QStringLiteral("*.lusl"),
+            QStringLiteral("*.luslh"),
+            QStringLiteral("*.slang"),
+            QStringLiteral("*.h"),
+            QStringLiteral("*.inc")};
 }
 
 bool CapturePreviewShaderSnapshot(const PreviewShaderSources& sources,
@@ -498,8 +502,9 @@ bool CapturePreviewShaderSnapshot(const PreviewShaderSources& sources,
             candidatePaths.append(path);
         }
     }
-    // Capture the recipe sources, then every file their quoted includes reach.
-    static const QRegularExpression INCLUDE(QStringLiteral(R"re(^\s*#\s*include\s*"([^"]+)")re"),
+    // Capture the recipe sources, then every file their quoted includes and LUSL `extern slang`
+    // declarations reach.
+    static const QRegularExpression INCLUDE(QStringLiteral(R"re((?:^\s*#\s*include|\bextern\s+slang)\s*"([^"]+)")re"),
                                             QRegularExpression::MultilineOption);
     PreviewShaderSnapshot snapshot;
     QSet<QString> visited;

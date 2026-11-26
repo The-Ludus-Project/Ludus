@@ -927,9 +927,9 @@ are its `graphs/Main` programs, most of them instances of engine templates.
 - The lowering target: generated `.lusl.slang` modules.
 - The RHI interface vocabulary that lowering writes against
   (`modules/graphics/rhi/shaders`), and RHI tests of Slang input.
-- Slang originals kept as differential oracles, such as
-  `renderer_composite.slang`, which a GPU test compares with
-  `lusl_composite.lusl`.
+- Slang originals kept as differential oracles, such as the Slang sources of
+  the renderer recipes ported in wave 2, whose pixels GPU tests compare with
+  the LUSL recipes'.
 - Tests of Slang interoperability and `extern slang`, and the legacy-format
   fixtures in `scripts/python/fixtures`.
 - Game projects' own sources: Slang remains an accepted source language, and
@@ -1100,6 +1100,37 @@ listed in the retained list with its reason:
   arrays take sampled textures and samplers with constant indices.
 - `mip_streaming.slang`: it reads the bound view's mip count, and
   `GetDimensions()` returns only level-zero extents.
+
+**Wave 2 status.** The self-contained raster recipes are LUSL:
+`renderer_composite`, `renderer_overlay`, `renderer_grid`,
+`renderer_selection_mask` and `renderer_selection_outline`. The renderer binds
+them by their generated `<NAME>_slots.h` constants, which its build takes from
+the recipe sources with `ludus_generate_renderer_shader_slots` (lowering only,
+see the [module guide](../modules/tooling/shader-language.md#resources-and-bindings)).
+Their Slang originals stay unchanged beside them, out of the recipe manifest and the installed
+SDK, and the retained list names each one. In the same run, the renderer GPU suites draw each recipe
+and its original on one device and require identical bytes. The composite comparison is in
+the render-graph pixel suite, which also runs on Direct3D 12 (WARP). The others run in the
+Vulkan and Metal renderer suite. The grid case has an in-process A/B timing mode
+(`LUDUS_RENDERER_BENCHMARK`), which alternates GPU-timed blocks of the two programs.
+The Editor's live viewport shaders capture `.lusl` recipes and their includes, and the shader
+worker lowers them from the same snapshot. Interface varyings that the Slang originals marked
+`nointerpolation` travel as `asuint` bit patterns in integer fields, which LUSL interpolates
+flat, so the fragment stages read identical values.
+
+The composite verification fixture (`tests/sdk_consumer/composite_recipe_fixture.h`) feeds
+an asymmetric 4×2 texture through the composite stages. It uses a cropped quad and a nearest
+sampler, binds by the generated slots, and checks every pixel against the image derived from
+the fixture inputs. The original must produce the same bytes. A linear sampler, standing in
+for a wrong sampler binding, must change the pixels next to each texel edge. The macOS batch
+plan builds and runs the same fixture from a relocated copy of the installed SDK. That run
+prints the reflected binding kinds, and both runs print the image's hash. `renderer_flat`
+stays Slang for now. The render-graph forward profile (`scripts/python/ludus_tools/render_graph_forward.py`)
+includes its source in generated Slang wrappers and calls its entry points by name, so it
+migrates with that profile. The remaining recipes, the lit, material, output, deferred,
+atmosphere, skin, light transformer, point search, GPU preview and reference programs, need
+their renderer-local helper libraries ported first and migrate in later wave 2 changes. The renderer shader directory joins the
+migrated scope with the last of them.
 
 ### Acceptance
 

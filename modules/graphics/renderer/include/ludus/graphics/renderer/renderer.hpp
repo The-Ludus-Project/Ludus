@@ -480,7 +480,7 @@ public:
     /// Advance asynchronous shader/layout/pipeline setup without blocking. Ready permits scene setup.
     /// Pending/failure retains ownership until Reset; no automatic backend switch.
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
-    /// Opt in to the analytic world grid after Initialize is Ready, using the shipped renderer_grid.slang
+    /// Opt in to the analytic world grid after Initialize is Ready, using the shipped renderer_grid.lusl
     /// stages. A visible ViewDescription::WorldGrid then draws one world-space plane whose fragment stage
     /// computes antialiased lines, plus one ribbon for the axis off the plane, instead of 165 ribbons.
     /// Views prepared before this call keep their ribbons. Pending shaders make PrepareView return Pending
@@ -702,7 +702,9 @@ public:
     /// it. Snapshot/material/mesh references release exactly once. Between frames.
     [[nodiscard]] rhi::RasterStatus Release(ReferenceCapture&) noexcept;
     /// Enable L1 surface/offscreen reverse-Z and target composition after Initialize is Ready.
-    /// Uses the shipped renderer_composite.slang stages; Ready/Pending publishes setup ownership.
+    /// Uses the shipped renderer_composite.lusl stages, whose texture, sampler and vertex input
+    /// must sit at the slots and location renderer_composite_slots.h names; other layouts return
+    /// InvalidDescription. Ready/Pending publishes setup ownership.
     /// Failure preserves the usable L0 profile; failed published setup requires Reset.
     [[nodiscard]] rhi::RasterStatus InitializeViews(const rhi::RasterShaderDescription& vertex,
                                                     const rhi::RasterShaderDescription& fragment) noexcept;

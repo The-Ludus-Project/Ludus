@@ -1,11 +1,16 @@
 #include <ludus/graphics/renderer/overlays.hpp>
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/lifetime.h>
 
 #include <atomic>
 #include <new>
+
+// Slot table of the LUSL overlay recipe, generated from its source
+// (ludus_generate_renderer_shader_slots; docs/architecture/shading-language.md#resources-and-bindings).
+#include "renderer_overlay_slots.h"
 
 namespace ludus::graphics::renderer
 {
@@ -18,6 +23,11 @@ namespace
 /// Overlay shaders take three Float4 vertex inputs and sample one texture with one sampler.
 constexpr usize OVERLAY_VERTEX_INPUT_COUNT = 3;
 constexpr usize OVERLAY_FRAGMENT_BINDING_COUNT = 2;
+namespace overlay_slots = ludus::shaders::renderer_overlay::slots;
+namespace overlay_locations = ludus::shaders::renderer_overlay::locations;
+/// Vertex input locations in OverlayVertex field order: clip position, coverage and colour.
+constexpr foundation::StaticArray<foundation::uint32, OVERLAY_VERTEX_INPUT_COUNT> OVERLAY_INPUT_LOCATIONS{
+    {overlay_locations::INPUT_CLIP, overlay_locations::INPUT_COVERAGE, overlay_locations::INPUT_COLOR}};
 bool Accepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
@@ -387,13 +397,15 @@ Status OverlayRenderer::Initialize(rhi::DeviceHandle device,
     }
     for (usize i = 0; i < OVERLAY_VERTEX_INPUT_COUNT; ++i)
     {
-        if (vertex.Inputs[i].Location != i || vertex.Inputs[i].Format != rhi::RasterVertexFormat::Float4)
+        if (vertex.Inputs[i].Location != OVERLAY_INPUT_LOCATIONS[i] ||
+            vertex.Inputs[i].Format != rhi::RasterVertexFormat::Float4)
         {
             return Status::InvalidDescription;
         }
     }
-    const rhi::RasterBinding expected[]{{0, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
-                                        {1, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0}};
+    const rhi::RasterBinding expected[]{
+        {overlay_slots::COVERAGE_ATLAS, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
+        {overlay_slots::COVERAGE_SAMPLER, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0}};
     for (usize i = 0; i < OVERLAY_FRAGMENT_BINDING_COUNT; ++i)
     {
         const auto& binding = fragment.Bindings[i];
@@ -468,9 +480,10 @@ Status OverlayRenderer::Poll() noexcept
         return s.Setup;
     }
     const rhi::RasterVertexStream streams[]{{sizeof(OverlayVertex), false}};
-    const rhi::RasterVertexAttribute attributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float4},
-                                                  {1, 0, 16, rhi::RasterVertexFormat::Float4},
-                                                  {2, 0, 32, rhi::RasterVertexFormat::Float4}};
+    const rhi::RasterVertexAttribute attributes[]{
+        {OVERLAY_INPUT_LOCATIONS[0], 0, 0, rhi::RasterVertexFormat::Float4},
+        {OVERLAY_INPUT_LOCATIONS[1], 0, sizeof(foundation::math::Vector4), rhi::RasterVertexFormat::Float4},
+        {OVERLAY_INPUT_LOCATIONS[2], 0, 2 * sizeof(foundation::math::Vector4), rhi::RasterVertexFormat::Float4}};
     while (s.Phase <= 6)
     {
         const auto prerequisite =
@@ -654,7 +667,8 @@ Status OverlayRenderer::GetStatus(PreparedOverlay overlay) noexcept
     }
     if (v->BindingCreated == false)
     {
-        const rhi::RasterBindingResource values[]{{0, {}, 0, 0, v->Atlas, {}}, {1, {}, 0, 0, {}, s.Sampler}};
+        const rhi::RasterBindingResource values[]{{ .Binding = overlay_slots::COVERAGE_ATLAS, .Texture = v->Atlas },
+                                                  { .Binding = overlay_slots::COVERAGE_SAMPLER, .Sampler = s.Sampler }};
         status = rhi::CreateBindingSet(s.Device, s.Layout, values, v->Bindings);
         if (Accepted(status) == false)
         {

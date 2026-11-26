@@ -1,0 +1,122 @@
+// Analytic world grid: one world-space quad on the grid plane. The fragment stage computes line
+// coverage from the distance to each line in pixels, so lines stay one pixel wide at any zoom, are
+// antialiased without a resolve, and fade out where they would be closer than a few pixels.
+//
+// ABI: renderer_flat's vertex stream and instance stream, with the instance fields reused.
+// No uniforms or textures; the CPU bakes the view into the instance. The renderer binds the
+// vertex input locations by the generated renderer_grid_slots.h constants.
+//   PositionWorld       quad corner on the plane, in world units
+//   Row0..Row3          world-to-clip rows
+//   MinorColor          minor line rgb, w = line width in pixels
+//   MajorSpacing        major line rgb, w = minor spacing in world units
+//   AxisU               xyz = unit direction of plane coordinate u, w = radial fade start (world units)
+//   AxisV               xyz = unit direction of plane coordinate v, w = radial fade end (world units)
+//   Center              xyz = plane centre, the origin of the radial fade, w = axis line width in pixels
+//   AxisColorU          rgb = colour of the axis line along u
+//   AxisColorV          rgb = colour of the axis line along v
+struct GridInput
+{
+    float32x3 PositionWorld;
+    float32x4 Row0;
+    float32x4 Row1;
+    float32x4 Row2;
+    float32x4 Row3;
+    float32x4 MinorColor;
+    float32x4 MajorSpacing;
+    float32x4 AxisU;
+    float32x4 AxisV;
+    float32x4 Center;
+    float32x4 AxisColorU;
+    float32x4 AxisColorV;
+};
+
+// The instance fields are the same at every corner of the quad. They travel as bit patterns in
+// integer fields, which LUSL interpolates flat, so the fragment stage reads them unchanged as the
+// Slang original's nointerpolation fields did.
+struct GridVarying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x3 PositionWorld;
+    uint32x4 MinorColorBits;
+    uint32x4 MajorSpacingBits;
+    uint32x4 AxisUBits;
+    uint32x4 AxisVBits;
+    uint32x4 CenterBits;
+    uint32x3 AxisColorUBits;
+    uint32x3 AxisColorVBits;
+};
+
+static const float32 DECADE = 10.0;
+// Lines closer than this many pixels are invisible; they reach full strength at FADE_HIGH_PIXELS.
+static const float32 FADE_LOW_PIXELS = 2.0;
+static const float32 FADE_HIGH_PIXELS = 10.0;
+static const float32 MINIMUM_PIXEL_SIZE = 1e-12;
+static const float32 HALF = 0.5;
+
+[stage(vertex)]
+GridVarying GridVertexMain(in GridInput input)
+{
+    float32x4 p = float32x4(input.PositionWorld, 1.0);
+    GridVarying output =
+    {
+        .PositionClip = float32x4(dot(input.Row0, p), dot(input.Row1, p), dot(input.Row2, p), dot(input.Row3, p)),
+        .PositionWorld = input.PositionWorld,
+        .MinorColorBits = asuint(input.MinorColor),
+        .MajorSpacingBits = asuint(input.MajorSpacing),
+        .AxisUBits = asuint(input.AxisU),
+        .AxisVBits = asuint(input.AxisV),
+        .CenterBits = asuint(input.Center),
+        .AxisColorUBits = asuint(input.AxisColorU.xyz),
+        .AxisColorVBits = asuint(input.AxisColorV.xyz),
+    };
+    return output;
+}
+
+// Coverage of the lines at multiples of spacing, per plane coordinate, then merged. uv is in world
+// units and pixelSize is the world size of one pixel along each coordinate.
+float32 ComputeLineLevel(in float32x2 uv, in float32x2 pixelSize, in float32 spacing, in float32 halfPixels)
+{
+    float32x2 distanceWorld = abs(frac(uv / spacing + HALF) - HALF) * spacing;
+    float32x2 distancePixels = distanceWorld / pixelSize;
+    float32x2 coverage = saturate(halfPixels + HALF - distancePixels);
+    float32x2 gapPixels = spacing / pixelSize;
+    float32x2 density = saturate((gapPixels - FADE_LOW_PIXELS) / (FADE_HIGH_PIXELS - FADE_LOW_PIXELS));
+    float32x2 visible = coverage * density;
+    return max(visible.x, visible.y);
+}
+
+// Premultiplied `color` with `coverage` composited over `below`.
+float32x4 ComputeOver(in float32x3 color, in float32 coverage, in float32x4 below)
+{
+    return float32x4(color * coverage + below.rgb * (1.0 - coverage), coverage + below.a * (1.0 - coverage));
+}
+
+[stage(fragment)]
+float32x4 GridFragmentMain(in GridVarying input)
+{
+    float32x4 minorColor = asfloat(input.MinorColorBits);
+    float32x4 majorSpacing = asfloat(input.MajorSpacingBits);
+    float32x4 axisU = asfloat(input.AxisUBits);
+    float32x4 axisV = asfloat(input.AxisVBits);
+    float32x4 center = asfloat(input.CenterBits);
+    float32x2 uv = float32x2(dot(input.PositionWorld, axisU.xyz), dot(input.PositionWorld, axisV.xyz));
+    // fwidth spelled out, as in the Slang original, so the port evaluates the same operations.
+    float32x2 pixelSize = max(abs(ddx(uv)) + abs(ddy(uv)), float32x2(MINIMUM_PIXEL_SIZE, MINIMUM_PIXEL_SIZE));
+    float32 halfPixels = minorColor.w * HALF;
+    float32 spacing = majorSpacing.w;
+    float32 minorCoverage = ComputeLineLevel(uv, pixelSize, spacing, halfPixels);
+    float32 majorCoverage = ComputeLineLevel(uv, pixelSize, spacing * DECADE, halfPixels);
+    // Axis lines are exact: they have no neighbours to fade into.
+    float32 axisHalfPixels = center.w * HALF;
+    float32x2 axisCoverage = saturate(axisHalfPixels + HALF - abs(uv) / pixelSize);
+    // uv.y is the distance to the line along u, so the line along u uses axisCoverage.y.
+    float32 alongU = axisCoverage.y;
+    float32 alongV = axisCoverage.x;
+    // Premultiplied "over" compositing, minor lines first and axes last.
+    float32x4 result = float32x4(minorColor.rgb * minorCoverage, minorCoverage);
+    result = ComputeOver(majorSpacing.rgb, majorCoverage, result);
+    result = ComputeOver(asfloat(input.AxisColorUBits), alongU, result);
+    result = ComputeOver(asfloat(input.AxisColorVBits), alongV, result);
+    float32 fade = 1.0 - smoothstep(axisU.w, axisV.w, length(input.PositionWorld - center.xyz));
+    return result * fade;
+}

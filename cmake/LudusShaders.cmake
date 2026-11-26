@@ -1,5 +1,68 @@
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/LudusDependencies.cmake")
+# The luslc that lowers LUSL sources: the source tree's luslc target, else the host LUDUS_LUSLC
+# (cross builds such as Emscripten, whose luslc target would be a target binary), else the SDK's
+# bin/luslc. Sets out_luslc to the command and out_depends to what the lowering depends on.
+function(_ludus_resolve_luslc out_luslc out_depends context)
+    set(sdk_luslc "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../bin/luslc${CMAKE_EXECUTABLE_SUFFIX}")
+    if(TARGET luslc AND NOT CMAKE_CROSSCOMPILING)
+        set(${out_luslc} "$<TARGET_FILE:luslc>" PARENT_SCOPE)
+        set(${out_depends} luslc PARENT_SCOPE)
+    elseif(LUDUS_LUSLC OR CMAKE_CROSSCOMPILING OR NOT EXISTS "${sdk_luslc}")
+        ludus_require_tool(LUDUS_LUSLC "LUSL shader lowering (${context})"
+            "From the Ludus source repository root: ./scripts/bootstrap-luslc\n  It builds the host luslc from the same sources; set LUDUS_LUSLC to the path it prints.")
+        set(${out_luslc} "${LUDUS_LUSLC}" PARENT_SCOPE)
+        set(${out_depends} "${LUDUS_LUSLC}" PARENT_SCOPE)
+    else()
+        get_filename_component(luslc "${sdk_luslc}" ABSOLUTE)
+        set(${out_luslc} "${luslc}" PARENT_SCOPE)
+        set(${out_depends} "${luslc}" PARENT_SCOPE)
+    endif()
+endfunction()
+
+# Lower a LUSL SOURCE for its slot table only, without compiling a shader, and add the generated
+# <NAME>_slots.h to TARGET's private include path. Code that binds a shader it does not compile
+# itself, such as a library drawing descriptions its callers compile, uses these constants
+# (docs/modules/tooling/shader-language.md#resources-and-bindings). INCLUDES and DEFINES must be
+# the ones the shader is compiled with, so the slots agree with the compiled artifact.
+function(ludus_generate_shader_slots)
+    cmake_parse_arguments(PARSE_ARGV 0 SLOTS "" "TARGET;NAME;SOURCE" "INCLUDES;DEFINES;DEPENDS")
+    if(SLOTS_UNPARSED_ARGUMENTS OR NOT TARGET "${SLOTS_TARGET}" OR NOT SLOTS_NAME MATCHES "^[A-Za-z_][A-Za-z_0-9]*$" OR
+       NOT SLOTS_SOURCE MATCHES "\\.lusl$")
+        message(FATAL_ERROR "ludus_generate_shader_slots requires TARGET, NAME and a .lusl SOURCE; optional INCLUDES DEFINES DEPENDS")
+    endif()
+    ludus_require_python("LUSL slot generation")
+    get_filename_component(source "${SLOTS_SOURCE}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    ludus_require_file("${source}" "LUSL slot generation" "Restore the shader source or correct SOURCE in ludus_generate_shader_slots.")
+    _ludus_resolve_luslc(luslc luslc_depends "${SLOTS_SOURCE}")
+    set(include_directory "${CMAKE_CURRENT_BINARY_DIR}/ludus-shader-slots/${SLOTS_TARGET}")
+    set(work "${include_directory}/${SLOTS_NAME}")
+    get_filename_component(lusl_root "${source}" DIRECTORY)
+    get_filename_component(lusl_name "${source}" NAME)
+    set(lusl_arguments)
+    foreach(path IN LISTS SLOTS_INCLUDES)
+        get_filename_component(path "${path}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        list(APPEND lusl_arguments --include-directory "${path}")
+    endforeach()
+    foreach(define IN LISTS SLOTS_DEFINES)
+        list(APPEND lusl_arguments --define "${define}")
+    endforeach()
+    set(slots "${include_directory}/${SLOTS_NAME}_slots.h")
+    add_custom_command(
+        OUTPUT "${slots}"
+        BYPRODUCTS "${work}/${SLOTS_NAME}.lusl.slang"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/lower_lusl.py"
+                --luslc "${luslc}" --root "${lusl_root}" --source "${lusl_name}" --name "${SLOTS_NAME}"
+                --output "${work}/${SLOTS_NAME}.lusl.slang" --slots "${slots}" --depfile "${work}/lusl.d"
+                --depfile-target "${slots}" ${lusl_arguments}
+        DEPENDS "${source}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/lower_lusl.py" ${luslc_depends} ${SLOTS_DEPENDS}
+        DEPFILE "${work}/lusl.d"
+        COMMENT "Generating the LUSL slot table of ${SLOTS_NAME}"
+        VERBATIM
+    )
+    target_sources(${SLOTS_TARGET} PRIVATE "${slots}")
+    target_include_directories(${SLOTS_TARGET} PRIVATE "${include_directory}")
+endfunction()
 # No downloads at configure/build time. Host tools remain separate from target
 # compilers, including when cross-compiling to wasm.
 function(ludus_compile_shader)
@@ -117,23 +180,7 @@ function(ludus_compile_shader)
     # A LUSL source is lowered first; its module is compiled as the Slang source, and the LUSL
     # compiler's slot table becomes <NAME>_slots.h (docs/modules/tooling/shader-language.md).
     if(source MATCHES "\\.lusl$")
-        set(luslc)
-        set(luslc_depends)
-        # The source tree's luslc target, else the host LUDUS_LUSLC (cross builds such as
-        # Emscripten, whose luslc target would be a target binary), else the SDK's bin/luslc.
-        set(sdk_luslc "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../bin/luslc${CMAKE_EXECUTABLE_SUFFIX}")
-        if(TARGET luslc AND NOT CMAKE_CROSSCOMPILING)
-            set(luslc "$<TARGET_FILE:luslc>")
-            set(luslc_depends luslc)
-        elseif(LUDUS_LUSLC OR CMAKE_CROSSCOMPILING OR NOT EXISTS "${sdk_luslc}")
-            ludus_require_tool(LUDUS_LUSLC "LUSL shader lowering (${SH_SOURCE})"
-                "From the Ludus source repository root: ./scripts/bootstrap-luslc\n  It builds the host luslc from the same sources; set LUDUS_LUSLC to the path it prints.")
-            set(luslc "${LUDUS_LUSLC}")
-            set(luslc_depends "${LUDUS_LUSLC}")
-        else()
-            get_filename_component(luslc "${sdk_luslc}" ABSOLUTE)
-            set(luslc_depends "${luslc}")
-        endif()
+        _ludus_resolve_luslc(luslc luslc_depends "${SH_SOURCE}")
         get_filename_component(lusl_root "${source}" DIRECTORY)
         get_filename_component(lusl_name "${source}" NAME)
         set(lusl_includes)

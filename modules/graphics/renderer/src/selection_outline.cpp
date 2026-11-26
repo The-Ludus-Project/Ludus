@@ -10,6 +10,11 @@
 #include <atomic>
 #include <new>
 
+// Slot tables of the LUSL selection recipes, generated from their sources
+// (ludus_generate_renderer_shader_slots; docs/architecture/shading-language.md#resources-and-bindings).
+#include "renderer_selection_mask_slots.h"
+#include "renderer_selection_outline_slots.h"
+
 namespace ludus::graphics::renderer
 {
 using namespace foundation;
@@ -21,6 +26,9 @@ namespace
 constexpr usize MASK_VERTEX_INPUT_COUNT = 5;
 constexpr usize EDGE_VERTEX_INPUT_COUNT = 4;
 constexpr usize EDGE_FRAGMENT_BINDING_COUNT = 2;
+namespace mask_locations = ludus::shaders::renderer_selection_mask::locations;
+namespace edge_locations = ludus::shaders::renderer_selection_outline::locations;
+namespace edge_slots = ludus::shaders::renderer_selection_outline::slots;
 constexpr usize MATRIX_ROWS = 4;
 constexpr usize INDICES_PER_TRIANGLE = 3;
 constexpr usize ALPHA_CHANNEL = 3;
@@ -248,7 +256,8 @@ struct SelectionOutlineRenderer::State final
             return viewStatus;
         }
         const StaticArray<rhi::RasterBindingResource, EDGE_FRAGMENT_BINDING_COUNT> resources{
-            {{ .Texture = MaskView }, { .Binding = 1, .Sampler = Sampler }}};
+            {{ .Binding = edge_slots::MASK_IMAGE, .Texture = MaskView },
+             { .Binding = edge_slots::MASK_SAMPLER, .Sampler = Sampler }}};
         status = rhi::CreateBindingSet(Device, EdgeLayout, {resources.GetData(), resources.GetSize()}, MaskBindings);
         if (Accepted(status) == false)
         {
@@ -324,8 +333,9 @@ Status SelectionOutlineRenderer::Initialize(rhi::DeviceHandle device,
     {
         return Status::InvalidDescription;
     }
-    const rhi::RasterBinding expected[]{{0, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
-                                        {1, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0}};
+    const rhi::RasterBinding expected[]{
+        {edge_slots::MASK_IMAGE, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
+        {edge_slots::MASK_SAMPLER, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0}};
     for (usize i = 0; i < EDGE_FRAGMENT_BINDING_COUNT; ++i)
     {
         const rhi::RasterBinding& binding = edgeFragment.Bindings[i];
@@ -410,17 +420,17 @@ Status SelectionOutlineRenderer::Poll() noexcept
     const StaticArray<rhi::RasterVertexStream, 2> maskStreams{
         {{sizeof(math::Vector3), false}, {sizeof(MaskInstance), true}}};
     const StaticArray<rhi::RasterVertexAttribute, MASK_VERTEX_INPUT_COUNT> maskAttributes{
-        {{0, 0, 0, rhi::RasterVertexFormat::Float3},
-         {1, 1, 0, rhi::RasterVertexFormat::Float4},
-         {2, 1, sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
-         {3, 1, 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
-         {4, 1, 3 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4}}};
+        {{mask_locations::INPUT_POSITION_MESH, 0, 0, rhi::RasterVertexFormat::Float3},
+         {mask_locations::INPUT_ROW0, 1, 0, rhi::RasterVertexFormat::Float4},
+         {mask_locations::INPUT_ROW1, 1, sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+         {mask_locations::INPUT_ROW2, 1, 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+         {mask_locations::INPUT_ROW3, 1, 3 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4}}};
     const StaticArray<rhi::RasterVertexStream, 1> edgeStreams{{{sizeof(EdgeVertex), false}}};
     const StaticArray<rhi::RasterVertexAttribute, EDGE_VERTEX_INPUT_COUNT> edgeAttributes{
-        {{0, 0, 0, rhi::RasterVertexFormat::Float4},
-         {1, 0, sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
-         {2, 0, 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
-         {3, 0, 3 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4}}};
+        {{edge_locations::INPUT_POSITION_UV, 0, 0, rhi::RasterVertexFormat::Float4},
+         {edge_locations::INPUT_OUTLINE_COLOR, 0, sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+         {edge_locations::INPUT_CASING_COLOR, 0, 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+         {edge_locations::INPUT_PARAMS, 0, 3 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4}}};
     while (state.Phase <= PIPELINE_COUNT)
     {
         // Each step waits for the previous resource, so a pending native creation is never overtaken.
