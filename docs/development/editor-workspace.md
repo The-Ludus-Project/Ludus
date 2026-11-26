@@ -2028,6 +2028,17 @@ level and refuses an existing conversion destination. Failed conversion preserve
 the active World. Save publishes only the converted World document. Existing
 `.world.json` documents without scene data remain readable.
 
+Worlds saved before the cloud layer was added open with clouds off and use the
+current defaults for missing layer settings. Opening a World leaves its file on
+disk as it was.
+
+If a World cannot open, the **World** tab keeps the current document and shows the
+reason and a recovery step. Use **Retry open** after restoring the file or fixing
+the project setup described in the message. Use **Choose another World…** to open
+a working backup in the project. The **Error List** also records the failure.
+Activate its World row to return to the recovery controls. A successful open
+clears the message and its row.
+
 ### Browse a World's material resources
 
 Open **Materials** beside **Lights** in the World sidebar to see the imported
