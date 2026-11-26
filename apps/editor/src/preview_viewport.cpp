@@ -285,6 +285,20 @@ private:
     QList<QLayoutItem*> mItems;
     ViewportSize mSize;
 };
+/// The navigation help: three short lines, so it stays beside its button and off the picture. Every
+/// preview backend shows it, including the browser editor.
+QString GetNavigationHelp()
+{
+#if defined(Q_OS_MACOS)
+    const QString modifier = QStringLiteral("Option");
+#else
+    const QString modifier = QStringLiteral("Alt");
+#endif
+    return modifier + QStringLiteral("-drag: orbit · Shift-") + modifier +
+           QStringLiteral("-drag: pan · Scroll: zoom\n"
+                          "Hold right mouse to look; add WASD/QE to fly (scroll sets speed)\n"
+                          "F frames the selection · Home frames all");
+}
 } // namespace
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 namespace
@@ -312,19 +326,6 @@ constexpr QRgb MESSAGE_ERROR_EDGE = GetViewportArgb(design::ThemeColour::StatusD
 /// Translucent red panel behind live shader errors and restart notices.
 constexpr QRgb SHADER_ERROR_BACKGROUND =
     WithAlpha(GetViewportArgb(design::ThemeColour::StatusDangerSurface), SHADER_ERROR_OPACITY);
-/// The navigation help: three short lines, so it stays beside its button and off the picture.
-QString GetNavigationHelp()
-{
-#    if defined(Q_OS_MACOS)
-    const QString modifier = QStringLiteral("Option");
-#    else
-    const QString modifier = QStringLiteral("Alt");
-#    endif
-    return modifier + QStringLiteral("-drag: orbit · Shift-") + modifier +
-           QStringLiteral("-drag: pan · Scroll: zoom\n"
-                          "Hold right mouse to look; add WASD/QE to fly (scroll sets speed)\n"
-                          "F frames the selection · Home frames all");
-}
 /// Live shaders toggle tooltip; while an error is shown the tooltip carries its full text instead.
 QString GetLiveShadersToolTip()
 {

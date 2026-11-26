@@ -615,6 +615,47 @@ void OpenGraphWorkspace(RendererWorkspace& inoutWorkspace, const QTemporaryDir& 
     inoutWorkspace.show();
     QCoreApplication::processEvents();
 }
+
+constexpr int32 TANGLED_GRID_COLUMNS = 8;
+constexpr int32 TANGLED_CELL_WIDTH = 300;
+constexpr int32 TANGLED_CELL_HEIGHT = 320;
+
+/// MakeLargeGraph's chains, saved in shuffled cells of a grid wide enough that no two cards touch: tangled, but
+/// not a layout the canvas nudges apart, which shows the overlap notice instead (render_graph_canvas_feedback_tests).
+QJsonObject MakeSeparatedTangledGraph()
+{
+    QJsonObject graph = MakeLargeGraph(true);
+    QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+    QJsonObject configuration = configurations.at(0).toObject();
+    QJsonArray positions =
+        configuration.value(QStringLiteral("layout")).toObject().value(QStringLiteral("positions")).toArray();
+    const int32 count = static_cast<int32>(positions.size());
+    QVector<int32> cells(count);
+    for (int32 i = 0; i < count; ++i)
+    {
+        cells[i] = i;
+    }
+    uint32 state = 7;
+    for (int32 i = count - 1; i > 0; --i)
+    {
+        state = state * static_cast<uint32>(SCRAMBLE_MULTIPLIER) + static_cast<uint32>(SCRAMBLE_INCREMENT);
+        const int32 j = static_cast<int32>((state >> 8) % static_cast<uint32>(i + 1));
+        const int32 cell = cells[i];
+        cells[i] = cells[j];
+        cells[j] = cell;
+    }
+    for (int32 i = 0; i < count; ++i)
+    {
+        QJsonObject position = positions.at(i).toObject();
+        position.insert(QStringLiteral("x"), (cells[i] % TANGLED_GRID_COLUMNS) * TANGLED_CELL_WIDTH);
+        position.insert(QStringLiteral("y"), (cells[i] / TANGLED_GRID_COLUMNS) * TANGLED_CELL_HEIGHT);
+        positions.replace(i, position);
+    }
+    configuration.insert(QStringLiteral("layout"), QJsonObject{{QStringLiteral("positions"), positions}});
+    configurations.replace(0, configuration);
+    graph.insert(QStringLiteral("configurations"), configurations);
+    return graph;
+}
 } // namespace
 
 TEST_CASE("wire measure counts each crossing once and never counts wires that share a port",
@@ -730,7 +771,7 @@ TEST_CASE("a tangled saved layout suggests Tidy layout, which is one undoable st
 {
     QTemporaryDir project;
     RendererWorkspace workspace({});
-    OpenGraphWorkspace(workspace, project, MakeLargeGraph(true));
+    OpenGraphWorkspace(workspace, project, MakeSeparatedTangledGraph());
     RenderGraphCanvas& canvas = workspace.GetCanvas();
     const RenderGraphWireMeasure tangled = canvas.MeasureWires();
     REQUIRE(tangled.Crossings >= 20);
