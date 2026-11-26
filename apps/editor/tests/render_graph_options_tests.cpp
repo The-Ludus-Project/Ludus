@@ -1,5 +1,6 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_node_details.h"
 #include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/renderer_workspace.h"
@@ -17,6 +18,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -453,4 +455,43 @@ TEST_CASE("subgraph details change only the caller and shader alternatives survi
     QStringList removedSources;
     REQUIRE(document.RemoveUnusedShaders(removedPrograms, removedSources, error) == RenderGraphDocumentStatus::Ok);
     CHECK(document.GetDraft(manifestFile).contains("Alternative") == true);
+}
+
+TEST_CASE("node Details opens as tall as its fields need", "[editor][render-graph][node-details][layout]")
+{
+    constexpr int32 DEFAULT_HEIGHT = 700;
+    constexpr int32 SHORT_FIELDS = 3;
+    constexpr int32 TALL_FIELDS = 60;
+    for (const int32 count : {SHORT_FIELDS, TALL_FIELDS})
+    {
+        RenderGraphNodeDetails dialog;
+        QObject::connect(&dialog,
+                         &RenderGraphNodeDetails::PopulateRequested,
+                         &dialog,
+                         [count](QFormLayout* outFields, QWidget* parent) {
+                             for (int32 row = 0; row < count; ++row)
+                             {
+                                 outFields->addRow(QStringLiteral("Field %1").arg(row), new QLabel(parent));
+                             }
+                         });
+        dialog.Refresh(QStringLiteral("Details — work"), QStringLiteral("main / Default / work"));
+        INFO(count << " fields");
+        if (count == SHORT_FIELDS)
+        {
+            // A short node leaves no empty band above Close.
+            CHECK(dialog.height() < DEFAULT_HEIGHT / 2);
+        }
+        else
+        {
+            // A tall one stops at the default height and scrolls.
+            CHECK(dialog.height() == DEFAULT_HEIGHT);
+        }
+        dialog.show();
+        QApplication::processEvents();
+        const int32 opened = dialog.height();
+        dialog.Refresh(QStringLiteral("Details — work"), QStringLiteral("main / Default / work"));
+        QApplication::processEvents();
+        // A refresh after an edit keeps the size the user sees.
+        CHECK(dialog.height() == opened);
+    }
 }

@@ -58,6 +58,8 @@ private:
     bool eventFilter(QObject* watched, QEvent* event) override;
     [[nodiscard]] QTableWidget*
     createTable(const QString& name, const QStringList& fields, const QStringList& defaults);
+    /// A one-line summary at the top of the Shaders part, with the full rules behind a Learn more toggle.
+    void addShadersHelp();
     void addColorOutputEditor();
     void updateColorOutputAccess(QJsonObject& inoutInvocation, bool isShaderWritable);
     void addProperties(QFormLayout& outForm, const QString& name);

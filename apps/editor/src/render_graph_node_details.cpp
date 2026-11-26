@@ -5,6 +5,8 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <algorithm>
+
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QFrame>
@@ -12,6 +14,7 @@
 #include <QPalette>
 #include <QPointer>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -89,6 +92,37 @@ void RenderGraphNodeDetails::Refresh(const QString& title, const QString& path)
         partsOrNull->setCurrentIndex(selectedPart);
     }
     mScroll->setWidget(fields);
+    if (isVisible() == false)
+    {
+        fitHeightToFields(*fields);
+    }
+    if (partsOrNull != nullptr)
+    {
+        // Each part frame is as tall as its own content, so the dialog follows the part on show, like a settings
+        // window that resizes per pane. The layouts settle before it measures.
+        connect(partsOrNull, &QTabWidget::currentChanged, this, [this]() {
+            QTimer::singleShot(0, this, [this]() {
+                if (mScroll->widget() != nullptr)
+                {
+                    fitHeightToFields(*mScroll->widget());
+                }
+            });
+        });
+    }
+}
+void RenderGraphNodeDetails::fitHeightToFields(const QWidget& fields)
+{
+    // As tall as the fields need, up to the default height, so a node with short parts has no empty band above
+    // Close. A refresh while open (after an edit) keeps the size the user sees and scrolls instead.
+    const QMargins margins = layout()->contentsMargins();
+    const int32 fieldsWidth = width() - margins.left() - margins.right() -
+                              mScroll->verticalScrollBar()->sizeHint().width() - 2 * mScroll->frameWidth();
+    const int32 fieldsHeight =
+        fields.hasHeightForWidth() == true ? fields.heightForWidth(fieldsWidth) : fields.sizeHint().height();
+    const int32 chrome = layout()->sizeHint().height() - mScroll->sizeHint().height();
+    resize(
+        width(),
+        std::clamp(chrome + fieldsHeight + 2 * mScroll->frameWidth(), minimumSizeHint().height(), NODE_EDITOR_HEIGHT));
 }
 void RenderGraphNodeDetails::ShowError(const QString& message)
 {

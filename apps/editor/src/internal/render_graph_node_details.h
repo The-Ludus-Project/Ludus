@@ -32,6 +32,7 @@ Q_SIGNALS:
     void PopulateRequested(QFormLayout* outFields, QWidget* parent);
 
 private:
+    void fitHeightToFields(const QWidget& fields);
     // Retired controls stay owned but outside live field lookups until deferred deletion.
     QWidget mRetiredFields;
     QScrollArea* mScroll;

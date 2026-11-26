@@ -1,5 +1,6 @@
 #include "internal/render_graph_pipeline.h"
 #include "design_tokens.h"
+#include "internal/property_panel_fit.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -29,10 +30,13 @@
 #include <QRegularExpression>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStyle>
+#include <QStyleOptionTabWidgetFrame>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QToolButton>
+#include <QToolTip>
 #include <QVBoxLayout>
 #include <QVariant>
 
@@ -51,6 +55,9 @@ constexpr int32 MAX_RAY_INTERFACE_BYTES = 4096;
 constexpr int32 AUTOMATIC_RAY_LIMIT = -1;
 /// An assigned-shader chip shows at most this many characters' width; its tooltip carries the whole program name.
 constexpr int32 SHADER_CHIP_MAX_CHARACTERS = 24;
+/// The offset QToolTip adds below and right of the position it is given (on macOS and Linux; Windows uses 21 down).
+constexpr int32 TOOLTIP_POINTER_OFFSET_X = 2;
+constexpr int32 TOOLTIP_POINTER_OFFSET_Y = 16;
 
 /// Items left to right, wrapping onto a new row when the next one would not fit, so a narrow Properties dock shows
 /// every part button instead of truncating them to "Read... Writable R...".
@@ -147,6 +154,54 @@ private:
     }
     QList<QLayoutItem*> mItems;
 };
+
+/// The pipeline parts, as tall as the part on show rather than the tallest part, so a short table has no empty frame
+/// under it. Switching parts changes the height; the width stays that of the widest part.
+class PartTabs final : public QTabWidget
+{
+public:
+    using QTabWidget::QTabWidget;
+    QSize sizeHint() const override
+    {
+        return QSize(QTabWidget::sizeHint().width(), fitCurrentPage(-1));
+    }
+    int heightForWidth(int width) const override
+    {
+        return fitCurrentPage(width);
+    }
+
+private:
+    /// The frame and tab height around the current page at a width, or at its preferred width when width is -1.
+    [[nodiscard]] int32 fitCurrentPage(int32 width) const
+    {
+        QStyleOptionTabWidgetFrame option;
+        initStyleOption(&option);
+        option.state = QStyle::State_None;
+        const QSize padding = style()->sizeFromContents(QStyle::CT_TabWidget, &option, QSize(0, 0), this);
+        const QWidget* pageOrNull = currentWidget();
+        int32 page = 0;
+        if (pageOrNull != nullptr)
+        {
+            page = width >= 0 && pageOrNull->hasHeightForWidth() == true
+                       ? pageOrNull->heightForWidth(width - padding.width())
+                       : pageOrNull->sizeHint().height();
+            page = std::max(page, pageOrNull->minimumSizeHint().height());
+        }
+        const int32 tabs = tabBar()->isVisibleTo(this) == true ? tabBar()->sizeHint().height() : 0;
+        return padding.height() + tabs + page;
+    }
+};
+
+/// Make every enclosing form and scroll area measure again after a part changes height; otherwise a taller part is
+/// squeezed into the height of the one before it.
+void RemeasureAncestors(QWidget& inoutWidget)
+{
+    for (QWidget* widgetOrNull = &inoutWidget; widgetOrNull != nullptr && widgetOrNull->isWindow() == false;
+         widgetOrNull = widgetOrNull->parentWidget())
+    {
+        widgetOrNull->updateGeometry();
+    }
+}
 
 QJsonArray ReadRows(const QTableWidget& table, const QStringList& fields)
 {
@@ -411,11 +466,14 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     QVBoxLayout* layout = new QVBoxLayout(this);
     // The editor sits inside a form or dialog that already has margins; its own would only narrow the content.
     layout->setContentsMargins(0, 0, 0, 0);
-    QTabWidget* tabs = new QTabWidget(this);
+    QTabWidget* tabs = new PartTabs(this);
     mTabs = tabs;
     mTabs->setObjectName(QStringLiteral("renderGraphPipelineParts"));
     // A narrow dialog or dock scrolls the part tabs instead of growing to fit every one of them.
     mTabs->setUsesScrollButtons(true);
+    // The parts frame is as tall as the part on show, not as tall as the dialog around it.
+    mTabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    connect(mTabs, &QTabWidget::currentChanged, mTabs, [this]() { RemeasureAncestors(*mTabs); });
     for (QTableWidget* table : {mInputs, mOutputs, mShaders})
     {
         const QString name = table->objectName();
@@ -456,29 +514,61 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     mError->setObjectName(QStringLiteral("renderGraphPipelineError"));
     mError->setWordWrap(true);
     layout->addWidget(mError);
-    QLabel* hint = new QLabel(
-        QStringLiteral("Choose the language for new shaders. LUSL (.lusl) is the default. "
-                       "Renaming moves its source; stage edits reuse it. Edit sources in Source; Save writes files."),
-        mShaders->parentWidget());
-    hint->setObjectName(QStringLiteral("renderGraphShadersHelp"));
-    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+    addShadersHelp();
+}
+
+void RenderGraphPipelineEditor::addShadersHelp()
+{
+    // One line people read, with the rules for program IDs and signatures a click away rather than a paragraph.
+    QWidget* panel = mShaders->parentWidget();
+    QLabel* summary =
+        new QLabel(QStringLiteral("Each row runs one program at a stage. New programs get a LUSL or Slang source."),
+                   panel);
+    summary->setObjectName(QStringLiteral("renderGraphShadersHelp"));
+    summary->setWordWrap(true);
+    QToolButton* more = new QToolButton(panel);
+    more->setObjectName(QStringLiteral("renderGraphShadersLearnMore"));
+    more->setText(QStringLiteral("Learn more"));
+    more->setAutoRaise(true);
+    more->setArrowType(Qt::RightArrow);
+    more->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    more->setAccessibleName(QStringLiteral("Learn more about shaders"));
+    QStringList paragraphs{
+        QStringLiteral("Program IDs are shared by every graph and configuration in the root shader manifest. Enter "
+                       "an existing program ID to reuse it, or Program to generate a unique ID. For shared structs "
+                       "and helpers, create a shared shader file and include it from your program."),
+        QStringLiteral("Renaming a shader moves its source; changing its stage reuses it. Double-click a chip under "
+                       "Assigned shaders to open its source in Source; Save writes the files.")};
+    if (mNode.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
     {
-        hint->setText(hint->text() +
-                      QStringLiteral(" New ray techniques expose materials through EvaluateMaterial(scene, hit). "
-                                     "For legacy ray pipelines, use Enable Scene Materials on the canvas."));
+        paragraphs.append(QStringLiteral("New ray techniques expose materials through EvaluateMaterial(scene, hit). "
+                                         "For legacy ray pipelines, use Enable Scene Materials on the canvas."));
     }
-    else if (IsSceneComputeNode(node) == true)
+    else if (IsSceneComputeNode(mNode) == true)
     {
-        hint->setText(
-            hint->text() +
-            QStringLiteral(" Scene compute shaders implement float3 Name(SceneContext scene, RayLaunch "
-                           "launch, inout RayQueryContext queries) and trace with TraceClosest or "
-                           "TestVisibility. Alternatively assign ray_generation, miss and closest_hit programs "
-                           "from a ray pipeline; TraceAndShade then invokes those callbacks."));
+        paragraphs.append(QStringLiteral("Scene compute shaders implement float3 Name(SceneContext scene, RayLaunch "
+                                         "launch, inout RayQueryContext queries) and trace with TraceClosest or "
+                                         "TestVisibility. Alternatively assign ray_generation, miss and closest_hit "
+                                         "programs from a ray pipeline; TraceAndShade then invokes those callbacks."));
     }
-    hint->setWordWrap(true);
-    // Under the program-scope note at the top of the Shaders part.
-    static_cast<QVBoxLayout*>(mShaders->parentWidget()->layout())->insertWidget(1, hint);
+    QLabel* details = new QLabel(paragraphs.join(QStringLiteral("\n\n")), panel);
+    details->setObjectName(QStringLiteral("renderGraphShadersDetails"));
+    details->setWordWrap(true);
+    details->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    details->hide();
+    // A plain disclosure rather than a checked button, so the open state reads as an arrow, not a pressed box.
+    connect(more, &QToolButton::clicked, details, [more, details]() {
+        const bool isExpanded = details->isHidden();
+        details->setVisible(isExpanded);
+        RemeasureAncestors(*details);
+        more->setArrowType(isExpanded == true ? Qt::DownArrow : Qt::RightArrow);
+        more->setText(isExpanded == true ? QStringLiteral("Show less") : QStringLiteral("Learn more"));
+    });
+    // The disclosure sits under the summary like the other expanders in Properties, so the summary keeps the row.
+    QVBoxLayout* layout = static_cast<QVBoxLayout*>(panel->layout());
+    layout->insertWidget(0, summary);
+    layout->insertWidget(1, more, 0, Qt::AlignLeft);
+    layout->insertWidget(2, details);
 }
 
 void RenderGraphPipelineEditor::AddOptionsEditor(QWidget* editor)
@@ -515,7 +605,6 @@ void RenderGraphPipelineEditor::ShowParts()
         part->setToolButtonStyle(Qt::ToolButtonTextOnly);
         part->setCheckable(true);
         part->setChecked(index == mTabs->currentIndex());
-        part->setToolTip(QStringLiteral("Edit %1 for this pipeline").arg(mTabs->tabText(index)));
         selection->addButton(part, index);
         partRow->addWidget(part);
     }
@@ -533,14 +622,18 @@ void RenderGraphPipelineEditor::ShowParts()
             QToolButton* part = new QToolButton(overview);
             part->setObjectName(QStringLiteral("renderGraphShaderPart_") +
                                 shader.value(QStringLiteral("id")).toString());
-            part->setText(part->fontMetrics().elidedText(
-                QStringLiteral("%1 · %2").arg(shader.value(QStringLiteral("stage")).toString(),
-                                              shader.value(QStringLiteral("program")).toString()),
-                Qt::ElideMiddle,
-                part->fontMetrics().averageCharWidth() * SHADER_CHIP_MAX_CHARACTERS));
-            part->setToolTip(
-                QStringLiteral("Program: %1\nClick to edit the assignment; double-click to open the shader source")
-                    .arg(shader.value(QStringLiteral("program")).toString()));
+            const QString label = QStringLiteral("%1 · %2").arg(shader.value(QStringLiteral("stage")).toString(),
+                                                                shader.value(QStringLiteral("program")).toString());
+            part->setText(
+                part->fontMetrics().elidedText(label,
+                                               Qt::ElideMiddle,
+                                               part->fontMetrics().averageCharWidth() * SHADER_CHIP_MAX_CHARACTERS));
+            // A tooltip opens under the pointer, right over the help beneath the chips, so a chip has one only
+            // when it cannot show its whole name. How to use the chips is in the Shaders help instead.
+            if (part->text() != label)
+            {
+                part->setToolTip(label);
+            }
             part->setProperty("renderGraphShaderId", shader.value(QStringLiteral("id")).toString());
             part->installEventFilter(this);
             part->setToolButtonStyle(Qt::ToolButtonTextOnly);
@@ -576,6 +669,17 @@ bool RenderGraphPipelineEditor::eventFilter(QObject* watched, QEvent* event)
             Q_EMIT ShaderOpenRequested(shaderId);
             return true;
         }
+    }
+    QWidget* chipOrNull = qobject_cast<QWidget*>(watched);
+    if (event->type() == QEvent::ToolTip && chipOrNull != nullptr &&
+        chipOrNull->property("renderGraphShaderId").isValid() == true && chipOrNull->toolTip().isEmpty() == false)
+    {
+        // Beside the chip, on its own row, instead of under the pointer where it would cover the part's help.
+        // Qt adds its pointer offset to the position it is given, so that offset is taken back first.
+        const QPoint beside = chipOrNull->mapToGlobal(QPoint(chipOrNull->width(), 0)) -
+                              QPoint(TOOLTIP_POINTER_OFFSET_X, TOOLTIP_POINTER_OFFSET_Y);
+        QToolTip::showText(beside, chipOrNull->toolTip(), chipOrNull);
+        return true;
     }
     return QWidget::eventFilter(watched, event);
 }
@@ -633,15 +737,25 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     table->setProperty("renderGraphField", name);
     table->setColumnCount(static_cast<int32>(fields.size()));
     table->setHorizontalHeaderLabels(fields);
-    table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     // The table is as tall as its rows (at least one), and the buttons sit right under it, instead of the table
     // holding a large empty box under a single row. An empty part shows a one-line note instead (below).
     table->setMinimumHeight(table->horizontalHeader()->sizeHint().height() +
                             table->verticalHeader()->defaultSectionSize() + 2 * table->frameWidth());
     table->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
-    table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    table->horizontalHeader()->setStretchLastSection(true);
     table->setProperty("fields", fields);
+    // Row numbers say nothing a row does not, and a narrow dock needs their width for the columns.
+    table->verticalHeader()->hide();
+    // Columns fit the table's width, eliding cell text, so neither a narrow dock nor the dialog scrolls sideways.
+    table->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    if (name == QStringLiteral("inputs"))
+    {
+        table->setHorizontalHeaderLabels({QStringLiteral("Input"), QStringLiteral("Type"), QStringLiteral("Required")});
+    }
+    else if (name == QStringLiteral("shaders"))
+    {
+        table->setHorizontalHeaderLabels(
+            {QStringLiteral("Shader"), QStringLiteral("Stage"), QStringLiteral("Program")});
+    }
     if (name == QStringLiteral("outputs"))
     {
         connect(table, &QTableWidget::itemChanged, table, [table](QTableWidgetItem* item) {
@@ -683,14 +797,6 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     }
     if (name == QStringLiteral("shaders"))
     {
-        QLabel* scope = new QLabel(
-            QStringLiteral(
-                "Program IDs are shared by every graph and configuration in the root shader manifest. "
-                "Enter an existing program ID to reuse it, or Program to generate a unique ID. "
-                "For shared structs and helpers, create a shared shader file and include it from your program."),
-            panel);
-        scope->setWordWrap(true);
-        layout->addWidget(scope);
         QLineEdit* programName = new QLineEdit(panel);
         programName->setObjectName(QStringLiteral("renderGraphProgramName"));
         programName->setReadOnly(true);
@@ -920,6 +1026,7 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
         empty->setProperty("renderGraphField", isEmpty == true ? QVariant(name) : QVariant());
     };
     showRows();
+    FitColumnsToWidth(*table);
     connect(table->model(), &QAbstractItemModel::rowsInserted, empty, showRows);
     connect(table->model(), &QAbstractItemModel::rowsRemoved, empty, showRows);
     return table;

@@ -17,18 +17,24 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGroupBox>
+#include <QHeaderView>
+#include <QHelpEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSet>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTest>
 #include <QToolButton>
+#include <QToolTip>
+#include <QVBoxLayout>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -3429,4 +3435,204 @@ TEST_CASE("the Shader API side panel wraps declarations at its edge", "[editor][
     REQUIRE(page != nullptr);
     CHECK(text->lineWrapMode() == QPlainTextEdit::WidgetWidth);
     CHECK(text->wordWrapMode() == QTextOption::WrapAtWordBoundaryOrAnywhere);
+}
+
+namespace
+{
+/// A scene compute pipeline like the ComputeRayTracing sample's `primary`: two read inputs and one shader.
+QJsonObject MakeSceneComputeNode()
+{
+    QJsonObject node = MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("primary"));
+    node.insert(QStringLiteral("inputs"),
+                QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("scene")},
+                                       {QStringLiteral("type"), QStringLiteral("Scene")},
+                                       {QStringLiteral("required"), true}},
+                           QJsonObject{{QStringLiteral("id"), QStringLiteral("view")},
+                                       {QStringLiteral("type"), QStringLiteral("View")},
+                                       {QStringLiteral("required"), true}}});
+    node.insert(QStringLiteral("shaders"),
+                QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("compute")},
+                                       {QStringLiteral("stage"), QStringLiteral("compute")},
+                                       {QStringLiteral("program"), QStringLiteral("Primary")}}});
+    return node;
+}
+
+int32 GetColumnsWidth(const QTableWidget& table)
+{
+    int32 width = 0;
+    for (int32 column = 0; column < table.columnCount(); ++column)
+    {
+        width += table.horizontalHeader()->sectionSize(column);
+    }
+    return width;
+}
+} // namespace
+
+TEST_CASE("pipeline tables fit their columns to a narrow Properties dock instead of scrolling sideways",
+          "[editor][render-graph][pipeline][node-details][layout]")
+{
+    constexpr int32 NARROW_DOCK_WIDTH = 240;
+    constexpr int32 WIDE_DIALOG_WIDTH = 860;
+    constexpr int32 HEIGHT = 900;
+    QWidget dock;
+    QVBoxLayout* layout = new QVBoxLayout(&dock);
+    RenderGraphPipelineEditor* editor = new RenderGraphPipelineEditor(MakeSceneComputeNode(), &dock);
+    editor->ShowParts();
+    layout->addWidget(editor);
+    QTabWidget* partsOrNull = editor->findChild<QTabWidget*>(QStringLiteral("renderGraphPipelineParts"));
+    REQUIRE(partsOrNull != nullptr);
+    for (const int32 width : {NARROW_DOCK_WIDTH, WIDE_DIALOG_WIDTH})
+    {
+        dock.resize(width, HEIGHT);
+        dock.show();
+        for (const QString& name : {QStringLiteral("inputs"), QStringLiteral("shaders")})
+        {
+            QTableWidget* tableOrNull = editor->findChild<QTableWidget*>(name);
+            REQUIRE(tableOrNull != nullptr);
+            partsOrNull->setCurrentWidget(tableOrNull->parentWidget());
+            QApplication::processEvents();
+            QApplication::processEvents();
+            INFO(name.toStdString() << " at " << width << " px");
+            // Row numbers are gone, and every column sits inside the table: nothing to scroll sideways to.
+            CHECK(tableOrNull->verticalHeader()->isHidden() == true);
+            CHECK(tableOrNull->horizontalScrollBar()->maximum() == 0);
+            CHECK(GetColumnsWidth(*tableOrNull) <= tableOrNull->viewport()->width());
+            CHECK(tableOrNull->mapTo(&dock, QPoint(tableOrNull->width(), 0)).x() <= dock.width());
+            // The first column (a short name) keeps its whole text; only the widest columns give way.
+            CHECK(tableOrNull->horizontalHeader()->sectionSize(0) >=
+                  static_cast<QAbstractItemView*>(tableOrNull)->sizeHintForColumn(0));
+            if (width == WIDE_DIALOG_WIDTH)
+            {
+                // With room to spare the columns fill the table; a text column, not a choice, takes the rest.
+                CHECK(GetColumnsWidth(*tableOrNull) == tableOrNull->viewport()->width());
+            }
+        }
+    }
+    QTableWidget* inputsOrNull = editor->findChild<QTableWidget*>(QStringLiteral("inputs"));
+    REQUIRE(inputsOrNull != nullptr);
+    CHECK(inputsOrNull->horizontalHeaderItem(2)->text() == QStringLiteral("Required"));
+    // The check box column stays narrow; the input name takes the spare width.
+    CHECK(inputsOrNull->horizontalHeader()->sectionSize(2) < inputsOrNull->horizontalHeader()->sectionSize(0));
+}
+
+TEST_CASE("the Shaders part leads with one line and keeps the program and signature rules behind Learn more",
+          "[editor][render-graph][pipeline][node-details]")
+{
+    constexpr int32 DIALOG_WIDTH = 600;
+    constexpr int32 DIALOG_HEIGHT = 700;
+    RenderGraphPipelineEditor editor(MakeSceneComputeNode());
+    editor.resize(DIALOG_WIDTH, DIALOG_HEIGHT);
+    editor.show();
+    QTabWidget* partsOrNull = editor.findChild<QTabWidget*>(QStringLiteral("renderGraphPipelineParts"));
+    QLabel* summaryOrNull = editor.findChild<QLabel*>(QStringLiteral("renderGraphShadersHelp"));
+    QToolButton* moreOrNull = editor.findChild<QToolButton*>(QStringLiteral("renderGraphShadersLearnMore"));
+    QLabel* detailsOrNull = editor.findChild<QLabel*>(QStringLiteral("renderGraphShadersDetails"));
+    REQUIRE(partsOrNull != nullptr);
+    REQUIRE(summaryOrNull != nullptr);
+    REQUIRE(moreOrNull != nullptr);
+    REQUIRE(detailsOrNull != nullptr);
+    partsOrNull->setCurrentWidget(summaryOrNull->parentWidget());
+    QApplication::processEvents();
+    // One short sentence pair, on one line at dialog width.
+    CHECK(summaryOrNull->isVisible() == true);
+    CHECK(summaryOrNull->height() < 2 * summaryOrNull->fontMetrics().height());
+    CHECK(summaryOrNull->text().contains(QStringLiteral("SceneContext")) == false);
+    CHECK(detailsOrNull->isVisible() == false);
+    CHECK(moreOrNull->isCheckable() == false);
+    moreOrNull->click();
+    QApplication::processEvents();
+    CHECK(detailsOrNull->isVisible() == true);
+    CHECK(moreOrNull->text() == QStringLiteral("Show less"));
+    CHECK(detailsOrNull->text().contains(QStringLiteral("Program IDs are shared")) == true);
+    CHECK(detailsOrNull->text().contains(QStringLiteral("float3 Name(SceneContext scene")) == true);
+    moreOrNull->click();
+    QApplication::processEvents();
+    CHECK(detailsOrNull->isVisible() == false);
+    CHECK(moreOrNull->text() == QStringLiteral("Learn more"));
+}
+
+TEST_CASE("the parts frame is as tall as the part on show", "[editor][render-graph][pipeline][node-details][layout]")
+{
+    QJsonObject node = MakeSceneComputeNode();
+    node.insert(QStringLiteral("outputs"), QJsonArray{});
+    constexpr int32 DIALOG_WIDTH = 600;
+    constexpr int32 DIALOG_HEIGHT = 900;
+    // Like the Details form: the editor gets its own height, and any spare height falls below it.
+    QWidget form;
+    QVBoxLayout* layout = new QVBoxLayout(&form);
+    RenderGraphPipelineEditor* editor = new RenderGraphPipelineEditor(node, &form);
+    layout->addWidget(editor);
+    layout->addStretch(1);
+    form.resize(DIALOG_WIDTH, DIALOG_HEIGHT);
+    form.show();
+    QTabWidget* partsOrNull = editor->findChild<QTabWidget*>(QStringLiteral("renderGraphPipelineParts"));
+    QLabel* emptyOrNull = editor->findChild<QLabel*>(QStringLiteral("renderGraphEmpty_outputs"));
+    QTableWidget* inputsOrNull = editor->findChild<QTableWidget*>(QStringLiteral("inputs"));
+    REQUIRE(partsOrNull != nullptr);
+    REQUIRE(emptyOrNull != nullptr);
+    REQUIRE(inputsOrNull != nullptr);
+    partsOrNull->setCurrentWidget(emptyOrNull->parentWidget());
+    QApplication::processEvents();
+    const int32 emptyPart = partsOrNull->sizeHint().height();
+    partsOrNull->setCurrentWidget(inputsOrNull->parentWidget());
+    QApplication::processEvents();
+    const int32 tablePart = partsOrNull->sizeHint().height();
+    // A one-line empty part is shorter than a two-row table; neither takes the tallest part's height.
+    CHECK(emptyPart < tablePart);
+    CHECK(partsOrNull->currentWidget()->height() <=
+          partsOrNull->currentWidget()->sizeHint().height() + partsOrNull->fontMetrics().height());
+}
+
+TEST_CASE("shader part tooltips stay off the Shaders help", "[editor][render-graph][pipeline][node-details]")
+{
+    QJsonObject node = MakeSceneComputeNode();
+    QJsonArray shaders = node.value(QStringLiteral("shaders")).toArray();
+    shaders.append(QJsonObject{{QStringLiteral("id"), QStringLiteral("trace")},
+                               {QStringLiteral("stage"), QStringLiteral("compute")},
+                               {QStringLiteral("program"), QStringLiteral("Shader_scenecomputepipeline_trace_long")}});
+    node.insert(QStringLiteral("shaders"), shaders);
+    RenderGraphPipelineEditor editor(node);
+    constexpr int32 DIALOG_WIDTH = 900;
+    constexpr int32 DIALOG_HEIGHT = 700;
+    editor.ShowParts();
+    editor.resize(DIALOG_WIDTH, DIALOG_HEIGHT);
+    editor.show();
+    QApplication::processEvents();
+    // A part button's label says what it does; it has no tooltip to cover the help under it.
+    for (QToolButton* part : editor.findChildren<QToolButton*>())
+    {
+        if (part->objectName().startsWith(QStringLiteral("renderGraphPart_")) == true)
+        {
+            INFO(part->text().toStdString());
+            CHECK(part->toolTip().isEmpty() == true);
+        }
+    }
+    QToolButton* shortChipOrNull = editor.findChild<QToolButton*>(QStringLiteral("renderGraphShaderPart_compute"));
+    QToolButton* longChipOrNull = editor.findChild<QToolButton*>(QStringLiteral("renderGraphShaderPart_trace"));
+    REQUIRE(shortChipOrNull != nullptr);
+    REQUIRE(longChipOrNull != nullptr);
+    // A chip that shows its whole name needs no tooltip; an elided one carries the full name.
+    const QChar ellipsis(0x2026);
+    CHECK(shortChipOrNull->toolTip().isEmpty() == (shortChipOrNull->text().contains(ellipsis) == false));
+    CHECK(longChipOrNull->text().contains(ellipsis) == true);
+    CHECK(longChipOrNull->toolTip().contains(QStringLiteral("Shader_scenecomputepipeline_trace_long")) == true);
+    const QPoint centre = longChipOrNull->rect().center();
+    QHelpEvent help(QEvent::ToolTip, centre, longChipOrNull->mapToGlobal(centre));
+    QApplication::sendEvent(longChipOrNull, &help);
+    QApplication::processEvents();
+    QWidget* tipOrNull = nullptr;
+    for (QWidget* top : QApplication::topLevelWidgets())
+    {
+        if (QString::fromLatin1(top->metaObject()->className()) == QStringLiteral("QTipLabel") &&
+            top->isVisible() == true)
+        {
+            tipOrNull = top;
+        }
+    }
+    REQUIRE(tipOrNull != nullptr);
+    // It opens on the chip's own row, not under the pointer where the help starts.
+    const int32 chipBottom = longChipOrNull->mapToGlobal(QPoint(0, longChipOrNull->height())).y();
+    CHECK(tipOrNull->geometry().top() < chipBottom);
+    CHECK(tipOrNull->geometry().top() >= longChipOrNull->mapToGlobal(QPoint(0, 0)).y() - 1);
+    QToolTip::hideText();
 }
