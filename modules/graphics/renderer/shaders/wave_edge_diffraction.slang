@@ -161,15 +161,30 @@ UtdEdgeField EvaluateUtdEdgeField(UtdEdge edge, float3 sourceWorld, float3 recei
         result.Field = float2(0);
     return result;
 }
-/// The connection whose edges a region contributes.
-struct UtdConnection
+/// Inputs an edge operator shares across the regions of one connection; mirrors WaveEdgeConnection in C++.
+struct WaveEdgeConnection
 {
     float3 SourceWorld;
     float3 ReceiverWorld;
     float3 DirectionWorld;
+    /// Unit transverse axis of the connection frame; the other is cross(DirectionWorld, AxisXWorld).
+    float3 AxisXWorld;
+    float DistanceWorld;
     float WavelengthWorld;
+    float SigmaWorldSquared;
     float EnvelopeRadiusWorld;
     float EndpointEscapeWorld;
+    float RoundoffWorld;
+    bool IsBallisticBlocked;
+};
+/// An edge connection between interaction regions: its inputs, the remaining cone and the field so far.
+struct WaveEdgeWalk
+{
+    WaveEdgeConnection Connection;
+    EllipticalCone Cone;
+    float2 Field;
+    /// The connection needs no further regions; Field is final.
+    bool IsComplete;
 };
 /// Whether the segment from nearWorld past `beginWorld` to farMarginWorld before `endWorld` is clear, ignoring
 /// the `excluded` faces.
@@ -217,7 +232,7 @@ float3 GetUtdCorner(TriangleData triangle, uint corner)
 }
 /// Add the diffracted fields of the edges in `region` whose diffraction points lie in its slab and envelope.
 WaveQuery AddUtdRegionEdgeFields(SceneContext scene,
-                                 UtdConnection connection,
+                                 WaveEdgeConnection connection,
                                  WaveInteractionRegion region,
                                  inout float2 inoutField)
 {
@@ -347,16 +362,17 @@ WaveQuery AddUtdRegionEdgeFields(SceneContext scene,
     }
     return WaveQuery::Ready;
 }
-/// Ballistic field plus coherent single-edge UTD fields, relative to the unobstructed free-space field.
-/// Accepts and rejects the same inputs as EvaluateWaveConnectionToReceiver; failure preserves the output.
-[noinline] WaveQuery EvaluateUtdConnectionToReceiver(SceneContext scene,
-                                                     float3 sourceWorld,
-                                                     float3 receiverWorld,
-                                                     float3 directionWorld,
-                                                     float distanceWorld,
-                                                     float wavelengthWorld,
-                                                     inout float2 inoutField)
+/// Validate a connection, trace its ballistic centre ray and escape both endpoints, as the shared C++ driver
+/// EvaluateWaveEdgeConnection does. Accepts and rejects the same inputs as EvaluateWaveConnectionToReceiver.
+WaveQuery BeginWaveEdgeConnection(SceneContext scene,
+                                  float3 sourceWorld,
+                                  float3 receiverWorld,
+                                  float3 directionWorld,
+                                  float distanceWorld,
+                                  float wavelengthWorld,
+                                  out WaveEdgeWalk outWalk)
 {
+    outWalk = (WaveEdgeWalk)0;
     if (IsFiniteBits(sourceWorld) == false || IsFiniteBits(receiverWorld) == false ||
         IsFiniteBits(directionWorld) == false || IsFiniteBits(distanceWorld) == false || distanceWorld <= 0 ||
         IsFiniteBits(wavelengthWorld) == false || wavelengthWorld < LUDUS_WAVE_CONNECTION_MIN_WAVELENGTH_WORLD ||
@@ -387,7 +403,7 @@ WaveQuery AddUtdRegionEdgeFields(SceneContext scene,
     WaveQuery status = TraceWaveBallistic(scene, cone, uint2(WAVE_CONNECTION_NO_EXCLUDED_TRIANGLE), isBlocked);
     if (status != WaveQuery::Ready)
         return status;
-    float2 field = float2(isBlocked == true ? 0 : 1, 0);
+    outWalk.Field = float2(isBlocked == true ? 0 : 1, 0);
     float sourceEscapeWorld;
     bool isEscapeBlocked;
     bool isEntirelyBallistic;
@@ -397,7 +413,7 @@ WaveQuery AddUtdRegionEdgeFields(SceneContext scene,
         return status;
     if (isEntirelyBallistic == true)
     {
-        inoutField = field;
+        outWalk.IsComplete = true;
         return WaveQuery::Ready;
     }
     EllipticalCone reverse = cone;
@@ -415,58 +431,95 @@ WaveQuery AddUtdRegionEdgeFields(SceneContext scene,
         return status;
     if (isEntirelyBallistic == true)
     {
-        inoutField = field;
+        outWalk.IsComplete = true;
         return WaveQuery::Ready;
     }
-    UtdConnection connection;
-    connection.SourceWorld = sourceWorld;
-    connection.ReceiverWorld = receiverWorld;
-    connection.DirectionWorld = directionWorld;
-    connection.WavelengthWorld = wavelengthWorld;
-    connection.EnvelopeRadiusWorld = halfWidthWorld;
-    connection.EndpointEscapeWorld = endpointEscapeWorld;
+    outWalk.Connection.SourceWorld = sourceWorld;
+    outWalk.Connection.ReceiverWorld = receiverWorld;
+    outWalk.Connection.DirectionWorld = directionWorld;
+    outWalk.Connection.AxisXWorld = cone.AxisXWorld;
+    outWalk.Connection.DistanceWorld = distanceWorld;
+    outWalk.Connection.WavelengthWorld = wavelengthWorld;
+    outWalk.Connection.SigmaWorldSquared = sigmaWorldSquared;
+    outWalk.Connection.EnvelopeRadiusWorld = halfWidthWorld;
+    outWalk.Connection.EndpointEscapeWorld = endpointEscapeWorld;
+    outWalk.Connection.RoundoffWorld = LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld;
+    outWalk.Connection.IsBallisticBlocked = isBlocked;
     cone.NearWorld = sourceEscapeWorld;
     cone.FarWorld = max(cone.NearWorld, distanceWorld - receiverEscapeWorld);
+    outWalk.Cone = cone;
+    return WaveQuery::Ready;
+}
+/// Move the walk's cone past `region`, skipping geometry that continues straight past it as the angular-spectrum
+/// operator does.
+WaveQuery AdvanceWaveEdgeWalk(SceneContext scene, WaveInteractionRegion region, inout WaveEdgeWalk inoutWalk)
+{
+    float nextNearWorld = asfloat(asuint(region.Frustum.FarWorld) + 1);
+    inoutWalk.Cone.NearWorld = min(inoutWalk.Cone.FarWorld, nextNearWorld);
+    float wavelengthWorld = inoutWalk.Connection.WavelengthWorld;
+    if (inoutWalk.Cone.FarWorld - inoutWalk.Cone.NearWorld <=
+        LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld)
+        return WaveQuery::Ready;
+    EllipticalCone skip = inoutWalk.Cone;
+    skip.OriginWorld =
+        inoutWalk.Connection.SourceWorld + inoutWalk.Connection.DirectionWorld * inoutWalk.Cone.NearWorld;
+    skip.FarWorld = inoutWalk.Cone.FarWorld - inoutWalk.Cone.NearWorld;
+    skip.NearWorld = min(skip.FarWorld, inoutWalk.Connection.EndpointEscapeWorld);
+    float skippedWorld;
+    bool isEscapeBlocked;
+    bool isEntirelyBallistic;
+    WaveQuery status =
+        EscapeWaveOrigin(scene, skip, wavelengthWorld, false, skippedWorld, isEscapeBlocked, isEntirelyBallistic);
+    if (status != WaveQuery::Ready)
+        return status;
+    inoutWalk.Cone.NearWorld = isEntirelyBallistic == true
+                                   ? inoutWalk.Cone.FarWorld
+                                   : min(inoutWalk.Cone.FarWorld, inoutWalk.Cone.NearWorld + skippedWorld);
+    return WaveQuery::Ready;
+}
+/// Ballistic field plus coherent single-edge UTD fields, relative to the unobstructed free-space field.
+/// Accepts and rejects the same inputs as EvaluateWaveConnectionToReceiver; failure preserves the output.
+[noinline] WaveQuery EvaluateUtdConnectionToReceiver(SceneContext scene,
+                                                     float3 sourceWorld,
+                                                     float3 receiverWorld,
+                                                     float3 directionWorld,
+                                                     float distanceWorld,
+                                                     float wavelengthWorld,
+                                                     inout float2 inoutField)
+{
+    WaveEdgeWalk walk;
+    WaveQuery status = BeginWaveEdgeConnection(scene,
+                                               sourceWorld,
+                                               receiverWorld,
+                                               directionWorld,
+                                               distanceWorld,
+                                               wavelengthWorld,
+                                               walk);
+    if (status != WaveQuery::Ready)
+        return status;
     for (uint interaction = 0; interaction < LUDUS_WAVE_CONNECTION_REGIONS; ++interaction)
     {
-        if (cone.NearWorld >= cone.FarWorld)
+        if (walk.IsComplete == true || walk.Cone.NearWorld >= walk.Cone.FarWorld)
         {
-            inoutField = field;
+            inoutField = walk.Field;
             return WaveQuery::Ready;
         }
         WaveInteractionRegion region = (WaveInteractionRegion)0;
-        status = FindWaveInteractionRegion(scene, cone, region);
+        status = FindWaveInteractionRegion(scene, walk.Cone, region);
         if (status != WaveQuery::Ready)
             return status;
         if (region.TriangleCount == 0)
         {
-            inoutField = field;
+            inoutField = walk.Field;
             return WaveQuery::Ready;
         }
-        status = AddUtdRegionEdgeFields(scene, connection, region, field);
+        status = AddUtdRegionEdgeFields(scene, walk.Connection, region, walk.Field);
         if (status != WaveQuery::Ready)
             return status;
-        float nextNearWorld = asfloat(asuint(region.Frustum.FarWorld) + 1);
-        cone.NearWorld = min(cone.FarWorld, nextNearWorld);
-        if (cone.FarWorld - cone.NearWorld > LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld)
-        {
-            EllipticalCone skip = cone;
-            skip.OriginWorld = sourceWorld + directionWorld * cone.NearWorld;
-            skip.FarWorld = cone.FarWorld - cone.NearWorld;
-            skip.NearWorld = min(skip.FarWorld, endpointEscapeWorld);
-            float skippedWorld;
-            status = EscapeWaveOrigin(scene,
-                                      skip,
-                                      wavelengthWorld,
-                                      false,
-                                      skippedWorld,
-                                      isEscapeBlocked,
-                                      isEntirelyBallistic);
-            if (status != WaveQuery::Ready)
-                return status;
-            cone.NearWorld =
-                isEntirelyBallistic == true ? cone.FarWorld : min(cone.FarWorld, cone.NearWorld + skippedWorld);
-        }
+        status = AdvanceWaveEdgeWalk(scene, region, walk);
+        if (status != WaveQuery::Ready)
+            return status;
     }
     return WaveQuery::PropagationCapacity;
 }
+#include "wave_fraunhofer_diffraction.slang"

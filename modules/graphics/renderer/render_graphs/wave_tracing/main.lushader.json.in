@@ -192,6 +192,6 @@
   "settings": [
     {"id": "WT_WAVELENGTH_NANOMETERS", "label": "Scalar optical wavelength (nm)", "type": "Float32", "value": 550, "minimum": 1, "maximum": 1000000},
     {"id": "WT_PATH_VERTICES", "label": "Surface scattering vertices", "type": "UInt32", "value": 3, "minimum": 1, "maximum": 8},
-    {"id": "IS_WT_UTD_ENABLED", "label": "UTD edge diffraction connections", "type": "Bool", "value": false}
+    {"id": "WT_OPTICAL_CONNECTION", "label": "Optical connection: 0 angular spectrum, 1 UTD edges, 2 Fraunhofer edges", "type": "UInt32", "value": 0, "minimum": 0, "maximum": 2}
   ]
 }

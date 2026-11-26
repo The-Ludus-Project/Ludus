@@ -13,7 +13,7 @@ WaveTracingParityMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
     if (index >= LUDUS_WAVE_PARITY_CASE_COUNT)
         return;
     if (Cases[0].w == LUDUS_WAVE_PARITY_REGION_TAG || Cases[0].w == LUDUS_WAVE_PARITY_CONNECTION_TAG ||
-        Cases[0].w == LUDUS_WAVE_PARITY_UTD_CONNECTION_TAG)
+        Cases[0].w == LUDUS_WAVE_PARITY_UTD_CONNECTION_TAG || Cases[0].w == LUDUS_WAVE_PARITY_FRAUNHOFER_CONNECTION_TAG)
     {
         EvaluateWaveSceneQueryFixture(index);
         return;

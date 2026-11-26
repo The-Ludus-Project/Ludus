@@ -165,7 +165,10 @@ exercises angular-spectrum propagation in its own tests. Its
 [UTD connection](../development/render-graph-authoring.md#utd-edge-diffraction-connections)
 reproduces the knife-edge, wedge and double-slit geometry of these scenes in
 `wave_edge_diffraction_tests.cpp`. Those tests compare it with Fresnel–Kirchhoff references for
-absorbing screens; the conducting-wedge comparison remains open.
+absorbing screens; the conducting-wedge comparison remains open. Its
+[Fraunhofer connection](../development/render-graph-authoring.md#fraunhofer-edge-diffraction-connections)
+reproduces the knife-edge and double-slit screens in `wave_fraunhofer_diffraction_tests.cpp`,
+against the Kirchhoff area integral of the connection's Gaussian beam.
 
 ## Document layout
 

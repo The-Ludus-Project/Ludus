@@ -87,8 +87,10 @@ class ReferenceExportTests(unittest.TestCase):
                 metadata, _ = hdr.decode(data)
                 self.assertEqual(metadata['material_profile'], profile)
         data = self.capture()
-        struct.pack_into('<I', data, 44, 2048 | 96)
-        with self.assertRaises(ValueError): hdr.decode(data)
+        for flags in (2048 | 96, 4096 | 96):
+            with self.subTest(flags=flags):
+                struct.pack_into('<I', data, 44, flags)
+                with self.assertRaises(ValueError): hdr.decode(data)
 
     def test_optical_capture_retains_its_declared_wavelength(self):
         data = self.capture()
@@ -100,6 +102,11 @@ class ReferenceExportTests(unittest.TestCase):
         struct.pack_into('<I', data, 44, 32 | 64 | 256 | 2048)
         metadata, _ = hdr.decode(data)
         self.assertEqual(metadata['optical_connection'], 'utd_edge_diffraction')
+        struct.pack_into('<I', data, 44, 32 | 64 | 256 | 4096)
+        metadata, _ = hdr.decode(data)
+        self.assertEqual(metadata['optical_connection'], 'fraunhofer_edge_diffraction')
+        struct.pack_into('<I', data, 44, 32 | 64 | 256 | 2048 | 4096)
+        with self.assertRaises(ValueError): hdr.decode(data)
         self.assertIsNone(hdr.decode(self.capture())[0]['optical_connection'])
         for flags, wavelength in ((96, 550e-9), (352, 0), (288, 550e-9), (352, float('nan'))):
             with self.subTest(flags=flags, wavelength=wavelength):

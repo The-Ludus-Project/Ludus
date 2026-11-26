@@ -35,9 +35,7 @@ constexpr float64 MAX_WAVELENGTH_TO_DISTANCE = 1.0 / 32;
 constexpr float64 EIGHTH_TURN_RADIANS = math::kPi / 4;
 /// Sixth: the second Taylor coefficient of sin(x) / x.
 constexpr float64 SINC_SECOND_TERM = 1.0 / 6;
-constexpr uint32 TRIANGLE_CORNERS = 3;
-/// FindCorner's result when no corner matches.
-constexpr uint32 NO_CORNER = TRIANGLE_CORNERS;
+constexpr uint32 TRIANGLE_CORNERS = WAVE_TRIANGLE_CORNERS;
 /// 0 + 1 + 2: subtracting two corner indices from it gives the third.
 constexpr uint32 CORNER_INDEX_SUM = 3;
 
@@ -103,41 +101,6 @@ WaveField EvaluateIncidentTerm(float64 epsilon, const UtdTermScale& scale) noexc
     const float64 sine = math::Sin(halfEpsilon);
     return ScaleField(EvaluateUtdTransitionRatio(distanceWavenumber * 2 * sine * sine), factor);
 }
-/// Coverage of `triangle` at barycentric `weights` of its corners, as ordinary visibility sees it.
-bool IsTriangleCovered(const ReferenceSceneData& scene,
-                       const ReferenceTriangle& triangle,
-                       const StaticArray<float64, TRIANGLE_CORNERS>& weights) noexcept
-{
-    const float64 u = weights[1];
-    const float64 v = weights[2];
-    // Geometry-only fixtures omit instances. Retained renderer scenes always supply the material owner.
-    if (scene.Instances.IsEmpty() == true)
-    {
-        return true;
-    }
-    if (triangle.Instance >= scene.Instances.GetSize())
-    {
-        return false;
-    }
-    const float32 narrowU = static_cast<float32>(u);
-    const float32 narrowV = static_cast<float32>(v);
-    return ReferenceOpacity(scene.Instances[triangle.Instance],
-                            InterpolateReferenceUv(triangle, narrowU, narrowV),
-                            InterpolateReferenceColor(triangle, narrowU, narrowV).W);
-}
-/// Corner of `triangle` whose position equals `position` bit for bit, or NO_CORNER when none does.
-uint32 FindCorner(const ReferenceTriangle& triangle, math::Vector3 position) noexcept
-{
-    for (uint32 corner = 0; corner < TRIANGLE_CORNERS; ++corner)
-    {
-        const math::Vector3& candidate = triangle.Positions[corner];
-        if (candidate.X == position.X && candidate.Y == position.Y && candidate.Z == position.Z)
-        {
-            return corner;
-        }
-    }
-    return NO_CORNER;
-}
 /// A face of an edge found in a region: the triangle, and its corners at the edge's begin and end.
 struct RegionEdgeFace final
 {
@@ -145,54 +108,10 @@ struct RegionEdgeFace final
     uint32 BeginCorner = 0;
     uint32 EndCorner = 0;
 };
-/// The connection whose edges a region contributes.
-struct UtdConnection final
-{
-    math::Vector3d SourceWorld{};
-    math::Vector3d ReceiverWorld{};
-    math::Vector3d DirectionWorld{};
-    float64 WavelengthWorld = 0;
-    float64 EnvelopeRadiusWorld = 0;
-    float64 EndpointEscapeWorld = 0;
-};
-/// Whether a ballistic segment between two points is clear, ignoring `excluded`. The segment starts
-/// nearWorld from `beginWorld` and stops farMarginWorld short of `endWorld`.
-rhi::RasterStatus IsSegmentClear(const ReferenceSceneData& scene,
-                                 math::Vector3d beginWorld,
-                                 math::Vector3d endWorld,
-                                 float64 nearWorld,
-                                 float64 farMarginWorld,
-                                 const WaveExcludedTriangles& excluded,
-                                 bool& outIsClear) noexcept
-{
-    const math::Vector3d deltaWorld = endWorld - beginWorld;
-    const float64 lengthWorld = math::Sqrt(math::Dot(deltaWorld, deltaWorld));
-    if (lengthWorld - farMarginWorld <= nearWorld)
-    {
-        outIsClear = true;
-        return rhi::RasterStatus::Ready;
-    }
-    math::EllipticalCone ray;
-    ray.OriginWorld = beginWorld;
-    ray.DirectionWorld = deltaWorld * (1 / lengthWorld);
-    const math::Vector3d helperWorld =
-        math::Abs(ray.DirectionWorld.Y) < FRAME_HELPER_COSINE ? math::Vector3d{0, 1, 0} : math::Vector3d{1, 0, 0};
-    const math::Vector3d crossWorld = math::Cross(helperWorld, ray.DirectionWorld);
-    ray.AxisXWorld = crossWorld * (1 / math::Sqrt(math::Dot(crossWorld, crossWorld)));
-    ray.NearWorld = nearWorld;
-    ray.FarWorld = lengthWorld - farMarginWorld;
-    bool isBlocked = false;
-    const rhi::RasterStatus status = TraceWaveBallistic(scene, ray, excluded, isBlocked);
-    if (status == rhi::RasterStatus::Ready)
-    {
-        outIsClear = isBlocked == false;
-    }
-    return status;
-}
 /// Add the diffracted fields of the edges in `region` whose diffraction points lie in its axial slab and
 /// inside the connection envelope. Each edge is visited from the lowest region slot among its faces.
 rhi::RasterStatus AddRegionEdgeFields(const ReferenceSceneData& scene,
-                                      const UtdConnection& connection,
+                                      const WaveEdgeConnection& connection,
                                       const WaveInteractionRegion& region,
                                       WaveField& inoutField) noexcept
 {
@@ -219,9 +138,9 @@ rhi::RasterStatus AddRegionEdgeFields(const ReferenceSceneData& scene,
                     continue;
                 }
                 const ReferenceTriangle& candidate = scene.Triangles[region.Triangles[other]];
-                const uint32 candidateBegin = FindCorner(candidate, begin);
-                const uint32 candidateEnd = FindCorner(candidate, end);
-                if (candidateBegin == NO_CORNER || candidateEnd == NO_CORNER)
+                const uint32 candidateBegin = FindWaveTriangleCorner(candidate, begin);
+                const uint32 candidateEnd = FindWaveTriangleCorner(candidate, end);
+                if (candidateBegin == WAVE_NO_TRIANGLE_CORNER || candidateEnd == WAVE_NO_TRIANGLE_CORNER)
                 {
                     continue;
                 }
@@ -300,7 +219,7 @@ rhi::RasterStatus AddRegionEdgeFields(const ReferenceSceneData& scene,
                 StaticArray<float64, TRIANGLE_CORNERS> weights{};
                 weights[faces[face].BeginCorner] = 1 - edgeCoordinate;
                 weights[faces[face].EndCorner] = edgeCoordinate;
-                if (IsTriangleCovered(scene, scene.Triangles[faces[face].TriangleIndex], weights) == true)
+                if (IsWaveTriangleCovered(scene, scene.Triangles[faces[face].TriangleIndex], weights) == true)
                 {
                     covered.FaceDirectionsWorld[covered.FaceCount++] = edge.FaceDirectionsWorld[face];
                 }
@@ -321,13 +240,13 @@ rhi::RasterStatus AddRegionEdgeFields(const ReferenceSceneData& scene,
                 }
             }
             bool isIncidentClear = false;
-            rhi::RasterStatus status = IsSegmentClear(scene,
-                                                      connection.SourceWorld,
-                                                      diffracted.PointWorld,
-                                                      connection.EndpointEscapeWorld,
-                                                      0,
-                                                      excluded,
-                                                      isIncidentClear);
+            rhi::RasterStatus status = IsWaveSegmentClear(scene,
+                                                          connection.SourceWorld,
+                                                          diffracted.PointWorld,
+                                                          connection.EndpointEscapeWorld,
+                                                          0,
+                                                          excluded,
+                                                          isIncidentClear);
             if (status != rhi::RasterStatus::Ready)
             {
                 return status;
@@ -337,13 +256,13 @@ rhi::RasterStatus AddRegionEdgeFields(const ReferenceSceneData& scene,
                 continue;
             }
             bool isDiffractedClear = false;
-            status = IsSegmentClear(scene,
-                                    diffracted.PointWorld,
-                                    connection.ReceiverWorld,
-                                    0,
-                                    connection.EndpointEscapeWorld,
-                                    excluded,
-                                    isDiffractedClear);
+            status = IsWaveSegmentClear(scene,
+                                        diffracted.PointWorld,
+                                        connection.ReceiverWorld,
+                                        0,
+                                        connection.EndpointEscapeWorld,
+                                        excluded,
+                                        isDiffractedClear);
             if (status != rhi::RasterStatus::Ready)
             {
                 return status;
@@ -357,6 +276,72 @@ rhi::RasterStatus AddRegionEdgeFields(const ReferenceSceneData& scene,
     return rhi::RasterStatus::Ready;
 }
 } // namespace
+
+bool IsWaveTriangleCovered(const ReferenceSceneData& scene,
+                           const ReferenceTriangle& triangle,
+                           const StaticArray<float64, WAVE_TRIANGLE_CORNERS>& weights) noexcept
+{
+    const float64 u = weights[1];
+    const float64 v = weights[2];
+    // Geometry-only fixtures omit instances. Retained renderer scenes always supply the material owner.
+    if (scene.Instances.IsEmpty() == true)
+    {
+        return true;
+    }
+    if (triangle.Instance >= scene.Instances.GetSize())
+    {
+        return false;
+    }
+    const float32 narrowU = static_cast<float32>(u);
+    const float32 narrowV = static_cast<float32>(v);
+    return ReferenceOpacity(scene.Instances[triangle.Instance],
+                            InterpolateReferenceUv(triangle, narrowU, narrowV),
+                            InterpolateReferenceColor(triangle, narrowU, narrowV).W);
+}
+uint32 FindWaveTriangleCorner(const ReferenceTriangle& triangle, math::Vector3 position) noexcept
+{
+    for (uint32 corner = 0; corner < TRIANGLE_CORNERS; ++corner)
+    {
+        const math::Vector3& candidate = triangle.Positions[corner];
+        if (candidate.X == position.X && candidate.Y == position.Y && candidate.Z == position.Z)
+        {
+            return corner;
+        }
+    }
+    return WAVE_NO_TRIANGLE_CORNER;
+}
+rhi::RasterStatus IsWaveSegmentClear(const ReferenceSceneData& scene,
+                                     math::Vector3d beginWorld,
+                                     math::Vector3d endWorld,
+                                     float64 nearWorld,
+                                     float64 farMarginWorld,
+                                     const WaveExcludedTriangles& excluded,
+                                     bool& outIsClear) noexcept
+{
+    const math::Vector3d deltaWorld = endWorld - beginWorld;
+    const float64 lengthWorld = math::Sqrt(math::Dot(deltaWorld, deltaWorld));
+    if (lengthWorld - farMarginWorld <= nearWorld)
+    {
+        outIsClear = true;
+        return rhi::RasterStatus::Ready;
+    }
+    math::EllipticalCone ray;
+    ray.OriginWorld = beginWorld;
+    ray.DirectionWorld = deltaWorld * (1 / lengthWorld);
+    const math::Vector3d helperWorld =
+        math::Abs(ray.DirectionWorld.Y) < FRAME_HELPER_COSINE ? math::Vector3d{0, 1, 0} : math::Vector3d{1, 0, 0};
+    const math::Vector3d crossWorld = math::Cross(helperWorld, ray.DirectionWorld);
+    ray.AxisXWorld = crossWorld * (1 / math::Sqrt(math::Dot(crossWorld, crossWorld)));
+    ray.NearWorld = nearWorld;
+    ray.FarWorld = lengthWorld - farMarginWorld;
+    bool isBlocked = false;
+    const rhi::RasterStatus status = TraceWaveBallistic(scene, ray, excluded, isBlocked);
+    if (status == rhi::RasterStatus::Ready)
+    {
+        outIsClear = isBlocked == false;
+    }
+    return status;
+}
 
 WaveField EvaluateUtdTransitionRatio(float64 argument) noexcept
 {
@@ -502,19 +487,21 @@ UtdEdgeField EvaluateUtdEdgeField(const UtdEdge& edge,
     return result;
 }
 
-rhi::RasterStatus EvaluateUtdConnectionToReceiver(const ReferenceSceneData& scene,
-                                                  math::Vector3d sourceWorld,
-                                                  math::Vector3d receiverWorld,
-                                                  math::Vector3d directionWorld,
-                                                  float64 distanceWorld,
-                                                  float64 wavelengthWorld,
-                                                  WaveField& outField) noexcept
+rhi::RasterStatus EvaluateWaveEdgeConnection(const ReferenceSceneData& scene,
+                                             math::Vector3d sourceWorld,
+                                             math::Vector3d receiverWorld,
+                                             math::Vector3d directionWorld,
+                                             float64 distanceWorld,
+                                             float64 wavelengthWorld,
+                                             AddWaveEdgeRegionFields addRegionFields,
+                                             WaveField& outField) noexcept
 {
     if (math::IsFinite(sourceWorld) == false || math::IsFinite(receiverWorld) == false ||
         math::IsFinite(directionWorld) == false || math::IsFinite(distanceWorld) == false || distanceWorld <= 0 ||
         math::IsFinite(wavelengthWorld) == false || wavelengthWorld < MIN_WAVELENGTH_WORLD ||
         wavelengthWorld / distanceWorld > MAX_WAVELENGTH_TO_DISTANCE ||
-        math::Abs(math::Dot(directionWorld, directionWorld) - 1) > UNIT_DIRECTION_TOLERANCE)
+        math::Abs(math::Dot(directionWorld, directionWorld) - 1) > UNIT_DIRECTION_TOLERANCE ||
+        addRegionFields == nullptr)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
@@ -577,14 +564,19 @@ rhi::RasterStatus EvaluateUtdConnectionToReceiver(const ReferenceSceneData& scen
         outField = field;
         return rhi::RasterStatus::Ready;
     }
-    const UtdConnection connection
+    const WaveEdgeConnection connection
     {
         .SourceWorld = sourceWorld,
         .ReceiverWorld = receiverWorld,
         .DirectionWorld = directionWorld,
+        .AxisXWorld = cone.AxisXWorld,
+        .DistanceWorld = distanceWorld,
         .WavelengthWorld = wavelengthWorld,
+        .SigmaWorldSquared = sigmaWorldSquared,
         .EnvelopeRadiusWorld = halfWidthWorld,
         .EndpointEscapeWorld = endpointEscapeWorld,
+        .RoundoffWorld = LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld,
+        .IsBallisticBlocked = isBlocked,
     };
     cone.NearWorld = sourceEscapeWorld;
     cone.FarWorld = math::Max(cone.NearWorld, distanceWorld - escape.DistanceWorld);
@@ -606,7 +598,7 @@ rhi::RasterStatus EvaluateUtdConnectionToReceiver(const ReferenceSceneData& scen
             outField = field;
             return rhi::RasterStatus::Ready;
         }
-        status = AddRegionEdgeFields(scene, connection, region, field);
+        status = addRegionFields(scene, connection, region, field);
         if (status != rhi::RasterStatus::Ready)
         {
             return status;
@@ -631,5 +623,22 @@ rhi::RasterStatus EvaluateUtdConnectionToReceiver(const ReferenceSceneData& scen
         }
     }
     return rhi::RasterStatus::Unsupported;
+}
+rhi::RasterStatus EvaluateUtdConnectionToReceiver(const ReferenceSceneData& scene,
+                                                  math::Vector3d sourceWorld,
+                                                  math::Vector3d receiverWorld,
+                                                  math::Vector3d directionWorld,
+                                                  float64 distanceWorld,
+                                                  float64 wavelengthWorld,
+                                                  WaveField& outField) noexcept
+{
+    return EvaluateWaveEdgeConnection(scene,
+                                      sourceWorld,
+                                      receiverWorld,
+                                      directionWorld,
+                                      distanceWorld,
+                                      wavelengthWorld,
+                                      AddRegionEdgeFields,
+                                      outField);
 }
 } // namespace ludus::graphics::renderer::internal

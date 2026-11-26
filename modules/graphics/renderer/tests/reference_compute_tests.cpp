@@ -847,6 +847,24 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: UTD edge diffraction scene
     });
 }
 
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: Fraunhofer edge diffraction scene connections",
+          "[renderer][gpu][reference-compute][wave-fraunhofer]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "Fraunhofer edge diffraction scene connections",
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 877,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0.001F,
+        .OpticalConnection = rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction,
+        .IsFarConventional = false,
+    });
+}
+
 TEST_CASE("GPU-compute raw AOVs match the CPU oracle: perspective textured environment",
           "[renderer][gpu][reference-compute]")
 {
@@ -4025,8 +4043,11 @@ TEST_CASE("Reference captures admit only closed bounded media on the supported t
     capture.OpticalWavelengthWorld = 5e-7F;
     CHECK(begin(MakeMedium(box, {1, 1, 1})) == S::Unsupported);
     capture.OpticalWavelengthWorld = 0;
-    // UTD edge diffraction is an optical connection operator: without a wavelength it is rejected, not ignored.
+    // Edge diffraction operators are optical connection operators: without a wavelength they are rejected, not
+    // ignored.
     capture.OpticalConnection = rr::ReferenceOpticalConnection::UtdEdgeDiffraction;
+    CHECK(begin(MakeMedium(box, {1, 1, 1})) == S::InvalidDescription);
+    capture.OpticalConnection = rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction;
     CHECK(begin(MakeMedium(box, {1, 1, 1})) == S::InvalidDescription);
     capture.OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
     // Changing the medium replaces the integral.

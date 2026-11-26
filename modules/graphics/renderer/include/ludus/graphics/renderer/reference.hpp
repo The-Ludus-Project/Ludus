@@ -53,6 +53,11 @@ enum class ReferenceOpticalConnection : ludus::foundation::uint8
     /// Pathak's wedge coefficient. Only edges whose diffraction points lie in the connection's Gaussian envelope
     /// contribute; corner and multiple diffraction are omitted.
     UtdEdgeDiffraction,
+    /// Fraunhofer edge diffraction: the ballistic field plus, coherently, the boundary-diffraction waves of each
+    /// interaction region's obstacle projected across the connection, integrated edge by edge with Steinberg et
+    /// al.'s closed-form Fraunhofer edge waves under the same Gaussian beam as AngularSpectrum. Corners are included;
+    /// each edge diffracts once, and only where the source and receiver see its stationary point.
+    FraunhoferEdgeDiffraction,
 };
 /// RT1 RGB reflection input. Scattering selects legacy metallic/roughness,
 /// Lambertian diffuse or isotropic rough conductor with complex-IOR Fresnel.
@@ -318,8 +323,9 @@ struct ReferenceCaptureDescription final
     /// the job and resets accumulation. Values outside the enumeration are rejected.
     ReferenceMaterialProfile MaterialProfile = ReferenceMaterialProfile::SingleScattering;
     /// Field operator of the optical connections that a positive OpticalWavelengthWorld, declared next, enables.
-    /// Recorded in the integral key: changing it replaces the job and resets accumulation. UtdEdgeDiffraction with a
-    /// zero wavelength, and values outside the enumeration, are rejected as InvalidDescription.
+    /// Recorded in the integral key: changing it replaces the job and resets accumulation. UtdEdgeDiffraction or
+    /// FraunhoferEdgeDiffraction with a zero wavelength, and values outside the enumeration, are rejected as
+    /// InvalidDescription.
     ReferenceOpticalConnection OpticalConnection = ReferenceOpticalConnection::AngularSpectrum;
     /// Zero retains geometric reference transport. Positive metres enable scalar paraxial Gaussian-mode
     /// coupling on finite light connections, including coherent diffraction by successive scene regions.
