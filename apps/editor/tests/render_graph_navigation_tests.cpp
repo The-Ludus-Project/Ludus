@@ -636,6 +636,48 @@ TEST_CASE("a dense graph's resting wires recede and a focused card's wires stand
     CHECK(other.opacity() == resting);
 }
 
+TEST_CASE("a dense graph's long wires rest quieter than short ones and a focused wire rises above them",
+          "[editor][render-graph][navigation][wires]")
+{
+    constexpr int PAIRS = 40;
+    constexpr int32 FAR_X = 1800;
+    QJsonArray nodes;
+    QJsonArray edges;
+    for (int index = 0; index < PAIRS; ++index)
+    {
+        nodes.append(MakeTarget(QStringLiteral("source%1").arg(index)));
+        nodes.append(MakeExport(QStringLiteral("sink%1").arg(index)));
+        edges.append(QJsonObject{{QStringLiteral("from"), QStringLiteral("source%1.texture").arg(index)},
+                                 {QStringLiteral("to"), QStringLiteral("sink%1.texture").arg(index)}});
+    }
+    QTemporaryDir project;
+    WriteGraph(project, nodes, edges);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(project.path(), GetRootFile()) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    ShowCanvas(canvas);
+    QGraphicsPathItem& shortWire = FindEdge(canvas, QStringLiteral("source0.texture → sink0.texture"));
+    QGraphicsPathItem& longWire = FindEdge(canvas, QStringLiteral("source1.texture → sink1.texture"));
+    const float64 shortOpacity = shortWire.opacity();
+    CHECK(longWire.opacity() == shortOpacity);
+    // Drawing a wire across several columns makes it a long wire: it rests quieter than its neighbours.
+    canvas.PreviewNodePositions({{QStringLiteral("sink1"), FAR_X, 0}});
+    canvas.SelectNode(QStringLiteral("source2"));
+    canvas.SelectNode({});
+    CHECK(longWire.opacity() < shortOpacity);
+    CHECK(shortWire.opacity() == shortOpacity);
+    // Resting wires are hairlines; a focused wire is wider and lifted above the resting ones, still under cards.
+    const float64 restingDepth = longWire.zValue();
+    CHECK(longWire.pen().widthF() <= shortWire.pen().widthF());
+    canvas.SelectNode(QStringLiteral("source1"));
+    CHECK(longWire.opacity() == 1);
+    CHECK(longWire.pen().widthF() > shortWire.pen().widthF());
+    CHECK(longWire.zValue() > restingDepth);
+    CHECK(longWire.zValue() < 0);
+    canvas.SelectNode({});
+    CHECK(longWire.zValue() == restingDepth);
+}
+
 TEST_CASE("the canvas toolbar groups framing under Fit and tracing under Trace",
           "[editor][render-graph][navigation][toolbar]")
 {

@@ -311,6 +311,8 @@ protected:
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
+    /// Scrolling moves the viewport's child widgets with the scene; the Tidy notice is pinned back to its corner.
+    void scrollContentsBy(int deltaX, int deltaY) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
@@ -346,8 +348,14 @@ private:
     /// Pin the availability notice to the viewport's top edge, above the scene.
     void placeAvailabilityNotice();
     void placeTidyNotice();
+    /// Width the Tidy notice leaves free for the minimap's corner; zero while the minimap is hidden.
+    [[nodiscard]] foundation::int32 getMinimapReserve() const;
     /// Display-only placement of cards without saved positions; saved cards and interface boxes stay put.
     void placeDisplayCards(const QSet<QString>& savedCards);
+    /// View-time nudge for saved cards that touch or overlap at the current card size. The offsets are worked out
+    /// once when a configuration is first shown and reapplied on later rebuilds while a card's saved position is
+    /// unchanged, so a card the author moves stays exactly where it was dropped. Never edits the document.
+    void settleAuthoredCards(const QHash<QString, QPointF>& authored);
     /// Offer Tidy layout when the saved layout is tangled and Auto Layout would untangle it.
     void refreshTidySuggestion();
     /// A first move in a configuration fixes every shown card where it is, so no card jumps to a new spot.
@@ -380,6 +388,19 @@ private:
     QFrame* mTidyNotice;
     QLabel* mTidyNoticeText;
     QSet<QString> mDismissedTidyLayouts;
+    /// The minimap reserve the Tidy notice was last fitted to, so it is refitted only when the minimap changes.
+    foundation::int32 mTidyNoticeReserve = 0;
+    /// A saved card's view-time nudge and the saved position it was worked out for.
+    struct DisplayNudge final
+    {
+        QPointF SavedPosition;
+        QPointF Offset;
+    };
+    /// "file#configuration" the nudges below belong to; empty before the first rebuild.
+    QString mNudgeKey;
+    QHash<QString, DisplayNudge> mNudges;
+    /// Cards shown away from their saved position by the last rebuild.
+    qsizetype mNudgedCardCount = 0;
     RenderGraphDeviceProfile mDeviceProfile;
     RenderGraphConfigurationAvailability mAvailability;
     foundation::float64 mPresentedScale = 0;

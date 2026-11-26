@@ -28,6 +28,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QProcess>
+#include <QScrollBar>
 #include <QSet>
 #include <QStandardPaths>
 #include <QStringView>
@@ -920,6 +921,115 @@ TEST_CASE("display placement never lays an unplaced card over a placed one",
             CHECK(cards.at(first).intersects(cards.at(second)) == false);
         }
     }
+}
+
+TEST_CASE("saved cards that overlap are nudged apart on screen without rewriting the saved layout",
+          "[editor][render-graph][canvas-feedback][layout]")
+{
+    constexpr int32 STACK_STEP = 10;
+    constexpr int32 TIDY_STEP = 400;
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeFeedbackPackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject record = ReadRecord(document);
+    // Three cards the author left stacked, two tidy ones, and nothing else placed.
+    QJsonArray positions;
+    const QStringList stacked{QStringLiteral("half"), QStringLiteral("color"), QStringLiteral("depth")};
+    for (qsizetype index = 0; index < stacked.size(); ++index)
+    {
+        positions.append(QJsonObject{{QStringLiteral("node"), stacked.at(index)},
+                                     {QStringLiteral("x"), 0},
+                                     {QStringLiteral("y"), static_cast<int32>(index) * STACK_STEP}});
+    }
+    positions.append(QJsonObject{{QStringLiteral("node"), QStringLiteral("scene")},
+                                 {QStringLiteral("x"), 900},
+                                 {QStringLiteral("y"), 0}});
+    positions.append(QJsonObject{{QStringLiteral("node"), QStringLiteral("camera")},
+                                 {QStringLiteral("x"), 900},
+                                 {QStringLiteral("y"), TIDY_STEP}});
+    record.insert(QStringLiteral("layout"), QJsonObject{{QStringLiteral("positions"), positions}});
+    WriteRecord(document, record);
+    const QByteArray savedText = document.GetDraft(ROOT_GRAPH);
+    const uint64 savedRevision = document.GetRevision();
+    RenderGraphCanvas canvas(document);
+    canvas.resize(1000, 650);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.show();
+    QCoreApplication::processEvents();
+    QVector<QRectF> cards;
+    for (const QString& identity : stacked)
+    {
+        QGraphicsRectItem* frame = FindFrame(canvas, identity);
+        REQUIRE(frame != nullptr);
+        cards.append(frame->sceneBoundingRect());
+    }
+    // Nobody overlaps, the top-to-bottom order and the column are kept, and only whole units were added.
+    for (qsizetype index = 1; index < cards.size(); ++index)
+    {
+        CHECK(cards.at(index - 1).intersects(cards.at(index)) == false);
+        CHECK(cards.at(index).top() > cards.at(index - 1).top());
+        CHECK(cards.at(index).left() == cards.at(0).left());
+    }
+    CHECK(canvas.GetNodePosition(QStringLiteral("half")) == QPointF(0, 0));
+    CHECK(canvas.GetNodePosition(QStringLiteral("color")).y() >= STACK_STEP);
+    // Cards that already clear each other stay exactly where they were saved.
+    CHECK(canvas.GetNodePosition(QStringLiteral("scene")) == QPointF(900, 0));
+    CHECK(canvas.GetNodePosition(QStringLiteral("camera")) == QPointF(900, TIDY_STEP));
+    // The file was never edited, and the author is told what happened and can tidy.
+    CHECK(document.GetRevision() == savedRevision);
+    CHECK(document.GetDraft(ROOT_GRAPH) == savedText);
+    REQUIRE(canvas.IsTidySuggested() == true);
+    const QLabel* text = canvas.findChild<QLabel*>(QStringLiteral("renderGraphTidyNoticeText"));
+    REQUIRE(text != nullptr);
+    CHECK(text->text().contains(QStringLiteral("2 overlapping cards are shown moved apart")) == true);
+    CHECK(text->text().contains(QStringLiteral("unchanged")) == true);
+    // The notice wraps instead of running off a narrow canvas, so its buttons stay reachable.
+    constexpr int32 NARROW_WIDTH = 520;
+    canvas.resize(NARROW_WIDTH, 650);
+    QCoreApplication::processEvents();
+    const QWidget* notice = canvas.findChild<QWidget*>(QStringLiteral("renderGraphTidyNotice"));
+    REQUIRE(notice != nullptr);
+    CHECK(notice->geometry().left() >= 0);
+    CHECK(notice->geometry().right() <= canvas.viewport()->width());
+    CHECK(notice->geometry().bottom() <= canvas.viewport()->height());
+    // The minimap keeps the corner, so the notice's buttons are never under it.
+    const QWidget* minimap = canvas.findChild<QWidget*>(QStringLiteral("renderGraphMinimap"));
+    if (minimap != nullptr && minimap->isVisibleTo(&canvas) == true)
+    {
+        CHECK(notice->geometry().right() < minimap->geometry().left());
+    }
+    // Panning the scene moves the viewport's child widgets; the notice stays in its corner.
+    const QRect pinned = notice->geometry();
+    canvas.horizontalScrollBar()->setValue(canvas.horizontalScrollBar()->value() + NARROW_WIDTH / 2);
+    canvas.verticalScrollBar()->setValue(canvas.verticalScrollBar()->value() + NARROW_WIDTH / 2);
+    QCoreApplication::processEvents();
+    CHECK(notice->geometry() == pinned);
+    canvas.resize(1000, 650);
+    QCoreApplication::processEvents();
+    // A rebuild (every edit makes one) leaves the nudged cards where they were instead of sliding them again.
+    const QPointF nudged = canvas.GetNodePosition(QStringLiteral("depth"));
+    canvas.Rebuild();
+    CHECK(canvas.GetNodePosition(QStringLiteral("depth")) == nudged);
+    // A card the author drops somewhere stays exactly there, even on top of another.
+    const QPointF colourPosition = canvas.GetNodePosition(QStringLiteral("color"));
+    QJsonObject moved = ReadRecord(document);
+    QJsonArray movedPositions =
+        moved.value(QStringLiteral("layout")).toObject().value(QStringLiteral("positions")).toArray();
+    for (qsizetype index = 0; index < movedPositions.size(); ++index)
+    {
+        QJsonObject position = movedPositions.at(index).toObject();
+        if (position.value(QStringLiteral("node")).toString() == QStringLiteral("depth"))
+        {
+            position.insert(QStringLiteral("x"), static_cast<int32>(colourPosition.x()));
+            position.insert(QStringLiteral("y"), static_cast<int32>(colourPosition.y()));
+            movedPositions.replace(index, position);
+        }
+    }
+    moved.insert(QStringLiteral("layout"), QJsonObject{{QStringLiteral("positions"), movedPositions}});
+    WriteRecord(document, moved);
+    canvas.Rebuild();
+    CHECK(canvas.GetNodePosition(QStringLiteral("depth")) == colourPosition);
+    CHECK(canvas.GetNodePosition(QStringLiteral("color")) == colourPosition);
 }
 
 TEST_CASE("a per-pixel buffer is a resource and keeps the draft's activity known",
