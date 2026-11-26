@@ -4,6 +4,7 @@
 #include "internal/caption_label.h"
 #include "internal/editor_icons.h"
 #include "internal/inspector_fields.h"
+#include "internal/material_inspection.h"
 #include "internal/render_scene.h"
 #include "internal/world_document.h"
 
@@ -82,12 +83,21 @@ QHash<QString, QString> CollectPresentedNames(const QJsonObject& level, const Re
         const resources::SceneMaterial& material =
             scene.Definition->Materials[static_cast<foundation::usize>(object.Surface)];
         const std::string_view name = material.Name.View();
-        if (name.empty() == false)
-        {
-            names.insert(id, QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size())));
-        }
+        // A material the source scene does not name reads "Material N", as the Name row in Properties does, so the
+        // list and Properties call the same material by the same name.
+        names.insert(id,
+                     name.empty() == true ? GetFallbackMaterialName(object.Surface + 1)
+                                          : QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size())));
     }
     return names;
+}
+
+/// The part of a resource ID after its last slash. A resource the presented scene does not describe is listed by
+/// it, since it is the part of the ID that tells materials apart; the kind before the slash is the same for all.
+QString GetResourceTail(const QString& resourceId)
+{
+    const QString tail = resourceId.section(QLatin1Char('/'), -1);
+    return tail.isEmpty() == true ? resourceId : tail;
 }
 
 QString GetItemId(const QTreeWidgetItem& item)
@@ -132,7 +142,7 @@ QVector<WorldMaterialRow> CollectWorldMaterialRows(const WorldDocument& world,
         if (index == rows.size())
         {
             const QString name = names.value(id);
-            rows.append({id, name.isEmpty() == true ? ShortenIdentifier(id) : name, {}});
+            rows.append({id, name.isEmpty() == true ? GetResourceTail(id) : name, {}});
             indices.insert(id, index);
         }
         rows[index].Users.append({world.GetEntityKey(entity), entity.value(QStringLiteral("name")).toString()});
@@ -154,7 +164,9 @@ WorldMaterialsPanel::WorldMaterialsPanel(QWidget* parent)
     mTree->header()->setSectionResizeMode(COUNT_COLUMN, QHeaderView::ResizeToContents);
     mTree->setMinimumHeight(MIN_LIST_HEIGHT);
     mTree->setUniformRowHeights(true);
-    mTree->setTextElideMode(Qt::ElideRight);
+    // A long name or ID loses its middle, so the start and the end that tells two materials apart both stay visible;
+    // the full name and ID are in the row's tooltip.
+    mTree->setTextElideMode(Qt::ElideMiddle);
     // Keyboard focus marks the whole row: a ring around the name cell alone read as an inline text field.
     mTree->setAllColumnsShowFocus(true);
     mTree->installEventFilter(this);

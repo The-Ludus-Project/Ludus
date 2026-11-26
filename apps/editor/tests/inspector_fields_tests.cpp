@@ -56,6 +56,8 @@ constexpr int DISPLAY_GREY = 128;
 constexpr float64 GREY_LINEAR = 0.2158605;
 constexpr int SWATCH_TOLERANCE = 1;
 constexpr int SETTLE_MILLISECONDS = 50;
+/// Room beside a whole identifier for the row's copy button and spacing.
+constexpr int32 WIDE_ROW_MARGIN = 80;
 const QString LONG_IDENTIFIER = QStringLiteral("0b2d8a4c-77f1-4a0e-9c35-6e1f2a3b4c5d");
 
 QByteArray Read(const QString& path)
@@ -130,21 +132,34 @@ TEST_CASE("Scrub steps follow the unit and the range of a field", "[editor][insp
     CHECK(GetScrubStep(QString(), 0.0, 5.0) >= 0.001);
 }
 
-TEST_CASE("Long identifiers are shortened and short ones are left alone", "[editor][inspector]")
-{
-    CHECK(ShortenIdentifier(LONG_IDENTIFIER) == QStringLiteral("0b2d8a4c…4c5d"));
-    CHECK(ShortenIdentifier(QStringLiteral("starter.cube")) == QStringLiteral("starter.cube"));
-    CHECK(ShortenIdentifier(QString()).isEmpty() == true);
-}
-
-TEST_CASE("An identifier row shows the short form and copies the full text", "[editor][inspector]")
+TEST_CASE("An identifier row holds the whole identifier and elides its middle only when the row is narrow",
+          "[editor][inspector]")
 {
     IdentifierRow row(LONG_IDENTIFIER, nullptr);
     row.show();
-    const QLabel* textOrNull = row.findChild<QLabel*>(QStringLiteral("inspectorIdentifierText"));
+    const ElidedLabel* textOrNull = row.findChild<ElidedLabel*>(QStringLiteral("inspectorIdentifierText"));
     REQUIRE(textOrNull != nullptr);
-    CHECK(textOrNull->text() == ShortenIdentifier(LONG_IDENTIFIER));
+    // The label's text is the identifier itself, never a fixed head and tail with the middle already gone.
+    CHECK(textOrNull->text() == LONG_IDENTIFIER);
     CHECK(textOrNull->toolTip().contains(LONG_IDENTIFIER) == true);
+
+    // Wide enough: every character shows.
+    const int32 wholeWidth = textOrNull->fontMetrics().horizontalAdvance(LONG_IDENTIFIER);
+    row.resize(wholeWidth + WIDE_ROW_MARGIN, row.sizeHint().height());
+    QApplication::processEvents();
+    CHECK(textOrNull->IsElided() == false);
+    CHECK(textOrNull->GetShownText() == LONG_IDENTIFIER);
+
+    // Narrow: it shows as much as fits, with the start and the end of the identifier on either side of the gap.
+    row.resize(wholeWidth / 2, row.sizeHint().height());
+    QApplication::processEvents();
+    CHECK(textOrNull->IsElided() == true);
+    CHECK(textOrNull->GetShownText().startsWith(LONG_IDENTIFIER.left(1)) == true);
+    CHECK(textOrNull->GetShownText().endsWith(LONG_IDENTIFIER.right(1)) == true);
+    CHECK(textOrNull->GetShownText().size() > LONG_IDENTIFIER.size() / 4);
+    // A long identifier does not widen the row: it asks for no more than its minimum.
+    CHECK(textOrNull->sizeHint().width() == textOrNull->minimumSizeHint().width());
+
     QToolButton* copyOrNull = row.findChild<QToolButton*>(QStringLiteral("inspectorIdentifierCopy"));
     REQUIRE(copyOrNull != nullptr);
     QApplication::clipboard()->setText(QStringLiteral("before"));

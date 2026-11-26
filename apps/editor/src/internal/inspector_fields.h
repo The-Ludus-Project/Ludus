@@ -211,15 +211,18 @@ public:
     [[nodiscard]] bool IsElided() const;
     /// The text as currently shown, shortened when IsElided().
     [[nodiscard]] QString GetShownText() const;
+    /// Whether the label asks for only its minimum width, so a long text takes whatever width the layout has left
+    /// instead of widening its row. Off by default: a label then asks for its whole text.
+    void SetIsFlexibleWidth(bool isFlexible);
+    [[nodiscard]] QSize sizeHint() const override;
     [[nodiscard]] QSize minimumSizeHint() const override;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
-};
 
-/// A long identifier (a UUID or hash) as its first eight and last four characters joined by an ellipsis, so a
-/// row stays narrow; identifiers that already fit are returned unchanged.
-[[nodiscard]] QString ShortenIdentifier(const QString& identifier);
+private:
+    bool mIsFlexibleWidth = false;
+};
 
 /// A field's axis or channel letter that changes the number in its field by dragging horizontally, as in the
 /// transform fields of other editors. A click without a drag focuses the field. GUI thread only.
@@ -330,11 +333,11 @@ private:
     QColor mColour;
 };
 
-/// An identifier shown shortened, with a button that copies the full text. The full text is the tooltip. In a narrow
-/// panel the shortened text is shortened further in the middle.
 /// Draws value as a read-only value rather than a field: secondary text, no edge or hover, selectable with an I-beam.
 void MarkReadOnlyValue(QLabel& inoutValue);
 
+/// An identifier shown whole when the row is wide enough, elided in the middle when it is not, with a button that
+/// copies the full text. The full text is the tooltip.
 class IdentifierRow final : public QWidget
 {
     Q_OBJECT

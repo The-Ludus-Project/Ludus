@@ -48,6 +48,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QPersistentModelIndex>
+#include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSet>
@@ -1381,6 +1382,84 @@ TEST_CASE("A short Content dock keeps the list above one action row", "[editor][
     CHECK(rowTops.size() == 1);
     workspace.Shutdown();
 }
+TEST_CASE("A stale material binding reads whole in a narrow Content dock", "[editor][content][widget][layout]")
+{
+    // The narrowest a side dock gets, and a width that holds the sentence on a few lines.
+    constexpr int32 NARROW_DOCK_WIDTH = 220;
+    constexpr int32 MEDIUM_DOCK_WIDTH = 340;
+    constexpr int32 DOCK_HEIGHT = 560;
+    QTemporaryDir root;
+    WriteSceneProject(root.path());
+    // A material with a real resource ID, whose texture was recooked after the material was: its binding is stale.
+    const QString catalogPath = QDir(root.path()).filePath(QStringLiteral("assets/catalog.json"));
+    QFile catalogFile(catalogPath);
+    REQUIRE(catalogFile.open(QIODevice::ReadOnly) == true);
+    QByteArray catalogText = catalogFile.readAll();
+    catalogFile.close();
+    catalogText.replace("material/brick", "material/0b2d8a4c-1f3e-4b7a-9c21-5d6e7f80448a");
+    QJsonObject catalog = QJsonDocument::fromJson(catalogText).object();
+    QJsonObject resources = catalog.value(QStringLiteral("resources")).toObject();
+    const QString materialId = QStringLiteral("material/0b2d8a4c-1f3e-4b7a-9c21-5d6e7f80448a");
+    QJsonObject material = resources.value(materialId).toObject();
+    QJsonObject bindings = material.value(QStringLiteral("dependency_keys")).toObject();
+    bindings.insert(QStringLiteral("texture/checker"), QStringLiteral("checker0"));
+    material.insert(QStringLiteral("dependency_keys"), bindings);
+    resources.insert(materialId, material);
+    catalog.insert(QStringLiteral("resources"), resources);
+    Write(catalogPath, QJsonDocument(catalog).toJson());
+
+    ContentWorkspace workspace;
+    workspace.SetProject(QDir(root.path()).filePath(QStringLiteral("content")), 1, root.path());
+    Wait(workspace);
+    StateView* problemOrNull = workspace.findChild<StateView*>(QStringLiteral("contentProblem"));
+    QLabel* statusOrNull = workspace.findChild<QLabel*>(QStringLiteral("contentStatus"));
+    REQUIRE(problemOrNull != nullptr);
+    REQUIRE(statusOrNull != nullptr);
+    const QString captures = qEnvironmentVariable("LUDUS_EDITOR_LAYOUT_CAPTURE");
+    for (const int32 width : {NARROW_DOCK_WIDTH, MEDIUM_DOCK_WIDTH})
+    {
+        INFO("Dock width " << width);
+        workspace.resize(width, DOCK_HEIGHT);
+        workspace.show();
+        QApplication::processEvents();
+        REQUIRE(problemOrNull->isVisibleTo(&workspace) == true);
+        // The warning names the material and its stale dependency; the dock shows it whole, wrapped or shortened.
+        const LongWordLabel* causeOrNull = problemOrNull->findChild<LongWordLabel*>(QStringLiteral("stateCause"));
+        REQUIRE(causeOrNull != nullptr);
+        CHECK(causeOrNull->GetFullText().contains(QStringLiteral("stale binding")) == true);
+        CHECK(causeOrNull->GetFullText().contains(materialId) == true);
+        CHECK(causeOrNull->height() >= causeOrNull->heightForWidth(causeOrNull->width()));
+        // The path wraps at its slashes. At the narrowest dock the ID is wider than a line, so its middle is
+        // shortened with the whole text in the tooltip; the status line steps aside because it would repeat the
+        // cause word for word.
+        CHECK(statusOrNull->isVisibleTo(&workspace) == false);
+        if (width == NARROW_DOCK_WIDTH)
+        {
+            CHECK(causeOrNull->IsShortened() == true);
+            CHECK(causeOrNull->toolTip().contains(materialId) == true);
+        }
+        else
+        {
+            CHECK(causeOrNull->IsShortened() == false);
+            CHECK(causeOrNull->text().contains(materialId) == true);
+        }
+        CHECK(problemOrNull->width() <= width);
+        CHECK(workspace.width() == width);
+        // The problem keeps the height its wrapped text needs; the list gives way.
+        CHECK(problemOrNull->height() >= problemOrNull->heightForWidth(problemOrNull->width()));
+        // One stale material keeps its message, and the other catalog rows are not this test's concern.
+        QPlainTextEdit* detailsOrNull = problemOrNull->findChild<QPlainTextEdit*>(QStringLiteral("stateDetails"));
+        REQUIRE(detailsOrNull != nullptr);
+        CHECK(detailsOrNull->toPlainText().contains(materialId) == true);
+        if (captures.isEmpty() == false)
+        {
+            REQUIRE(workspace.grab().save(captures + QStringLiteral("-content-stale-%1.png").arg(width)) == true);
+        }
+    }
+    workspace.Shutdown();
+    CHECK(workspace.Finished());
+}
+
 #if !defined(LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS) && !defined(Q_OS_WASM)
 namespace
 {

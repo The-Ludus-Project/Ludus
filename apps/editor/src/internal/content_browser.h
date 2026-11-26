@@ -233,6 +233,7 @@ private:
     bool Closing_ = false;
 };
 
+class LongWordLabel;
 class StateView;
 
 class ContentWorkspace final : public QWidget
@@ -291,6 +292,10 @@ private:
     [[nodiscard]] QString getRetryLabel(const QString& id) const;
     void showProblem(const ContentResult& result);
     void hideProblem();
+    /// Show message on the status line, which steps aside while it would only repeat the shown problem.
+    void setStatus(const QString& message);
+    /// Give the list fewer rows while a problem is shown, and hide a status line that repeats it.
+    void applyProblemLayout();
     void RestoreSelection();
     void Accept(const ContentResult& result);
     void finishImport(const ContentResult& result);
@@ -315,7 +320,7 @@ private:
     QWidget* mProgressRowOrNull = nullptr;
     QLabel* mProgressLabelOrNull = nullptr;
     QProgressBar* mProgressBarOrNull = nullptr;
-    QLabel* Status_ = nullptr;
+    LongWordLabel* mStatusOrNull = nullptr;
     StateView* mProblemOrNull = nullptr;
     ActionStrip* mActionsOrNull = nullptr;
     QPushButton* Refresh_ = nullptr;

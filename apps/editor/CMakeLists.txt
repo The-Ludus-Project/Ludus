@@ -1403,6 +1403,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/world_climate_tests.cpp
         tests/world_environment_tests.cpp
         tests/world_properties_layout_tests.cpp
+        tests/world_names_layout_tests.cpp
         tests/world_start_view_tests.cpp
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp

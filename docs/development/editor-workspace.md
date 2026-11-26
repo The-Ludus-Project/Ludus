@@ -644,6 +644,10 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
 - **Empty and error states** share one `StateView`: an icon, one sentence, at most
   one primary action with its shortcut, and for an error the cause, what to do
   about it and a **Copy Details** button that puts all of it on the clipboard.
+  The text wraps at the dock's width. A word too wide for it, such as a resource ID
+  or a path, is shortened in the middle with the whole text in a tooltip, and
+  **Show Details** opens the whole text with nothing shortened. In a narrow dock
+  the buttons stack rather than clip.
   The Start Page (no recent projects), the World Inspector (no world open), the
   viewport when its GPU device or presentation fails, and a failed content
   refresh or import use it; cancelling an import is not an error.
@@ -2036,6 +2040,17 @@ renderables. Double-click a renderable or press Enter on its row to select it in
 the entity hierarchy and viewport. Select a material or one of its renderables
 and choose **Copy Resource ID** to copy the full catalog ID.
 
+A material the source scene names is listed by that name. One it does not name is
+listed as **Material N**, counting from one in scene order, which is also what its
+**Name** row in Properties says. A resource the scene no longer describes is listed
+by the part of its ID after the last slash. Two materials with the same name read
+as `name · last four characters of the ID`. A name or ID wider than the list loses
+its middle, so its start and end stay visible, and the row's tooltip holds the
+whole name and resource ID. The identifier rows in **Properties** (**Stable ID**,
+**Mesh**, **Material resource**) hold the whole ID and show as much of it as the
+dock is wide, eliding the middle of the rest. Their tooltip and **Copy** button
+give the full ID.
+
 From an imported entity, choose **Show in Materials** in **Scene instance** to
 find its material and the other renderables using it. The list follows material
 mappings and explicit Project BRDF assignments. Renderables that override
@@ -2973,6 +2988,12 @@ Use a switchable light row's checkbox to turn it on or off. **Solo** keeps the
 selected light and any always-on baked lights enabled. **Enable All**
 switches every light back on. Each action is one World edit. Undo and Redo
 restore the previous state, and **Save World** keeps it.
+
+Under the list, one wrapped line says why the frame may be dark. With no lights it
+says that a scene with none renders dark unless the sky or an emissive surface
+lights it. When every light is switched off it says so and points to **Enable All**.
+The **Environment** tab says the same of a World with no climate: the sky stays
+clear, which does not by itself darken a frame, so look at **Lights**.
 
 Selecting a light row shows its properties in **Properties**. An imported area
 light selects its first emissive object. Its **Material** group shows the

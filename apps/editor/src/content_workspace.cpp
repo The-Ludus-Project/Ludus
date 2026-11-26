@@ -53,6 +53,9 @@ constexpr int PROGRESS_STEPS = 1000;
 constexpr int WATCH_DELAY_MILLISECONDS = 250;
 /// Fewest list rows a short dock should keep; the action row never takes this space.
 constexpr int CONTENT_LIST_MINIMUM_ROWS = 6;
+/// Rows the list keeps while a problem is shown, so a narrow dock gives the problem the height its wrapped text
+/// needs instead of squeezing it.
+constexpr int CONTENT_PROBLEM_LIST_MINIMUM_ROWS = 1;
 #if !defined(Q_OS_WASM)
 /// Poll interval of the cooked-output watch; the browser editor has no file watcher.
 constexpr int COOKED_WATCH_INTERVAL_MILLISECONDS = 100;
@@ -182,8 +185,6 @@ ContentWorkspace::ContentWorkspace(QWidget* parentOrNull, const foundation::file
     Table_->setColumnWidth(static_cast<int>(ContentColumn::Name), NAME_COLUMN_WIDTH);
     Table_->setColumnWidth(static_cast<int>(ContentColumn::Type), TYPE_COLUMN_WIDTH);
     Table_->setColumnWidth(static_cast<int>(ContentColumn::Status), STATUS_COLUMN_WIDTH);
-    Table_->setMinimumHeight(Table_->horizontalHeader()->sizeHint().height() +
-                             CONTENT_LIST_MINIMUM_ROWS * (CONTENT_THUMBNAIL_SIZE + design::SPACING_EXTRA_SMALL));
     layout->addWidget(Table_, 1);
     mNoMatchesOrNull = new QLabel(this);
     mNoMatchesOrNull->setObjectName(QStringLiteral("contentNoMatches"));
@@ -242,10 +243,12 @@ ContentWorkspace::ContentWorkspace(QWidget* parentOrNull, const foundation::file
     Cancel_->setIcon(GetEditorIcon(EditorIcon::Cancel));
     Cancel_->setToolTip(QStringLiteral("Cancel the import or catalog operation that is running."));
     mActionsOrNull->SetActionVisible(*mRetryOrNull, false);
-    Status_ = new QLabel(QStringLiteral("Open a project to browse content/catalog.json."), this);
-    Status_->setObjectName(QStringLiteral("contentStatus"));
-    Status_->setWordWrap(true);
-    Status_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // A message that names a resource ID or a path wraps at the dock's width; a word too long for it is shortened in
+    // the middle, with the whole message in the tooltip and in the problem's details.
+    mStatusOrNull = new LongWordLabel(this);
+    mStatusOrNull->SetFullText(QStringLiteral("Open a project to browse content/catalog.json."));
+    mStatusOrNull->setObjectName(QStringLiteral("contentStatus"));
+    mStatusOrNull->setTextInteractionFlags(Qt::TextSelectableByMouse);
     mProblemOrNull = new StateView(this);
     mProblemOrNull->setObjectName(QStringLiteral("contentProblem"));
     mProblemOrNull->hide();
@@ -264,7 +267,8 @@ ContentWorkspace::ContentWorkspace(QWidget* parentOrNull, const foundation::file
     problemRow->addWidget(mProblemOrNull, 1);
     problemRow->addStretch();
     layout->addLayout(problemRow);
-    layout->addWidget(Status_);
+    layout->addWidget(mStatusOrNull);
+    applyProblemLayout();
     Jobs_ = new ContentJobs(this);
     connect(Jobs_, &ContentJobs::Completed, this, &ContentWorkspace::Accept);
     connect(Jobs_, &ContentJobs::ProgressChanged, this, [this]() { renderProgress(); });
@@ -386,7 +390,7 @@ void ContentWorkspace::SetProject(const QString& root, foundation::uint64 epoch,
     }
     else if (Root_.isEmpty())
     {
-        Status_->setText(QStringLiteral("Open a project to browse content/catalog.json."));
+        setStatus(QStringLiteral("Open a project to browse content/catalog.json."));
     }
     applyFilter();
     RenderActions();
@@ -411,10 +415,10 @@ void ContentWorkspace::Refresh()
     auto request = Request();
     request.Operation = ++NextOperation_;
     ActiveOperation_ = request.Operation;
-    Status_->setText(QStringLiteral("Reading content catalog…"));
+    setStatus(QStringLiteral("Reading content catalog…"));
     if (Jobs_->Start(request) == false)
     {
-        Status_->setText(QStringLiteral("Content worker unavailable; retry Refresh."));
+        setStatus(QStringLiteral("Content worker unavailable; retry Refresh."));
     }
 }
 bool ContentWorkspace::Import(const QString& file, const QString& id)
@@ -527,7 +531,7 @@ void ContentWorkspace::startNextImport()
                              .Progress = 0.0,
                              .Message = GetStageText(ContentImportStage::Waiting),
                          });
-    Status_->setText(QStringLiteral("Reading and validating source and saved dependencies…"));
+    setStatus(QStringLiteral("Reading and validating source and saved dependencies…"));
     if (Jobs_->Start(request) == false)
     {
         ContentResult failed;
@@ -552,7 +556,7 @@ void ContentWorkspace::chooseImportFile(const QString& resourceId)
 {
     if (Root_.isEmpty() || Closing_)
     {
-        Status_->setText(QStringLiteral("Open a project, then retry Import."));
+        setStatus(QStringLiteral("Open a project, then retry Import."));
         return;
     }
     const auto identity = Epoch_;
@@ -604,7 +608,7 @@ void ContentWorkspace::Accept(const ContentResult& result)
     {
         return;
     }
-    Status_->setText(result.Message);
+    setStatus(result.Message);
     if (result.Request.Id.isEmpty() == false)
     {
         finishImport(result);
@@ -739,6 +743,7 @@ void ContentWorkspace::showProblem(const ContentResult& result)
     }
     mProblemOrNull->SetContent(state);
     mProblemOrNull->show();
+    applyProblemLayout();
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     const QWidget* focusOrNull = QApplication::focusWidget();
     if (result.ReplacementGuidance.isEmpty() == false && focusOrNull != nullptr && isAncestorOf(focusOrNull) == true)
@@ -752,6 +757,23 @@ void ContentWorkspace::hideProblem()
 {
     mProblemImportId.clear();
     mProblemOrNull->hide();
+    applyProblemLayout();
+}
+void ContentWorkspace::setStatus(const QString& message)
+{
+    mStatusOrNull->SetFullText(message);
+    applyProblemLayout();
+}
+void ContentWorkspace::applyProblemLayout()
+{
+    const bool isProblemShown = mProblemOrNull->isHidden() == false;
+    // While a problem is shown, the list keeps fewer rows so the problem's wrapped text is not squeezed, and the
+    // status line steps aside when it would only repeat the problem's cause word for word.
+    const int minimumRows = isProblemShown == true ? CONTENT_PROBLEM_LIST_MINIMUM_ROWS : CONTENT_LIST_MINIMUM_ROWS;
+    Table_->setMinimumHeight(Table_->horizontalHeader()->sizeHint().height() +
+                             minimumRows * (CONTENT_THUMBNAIL_SIZE + design::SPACING_EXTRA_SMALL));
+    mStatusOrNull->setVisible(isProblemShown == false ||
+                              mStatusOrNull->GetFullText() != mProblemOrNull->GetContent().Cause);
 }
 void ContentWorkspace::applyRows()
 {
@@ -933,7 +955,7 @@ void ContentWorkspace::pollCookedContent()
 }
 void ContentWorkspace::reportCookedWatchFailure(const QString& message)
 {
-    Status_->setText(message);
+    setStatus(message);
     if (mProblemImportId.isEmpty() == true)
     {
         ContentResult result;
@@ -979,7 +1001,7 @@ void ContentWorkspace::activateResource(const QModelIndex& index)
     }
     else if (rowOrNull != nullptr && rowOrNull->Type == ContentType::Mesh)
     {
-        Status_->setText(QStringLiteral("Mesh editing is not available yet."));
+        setStatus(QStringLiteral("Mesh editing is not available yet."));
     }
 }
 
@@ -1036,8 +1058,8 @@ void ContentWorkspace::Cancel()
     }
     mImportQueue.clear();
     applyRows();
-    Status_->setText(Jobs_->Cancel() ? QStringLiteral("Cancellation requested; waiting for acknowledgement…")
-                                     : QStringLiteral("Publication already began; waiting for its result…"));
+    setStatus(Jobs_->Cancel() ? QStringLiteral("Cancellation requested; waiting for acknowledgement…")
+                              : QStringLiteral("Publication already began; waiting for its result…"));
     renderProgress();
     RenderActions();
 }
