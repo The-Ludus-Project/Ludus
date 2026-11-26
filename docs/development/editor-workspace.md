@@ -2714,6 +2714,30 @@ surface charts and how many receiver draws use the probe volume
 ([Baked lighting: probe GI and surface charts](render-graph-authoring.md#deferred-baked-probe-gi)).
 Browser and packaged game hosts continue to use their existing inputs.
 
+#### Compare realtime and baked lighting
+
+Keep the camera, render extent and display settings fixed between captures. In
+the default Raster graph, select **Graph exposure** and keep the tone curve,
+multiplier and compensation the same. With the light still enabled, capture
+the scene once with **Bake always-on lighting** cleared and again with it
+enabled, clicking **Apply** after each edit. Wait for the viewport to report
+that the current charts are in use before saving the baked
+[screenshot](#save-a-screenshot-of-the-viewport).
+
+Use a neutral matte receiver to inspect bounced light and a rough dielectric
+patch to check that the highlight still changes with the viewing angle. The
+[Lighting Room checks](#qualifying-baked-lighting-in-lighting-room) isolate
+these contributions and use a blocker to cut the bounce path as a control.
+Use screenshots to compare appearance and scene-linear readings for
+numerical checks. Repeat the relevant views in Play and the packaged app to
+verify which lighting inputs the game uses.
+
+Jerome Platteaux demonstrates fixed display settings and reference materials
+at 10:00 in [*Lighting with Unreal Engine Masterclass*](https://www.youtube.com/watch?v=ihg4uirMcec&t=600s).
+[Tom Looman’s notes](https://tomlooman.com/unreal-engine-lighting-guide/) record
+the UE4 setup. Lighting Room uses its own authored light units and reference
+readings.
+
 ### Qualifying baked lighting in Lighting Room
 
 Open the `examples/lighting-room` project, then open
