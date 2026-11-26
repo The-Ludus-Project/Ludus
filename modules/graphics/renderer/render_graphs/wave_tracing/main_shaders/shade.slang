@@ -1,20 +1,16 @@
 #include "hit_record.slang"
 // Scene optical renderer: truncated RGB surface paths with coherent, scalar finite-light connections.
 // Thanks to Steinberg and Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics", CGF45(2),
-// e70322 (2026), Sections3.1, 4.2 and 5.2.2, https://doi.org/10.1111/cgf.70322 . WT_OPTICAL_CONNECTION selects
+// e70322 (2026), Sections3, 4.2 and 5.2, https://doi.org/10.1111/cgf.70322 . WT_OPTICAL_CONNECTION selects
 // the Gaussian angular-spectrum connection (wave_connection.cpp), the UTD edge connection
 // (wave_edge_diffraction.cpp) or the Fraunhofer edge connection (wave_fraunhofer_diffraction.cpp).
 // All geometry, lights, textures and supported typed reflection materials come from the current World.
-// Each surface path samples light endpoints only by NEE. Secondary emitter/environment hits are omitted,
-// so the scalar optical visibility and classical continuation visibility cannot receive inconsistent MIS.
+// Rough surface vertices sample light endpoints only by NEE; emitter/environment hits after them are omitted, so
+// the scalar optical visibility and classical continuation visibility cannot receive inconsistent MIS. Glass
+// reflection and refraction are delta events that no light sample reaches: emission found after them keeps full
+// weight, and its connection is relayed coherently back through the glass events (wave_relay.slang) to the vertex
+// whose rough scattering ended coherence, or to the camera.
 static const float WAVE_METRES_PER_NANOMETRE = 0.000000001;
-/// The scalar connection operator that WT_OPTICAL_CONNECTION selects.
-enum WaveOpticalConnection : uint
-{
-    AngularSpectrum = 0,
-    UtdEdgeDiffraction = 1,
-    FraunhoferEdgeDiffraction = 2,
-};
 static const float WAVE_MAXIMUM_TRACE_DISTANCE_WORLD = 2000000;
 static const uint WAVE_VERTEX_LIMIT = 8;
 static const uint WAVE_RANDOM_VERTEX_STRIDE = 8;
@@ -31,6 +27,15 @@ CoatingRandomContext MakeWaveMaterialRandom(RayLaunch launch, uint depth)
         launch.SampleIndex,
         depth);
     return result;
+}
+void FailWaveConnection(inout RayQueryContext queries, WaveQuery status)
+{
+    FailSceneQuery(queries,
+                   status == WaveQuery::Capacity
+                       ? LUDUS_SCENE_FAILURE_WAVE_CAPACITY
+                       : ((status == WaveQuery::PropagationCapacity || status == WaveQuery::EscapeCapacity)
+                              ? LUDUS_SCENE_FAILURE_WAVE_PROPAGATION_CAPACITY
+                              : LUDUS_SCENE_FAILURE_WAVE_CONNECTION));
 }
 float EvaluateOpticalVisibility(SceneContext scene,
                                 SurfaceHit receiver,
@@ -53,9 +58,9 @@ float EvaluateOpticalVisibility(SceneContext scene,
     float distanceWorld = length(deltaWorld);
     float2 field = float2(0);
     float wavelengthWorld = WT_WAVELENGTH_NANOMETERS * WAVE_METRES_PER_NANOMETRE;
-    WaveOpticalConnection connection = WaveOpticalConnection(WT_OPTICAL_CONNECTION);
+    WaveConnectionOperator connection = WaveConnectionOperator(WT_OPTICAL_CONNECTION);
     WaveQuery status;
-    if (connection == WaveOpticalConnection::UtdEdgeDiffraction)
+    if (connection == WaveConnectionOperator::UtdEdgeDiffraction)
         status = EvaluateUtdConnectionToReceiver(scene,
                                                  sourceWorld,
                                                  shadow.OriginWorld,
@@ -63,7 +68,7 @@ float EvaluateOpticalVisibility(SceneContext scene,
                                                  distanceWorld,
                                                  wavelengthWorld,
                                                  field);
-    else if (connection == WaveOpticalConnection::FraunhoferEdgeDiffraction)
+    else if (connection == WaveConnectionOperator::FraunhoferEdgeDiffraction)
         status = EvaluateFraunhoferConnectionToReceiver(scene,
                                                         sourceWorld,
                                                         shadow.OriginWorld,
@@ -81,12 +86,37 @@ float EvaluateOpticalVisibility(SceneContext scene,
                                                   field);
     if (status != WaveQuery::Ready)
     {
-        FailSceneQuery(queries,
-                       status == WaveQuery::Capacity
-                           ? LUDUS_SCENE_FAILURE_WAVE_CAPACITY
-                           : ((status == WaveQuery::PropagationCapacity || status == WaveQuery::EscapeCapacity)
-                                  ? LUDUS_SCENE_FAILURE_WAVE_PROPAGATION_CAPACITY
-                                  : LUDUS_SCENE_FAILURE_WAVE_CONNECTION));
+        FailWaveConnection(queries, status);
+        return 0;
+    }
+    return dot(field, field);
+}
+/// Power of the emitter connection from sourceWorld, relayed back through the glass events of `relay`.
+float EvaluateRelayedVisibility(SceneContext scene, WaveRelay relay, float3 sourceWorld, inout RayQueryContext queries)
+{
+    if (queries.VisibilityQueries >= queries.MaximumVisibilityQueries)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET);
+        return 0;
+    }
+    queries.VisibilityQueries += 1;
+    float2 field = float2(0);
+    bool isAdmitted;
+    WaveQuery status = EvaluateWaveRelay(scene,
+                                         relay,
+                                         sourceWorld,
+                                         WT_WAVELENGTH_NANOMETERS * WAVE_METRES_PER_NANOMETRE,
+                                         WaveConnectionOperator(WT_OPTICAL_CONNECTION),
+                                         isAdmitted,
+                                         field);
+    if (status == WaveQuery::Ready && isAdmitted == false)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_WAVE_INTERFACE);
+        return 0;
+    }
+    if (status != WaveQuery::Ready)
+    {
+        FailWaveConnection(queries, status);
         return 0;
     }
     return dot(field, field);
@@ -115,6 +145,7 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
     hit.IsFrontFace = record.IsFrontFace;
     float3 radiance = mode == 2 ? float3(0) : EvaluateEmission(scene, hit, -ray.DirectionWorld);
     float3 throughput = float3(1);
+    WaveRelay relay = BeginWaveRelay(ray.OriginWorld);
     for (uint depth = 0; depth < WT_PATH_VERTICES; ++depth)
     {
         float3 viewWorld = -ray.DirectionWorld;
@@ -177,9 +208,36 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
             break;
         throughput *= continuation.Weight;
         ray = SpawnSurfaceRay(hit, continuation.DirectionWorld, WAVE_MAXIMUM_TRACE_DISTANCE_WORLD);
+        if (continuation.IsSpecular == true)
+            AppendWaveRelayEvent(relay,
+                                 material.Model == MaterialModel::Dielectric,
+                                 material.Eta.x,
+                                 dot(material.ShadingNormalWorld, viewWorld) < 0,
+                                 continuation.IsTransmission == false,
+                                 hit.PositionWorld);
+        else
+            relay = BeginWaveRelay(ray.OriginWorld);
         SceneQuery query = TraceClosest(scene, queries, ray, hit);
+        if (query == SceneQuery::Miss && continuation.IsSpecular == true)
+            radiance += throughput * EvaluateEnvironment(scene, ray.DirectionWorld);
         if (query != SceneQuery::Surface)
             break;
+        if (continuation.IsSpecular == true)
+        {
+            // No light sample reaches a delta direction: the emitter keeps full weight, behind the relayed field.
+            float3 emission = EvaluateEmission(scene, hit, -ray.DirectionWorld);
+            if (any(emission > 0) == true)
+            {
+                float transmission =
+                    mode == 1 ? 1
+                              : EvaluateRelayedVisibility(
+                                    scene,
+                                    relay,
+                                    OffsetPositionWorld(hit.PositionWorld, hit.TriangleIndex, -ray.DirectionWorld),
+                                    queries);
+                radiance += throughput * emission * transmission;
+            }
+        }
     }
     if (all(isfinite(radiance)) == false || any(radiance < 0) == true)
     {

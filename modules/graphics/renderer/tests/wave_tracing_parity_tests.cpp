@@ -701,3 +701,183 @@ TEST_CASE("Fraunhofer edge diffraction GPU connections match the CPU oracle",
 {
     CheckEdgeConnectionParity(LUDUS_WAVE_PARITY_FRAUNHOFER_CONNECTION_TAG);
 }
+
+namespace
+{
+/// Operator of a relayed chain case; the values of WaveConnectionOperator in wave_relay.slang.
+enum class ChainOperator : uint32
+{
+    AngularSpectrum = 0,
+    UtdEdgeDiffraction = 1,
+    FraunhoferEdgeDiffraction = 2,
+};
+/// A relayed chain sweep: a base chain of up to three legs, shifted along `stepWorld` for each case.
+struct ChainSweep final
+{
+    StaticArray<math::Vector3d, 4> VerticesWorld{};
+    StaticArray<float64, 3> RefractiveIndices{1, 1, 1};
+    uint32 LegCount = 0;
+    uint32 ReflectionMask = 0;
+    math::Vector3d FirstShiftWorld{};
+    math::Vector3d StepWorld{};
+};
+/// Run a relayed chain sweep through the GPU fixture and compare each case with the CPU oracle.
+void CheckChainParity(const ludus::graphics::renderer::internal::ReferenceSceneData& scene,
+                      const ChainSweep& sweep,
+                      ChainOperator connectionOperator,
+                      float64 wavelengthWorld)
+{
+    namespace internal = ludus::graphics::renderer::internal;
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    Array<uint32> words;
+    REQUIRE(words.TryResize(CASE_WORDS, uint32{0}) == true);
+    PackParityScene(scene, words);
+    words[3] = LUDUS_WAVE_PARITY_CHAIN_TAG;
+    const usize settings = LUDUS_WAVE_PARITY_CHAIN_RECORD * WORDS_PER_RECORD;
+    WriteFloat(settings, words, wavelengthWorld);
+    words[settings + 1] = static_cast<uint32>(connectionOperator);
+    words[settings + 2] = sweep.LegCount;
+    words[settings + 3] = sweep.ReflectionMask;
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        const math::Vector3d shiftWorld = sweep.FirstShiftWorld + sweep.StepWorld * static_cast<float64>(index);
+        const usize base =
+            (LUDUS_WAVE_PARITY_REGION_CONE_FIRST + index * LUDUS_WAVE_PARITY_REGION_CONE_RECORDS) * WORDS_PER_RECORD;
+        for (usize vertex = 0; vertex <= sweep.LegCount; ++vertex)
+        {
+            const math::Vector3d positionWorld = sweep.VerticesWorld[vertex] + shiftWorld;
+            const usize record = base + vertex * WORDS_PER_RECORD;
+            WriteFloat(record, words, positionWorld.X);
+            WriteFloat(record + 1, words, positionWorld.Y);
+            WriteFloat(record + 2, words, positionWorld.Z);
+            WriteFloat(record + 3, words, vertex < sweep.LegCount ? sweep.RefractiveIndices[vertex] : 1);
+        }
+    }
+    Array<uint32> results;
+    if (RunParityKernel(words, results) == false)
+    {
+        SKIP("GPU adapter unavailable");
+    }
+    // float32 GPU geometry and phases against the float64 oracle on the same float32 inputs, as for straight
+    // connections.
+    constexpr float64 FIELD_TOLERANCE = 5e-4;
+    usize diffractingCount = 0;
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        const usize base =
+            (LUDUS_WAVE_PARITY_REGION_CONE_FIRST + index * LUDUS_WAVE_PARITY_REGION_CONE_RECORDS) * WORDS_PER_RECORD;
+        internal::WaveConnectionChain chain;
+        for (usize leg = 0; leg < sweep.LegCount; ++leg)
+        {
+            const usize begin = base + leg * WORDS_PER_RECORD;
+            const usize end = begin + WORDS_PER_RECORD;
+            REQUIRE(internal::TryAppendWaveConnectionLeg(
+                        chain,
+                        {ReadFloat(words, begin), ReadFloat(words, begin + 1), ReadFloat(words, begin + 2)},
+                        {ReadFloat(words, end), ReadFloat(words, end + 1), ReadFloat(words, end + 2)},
+                        ReadFloat(words, begin + 3),
+                        (sweep.ReflectionMask & (1U << leg)) != 0) == true);
+        }
+        WaveField field;
+        const float64 wavelength = ReadFloat(words, settings);
+        RasterStatus status = RasterStatus::Failed;
+        switch (connectionOperator)
+        {
+            case ChainOperator::AngularSpectrum:
+                status = internal::EvaluateWaveChainConnection(scene, chain, wavelength, field);
+                break;
+            case ChainOperator::UtdEdgeDiffraction:
+                status = internal::EvaluateUtdChainConnection(scene, chain, wavelength, field);
+                break;
+            case ChainOperator::FraunhoferEdgeDiffraction:
+                status = internal::EvaluateFraunhoferChainConnection(scene, chain, wavelength, field);
+                break;
+        }
+        REQUIRE(status == RasterStatus::Ready);
+        const usize destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS * WORDS_PER_RECORD;
+        const float64 gpuReal = ReadFloat(results, destination);
+        const float64 gpuImaginary = ReadFloat(results, destination + 1);
+        INFO("chain " << index << " cpu " << field.Real << "," << field.Imaginary << " gpu " << gpuReal << ","
+                      << gpuImaginary);
+        REQUIRE(results[destination + 3] == LUDUS_WAVE_QUERY_READY);
+        CHECK(math::Abs(gpuReal - field.Real) < FIELD_TOLERANCE);
+        CHECK(math::Abs(gpuImaginary - field.Imaginary) < FIELD_TOLERANCE);
+        if (field.Imaginary != 0)
+        {
+            ++diffractingCount;
+        }
+    }
+    // A GPU that dropped the relayed edges or masks would return only the ballistic 0 or 1.
+    CHECK(diffractingCount > CASE_COUNT / 2);
+}
+void AddParityTriangle(ludus::graphics::renderer::internal::ReferenceSceneData& inoutScene,
+                       math::Vector3d first,
+                       math::Vector3d second,
+                       math::Vector3d third)
+{
+    ludus::graphics::renderer::internal::ReferenceTriangle triangle;
+    const auto narrow = [](math::Vector3d value) {
+        return math::Vector3{static_cast<float32>(value.X),
+                             static_cast<float32>(value.Y),
+                             static_cast<float32>(value.Z)};
+    };
+    triangle.Positions[0] = narrow(first);
+    triangle.Positions[1] = narrow(second);
+    triangle.Positions[2] = narrow(third);
+    triangle.Area = 1;
+    triangle.GeometricNormal = {0, 0, 1};
+    REQUIRE(inoutScene.Triangles.TryAdd(triangle) == true);
+}
+} // namespace
+
+TEST_CASE("Relayed wave connections match the CPU oracle on GPU",
+          "[renderer][gpu][reference-compute][wave-relay][parity]")
+{
+    namespace internal = ludus::graphics::renderer::internal;
+    constexpr float64 EDGE_WAVELENGTH_WORLD = 0.005;
+    constexpr float64 LATTICE_WAVELENGTH_WORLD = 0.01;
+    constexpr float64 FAR_WORLD = 2;
+    internal::ReferenceSceneData scene;
+    ChainSweep sweep;
+    SECTION("A mirror relays a slit whose edges lie on both legs")
+    {
+        // The light shines along +z onto a mirror at z = 2 that turns it to +x (wave_relay_tests.cpp). A screen at
+        // z = 1 covers x >= 0.05; one at x = 1 covers world z <= 1.95, x <= -0.05 once unfolded.
+        AddParityTriangle(scene, {0.05, -FAR_WORLD, 1}, {FAR_WORLD, -FAR_WORLD, 1}, {FAR_WORLD, FAR_WORLD, 1});
+        AddParityTriangle(scene, {0.05, -FAR_WORLD, 1}, {FAR_WORLD, FAR_WORLD, 1}, {0.05, FAR_WORLD, 1});
+        AddParityTriangle(scene, {1, -FAR_WORLD, 0}, {1, FAR_WORLD, 0}, {1, FAR_WORLD, 1.95});
+        AddParityTriangle(scene, {1, -FAR_WORLD, 0}, {1, FAR_WORLD, 1.95}, {1, -FAR_WORLD, 1.95});
+        REQUIRE(internal::BuildReferenceBvh(scene) == RasterStatus::Ready);
+        sweep.VerticesWorld = {{{0, 0, 0}, {0, 0, 2}, {2, 0, 2}}};
+        sweep.LegCount = 2;
+        sweep.ReflectionMask = 2;
+        // Shifts along x move the first edge across the first leg; shifts along z move the second edge across the
+        // reflected leg. Shifts along y slide along both edges.
+        sweep.FirstShiftWorld = {-0.03, 0.1, -0.03};
+        sweep.StepWorld = {0.004, -0.01, 0.004};
+        CheckChainParity(scene, sweep, ChainOperator::UtdEdgeDiffraction, EDGE_WAVELENGTH_WORLD);
+        CheckChainParity(scene, sweep, ChainOperator::FraunhoferEdgeDiffraction, EDGE_WAVELENGTH_WORLD);
+        CheckChainParity(scene, sweep, ChainOperator::AngularSpectrum, LATTICE_WAVELENGTH_WORLD);
+    }
+    SECTION("A knife edge inside a glass slab")
+    {
+        AddParityTriangle(scene, {0.02, -FAR_WORLD, 1.5}, {FAR_WORLD, -FAR_WORLD, 1.5}, {FAR_WORLD, FAR_WORLD, 1.5});
+        AddParityTriangle(scene, {0.02, -FAR_WORLD, 1.5}, {FAR_WORLD, FAR_WORLD, 1.5}, {0.02, FAR_WORLD, 1.5});
+        REQUIRE(internal::BuildReferenceBvh(scene) == RasterStatus::Ready);
+        sweep.VerticesWorld = {{{0, 0, 0}, {0, 0, 0.5}, {0, 0, 2.5}, {0, 0, 3}}};
+        sweep.RefractiveIndices = {{1, 1.5, 1}};
+        sweep.LegCount = 3;
+        sweep.FirstShiftWorld = {-0.03, 0, 0};
+        sweep.StepWorld = {0.008, 0, 0};
+        CheckChainParity(scene, sweep, ChainOperator::UtdEdgeDiffraction, EDGE_WAVELENGTH_WORLD);
+        CheckChainParity(scene, sweep, ChainOperator::FraunhoferEdgeDiffraction, EDGE_WAVELENGTH_WORLD);
+        CheckChainParity(scene, sweep, ChainOperator::AngularSpectrum, LATTICE_WAVELENGTH_WORLD);
+    }
+}

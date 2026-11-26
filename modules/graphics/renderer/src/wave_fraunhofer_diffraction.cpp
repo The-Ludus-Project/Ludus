@@ -473,11 +473,16 @@ rhi::RasterStatus AddFraunhoferRegionFields(const ReferenceSceneData& scene,
             const math::Vector3d incidentWorld = pointWorld - connection.SourceWorld;
             const float64 incidentLengthWorld = math::Sqrt(math::Dot(incidentWorld, incidentWorld));
             const float64 incidentFraction = math::Min(1.0, region.Frustum.NearWorld / pointDepthWorld);
+            // Past an interface event the source is virtual: the incident ray is tested within the leg only.
+            const float64 incidentNearWorld =
+                connection.LegBeginWorld > 0
+                    ? connection.EndpointEscapeWorld + connection.LegBeginWorld * incidentLengthWorld / pointDepthWorld
+                    : connection.EndpointEscapeWorld;
             bool isIncidentClear = false;
             status = IsWaveSegmentClear(scene,
                                         connection.SourceWorld,
                                         pointWorld,
-                                        connection.EndpointEscapeWorld,
+                                        incidentNearWorld,
                                         incidentLengthWorld * (1 - incidentFraction),
                                         excluded,
                                         isIncidentClear);
@@ -494,12 +499,17 @@ rhi::RasterStatus AddFraunhoferRegionFields(const ReferenceSceneData& scene,
             const float64 diffractedFraction =
                 math::Max(0.0,
                           (region.Frustum.FarWorld - pointDepthWorld) / (connection.DistanceWorld - pointDepthWorld));
+            const float64 beyondLegWorld = connection.DistanceWorld - connection.LegEndWorld;
+            const float64 diffractedMarginWorld =
+                beyondLegWorld > 0 ? connection.EndpointEscapeWorld + beyondLegWorld * diffractedLengthWorld /
+                                                                          (connection.DistanceWorld - pointDepthWorld)
+                                   : connection.EndpointEscapeWorld;
             bool isDiffractedClear = false;
             status = IsWaveSegmentClear(scene,
                                         pointWorld,
                                         connection.ReceiverWorld,
                                         diffractedLengthWorld * diffractedFraction,
-                                        connection.EndpointEscapeWorld,
+                                        diffractedMarginWorld,
                                         excluded,
                                         isDiffractedClear);
             if (status != rhi::RasterStatus::Ready)
@@ -544,6 +554,13 @@ rhi::RasterStatus EvaluateFraunhoferEdgeField(const FraunhoferEdge& edge,
     return status;
 }
 
+rhi::RasterStatus EvaluateFraunhoferChainConnection(const ReferenceSceneData& scene,
+                                                    const WaveConnectionChain& chain,
+                                                    float64 wavelengthWorld,
+                                                    WaveField& outField) noexcept
+{
+    return EvaluateWaveEdgeChain(scene, chain, wavelengthWorld, AddFraunhoferRegionFields, outField);
+}
 rhi::RasterStatus EvaluateFraunhoferConnectionToReceiver(const ReferenceSceneData& scene,
                                                          math::Vector3d sourceWorld,
                                                          math::Vector3d receiverWorld,

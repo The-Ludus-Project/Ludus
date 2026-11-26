@@ -50,4 +50,10 @@ struct FraunhoferEdge final
                                                                        float64 distanceWorld,
                                                                        float64 wavelengthWorld,
                                                                        WaveField& outField) noexcept;
+/// Fraunhofer connection relayed through the chain's interface events: EvaluateWaveEdgeChain with the Fraunhofer
+/// edge operator.
+[[nodiscard]] rhi::RasterStatus EvaluateFraunhoferChainConnection(const ReferenceSceneData& scene,
+                                                                  const WaveConnectionChain& chain,
+                                                                  float64 wavelengthWorld,
+                                                                  WaveField& outField) noexcept;
 } // namespace ludus::graphics::renderer::internal

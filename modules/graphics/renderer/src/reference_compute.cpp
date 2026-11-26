@@ -107,6 +107,7 @@ static_assert(static_cast<uint32>(ReferenceFailure::OpticalPropagationCapacity) 
               LUDUS_REFERENCE_FAILURE_OPTICAL_PROPAGATION_CAPACITY);
 static_assert(static_cast<uint32>(ReferenceFailure::InvalidMediumCrossing) ==
               LUDUS_REFERENCE_FAILURE_INVALID_MEDIUM_CROSSING);
+static_assert(static_cast<uint32>(ReferenceFailure::OpticalInterface) == LUDUS_REFERENCE_FAILURE_OPTICAL_INTERFACE);
 bool Accepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;

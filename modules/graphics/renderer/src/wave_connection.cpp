@@ -336,6 +336,437 @@ rhi::RasterStatus EscapeWaveOrigin(const ReferenceSceneData& scene,
     return rhi::RasterStatus::Unsupported;
 }
 
+bool TryAppendWaveConnectionLeg(WaveConnectionChain& inoutChain,
+                                math::Vector3d beginWorld,
+                                math::Vector3d endWorld,
+                                float64 refractiveIndex,
+                                bool isReflectedEntry) noexcept
+{
+    const math::Vector3d deltaWorld = endWorld - beginWorld;
+    const float64 lengthWorld = math::Sqrt(math::Dot(deltaWorld, deltaWorld));
+    if (inoutChain.LegCount >= WAVE_MAX_CONNECTION_LEGS || math::IsFinite(beginWorld) == false ||
+        math::IsFinite(endWorld) == false || math::IsFinite(lengthWorld) == false || lengthWorld <= 0 ||
+        math::IsFinite(refractiveIndex) == false || refractiveIndex <= 0)
+    {
+        return false;
+    }
+    inoutChain.Legs[inoutChain.LegCount++] =
+    {
+        .BeginWorld = beginWorld,
+        .EndWorld = endWorld,
+        .DirectionWorld = deltaWorld * (1 / lengthWorld),
+        .LengthWorld = lengthWorld,
+        .RefractiveIndex = refractiveIndex,
+        .IsReflectedEntry = isReflectedEntry,
+    };
+    return true;
+}
+bool TryMakeWaveConnectionFrames(const WaveConnectionChain& chain, WaveConnectionFrames& outFrames) noexcept
+{
+    if (chain.LegCount == 0 || chain.LegCount > WAVE_MAX_CONNECTION_LEGS)
+    {
+        return false;
+    }
+    WaveConnectionFrames frames;
+    const math::Vector3d firstWorld = chain.Legs[0].DirectionWorld;
+    const math::Vector3d helperWorld =
+        math::Abs(firstWorld.Y) < FRAME_HELPER_COSINE ? math::Vector3d{0, 1, 0} : math::Vector3d{1, 0, 0};
+    const math::Vector3d crossWorld = math::Cross(helperWorld, firstWorld);
+    frames.AxisXWorld[0] = crossWorld * (1 / math::Sqrt(math::Dot(crossWorld, crossWorld)));
+    frames.Handedness[0] = 1;
+    for (uint32 leg = 1; leg < chain.LegCount; ++leg)
+    {
+        const math::Vector3d incidentWorld = chain.Legs[leg - 1].DirectionWorld;
+        const math::Vector3d outgoingWorld = chain.Legs[leg].DirectionWorld;
+        math::Vector3d axisWorld = frames.AxisXWorld[leg - 1];
+        frames.Handedness[leg] = frames.Handedness[leg - 1];
+        if (chain.Legs[leg].IsReflectedEntry == true)
+        {
+            // A mirror reflection maps the incident direction to the outgoing one with the Householder transform of
+            // the interface normal, which lies along their difference; it reverses the transverse handedness.
+            const math::Vector3d normalWorld = incidentWorld - outgoingWorld;
+            const float64 normalLength = math::Sqrt(math::Dot(normalWorld, normalWorld));
+            if (normalLength <= 0 || math::IsFinite(normalLength) == false)
+            {
+                return false;
+            }
+            const math::Vector3d unitNormalWorld = normalWorld * (1 / normalLength);
+            axisWorld = axisWorld - unitNormalWorld * (2 * math::Dot(axisWorld, unitNormalWorld));
+            frames.Handedness[leg] = -frames.Handedness[leg];
+        }
+        else
+        {
+            const float64 cosine = math::Dot(incidentWorld, outgoingWorld);
+            const math::Vector3d rotationWorld = math::Cross(incidentWorld, outgoingWorld);
+            const float64 sine = math::Sqrt(math::Dot(rotationWorld, rotationWorld));
+            if (cosine <= 0 || math::IsFinite(cosine) == false || math::IsFinite(sine) == false)
+            {
+                return false;
+            }
+            if (sine > 0)
+            {
+                // Rodrigues' rotation about the normal of the plane of incidence, by the refraction angle.
+                const math::Vector3d unitAxisWorld = rotationWorld * (1 / sine);
+                axisWorld = axisWorld * cosine + math::Cross(unitAxisWorld, axisWorld) * sine +
+                            unitAxisWorld * (math::Dot(unitAxisWorld, axisWorld) * (1 - cosine));
+            }
+        }
+        // Remove the rounding left by offset endpoints, so the frame stays transverse to the traced leg.
+        axisWorld = axisWorld - outgoingWorld * math::Dot(axisWorld, outgoingWorld);
+        const float64 axisLength = math::Sqrt(math::Dot(axisWorld, axisWorld));
+        if (axisLength <= 0 || math::IsFinite(axisLength) == false)
+        {
+            return false;
+        }
+        frames.AxisXWorld[leg] = axisWorld * (1 / axisLength);
+    }
+    outFrames = frames;
+    return true;
+}
+void BeginWaveRelay(ReferenceOpticalRelay& outRelay, math::Vector3 originWorld) noexcept
+{
+    outRelay = {};
+    outRelay.OriginsWorld[0] = originWorld;
+    outRelay.SegmentCount = 1;
+}
+void AppendWaveRelayEvent(ReferenceOpticalRelay& inoutRelay,
+                          bool isSolid,
+                          float32 eta,
+                          bool isViewerInside,
+                          bool isReflected,
+                          math::Vector3 nextOriginWorld) noexcept
+{
+    if (inoutRelay.SegmentCount == 0 || inoutRelay.SegmentCount >= WAVE_MAX_CONNECTION_LEGS)
+    {
+        inoutRelay.HasConflict = true;
+        return;
+    }
+    const float32 incomingIndex = isSolid == true && isViewerInside == true ? eta : 1;
+    const bool isOutgoingInside = isReflected == true ? isViewerInside : isViewerInside == false;
+    const float32 outgoingIndex = isSolid == true && isOutgoingInside == true ? eta : 1;
+    const uint32 segment = inoutRelay.SegmentCount - 1;
+    if (inoutRelay.RefractiveIndices[segment] != 0 && inoutRelay.RefractiveIndices[segment] != incomingIndex)
+    {
+        inoutRelay.HasConflict = true;
+    }
+    inoutRelay.RefractiveIndices[segment] = incomingIndex;
+    inoutRelay.IsReflected[segment] = isReflected;
+    inoutRelay.OriginsWorld[segment + 1] = nextOriginWorld;
+    inoutRelay.RefractiveIndices[segment + 1] = outgoingIndex;
+    ++inoutRelay.SegmentCount;
+}
+bool TryMakeWaveRelayChain(const ReferenceOpticalRelay& relay,
+                           math::Vector3 sourceWorld,
+                           WaveConnectionChain& outChain) noexcept
+{
+    if (relay.HasConflict == true || relay.SegmentCount < 2 || relay.SegmentCount > WAVE_MAX_CONNECTION_LEGS)
+    {
+        return false;
+    }
+    // Light order: the emitter, then the glass events from the last to the first, then the receiver.
+    WaveConnectionChain chain;
+    math::Vector3d beginWorld = WidenVector(sourceWorld);
+    for (uint32 leg = 0; leg < relay.SegmentCount; ++leg)
+    {
+        const uint32 segment = relay.SegmentCount - 1 - leg;
+        const math::Vector3d endWorld = WidenVector(relay.OriginsWorld[segment]);
+        if (TryAppendWaveConnectionLeg(chain,
+                                       beginWorld,
+                                       endWorld,
+                                       static_cast<float64>(relay.RefractiveIndices[segment]),
+                                       leg > 0 && relay.IsReflected[segment] == true) == false)
+        {
+            return false;
+        }
+        beginWorld = endWorld;
+    }
+    outChain = chain;
+    return true;
+}
+rhi::RasterStatus EvaluateWaveChainConnection(const ReferenceSceneData& scene,
+                                              const WaveConnectionChain& chain,
+                                              float64 wavelengthWorld,
+                                              WaveField& outField) noexcept
+{
+    if (chain.LegCount == 0 || chain.LegCount > WAVE_MAX_CONNECTION_LEGS || math::IsFinite(wavelengthWorld) == false ||
+        wavelengthWorld < MIN_WAVELENGTH_WORLD)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    // Paraxially, a leg of geometric length l in a medium of index n propagates as l / n in vacuum at the vacuum
+    // wavelength: the reduced distance. Transverse coordinates are unchanged at the interfaces (Section 5.2's rule
+    // that an interaction keeps the beam's solid angle and eccentricity), so one Gaussian mode spans the chain.
+    float64 distanceWorld = 0;
+    float64 geometricLengthWorld = 0;
+    float64 coordinateMagnitudeWorld = 0;
+    for (uint32 index = 0; index < chain.LegCount; ++index)
+    {
+        const WaveConnectionLeg& leg = chain.Legs[index];
+        if (math::IsFinite(leg.BeginWorld) == false || math::IsFinite(leg.EndWorld) == false ||
+            math::IsFinite(leg.DirectionWorld) == false || math::IsFinite(leg.LengthWorld) == false ||
+            leg.LengthWorld <= 0 || math::IsFinite(leg.RefractiveIndex) == false || leg.RefractiveIndex <= 0 ||
+            math::Abs(math::Dot(leg.DirectionWorld, leg.DirectionWorld) - 1) > UNIT_DIRECTION_TOLERANCE)
+        {
+            return rhi::RasterStatus::InvalidDescription;
+        }
+        distanceWorld += leg.LengthWorld / leg.RefractiveIndex;
+        geometricLengthWorld += leg.LengthWorld;
+        coordinateMagnitudeWorld =
+            math::Max(coordinateMagnitudeWorld,
+                      math::Max(math::Max(math::Abs(leg.BeginWorld.X),
+                                          math::Max(math::Abs(leg.BeginWorld.Y), math::Abs(leg.BeginWorld.Z))),
+                                math::Max(math::Abs(leg.EndWorld.X),
+                                          math::Max(math::Abs(leg.EndWorld.Y), math::Abs(leg.EndWorld.Z)))));
+    }
+    if (math::IsFinite(distanceWorld) == false || wavelengthWorld / distanceWorld > MAX_WAVELENGTH_TO_DISTANCE)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    WaveConnectionFrames frames;
+    if (TryMakeWaveConnectionFrames(chain, frames) == false)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    const float64 wavenumber = 2 * math::kPi / wavelengthWorld;
+    const float64 sigmaWorldSquared = distanceWorld / wavenumber;
+    const float64 sigmaWorld = math::Sqrt(sigmaWorldSquared);
+    const float64 halfWidthWorld = LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * math::Sqrt(2.0) * sigmaWorld;
+    const float64 coordinateScaleWorld = math::Max(geometricLengthWorld, coordinateMagnitudeWorld);
+    const float64 endpointEscapeWorld = math::Max(LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld,
+                                                  LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld);
+    if (2 * endpointEscapeWorld >= distanceWorld)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    WaveGrid grid;
+    bool hasField = false;
+    float64 fieldDistanceWorld = 0;
+    // Reduced distance from the source to the start of the current leg.
+    float64 legStartWorld = 0;
+    uint32 interaction = 0;
+    for (uint32 index = 0; index < chain.LegCount; ++index)
+    {
+        const WaveConnectionLeg& leg = chain.Legs[index];
+        const float64 handedness = frames.Handedness[index];
+        const float64 legStartReducedWorld = legStartWorld;
+        legStartWorld += leg.LengthWorld / leg.RefractiveIndex;
+        if (2 * endpointEscapeWorld >= leg.LengthWorld)
+        {
+            // Inside both endpoint escapes: no interaction region is resolvable on this leg.
+            continue;
+        }
+        math::EllipticalCone cone;
+        cone.OriginWorld = leg.BeginWorld;
+        cone.DirectionWorld = leg.DirectionWorld;
+        cone.AxisXWorld = frames.AxisXWorld[index];
+        // The cylinder encloses the propagated Gaussian at every z in this finite connection, with margin
+        // beyond the three-sigma intensity ellipse. The same window bounds the periodic propagation lattice.
+        cone.RadiusWorld = halfWidthWorld;
+        cone.NearWorld = endpointEscapeWorld;
+        cone.FarWorld = leg.LengthWorld - cone.NearWorld;
+        WaveOriginEscape escapeResult;
+        rhi::RasterStatus escapeStatus = EscapeWaveOrigin(scene, cone, wavelengthWorld, true, escapeResult);
+        const float64 sourceEscapeWorld = escapeResult.DistanceWorld;
+        if (escapeStatus != rhi::RasterStatus::Ready)
+        {
+            return escapeStatus;
+        }
+        if (escapeResult.IsBlocked == true)
+        {
+            outField = {};
+            return rhi::RasterStatus::Ready;
+        }
+        if (escapeResult.IsEntirelyBallistic == true)
+        {
+            continue;
+        }
+        math::EllipticalCone reverse = cone;
+        reverse.OriginWorld = leg.EndWorld;
+        reverse.DirectionWorld = -leg.DirectionWorld;
+        escapeStatus = EscapeWaveOrigin(scene, reverse, wavelengthWorld, true, escapeResult);
+        const float64 receiverEscapeWorld = escapeResult.DistanceWorld;
+        if (escapeStatus != rhi::RasterStatus::Ready)
+        {
+            return escapeStatus;
+        }
+        if (escapeResult.IsBlocked == true)
+        {
+            outField = {};
+            return rhi::RasterStatus::Ready;
+        }
+        if (escapeResult.IsEntirelyBallistic == true)
+        {
+            continue;
+        }
+        cone.NearWorld = sourceEscapeWorld;
+        cone.FarWorld = math::Max(cone.NearWorld, leg.LengthWorld - receiverEscapeWorld);
+        for (; interaction < LUDUS_WAVE_CONNECTION_REGIONS; ++interaction)
+        {
+            WaveInteractionRegion region;
+            const rhi::RasterStatus status = cone.NearWorld < cone.FarWorld
+                                                 ? FindWaveInteractionRegion(scene, cone, region)
+                                                 : rhi::RasterStatus::Ready;
+            if (status != rhi::RasterStatus::Ready)
+            {
+                return status;
+            }
+            if (region.TriangleCount == 0)
+            {
+                break;
+            }
+            float64 screenDistanceWorld = region.Frustum.NearWorld * 0.5 + region.Frustum.FarWorld * 0.5;
+            if (chain.LegCount > 1)
+            {
+                // A relay projects each region onto the midpoint of its slab in reduced depth, as the unfolded
+                // straight connection would: twice the envelope radius from the nearest intersection, clipped at the
+                // chain's far end rather than at the end of the leg.
+                const float64 nearReducedWorld = legStartReducedWorld + region.Frustum.NearWorld / leg.RefractiveIndex;
+                const float64 farReducedWorld =
+                    math::Max(nearReducedWorld,
+                              math::Min(distanceWorld - endpointEscapeWorld, nearReducedWorld + 2 * halfWidthWorld));
+                screenDistanceWorld = nearReducedWorld * 0.5 + farReducedWorld * 0.5;
+            }
+            StaticArray<float64, CELLS> transmission;
+            usize blockedCount = 0;
+            for (usize y = 0; y < AXIS; ++y)
+            {
+                for (usize x = 0; x < AXIS; ++x)
+                {
+                    const float64 positionXWorld =
+                        (2 * static_cast<float64>(x) / static_cast<float64>(AXIS) - 1) * halfWidthWorld;
+                    const float64 positionYWorld =
+                        (2 * static_cast<float64>(y) / static_cast<float64>(AXIS) - 1) * halfWidthWorld;
+                    const usize cell = y * AXIS + x;
+                    usize coveredSamples = 0;
+                    const float64 cellWidthWorld = 2 * halfWidthWorld / static_cast<float64>(AXIS);
+                    for (uint32 sampleY = 0; sampleY < LUDUS_WAVE_CONNECTION_MASK_AXIS; ++sampleY)
+                    {
+                        for (uint32 sampleX = 0; sampleX < LUDUS_WAVE_CONNECTION_MASK_AXIS; ++sampleX)
+                        {
+                            const float64 offsetXWorld =
+                                ((static_cast<float64>(sampleX) + 0.5) / LUDUS_WAVE_CONNECTION_MASK_AXIS - 0.5) *
+                                cellWidthWorld;
+                            const float64 offsetYWorld =
+                                ((static_cast<float64>(sampleY) + 0.5) / LUDUS_WAVE_CONNECTION_MASK_AXIS - 0.5) *
+                                cellWidthWorld;
+                            // The lattice keeps the first leg's transverse coordinates; a mirrored leg's frame has
+                            // the opposite handedness, so its second coordinate changes sign.
+                            coveredSamples +=
+                                IsProjectedPointBlocked(scene,
+                                                        region,
+                                                        {
+                                                            .X = positionXWorld + offsetXWorld,
+                                                            .Y = (positionYWorld + offsetYWorld) * handedness,
+                                                        }) == true
+                                    ? 1
+                                    : 0;
+                        }
+                    }
+                    transmission[cell] = 1 - static_cast<float64>(coveredSamples) / static_cast<float64>(MASK_SAMPLES);
+                    blockedCount += coveredSamples;
+                    if (hasField == false)
+                    {
+                        grid[cell] = EvaluateGaussian(positionXWorld * positionXWorld + positionYWorld * positionYWorld,
+                                                      {
+                                                          .DistanceWorld = screenDistanceWorld,
+                                                          .SigmaWorldSquared = sigmaWorldSquared,
+                                                          .Wavenumber = wavenumber,
+                                                      });
+                    }
+                }
+            }
+            if (blockedCount == CELLS * MASK_SAMPLES)
+            {
+                outField = {};
+                return rhi::RasterStatus::Ready;
+            }
+            if (blockedCount > 0)
+            {
+                if (hasField == true)
+                {
+                    PropagateGrid(grid,
+                                  {
+                                      .DistanceWorld = screenDistanceWorld - fieldDistanceWorld,
+                                      .WavelengthWorld = wavelengthWorld,
+                                      .HalfWidthWorld = halfWidthWorld,
+                                  });
+                }
+                for (usize cell = 0; cell < CELLS; ++cell)
+                {
+                    grid[cell].Real *= transmission[cell];
+                    grid[cell].Imaginary *= transmission[cell];
+                }
+                hasField = true;
+                fieldDistanceWorld = screenDistanceWorld;
+            }
+            const float64 nextNearWorld = math::NextFloat64Up(region.Frustum.FarWorld);
+            if (nextNearWorld > cone.FarWorld)
+            {
+                cone.NearWorld = cone.FarWorld;
+            }
+            else
+            {
+                cone.NearWorld = nextNearWorld;
+            }
+            if (cone.FarWorld - cone.NearWorld > LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld)
+            {
+                math::EllipticalCone escape = cone;
+                escape.OriginWorld = leg.BeginWorld + leg.DirectionWorld * cone.NearWorld;
+                escape.FarWorld = cone.FarWorld - cone.NearWorld;
+                escape.NearWorld = math::Min(escape.FarWorld, endpointEscapeWorld);
+                const rhi::RasterStatus escaped = EscapeWaveOrigin(scene, escape, wavelengthWorld, true, escapeResult);
+                const float64 escapedWorld = escapeResult.DistanceWorld;
+                if (escaped != rhi::RasterStatus::Ready)
+                {
+                    return escaped;
+                }
+                if (escapeResult.IsBlocked == true)
+                {
+                    outField = {};
+                    return rhi::RasterStatus::Ready;
+                }
+                cone.NearWorld = escapeResult.IsEntirelyBallistic == true
+                                     ? cone.FarWorld
+                                     : math::Min(cone.FarWorld, cone.NearWorld + escapedWorld);
+            }
+            // No remaining interval: finish this leg through the empty-region path on the next iteration.
+            if (nextNearWorld > cone.FarWorld)
+            {
+                cone.FarWorld = cone.NearWorld;
+            }
+        }
+        if (interaction == LUDUS_WAVE_CONNECTION_REGIONS)
+        {
+            return rhi::RasterStatus::Unsupported;
+        }
+        // The empty region that ended this leg used one step, as it does for a one-leg connection.
+        ++interaction;
+    }
+    if (hasField == false)
+    {
+        outField = {1, 0};
+        return rhi::RasterStatus::Ready;
+    }
+    PropagateGrid(grid,
+                  {
+                      .DistanceWorld = distanceWorld - fieldDistanceWorld,
+                      .WavelengthWorld = wavelengthWorld,
+                      .HalfWidthWorld = halfWidthWorld,
+                  });
+    const WaveField field = grid[(AXIS / 2) * AXIS + AXIS / 2];
+    const WaveField normalization = EvaluateGaussian(
+        0,
+        { .DistanceWorld = distanceWorld, .SigmaWorldSquared = sigmaWorldSquared, .Wavenumber = wavenumber });
+    const float64 power = normalization.Real * normalization.Real + normalization.Imaginary * normalization.Imaginary;
+    const WaveField result{(field.Real * normalization.Real + field.Imaginary * normalization.Imaginary) / power,
+                           (field.Imaginary * normalization.Real - field.Real * normalization.Imaginary) / power};
+    if (math::IsFinite(result.Real) == false || math::IsFinite(result.Imaginary) == false)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    outField = result;
+    return rhi::RasterStatus::Ready;
+}
 rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& scene,
                                                    math::Vector3d sourceWorld,
                                                    math::Vector3d receiverWorld,
@@ -344,218 +775,18 @@ rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& sce
                                                    float64 wavelengthWorld,
                                                    WaveField& outField) noexcept
 {
-    if (math::IsFinite(sourceWorld) == false || math::IsFinite(receiverWorld) == false ||
-        math::IsFinite(directionWorld) == false || math::IsFinite(distanceWorld) == false || distanceWorld <= 0 ||
-        math::IsFinite(wavelengthWorld) == false || wavelengthWorld < MIN_WAVELENGTH_WORLD ||
-        wavelengthWorld / distanceWorld > MAX_WAVELENGTH_TO_DISTANCE ||
-        math::Abs(math::Dot(directionWorld, directionWorld) - 1) > UNIT_DIRECTION_TOLERANCE)
+    WaveConnectionChain chain;
+    chain.Legs[0] =
     {
-        return rhi::RasterStatus::InvalidDescription;
-    }
-    const float64 wavenumber = 2 * math::kPi / wavelengthWorld;
-    const float64 sigmaWorldSquared = distanceWorld / wavenumber;
-    const float64 sigmaWorld = math::Sqrt(sigmaWorldSquared);
-    const float64 halfWidthWorld = LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * math::Sqrt(2.0) * sigmaWorld;
-    math::EllipticalCone cone;
-    cone.OriginWorld = sourceWorld;
-    cone.DirectionWorld = directionWorld;
-    const math::Vector3d helperWorld =
-        math::Abs(directionWorld.Y) < FRAME_HELPER_COSINE ? math::Vector3d{0, 1, 0} : math::Vector3d{1, 0, 0};
-    const math::Vector3d crossWorld = math::Cross(helperWorld, directionWorld);
-    cone.AxisXWorld = crossWorld * (1 / math::Sqrt(math::Dot(crossWorld, crossWorld)));
-    // The cylinder encloses the propagated Gaussian at every z in this finite connection, with margin
-    // beyond the three-sigma intensity ellipse. The same window bounds the periodic propagation lattice.
-    cone.RadiusWorld = halfWidthWorld;
-    const float64 coordinateScaleWorld = math::Max(
-        distanceWorld,
-        math::Max(
-            math::Max(math::Abs(sourceWorld.X), math::Max(math::Abs(sourceWorld.Y), math::Abs(sourceWorld.Z))),
-            math::Max(math::Abs(receiverWorld.X), math::Max(math::Abs(receiverWorld.Y), math::Abs(receiverWorld.Z)))));
-    const float64 endpointEscapeWorld = math::Max(LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld,
-                                                  LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld);
-    if (2 * endpointEscapeWorld >= distanceWorld)
-    {
-        return rhi::RasterStatus::InvalidDescription;
-    }
-    cone.NearWorld = endpointEscapeWorld;
-    cone.FarWorld = distanceWorld - cone.NearWorld;
-    WaveOriginEscape escapeResult;
-    rhi::RasterStatus escapeStatus = EscapeWaveOrigin(scene, cone, wavelengthWorld, true, escapeResult);
-    const float64 sourceEscapeWorld = escapeResult.DistanceWorld;
-    if (escapeStatus != rhi::RasterStatus::Ready)
-    {
-        return escapeStatus;
-    }
-    if (escapeResult.IsBlocked == true || escapeResult.IsEntirelyBallistic == true)
-    {
-        outField = {escapeResult.IsBlocked == true ? 0.0 : 1.0, 0};
-        return rhi::RasterStatus::Ready;
-    }
-    math::EllipticalCone reverse = cone;
-    reverse.OriginWorld = receiverWorld;
-    reverse.DirectionWorld = -directionWorld;
-    escapeStatus = EscapeWaveOrigin(scene, reverse, wavelengthWorld, true, escapeResult);
-    const float64 receiverEscapeWorld = escapeResult.DistanceWorld;
-    if (escapeStatus != rhi::RasterStatus::Ready)
-    {
-        return escapeStatus;
-    }
-    if (escapeResult.IsBlocked == true || escapeResult.IsEntirelyBallistic == true)
-    {
-        outField = {escapeResult.IsBlocked == true ? 0.0 : 1.0, 0};
-        return rhi::RasterStatus::Ready;
-    }
-    cone.NearWorld = sourceEscapeWorld;
-    cone.FarWorld = math::Max(cone.NearWorld, distanceWorld - receiverEscapeWorld);
-    WaveGrid grid;
-    bool hasField = false;
-    float64 fieldDistanceWorld = 0;
-    for (uint32 interaction = 0; interaction < LUDUS_WAVE_CONNECTION_REGIONS; ++interaction)
-    {
-        WaveInteractionRegion region;
-        const rhi::RasterStatus status =
-            cone.NearWorld < cone.FarWorld ? FindWaveInteractionRegion(scene, cone, region) : rhi::RasterStatus::Ready;
-        if (status != rhi::RasterStatus::Ready)
-        {
-            return status;
-        }
-        if (region.TriangleCount == 0)
-        {
-            if (hasField == false)
-            {
-                outField = {1, 0};
-                return rhi::RasterStatus::Ready;
-            }
-            PropagateGrid(grid,
-                          {
-                              .DistanceWorld = distanceWorld - fieldDistanceWorld,
-                              .WavelengthWorld = wavelengthWorld,
-                              .HalfWidthWorld = halfWidthWorld,
-                          });
-            const WaveField field = grid[(AXIS / 2) * AXIS + AXIS / 2];
-            const WaveField normalization = EvaluateGaussian(
-                0,
-                { .DistanceWorld = distanceWorld, .SigmaWorldSquared = sigmaWorldSquared, .Wavenumber = wavenumber });
-            const float64 power =
-                normalization.Real * normalization.Real + normalization.Imaginary * normalization.Imaginary;
-            const WaveField result{
-                (field.Real * normalization.Real + field.Imaginary * normalization.Imaginary) / power,
-                (field.Imaginary * normalization.Real - field.Real * normalization.Imaginary) / power};
-            if (math::IsFinite(result.Real) == false || math::IsFinite(result.Imaginary) == false)
-            {
-                return rhi::RasterStatus::InvalidDescription;
-            }
-            outField = result;
-            return rhi::RasterStatus::Ready;
-        }
-        const float64 screenDistanceWorld = region.Frustum.NearWorld * 0.5 + region.Frustum.FarWorld * 0.5;
-        StaticArray<float64, CELLS> transmission;
-        usize blockedCount = 0;
-        for (usize y = 0; y < AXIS; ++y)
-        {
-            for (usize x = 0; x < AXIS; ++x)
-            {
-                const float64 positionXWorld =
-                    (2 * static_cast<float64>(x) / static_cast<float64>(AXIS) - 1) * halfWidthWorld;
-                const float64 positionYWorld =
-                    (2 * static_cast<float64>(y) / static_cast<float64>(AXIS) - 1) * halfWidthWorld;
-                const usize cell = y * AXIS + x;
-                usize coveredSamples = 0;
-                const float64 cellWidthWorld = 2 * halfWidthWorld / static_cast<float64>(AXIS);
-                for (uint32 sampleY = 0; sampleY < LUDUS_WAVE_CONNECTION_MASK_AXIS; ++sampleY)
-                {
-                    for (uint32 sampleX = 0; sampleX < LUDUS_WAVE_CONNECTION_MASK_AXIS; ++sampleX)
-                    {
-                        const float64 offsetXWorld =
-                            ((static_cast<float64>(sampleX) + 0.5) / LUDUS_WAVE_CONNECTION_MASK_AXIS - 0.5) *
-                            cellWidthWorld;
-                        const float64 offsetYWorld =
-                            ((static_cast<float64>(sampleY) + 0.5) / LUDUS_WAVE_CONNECTION_MASK_AXIS - 0.5) *
-                            cellWidthWorld;
-                        coveredSamples += IsProjectedPointBlocked(scene,
-                                                                  region,
-                                                                  {
-                                                                      .X = positionXWorld + offsetXWorld,
-                                                                      .Y = positionYWorld + offsetYWorld,
-                                                                  }) == true
-                                              ? 1
-                                              : 0;
-                    }
-                }
-                transmission[cell] = 1 - static_cast<float64>(coveredSamples) / static_cast<float64>(MASK_SAMPLES);
-                blockedCount += coveredSamples;
-                if (hasField == false)
-                {
-                    grid[cell] = EvaluateGaussian(positionXWorld * positionXWorld + positionYWorld * positionYWorld,
-                                                  {
-                                                      .DistanceWorld = screenDistanceWorld,
-                                                      .SigmaWorldSquared = sigmaWorldSquared,
-                                                      .Wavenumber = wavenumber,
-                                                  });
-                }
-            }
-        }
-        if (blockedCount == CELLS * MASK_SAMPLES)
-        {
-            outField = {};
-            return rhi::RasterStatus::Ready;
-        }
-        if (blockedCount > 0)
-        {
-            if (hasField == true)
-            {
-                PropagateGrid(grid,
-                              {
-                                  .DistanceWorld = screenDistanceWorld - fieldDistanceWorld,
-                                  .WavelengthWorld = wavelengthWorld,
-                                  .HalfWidthWorld = halfWidthWorld,
-                              });
-            }
-            for (usize cell = 0; cell < CELLS; ++cell)
-            {
-                grid[cell].Real *= transmission[cell];
-                grid[cell].Imaginary *= transmission[cell];
-            }
-            hasField = true;
-            fieldDistanceWorld = screenDistanceWorld;
-        }
-        const float64 nextNearWorld = math::NextFloat64Up(region.Frustum.FarWorld);
-        if (nextNearWorld > cone.FarWorld)
-        {
-            cone.NearWorld = cone.FarWorld;
-        }
-        else
-        {
-            cone.NearWorld = nextNearWorld;
-        }
-        if (cone.FarWorld - cone.NearWorld > LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld)
-        {
-            math::EllipticalCone escape = cone;
-            escape.OriginWorld = sourceWorld + directionWorld * cone.NearWorld;
-            escape.FarWorld = cone.FarWorld - cone.NearWorld;
-            escape.NearWorld = math::Min(escape.FarWorld, endpointEscapeWorld);
-            const rhi::RasterStatus escaped = EscapeWaveOrigin(scene, escape, wavelengthWorld, true, escapeResult);
-            const float64 escapedWorld = escapeResult.DistanceWorld;
-            if (escaped != rhi::RasterStatus::Ready)
-            {
-                return escaped;
-            }
-            if (escapeResult.IsBlocked == true)
-            {
-                outField = {};
-                return rhi::RasterStatus::Ready;
-            }
-            cone.NearWorld = escapeResult.IsEntirelyBallistic == true
-                                 ? cone.FarWorld
-                                 : math::Min(cone.FarWorld, cone.NearWorld + escapedWorld);
-        }
-        // No remaining interval: finish through the normal empty-scene path on the next iteration.
-        if (nextNearWorld > cone.FarWorld)
-        {
-            cone.FarWorld = cone.NearWorld;
-        }
-    }
-    return rhi::RasterStatus::Unsupported;
+        .BeginWorld = sourceWorld,
+        .EndWorld = receiverWorld,
+        .DirectionWorld = directionWorld,
+        .LengthWorld = distanceWorld,
+        .RefractiveIndex = 1,
+        .IsReflectedEntry = false,
+    };
+    chain.LegCount = 1;
+    return EvaluateWaveChainConnection(scene, chain, wavelengthWorld, outField);
 }
 rhi::RasterStatus EvaluateWaveConnection(const ReferenceSceneData& scene,
                                          math::Vector3d sourceWorld,

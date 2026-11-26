@@ -25,3 +25,7 @@
 #define LUDUS_WAVE_PARITY_UTD_CONNECTION_TAG 0x55544443
 // Fraunhofer connection mode: the same records as the UTD mode.
 #define LUDUS_WAVE_PARITY_FRAUNHOFER_CONNECTION_TAG 0x46524e43
+// Relayed chain mode: record 2 holds wavelength, operator, leg count and reflection mask; each case's four records
+// hold the chain's vertices (xyz) and each leg's refractive index (w), light first.
+#define LUDUS_WAVE_PARITY_CHAIN_TAG 0x43484e43
+#define LUDUS_WAVE_PARITY_CHAIN_RECORD 2

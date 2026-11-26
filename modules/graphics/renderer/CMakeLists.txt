@@ -158,7 +158,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
 endif()
 install(FILES shaders/wave_scene_layout.h shaders/wave_scene_queries.slang shaders/wave_connection_layout.h
-    shaders/wave_connection.slang shaders/wave_edge_diffraction.slang shaders/wave_fraunhofer_diffraction.slang shaders/wave_reference_scene.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+    shaders/wave_connection.slang shaders/wave_edge_diffraction.slang shaders/wave_fraunhofer_diffraction.slang shaders/wave_relay.slang shaders/wave_reference_scene.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 install(FILES shaders/renderer_shadow_depth.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 install(FILES shaders/renderer_celestial_constants.h shaders/renderer_reference_sky_layout.h
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
@@ -276,6 +276,7 @@ if(LUDUS_BUILD_TESTS)
         tests/wave_scene_queries_tests.cpp
         tests/wave_edge_diffraction_tests.cpp
         tests/wave_fraunhofer_diffraction_tests.cpp
+        tests/wave_relay_tests.cpp
         tests/atmosphere_environment_tests.cpp
         tests/world_feature_tests.cpp
         "$<TARGET_OBJECTS:ludus_renderer_earth_sky_quadrature>"

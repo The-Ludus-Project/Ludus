@@ -11518,8 +11518,9 @@ and physical-device qualification remain distinct from any local macOS result.
 
 The **Wave tracing — scene optical transport** template (`wave-tracing`) uses the
 selected World's camera, geometry, lights, emissive meshes, textures and supported
-reflection materials. It samples truncated surface paths, with coherent scalar
-connections to finite lights. `WT_OPTICAL_CONNECTION` selects the connection
+materials. It samples truncated surface paths, with coherent scalar connections to
+finite lights. Glass reflection and refraction carry a connection on instead of ending
+it ([relayed connections](#relayed-connections-through-glass)). `WT_OPTICAL_CONNECTION` selects the connection
 operator: `0` (the default) propagates a Gaussian mode through an angular-spectrum
 lattice, `1` adds [UTD edge diffraction](#utd-edge-diffraction-connections) to the
 straight ray, and `2` adds
@@ -11564,9 +11565,12 @@ replacement light source.
   transmission multiplies the authored RGB light; this is not spectral colour
   integration or wavelength-dependent material scattering.
 - **Geometric** traces matching surface paths and light proposals with ordinary
-  binary visibility. Both paths use next-event estimation alone for light
-  endpoints. Secondary emitter/environment hits are omitted to avoid inconsistent
-  MIS weights when optical and geometric visibility differ.
+  binary visibility. At rough vertices both paths use next-event estimation alone
+  for light endpoints: emitter/environment hits after a rough vertex are omitted to
+  avoid inconsistent MIS weights when optical and geometric visibility differ.
+  Emitter and environment hits after a glass event keep full weight, because no
+  light sample reaches a delta direction. Optical weights the emitter by its relayed
+  connection; Geometric weights it by one.
 - **Transmission** shows the first receiver's sampled light-connection power,
   relative to the unobstructed Gaussian mode, without tone mapping. It is zero
   without a contributing light sample. Diffraction can redistribute power above
@@ -11574,8 +11578,8 @@ replacement light source.
   values above one.
 
 `WT_PATH_VERTICES` defaults to three surface scattering vertices, with a maximum
-of eight. Every vertex uses the current material's reflection model, including
-normal maps, diffuse, rough conductor and coated diffuse inputs. Infinite lights
+of eight. Every vertex uses the current material's scattering model, including
+normal maps, diffuse, rough conductor, coated diffuse and glass inputs. Infinite lights
 and the environment use ordinary geometric visibility. Finite point, spot and
 mesh-light connections use the optical operator. A scene lit only by an infinite
 environment therefore does not gain free-space diffraction from this profile.
@@ -11629,11 +11633,11 @@ unit directions and `lambda/L <= 1/32`. Invalid inputs and exhaustion of the
 with an actionable diagnostic, preserving the last accepted image.
 
 This is a scene-capable **scalar paraxial connection profile**, with classical RGB
-surface scattering between connections. It is not the paper's full polarimetric
-bidirectional cone path tracer: multiple edge diffraction, UTD corner diffraction,
-interference-aware material-direction rejection sampling, coherent
-reflection/transmission between surface events and spectral material transport
-are not implemented here. The [UTD](#utd-edge-diffraction-connections) and
+scattering at rough surfaces and coherent relays through glass. It is not the
+paper's full polarimetric bidirectional cone path tracer: multiple edge diffraction,
+UTD corner diffraction, interference-aware material-direction rejection sampling,
+diffraction by the edges of glass and mirrors, polarization and spectral material
+transport are not implemented here. The [UTD](#utd-edge-diffraction-connections) and
 [Fraunhofer](#fraunhofer-edge-diffraction-connections) connections cover single
 edge diffraction.
 
@@ -11831,6 +11835,126 @@ Evidence for the Fraunhofer connection, on an Apple M5 with Metal:
   other operators. Without that pixel the RMSE is 0.00125, with a largest component
   difference of 0.032. The mean radiance differs from the lattice operator's by
   0.008%.
+
+### Relayed connections through glass
+
+Steinberg and Pharr's region-to-region operator `T` (Section 4.2) generalizes the
+BSDF, and Section 5.2 applies it at every interaction. Section 3 admits materials
+whose scattering is specified in expectation by a statistically stationary process,
+over a region large compared with its correlation length. A smooth Fresnel
+interface carries the incident field on as reflected and transmitted fields. A rough
+statistical surface scatters incoherently in expectation, and its classical BSDF is
+that expectation, the point limit of `T`. The profile therefore admits two classes of
+interaction:
+
+- **Coherent relays.** Glass events, the delta reflection and transmission of the
+  `Dielectric` and `ThinDielectric` models, relay a connection. These are the only
+  delta lobes of the standard materials.
+- **Incoherent scattering.** Diffuse, rough conductor, their Mix, metallic-roughness,
+  coated diffuse (a thin layer), project BRDF and closure-program materials scatter
+  through their classical BSDFs. Each one squares the field it receives, as before.
+
+No light sample reaches a delta direction, so a path that leaves a rough vertex (or
+the camera) through glass events reaches finite emitters only by hitting them. Such
+a hit keeps full weight. Its field is the light's connection relayed back through
+the glass events to that vertex, divided by the unobstructed field of the same chain:
+
+```text
+L_relayed = T_path * L_e * |u_chain|^2
+```
+
+`T_path` is the path's classical throughput, including each glass event's Fresnel
+weight and the radiance scaling of refraction. `u_chain` is the field ratio that the
+selected operator evaluates along the chain of straight legs. The legs run from the
+emitter, through the glass events in reverse, to the receiver:
+
+- Each leg of geometric length `l` in a medium of index `n` propagates paraxially as
+  `l/n` in vacuum at the vacuum wavelength (its reduced length). One Gaussian mode
+  with `Sigma = L/k` spans the chain, where `L` is the sum of the reduced lengths.
+  Transverse coordinates are unchanged at an interface, following Section 5.2's rule
+  that an interaction keeps the beam's solid angle and eccentricity. The anamorphic
+  beam compression of oblique refraction (`cos(theta_t)/cos(theta_i)` in the plane
+  of incidence) is not modelled.
+- The lattice carries its field across the legs. Its transverse frame is mirrored by
+  each reflection, a Householder transform about the difference of the two
+  directions that reverses the handedness, and rotated by each transmission. Each
+  region is projected onto the midpoint of its slab in reduced depth, as the
+  unfolded straight connection would project it.
+- The edge operators evaluate each leg as the virtual straight connection that a
+  paraxial observer in its medium sees. The source and receiver sit at apparent
+  depths, `n` times their reduced distances along the leg, with wavenumber `n*k`.
+  This connection has the reduced chain's Gaussian kernel. Each leg visits only its
+  own interaction regions, and diffracted rays are tested for clearance only within
+  their leg. Legs combine by single diffraction: the product of the legs' ballistic
+  fields, plus each leg's diffracted field times the other legs' ballistic fields.
+- A mirror reflection is an isometry, so a relay through it equals the straight
+  connection to the light's mirror image.
+
+A glass event infers the medium on each of its sides by the dielectric's own
+convention. A solid dielectric fills the viewer's side when the viewer is behind its
+front face, a reflection stays on that side and a transmission crosses it. A thin
+dielectric has air on both sides. Legs shorter than twice the endpoint escape
+propagate without interaction regions, because the camera path traced them clear.
+Interfaces near the ends of a leg are escaped, as endpoint surfaces are.
+
+The profile rejects the rest explicitly with `WaveInterface`
+(`ReferenceFailure::OpticalInterface` in reference captures):
+
+- a leg that two glass events infer differently, such as touching or nested glass of
+  different indices;
+- a chain of more than eight glass events (`LUDUS_WAVE_CONNECTION_LEGS` is nine).
+
+The region, propagation and wavelength limits of the selected operator apply to the
+whole chain, with its 64 regions shared by all legs. The relay has these
+limitations:
+
+- Coherence ends at every rough vertex. Its scattered field is not relayed further.
+- Interfaces are locally planar and unbounded. The focusing of curved glass and
+  diffraction by the edges of a glass pane are not modelled, so a pane's rim casts a
+  ray-optical boundary.
+- Other glass that a leg's envelope gathers obstructs like opaque geometry. Only the
+  chain's own events transmit.
+- Point and spot lights are not relayed through glass. Their delta positions cannot
+  be hit, so light from them that is refracted or reflected by glass (caustics) is
+  absent. Relays reach emissive meshes. Infinite lights reached through glass keep
+  geometric visibility.
+- The interface coefficient's magnitude stays in the classical throughput, and its
+  uniform phase cancels in `u_chain`. Polarization, thin-film interference and the
+  phase of a slab's internal reflections are not modelled.
+
+Evidence for relayed connections, on an Apple M5 with Metal:
+
+- `wave_relay_tests.cpp` (`[wave-relay]`, CPU only) checks the transported frames
+  and the media inference, including the rejection of touching glass and of a
+  chain that is too long. A mirror relay equals the straight connection to the
+  light's mirror image within `1e-9`, for all three operators. The fixture is a slit
+  whose two edges lie on opposite legs, and its power differs from the classical step
+  by more than 0.02. Off-axis squares, one on each leg, check the lattice's mirrored
+  handedness: the wrong handedness would change the power by more than 0.02.
+  A UTD knife edge before the mirror matches Fresnel–Kirchhoff diffraction at the
+  unfolded distance within 1.5% of the power. A knife edge before, inside and behind a
+  2 m slab of index 1.5 equals the straight connection with the slab shortened to its
+  reduced thickness. The bound is `1e-6` for the lattice and Fraunhofer, limited by
+  binary32 scene depths, and `2e-3` for UTD, which evaluates exact geometry around
+  its apparent-depth endpoints. Inside the glass, the edge operators' powers differ
+  from a relay that ignores the index by more than 0.02. A UTD knife edge inside the
+  glass matches Fresnel–Kirchhoff diffraction at reduced distances within 1.5%.
+- `wave_tracing_parity_tests.cpp` (`[wave-relay][parity]`) runs the production chain
+  kernels on the GPU for the mirror slit and the knife edge in glass, with all three
+  operators and 16 shifted chains each. The largest field-component difference from
+  the float64 oracle is `4e-6`; the test admits `5e-4`.
+- `reference_compute_tests.cpp` (`[wave-relay]`) renders the glass-sphere scene at
+  550 nm with each operator. The GPU compute raw radiance differs from the CPU oracle
+  by RMSE `2.4e-8` (lattice), `4.8e-8` (UTD) and `8.6e-6` (Fraunhofer). The optical
+  capture issues more visibility queries than the geometric one (10,285 against
+  10,273), so relays are exercised, if sparsely.
+- `wave_scene_graph_tests.cpp` (`[wave-relay]`) cooks the template with each operator
+  and renders a lamp seen through a thin glass pane. The template previously omitted
+  that emission. Unobstructed, the Optical and Geometric outputs agree within 1%. A
+  half screen below the pane leaves the lit pixels 0 to 0.7 Fresnel units from its
+  shadow boundary, at 0.33–0.46 (lattice), 0.38–0.66 (UTD) and 0.32–0.45 (Fraunhofer)
+  of the Geometric output. The test admits 0.25 to 0.75. Classical scattering at the
+  pane would give one.
 
 ### CPU oracle and validation
 

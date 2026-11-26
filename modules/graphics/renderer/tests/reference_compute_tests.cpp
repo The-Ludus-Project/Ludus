@@ -2377,6 +2377,99 @@ TEST_CASE("Typed reflection and transmission match between CPU and GPU reference
     CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
 }
 
+TEST_CASE("Optical connections relayed through glass match between CPU and GPU reference transport",
+          "[renderer][gpu][reference-compute][wave-relay]")
+{
+    // The glass spheres (a solid dielectric and a thin one) relay the emissive sphere's connection: camera paths and
+    // rough vertices reach it through reflections and refractions, and every operator evaluates the relayed chain.
+    const rr::ReferenceOpticalConnection connection =
+        GENERATE(rr::ReferenceOpticalConnection::AngularSpectrum,
+                 rr::ReferenceOpticalConnection::UtdEdgeDiffraction,
+                 rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction);
+    CAPTURE(connection);
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    rr::Snapshot spheres[2];
+    REQUIRE(BuildSphereSnapshot(device, cpu.Renderer, cpu.Program, spheres[0], true, SphereSurfaces::Glass) ==
+            S::Ready);
+    REQUIRE(BuildSphereSnapshot(device, gpu.Renderer, gpu.Program, spheres[1], true, SphereSurfaces::Glass) ==
+            S::Ready);
+    REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
+    REQUIRE(gpu.Renderer.Release(gpu.Snapshot) == S::Ready);
+    cpu.Snapshot = spheres[0];
+    gpu.Snapshot = spheres[1];
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = 32;
+    capture.Height = 24;
+    capture.TargetSamples = 16;
+    capture.MaxDepth = 6;
+    capture.Seed = 99;
+    capture.Environment = {.2F, .25F, .3F};
+    // The template's visible default. At the raw-AOV cases' millimetre, the envelope would gather more than the
+    // region capacity of the tessellated spheres.
+    constexpr float32 OPTICAL_WAVELENGTH_WORLD = 550e-9F;
+    capture.OpticalWavelengthWorld = OPTICAL_WAVELENGTH_WORLD;
+    capture.OpticalConnection = connection;
+    math::Matrix4 view;
+    math::Matrix4 projection;
+    capture.CameraPosition = {.3F, .2F, -2};
+    REQUIRE(math::TryLookAt(capture.CameraPosition, {0, 0, 0}, {0, 1, 0}, view) == math::MathStatus::Success);
+    REQUIRE(math::TryPerspectiveReverseZ(.9F, float32(capture.Width) / float32(capture.Height), .1F, 20, projection) ==
+            math::MathStatus::Success);
+    capture.WorldToClip = projection * view;
+    capture.ReverseZ = true;
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    Capture(cpu, capture, surface, oracle, oracleInfo);
+    Capture(gpu, capture, surface, compute, computeInfo);
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance,
+            comparison.MaximumEmission,
+            math::Sqrt(comparison.SquaredRadiance),
+            oracleInfo.ClosestQueries,
+            computeInfo.ClosestQueries,
+            oracleInfo.VisibilityQueries,
+            computeInfo.VisibilityQueries);
+    CHECK(oracleInfo.InvalidContributions == 0);
+    CHECK(computeInfo.InvalidContributions == 0);
+    CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
+    // The same bounds as the typed glass transport case: a rare near-edge hit can send one path elsewhere.
+    CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+    CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
+    // Each relayed emitter hit counts one visibility query beyond the geometric profile's next-event estimates, so
+    // the capture exercised relays.
+    rr::ReferenceCaptureDescription geometric = capture;
+    geometric.OpticalWavelengthWorld = 0;
+    geometric.OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
+    Array<rr::ReferencePixel> classical;
+    rr::ReferenceCaptureInfo classicalInfo;
+    Capture(cpu, geometric, surface, classical, classicalInfo);
+    CHECK(oracleInfo.VisibilityQueries > classicalInfo.VisibilityQueries);
+}
+
 TEST_CASE("A grain-masked closure program matches between CPU and GPU reference transport",
           "[renderer][gpu][reference-compute][program]")
 {

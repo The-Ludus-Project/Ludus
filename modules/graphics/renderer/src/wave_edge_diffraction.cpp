@@ -239,11 +239,33 @@ rhi::RasterStatus AddRegionEdgeFields(const ReferenceSceneData& scene,
                     continue;
                 }
             }
+            // Past an interface event the source is virtual: test the incident and diffracted rays within the leg.
+            const math::Vector3d incidentWorld = diffracted.PointWorld - connection.SourceWorld;
+            const math::Vector3d diffractedWorld = connection.ReceiverWorld - diffracted.PointWorld;
+            const float64 incidentAxialWorld = math::Dot(incidentWorld, connection.DirectionWorld);
+            const float64 diffractedAxialWorld = math::Dot(diffractedWorld, connection.DirectionWorld);
+            const float64 beyondLegWorld = connection.DistanceWorld - connection.LegEndWorld;
+            if ((connection.LegBeginWorld > 0 && incidentAxialWorld <= 0) ||
+                (beyondLegWorld > 0 && diffractedAxialWorld <= 0))
+            {
+                continue;
+            }
+            const float64 incidentNearWorld =
+                connection.LegBeginWorld > 0
+                    ? connection.EndpointEscapeWorld + connection.LegBeginWorld *
+                                                           math::Sqrt(math::Dot(incidentWorld, incidentWorld)) /
+                                                           incidentAxialWorld
+                    : connection.EndpointEscapeWorld;
+            const float64 diffractedMarginWorld =
+                beyondLegWorld > 0 ? connection.EndpointEscapeWorld +
+                                         beyondLegWorld * math::Sqrt(math::Dot(diffractedWorld, diffractedWorld)) /
+                                             diffractedAxialWorld
+                                   : connection.EndpointEscapeWorld;
             bool isIncidentClear = false;
             rhi::RasterStatus status = IsWaveSegmentClear(scene,
                                                           connection.SourceWorld,
                                                           diffracted.PointWorld,
-                                                          connection.EndpointEscapeWorld,
+                                                          incidentNearWorld,
                                                           0,
                                                           excluded,
                                                           isIncidentClear);
@@ -260,7 +282,7 @@ rhi::RasterStatus AddRegionEdgeFields(const ReferenceSceneData& scene,
                                         diffracted.PointWorld,
                                         connection.ReceiverWorld,
                                         0,
-                                        connection.EndpointEscapeWorld,
+                                        diffractedMarginWorld,
                                         excluded,
                                         isDiffractedClear);
             if (status != rhi::RasterStatus::Ready)
@@ -487,6 +509,206 @@ UtdEdgeField EvaluateUtdEdgeField(const UtdEdge& edge,
     return result;
 }
 
+rhi::RasterStatus EvaluateWaveEdgeChain(const ReferenceSceneData& scene,
+                                        const WaveConnectionChain& chain,
+                                        float64 wavelengthWorld,
+                                        AddWaveEdgeRegionFields addRegionFields,
+                                        WaveField& outField) noexcept
+{
+    if (chain.LegCount == 0 || chain.LegCount > WAVE_MAX_CONNECTION_LEGS || math::IsFinite(wavelengthWorld) == false ||
+        wavelengthWorld < MIN_WAVELENGTH_WORLD || addRegionFields == nullptr)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    float64 distanceWorld = 0;
+    float64 geometricLengthWorld = 0;
+    float64 coordinateMagnitudeWorld = 0;
+    for (uint32 index = 0; index < chain.LegCount; ++index)
+    {
+        const WaveConnectionLeg& leg = chain.Legs[index];
+        if (math::IsFinite(leg.BeginWorld) == false || math::IsFinite(leg.EndWorld) == false ||
+            math::IsFinite(leg.DirectionWorld) == false || math::IsFinite(leg.LengthWorld) == false ||
+            leg.LengthWorld <= 0 || math::IsFinite(leg.RefractiveIndex) == false || leg.RefractiveIndex <= 0 ||
+            math::Abs(math::Dot(leg.DirectionWorld, leg.DirectionWorld) - 1) > UNIT_DIRECTION_TOLERANCE)
+        {
+            return rhi::RasterStatus::InvalidDescription;
+        }
+        distanceWorld += leg.LengthWorld / leg.RefractiveIndex;
+        geometricLengthWorld += leg.LengthWorld;
+        coordinateMagnitudeWorld =
+            math::Max(coordinateMagnitudeWorld,
+                      math::Max(math::Max(math::Abs(leg.BeginWorld.X),
+                                          math::Max(math::Abs(leg.BeginWorld.Y), math::Abs(leg.BeginWorld.Z))),
+                                math::Max(math::Abs(leg.EndWorld.X),
+                                          math::Max(math::Abs(leg.EndWorld.Y), math::Abs(leg.EndWorld.Z)))));
+    }
+    if (math::IsFinite(distanceWorld) == false || wavelengthWorld / distanceWorld > MAX_WAVELENGTH_TO_DISTANCE)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    WaveConnectionFrames frames;
+    if (TryMakeWaveConnectionFrames(chain, frames) == false)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    const float64 wavenumber = 2 * math::kPi / wavelengthWorld;
+    const float64 sigmaWorldSquared = distanceWorld / wavenumber;
+    // The same Gaussian envelope as the angular-spectrum operator bounds which edges this connection sees.
+    const float64 halfWidthWorld = LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * math::Sqrt(2 * sigmaWorldSquared);
+    const float64 coordinateScaleWorld = math::Max(geometricLengthWorld, coordinateMagnitudeWorld);
+    const float64 endpointEscapeWorld = math::Max(LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld,
+                                                  LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld);
+    if (2 * endpointEscapeWorld >= distanceWorld)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    // Single diffraction along the chain: the ballistic field of every leg, plus one leg's diffracted field with the
+    // other legs ballistic. Products of the legs' ballistic terms accumulate as the legs are visited.
+    float64 ballisticProduct = 1;
+    WaveField diffracted{};
+    float64 legStartReducedWorld = 0;
+    uint32 interaction = 0;
+    for (uint32 index = 0; index < chain.LegCount; ++index)
+    {
+        const WaveConnectionLeg& leg = chain.Legs[index];
+        const float64 refractiveIndex = leg.RefractiveIndex;
+        const float64 legStartWorld = legStartReducedWorld;
+        legStartReducedWorld += leg.LengthWorld / refractiveIndex;
+        if (2 * endpointEscapeWorld >= leg.LengthWorld)
+        {
+            // Inside both endpoint escapes: the caller's own path traced this leg clear, and nothing diffracts.
+            continue;
+        }
+        math::EllipticalCone cone;
+        cone.OriginWorld = leg.BeginWorld;
+        cone.DirectionWorld = leg.DirectionWorld;
+        cone.AxisXWorld = frames.AxisXWorld[index];
+        cone.RadiusWorld = halfWidthWorld;
+        cone.NearWorld = endpointEscapeWorld;
+        cone.FarWorld = leg.LengthWorld - endpointEscapeWorld;
+        // Ballistic term: the straight leg between its offset endpoints.
+        bool isBlocked = false;
+        rhi::RasterStatus status = TraceWaveBallistic(scene, cone, {}, isBlocked);
+        if (status != rhi::RasterStatus::Ready)
+        {
+            return status;
+        }
+        const float64 legBallistic = isBlocked == true ? 0.0 : 1.0;
+        // A one-leg connection adds its edge fields to its ballistic field directly, as it always has.
+        WaveField legField{chain.LegCount == 1 ? legBallistic : 0.0, 0};
+        // Paraxially, a leg in a medium of index n sees the chain's source and receiver at n times their reduced
+        // distances (apparent depth), with wavenumber n k: a virtual straight connection with the same Gaussian
+        // kernel as the reduced chain. Edge operators evaluate that connection over this leg's span alone.
+        const float64 legOffsetWorld = refractiveIndex * legStartWorld;
+        const float64 remainingWorld = refractiveIndex * math::Max(0.0, distanceWorld - legStartReducedWorld);
+        const math::Vector3d sourceWorld = leg.BeginWorld - leg.DirectionWorld * legOffsetWorld;
+        const WaveEdgeConnection connection
+        {
+            .SourceWorld = sourceWorld,
+            .ReceiverWorld = leg.EndWorld + leg.DirectionWorld * remainingWorld,
+            .DirectionWorld = leg.DirectionWorld,
+            .AxisXWorld = frames.AxisXWorld[index],
+            .DistanceWorld = refractiveIndex * distanceWorld,
+            .WavelengthWorld = wavelengthWorld / refractiveIndex,
+            .SigmaWorldSquared = sigmaWorldSquared,
+            .EnvelopeRadiusWorld = halfWidthWorld,
+            .EndpointEscapeWorld = endpointEscapeWorld,
+            .RoundoffWorld = LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld,
+            .IsBallisticBlocked = isBlocked,
+            .LegBeginWorld = legOffsetWorld,
+            .LegEndWorld = legOffsetWorld + leg.LengthWorld,
+        };
+        // Edges at the endpoints' own surfaces lie inside their escapes and are not diffracted.
+        WaveOriginEscape escape;
+        status = EscapeWaveOrigin(scene, cone, wavelengthWorld, false, escape);
+        if (status != rhi::RasterStatus::Ready)
+        {
+            return status;
+        }
+        bool hasRegions = escape.IsEntirelyBallistic == false;
+        const float64 sourceEscapeWorld = escape.DistanceWorld;
+        if (hasRegions == true)
+        {
+            math::EllipticalCone reverse = cone;
+            reverse.OriginWorld = leg.EndWorld;
+            reverse.DirectionWorld = -leg.DirectionWorld;
+            status = EscapeWaveOrigin(scene, reverse, wavelengthWorld, false, escape);
+            if (status != rhi::RasterStatus::Ready)
+            {
+                return status;
+            }
+            hasRegions = escape.IsEntirelyBallistic == false;
+        }
+        if (hasRegions == true)
+        {
+            cone.NearWorld = sourceEscapeWorld;
+            cone.FarWorld = math::Max(cone.NearWorld, leg.LengthWorld - escape.DistanceWorld);
+            bool isLegComplete = false;
+            for (; interaction < LUDUS_WAVE_CONNECTION_REGIONS; ++interaction)
+            {
+                if (cone.NearWorld >= cone.FarWorld)
+                {
+                    isLegComplete = true;
+                    break;
+                }
+                WaveInteractionRegion region;
+                status = FindWaveInteractionRegion(scene, cone, region);
+                if (status != rhi::RasterStatus::Ready)
+                {
+                    return status;
+                }
+                if (region.TriangleCount == 0)
+                {
+                    isLegComplete = true;
+                    break;
+                }
+                // Operators measure depths from the virtual source on the same axis.
+                WaveInteractionRegion virtualRegion = region;
+                virtualRegion.Frustum.OriginWorld = sourceWorld;
+                virtualRegion.Frustum.NearWorld = region.Frustum.NearWorld + legOffsetWorld;
+                virtualRegion.Frustum.FarWorld = region.Frustum.FarWorld + legOffsetWorld;
+                status = addRegionFields(scene, connection, virtualRegion, legField);
+                if (status != rhi::RasterStatus::Ready)
+                {
+                    return status;
+                }
+                const float64 nextNearWorld = math::NextFloat64Up(region.Frustum.FarWorld);
+                cone.NearWorld = math::Min(cone.FarWorld, nextNearWorld);
+                if (cone.FarWorld - cone.NearWorld > LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld)
+                {
+                    // Skip geometry that continues straight past the region, as the angular-spectrum operator does.
+                    math::EllipticalCone skip = cone;
+                    skip.OriginWorld = leg.BeginWorld + leg.DirectionWorld * cone.NearWorld;
+                    skip.FarWorld = cone.FarWorld - cone.NearWorld;
+                    skip.NearWorld = math::Min(skip.FarWorld, endpointEscapeWorld);
+                    status = EscapeWaveOrigin(scene, skip, wavelengthWorld, false, escape);
+                    if (status != rhi::RasterStatus::Ready)
+                    {
+                        return status;
+                    }
+                    cone.NearWorld = escape.IsEntirelyBallistic == true
+                                         ? cone.FarWorld
+                                         : math::Min(cone.FarWorld, cone.NearWorld + escape.DistanceWorld);
+                }
+            }
+            if (isLegComplete == false)
+            {
+                return rhi::RasterStatus::Unsupported;
+            }
+            ++interaction;
+        }
+        if (chain.LegCount == 1)
+        {
+            outField = legField;
+            return rhi::RasterStatus::Ready;
+        }
+        diffracted = {diffracted.Real * legBallistic + legField.Real * ballisticProduct,
+                      diffracted.Imaginary * legBallistic + legField.Imaginary * ballisticProduct};
+        ballisticProduct *= legBallistic;
+    }
+    outField = {ballisticProduct + diffracted.Real, diffracted.Imaginary};
+    return rhi::RasterStatus::Ready;
+}
 rhi::RasterStatus EvaluateWaveEdgeConnection(const ReferenceSceneData& scene,
                                              math::Vector3d sourceWorld,
                                              math::Vector3d receiverWorld,
@@ -496,133 +718,25 @@ rhi::RasterStatus EvaluateWaveEdgeConnection(const ReferenceSceneData& scene,
                                              AddWaveEdgeRegionFields addRegionFields,
                                              WaveField& outField) noexcept
 {
-    if (math::IsFinite(sourceWorld) == false || math::IsFinite(receiverWorld) == false ||
-        math::IsFinite(directionWorld) == false || math::IsFinite(distanceWorld) == false || distanceWorld <= 0 ||
-        math::IsFinite(wavelengthWorld) == false || wavelengthWorld < MIN_WAVELENGTH_WORLD ||
-        wavelengthWorld / distanceWorld > MAX_WAVELENGTH_TO_DISTANCE ||
-        math::Abs(math::Dot(directionWorld, directionWorld) - 1) > UNIT_DIRECTION_TOLERANCE ||
-        addRegionFields == nullptr)
+    WaveConnectionChain chain;
+    chain.Legs[0] =
     {
-        return rhi::RasterStatus::InvalidDescription;
-    }
-    const float64 wavenumber = 2 * math::kPi / wavelengthWorld;
-    const float64 sigmaWorldSquared = distanceWorld / wavenumber;
-    // The same Gaussian envelope as the angular-spectrum operator bounds which edges this connection sees.
-    const float64 halfWidthWorld = LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * math::Sqrt(2 * sigmaWorldSquared);
-    const float64 coordinateScaleWorld = math::Max(
-        distanceWorld,
-        math::Max(
-            math::Max(math::Abs(sourceWorld.X), math::Max(math::Abs(sourceWorld.Y), math::Abs(sourceWorld.Z))),
-            math::Max(math::Abs(receiverWorld.X), math::Max(math::Abs(receiverWorld.Y), math::Abs(receiverWorld.Z)))));
-    const float64 endpointEscapeWorld = math::Max(LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld,
-                                                  LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld);
-    if (2 * endpointEscapeWorld >= distanceWorld)
-    {
-        return rhi::RasterStatus::InvalidDescription;
-    }
-    math::EllipticalCone cone;
-    cone.OriginWorld = sourceWorld;
-    cone.DirectionWorld = directionWorld;
-    const math::Vector3d helperWorld =
-        math::Abs(directionWorld.Y) < FRAME_HELPER_COSINE ? math::Vector3d{0, 1, 0} : math::Vector3d{1, 0, 0};
-    const math::Vector3d crossWorld = math::Cross(helperWorld, directionWorld);
-    cone.AxisXWorld = crossWorld * (1 / math::Sqrt(math::Dot(crossWorld, crossWorld)));
-    cone.RadiusWorld = halfWidthWorld;
-    cone.NearWorld = endpointEscapeWorld;
-    cone.FarWorld = distanceWorld - endpointEscapeWorld;
-    // Ballistic term: the straight segment between the offset endpoints.
-    bool isBlocked = false;
-    rhi::RasterStatus status = TraceWaveBallistic(scene, cone, {}, isBlocked);
-    if (status != rhi::RasterStatus::Ready)
-    {
-        return status;
-    }
-    WaveField field{isBlocked == true ? 0.0 : 1.0, 0};
-    // Edges at the endpoints' own surfaces lie inside their escapes and are not diffracted.
-    WaveOriginEscape escape;
-    status = EscapeWaveOrigin(scene, cone, wavelengthWorld, false, escape);
-    if (status != rhi::RasterStatus::Ready)
-    {
-        return status;
-    }
-    if (escape.IsEntirelyBallistic == true)
-    {
-        outField = field;
-        return rhi::RasterStatus::Ready;
-    }
-    const float64 sourceEscapeWorld = escape.DistanceWorld;
-    math::EllipticalCone reverse = cone;
-    reverse.OriginWorld = receiverWorld;
-    reverse.DirectionWorld = -directionWorld;
-    status = EscapeWaveOrigin(scene, reverse, wavelengthWorld, false, escape);
-    if (status != rhi::RasterStatus::Ready)
-    {
-        return status;
-    }
-    if (escape.IsEntirelyBallistic == true)
-    {
-        outField = field;
-        return rhi::RasterStatus::Ready;
-    }
-    const WaveEdgeConnection connection
-    {
-        .SourceWorld = sourceWorld,
-        .ReceiverWorld = receiverWorld,
+        .BeginWorld = sourceWorld,
+        .EndWorld = receiverWorld,
         .DirectionWorld = directionWorld,
-        .AxisXWorld = cone.AxisXWorld,
-        .DistanceWorld = distanceWorld,
-        .WavelengthWorld = wavelengthWorld,
-        .SigmaWorldSquared = sigmaWorldSquared,
-        .EnvelopeRadiusWorld = halfWidthWorld,
-        .EndpointEscapeWorld = endpointEscapeWorld,
-        .RoundoffWorld = LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld,
-        .IsBallisticBlocked = isBlocked,
+        .LengthWorld = distanceWorld,
+        .RefractiveIndex = 1,
+        .IsReflectedEntry = false,
     };
-    cone.NearWorld = sourceEscapeWorld;
-    cone.FarWorld = math::Max(cone.NearWorld, distanceWorld - escape.DistanceWorld);
-    for (uint32 interaction = 0; interaction < LUDUS_WAVE_CONNECTION_REGIONS; ++interaction)
-    {
-        if (cone.NearWorld >= cone.FarWorld)
-        {
-            outField = field;
-            return rhi::RasterStatus::Ready;
-        }
-        WaveInteractionRegion region;
-        status = FindWaveInteractionRegion(scene, cone, region);
-        if (status != rhi::RasterStatus::Ready)
-        {
-            return status;
-        }
-        if (region.TriangleCount == 0)
-        {
-            outField = field;
-            return rhi::RasterStatus::Ready;
-        }
-        status = addRegionFields(scene, connection, region, field);
-        if (status != rhi::RasterStatus::Ready)
-        {
-            return status;
-        }
-        const float64 nextNearWorld = math::NextFloat64Up(region.Frustum.FarWorld);
-        cone.NearWorld = math::Min(cone.FarWorld, nextNearWorld);
-        if (cone.FarWorld - cone.NearWorld > LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld)
-        {
-            // Skip geometry that continues straight past the region, as the angular-spectrum operator does.
-            math::EllipticalCone skip = cone;
-            skip.OriginWorld = sourceWorld + directionWorld * cone.NearWorld;
-            skip.FarWorld = cone.FarWorld - cone.NearWorld;
-            skip.NearWorld = math::Min(skip.FarWorld, endpointEscapeWorld);
-            status = EscapeWaveOrigin(scene, skip, wavelengthWorld, false, escape);
-            if (status != rhi::RasterStatus::Ready)
-            {
-                return status;
-            }
-            cone.NearWorld = escape.IsEntirelyBallistic == true
-                                 ? cone.FarWorld
-                                 : math::Min(cone.FarWorld, cone.NearWorld + escape.DistanceWorld);
-        }
-    }
-    return rhi::RasterStatus::Unsupported;
+    chain.LegCount = 1;
+    return EvaluateWaveEdgeChain(scene, chain, wavelengthWorld, addRegionFields, outField);
+}
+rhi::RasterStatus EvaluateUtdChainConnection(const ReferenceSceneData& scene,
+                                             const WaveConnectionChain& chain,
+                                             float64 wavelengthWorld,
+                                             WaveField& outField) noexcept
+{
+    return EvaluateWaveEdgeChain(scene, chain, wavelengthWorld, AddRegionEdgeFields, outField);
 }
 rhi::RasterStatus EvaluateUtdConnectionToReceiver(const ReferenceSceneData& scene,
                                                   math::Vector3d sourceWorld,
