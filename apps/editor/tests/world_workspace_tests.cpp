@@ -48,6 +48,7 @@
 #include <ludus/gameplay/world/celestial_transform.hpp>
 
 #include "internal/workspace_style.h"
+#include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
@@ -781,9 +782,14 @@ TEST_CASE("World failed replacement keeps pending fields and a cancelled close p
         Write(replacement, QByteArrayLiteral("{damaged"));
         QMessageBox* boxOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
         REQUIRE(boxOrNull != nullptr);
-        boxOrNull->done(QMessageBox::Discard);
+        QAbstractButton* discardOrNull = boxOrNull->button(QMessageBox::Discard);
+        REQUIRE(discardOrNull != nullptr);
+        discardOrNull->click();
     });
     CHECK(view.Open(replacement) == false);
+    QLabel* problemOrNull = view.findChild<QLabel*>(QStringLiteral("worldOpenProblemText"));
+    REQUIRE(problemOrNull != nullptr);
+    CHECK(problemOrNull->text().contains(QStringLiteral("Invalid JSON")) == true);
     CHECK(view.Path() == path);
     CHECK(view.Dirty() == true);
     CHECK(field->text() == QStringLiteral("-"));
