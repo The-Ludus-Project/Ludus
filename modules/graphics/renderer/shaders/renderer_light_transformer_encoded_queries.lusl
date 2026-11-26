@@ -1,0 +1,56 @@
+// The Light Transformer query decoder over the encoder's GPU packet (light_transformer_encoder.hpp,
+// PrepareLightTransformerPacketQueries). packet is the encoder output: a header word, a world-to-model word, the
+// point tree, then each anchor's position and latent words. weights holds {query count, packet words, 0,
+// X groups}, the decoder weights and then each query's nine channels. The LUSL compiler assigns the three
+// buffer slots in declaration order and the renderer binds the generated
+// renderer_light_transformer_encoded_queries_slots.h constants. Its Slang original,
+// renderer_light_transformer_encoded_queries.slang, binds the results at slot 3; a renderer GPU test runs both
+// on one device and compares their results, and the original stays as the differential oracle (L5d wave 2).
+// The decoder itself is renderer_light_transformer_decoder.luslh.
+StructuredBuffer<uint32x4> packet;
+StructuredBuffer<float32> weights;
+RWStructuredBuffer<float32x4> results;
+
+#include "renderer_light_transformer_decoder.luslh"
+
+// The point tree follows the packet header.
+uint32x4 ReadPointSearchNodeWord(in uint32 index)
+{
+    return packet[index + LUDUS_LIGHT_ENCODER_PACKET_HEADER_WORDS];
+}
+uint32x4 ReadParameters()
+{
+    return uint32x4(asuint(weights[0]), packet[0].y, packet[0].z, asuint(weights[3]));
+}
+// The packet header names its own magic, anchor count, root and first anchor word; reject one the encoder did not
+// write before searching it. weights[1] is the packet's length in words.
+bool HasValidInputs()
+{
+    uint32x4 metadata = packet[0];
+    uint32 expectedAnchorWord = LUDUS_LIGHT_ENCODER_PACKET_HEADER_WORDS + metadata.y * LUDUS_POINT_SEARCH_NODE_WORDS;
+    return metadata.x == LUDUS_LIGHT_ENCODER_PACKET_MAGIC && metadata.y >= NEIGHBORS &&
+        metadata.y <= LUDUS_LIGHT_ENCODER_MAX_POINTS / LUDUS_LIGHT_ENCODER_ANCHOR_DIVISOR && metadata.z < metadata.y &&
+        metadata.w == expectedAnchorWord && metadata.w + metadata.y * ANCHOR_WORDS <= asuint(weights[1]);
+}
+// The decoder weights follow the one-word parameter header.
+float32 ReadWeight(in uint32 index)
+{
+    return weights[index + WORD_CHANNELS];
+}
+float32x3 ReadAnchorPosition(in uint32 anchor)
+{
+    return asfloat(packet[packet[0].w + anchor * ANCHOR_WORDS]).xyz;
+}
+float32 ReadAnchorFeature(in uint32 anchor, in uint32 channel)
+{
+    return asfloat(packet[packet[0].w + anchor * ANCHOR_WORDS + 1 + channel / WORD_CHANNELS])[channel % WORD_CHANNELS];
+}
+float32 ReadQueryFeature(in uint32 queryIndex, in uint32 channel)
+{
+    return weights[WORD_CHANNELS + LUDUS_LIGHT_TRANSFORMER_WEIGHT_COUNT +
+                   queryIndex * LUDUS_LIGHT_TRANSFORMER_QUERY_CHANNELS + channel];
+}
+void WriteResult(in uint32 queryIndex, in float32x4 value)
+{
+    results[queryIndex] = value;
+}

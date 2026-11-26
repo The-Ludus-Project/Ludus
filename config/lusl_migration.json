@@ -55,6 +55,22 @@
       "reason": "Differential oracle of the LUSL recipe renderer_grid.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
     },
     {
+      "path": "modules/graphics/renderer/shaders/renderer_light_transformer_decoder.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_light_transformer_decoder.lusl (L5d wave 2), and the decoder body that renderer_light_transformer_encoded_queries.slang includes; renderer_light_transformer_decoder.luslh is its LUSL port. The Light Transformer GPU suite runs both on one device and requires identical results"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_light_transformer_encoded_queries.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_light_transformer_encoded_queries.lusl (L5d wave 2): the Light Transformer GPU suite runs both on one device and requires identical results"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_light_transformer_encoder.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_light_transformer_encoder.lusl (L5d wave 2): the Light Transformer GPU suite runs both on one device and requires identical packets"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_light_transformer_query.slang",
+      "reason": "Per-query decoder that render_graph_ray.py splices into the Slang wrapper of render-graph packages with scene_interface.light_transformer; it reads the graph's GraphBuffer0 and migrates with the render-graph scene interface"
+    },
+    {
       "path": "modules/graphics/renderer/shaders/renderer_overlay.slang",
       "reason": "Differential oracle of the LUSL recipe renderer_overlay.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
     },

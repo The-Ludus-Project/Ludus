@@ -15,6 +15,8 @@
 
 #include <cstring>
 
+#include "renderer_light_transformer_encoder_slots.h"
+
 // Thanks to Bing Xu et al., "A Generalizable Light Transport 3D Embedding for
 // Global Illumination", SIGGRAPH 2026, section 3.3, https://arxiv.org/abs/2510.18189,
 // and Xiaoyang Wu et al., "Point Transformer V3: Simpler, Faster, Stronger",
@@ -35,6 +37,7 @@ constexpr usize DISPATCH_WORDS = LUDUS_LIGHT_ENCODER_DISPATCH_WORDS;
 constexpr usize HEADER_WORDS = LUDUS_LIGHT_ENCODER_HEADER_WORDS;
 constexpr usize BUFFER_COUNT = 4;
 constexpr usize ARENA_BUFFER = 3;
+namespace encoder_slots = ludus::shaders::renderer_light_transformer_encoder::slots;
 constexpr usize WEIGHT_CHUNK_BYTES = usize{64} * 1024 * 1024;
 constexpr uint32 AXES = 3;
 constexpr uint32 CPE_KERNEL_SIZE = 3;
@@ -936,10 +939,11 @@ Status PrepareLightTransformerEncoder(BorrowedView<const uint8> encoderAsset,
         }
         std::memcpy(dispatchData.GetData() + i * dispatchStride, instruction.GetData(), dispatchBytes);
         const uint32 weightBuffer = program.WeightBuffers[i];
-        bindings[i] = {{{0, 0, i * dispatchStride, dispatchBytes, false},
-                        {1, weightBuffer, 0, buffers[weightBuffer].Size, false},
-                        {2, 2, 0, buffers[2].Size, false},
-                        {static_cast<uint32>(ARENA_BUFFER), ARENA_BUFFER, 0, buffers[ARENA_BUFFER].Size, true}}};
+        // Slots come from the recipe's generated slot table (LUSL L5d wave 2).
+        bindings[i] = {{{encoder_slots::DISPATCH, 0, i * dispatchStride, dispatchBytes, false},
+                        {encoder_slots::WEIGHTS, weightBuffer, 0, buffers[weightBuffer].Size, false},
+                        {encoder_slots::TOPOLOGY, 2, 0, buffers[2].Size, false},
+                        {encoder_slots::TENSORS, ARENA_BUFFER, 0, buffers[ARENA_BUFFER].Size, true}}};
         kernels[i].NameOrNull = "Light Transformer encoder layer";
         if (i == 0)
         {

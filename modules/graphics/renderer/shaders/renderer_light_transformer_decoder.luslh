@@ -1,0 +1,340 @@
+// Thanks to Bing Xu et al., "A Generalizable Light Transport 3D Embedding for
+// Global Illumination", SIGGRAPH 2026, section 3.3, https://arxiv.org/abs/2510.18189.
+// Independent inference implementation of the released query decoder, including
+// its V(K(latent)) projection. Dropout is disabled; exported BatchNorm is folded.
+//
+// The cooperative query decoder shared by renderer_light_transformer_decoder.lusl, which reads CPU-uploaded
+// anchors, and renderer_light_transformer_encoded_queries.lusl, which reads the encoder's packet. It is the
+// LUSL port of renderer_light_transformer_decoder.slang (L5d wave 2). The including kernel declares its
+// buffers, so each recipe keeps its own slot table, and defines the reads declared below, so this body never
+// names a buffer. One group of DIMENSION invocations decodes one query.
+#pragma once
+
+#include "light_transformer_encoder_layout.luslh"
+#include "light_transformer_layout.luslh"
+#include "point_search_layout.luslh"
+
+static const uint32 DIMENSION = LUDUS_LIGHT_TRANSFORMER_DIMENSION;
+static const uint32 NEIGHBORS = LUDUS_LIGHT_TRANSFORMER_NEIGHBORS;
+static const uint32 NEIGHBOR_TILE_SIZE = NEIGHBORS / 2;
+static const uint32 ATTENTION_CHANNELS = LUDUS_LIGHT_TRANSFORMER_ATTENTION_CHANNELS;
+static const uint32 FEED_FORWARD_CHANNELS = LUDUS_LIGHT_TRANSFORMER_FEED_FORWARD_CHANNELS;
+static const uint32 WORD_CHANNELS = LUDUS_LIGHT_TRANSFORMER_WORD_CHANNELS;
+static const uint32 POSITION_CHANNELS = LUDUS_LIGHT_TRANSFORMER_POSITION_CHANNELS;
+static const uint32 ANCHOR_WORDS = 1 + DIMENSION / WORD_CHANNELS;
+static const uint32 QUERY_WORDS = LUDUS_LIGHT_TRANSFORMER_QUERY_WORDS;
+static const uint32 OUTPUT_CHANNELS = LUDUS_LIGHT_TRANSFORMER_OUTPUT_CHANNELS;
+static const uint32 MAX_NEIGHBORS = LUDUS_MAX_POINT_NEIGHBORS;
+static const uint32 ABSENT_NODE = LUDUS_ABSENT_POINT_NODE;
+static const float32 LOWEST_FINITE = -3.402823466e38;
+// The IEEE quiet NaN whose X component marks a query without a valid neighbourhood.
+static const uint32 QUIET_NAN_BITS = 0x7fc00000;
+
+// {query count, anchor count, point-tree root, X groups}, read at constant addresses so it stays uniform.
+uint32x4 ReadParameters();
+// Whether the kernel's inputs admit decoding at all; read at constant addresses, so it stays uniform.
+bool HasValidInputs();
+// Decoder parameter `index` of the light_transformer_layout.h order.
+float32 ReadWeight(in uint32 index);
+// Model-space position of anchor `anchor`.
+float32x3 ReadAnchorPosition(in uint32 anchor);
+// Latent channel `channel` of anchor `anchor`.
+float32 ReadAnchorFeature(in uint32 anchor, in uint32 channel);
+// Input channel `channel` (position, normal, then albedo) of query `queryIndex`.
+float32 ReadQueryFeature(in uint32 queryIndex, in uint32 channel);
+// Store the float4 result of query `queryIndex`.
+void WriteResult(in uint32 queryIndex, in float32x4 value);
+
+// FoundationGeometry's Slang query, which migrates with the shared libraries (L5d wave 5). It reads the tree
+// through the ReadPointSearchNodeWord callback that each including kernel defines.
+extern slang "point_search.slang"
+{
+    struct PointNeighbor
+    {
+        uint32 PointIndex;
+        float32 DistanceSquared;
+    };
+
+    bool FindPointNeighbors(in uint32 nodeCount,
+                            in uint32 root,
+                            in float32x3 positionWorld,
+                            in uint32 neighborCount,
+                            out PointNeighbor outNeighbors[MAX_NEIGHBORS]);
+};
+
+// Every array is written before the barrier that publishes it, so none needs a clear.
+groupshared uint32 neighborIndices[NEIGHBORS] = void;
+groupshared uint32 isValidQuery = void;
+groupshared float32 queryEmbedding[DIMENSION] = void;
+groupshared float32 temporary[DIMENSION] = void;
+groupshared float32 queryProjection[DIMENSION] = void;
+// Tile keys to fit Vulkan's minimum 16 KiB workgroup-memory guarantee.
+groupshared float32 keys[NEIGHBOR_TILE_SIZE * DIMENSION] = void;
+groupshared float32 positionHidden[NEIGHBORS * ATTENTION_CHANNELS] = void;
+groupshared float32 attentionHidden[NEIGHBORS * ATTENTION_CHANNELS] = void;
+groupshared float32 work[FEED_FORWARD_CHANNELS] = void;
+groupshared float32 queryMean = void;
+groupshared float32 queryInverseDeviation = void;
+
+float32 ReadPositionEmbedding(in uint32 offset, in uint32 neighbor, in uint32 channel)
+{
+    float32 value = ReadWeight(offset + ATTENTION_CHANNELS * DIMENSION + channel);
+    for (uint32 i = 0; i < ATTENTION_CHANNELS; ++i)
+    {
+        value += ReadWeight(offset + channel * ATTENTION_CHANNELS + i) *
+            positionHidden[neighbor * ATTENTION_CHANNELS + i];
+    }
+    return value;
+}
+void ComputeQueryStatistics(in uint32 lane)
+{
+    if (lane == 0)
+    {
+        float32 mean = 0;
+        for (uint32 i = 0; i < DIMENSION; ++i)
+        {
+            mean += queryEmbedding[i];
+        }
+        mean /= float32(DIMENSION);
+        float32 variance = 0;
+        for (uint32 i = 0; i < DIMENSION; ++i)
+        {
+            float32 difference = queryEmbedding[i] - mean;
+            variance += difference * difference;
+        }
+        queryMean = mean;
+        queryInverseDeviation = rsqrt(variance / float32(DIMENSION) + LUDUS_LIGHT_TRANSFORMER_QUERY_NORM_EPSILON);
+    }
+    barrier groupshared;
+}
+
+[stage(compute), threads(DIMENSION, 1, 1)]
+void ComputeMain(in uint32x3 groupId : GroupId, in uint32 lane : GroupIndex)
+{
+    uint32x4 parameters = ReadParameters();
+    uint32 queryIndex = groupId.x + groupId.y * parameters.w;
+    if (queryIndex >= parameters.x)
+    {
+        return;
+    }
+    // An invalid input packet, or fewer anchors than neighbours, admits no neighbourhood. Both tests are uniform,
+    // so the group leaves together before its first barrier.
+    if (HasValidInputs() == false || parameters.y < NEIGHBORS)
+    {
+        if (lane == 0)
+        {
+            WriteResult(queryIndex, float32x4(asfloat(QUIET_NAN_BITS), 0, 0, 0));
+        }
+        return;
+    }
+    float32x3 positionModel =
+        float32x3(ReadQueryFeature(queryIndex, 0), ReadQueryFeature(queryIndex, 1), ReadQueryFeature(queryIndex, 2));
+    if (lane == 0)
+    {
+        PointNeighbor neighbors[MAX_NEIGHBORS];
+        bool hasNeighbors = FindPointNeighbors(parameters.y, parameters.z, positionModel, NEIGHBORS, out neighbors);
+        for (uint32 i = 0; i < NEIGHBORS; ++i)
+        {
+            if (neighbors[i].PointIndex >= parameters.y)
+            {
+                hasNeighbors = false;
+            }
+        }
+        isValidQuery = hasNeighbors == true ? 1 : 0;
+        // A failed search decodes anchor 0, which exists, instead of leaving early: isValidQuery is group memory,
+        // so a return on it would put every later barrier in non-uniform control flow. Its result is discarded.
+        for (uint32 i = 0; i < NEIGHBORS; ++i)
+        {
+            neighborIndices[i] = hasNeighbors == true ? neighbors[i].PointIndex : 0;
+        }
+    }
+    barrier groupshared;
+    uint32 offset = 0;
+    float32 value = ReadWeight(LUDUS_LIGHT_TRANSFORMER_QUERY_CHANNELS * DIMENSION + lane);
+    for (uint32 i = 0; i < LUDUS_LIGHT_TRANSFORMER_QUERY_CHANNELS; ++i)
+    {
+        value += ReadWeight(lane * LUDUS_LIGHT_TRANSFORMER_QUERY_CHANNELS + i) * ReadQueryFeature(queryIndex, i);
+    }
+    queryEmbedding[lane] = max(value, 0);
+    offset += LUDUS_LIGHT_TRANSFORMER_AFFINE_SIZE(LUDUS_LIGHT_TRANSFORMER_QUERY_CHANNELS, DIMENSION);
+    barrier groupshared;
+    value = ReadWeight(offset + DIMENSION * DIMENSION + lane);
+    for (uint32 i = 0; i < DIMENSION; ++i)
+    {
+        value += ReadWeight(offset + lane * DIMENSION + i) * queryEmbedding[i];
+    }
+    temporary[lane] = max(value, 0);
+    barrier groupshared;
+    queryEmbedding[lane] = temporary[lane];
+    barrier groupshared;
+
+    for (uint32 block = 0; block < LUDUS_LIGHT_TRANSFORMER_DEPTH; ++block)
+    {
+        uint32 blockOffset = LUDUS_LIGHT_TRANSFORMER_PRE_QUERY_SIZE + block * LUDUS_LIGHT_TRANSFORMER_BLOCK_SIZE;
+        uint32 attentionNorm = blockOffset;
+        uint32 feedForwardNorm = attentionNorm + 2 * DIMENSION;
+        uint32 queryWeights = feedForwardNorm + 2 * DIMENSION;
+        uint32 keyWeights = queryWeights + DIMENSION * DIMENSION;
+        uint32 valueWeights = keyWeights + DIMENSION * DIMENSION;
+        uint32 positionFirst = valueWeights + DIMENSION * DIMENSION;
+        uint32 positionSecond =
+            positionFirst + LUDUS_LIGHT_TRANSFORMER_AFFINE_SIZE(POSITION_CHANNELS, ATTENTION_CHANNELS);
+        uint32 attentionFirst = positionSecond + LUDUS_LIGHT_TRANSFORMER_AFFINE_SIZE(ATTENTION_CHANNELS, DIMENSION);
+        uint32 attentionSecond = attentionFirst + LUDUS_LIGHT_TRANSFORMER_AFFINE_SIZE(DIMENSION, ATTENTION_CHANNELS);
+        uint32 attentionOutput = attentionSecond + LUDUS_LIGHT_TRANSFORMER_AFFINE_SIZE(ATTENTION_CHANNELS, DIMENSION);
+        uint32 feedForwardFirst = attentionOutput + LUDUS_LIGHT_TRANSFORMER_AFFINE_SIZE(DIMENSION, DIMENSION);
+        uint32 feedForwardSecond =
+            feedForwardFirst + LUDUS_LIGHT_TRANSFORMER_AFFINE_SIZE(DIMENSION, FEED_FORWARD_CHANNELS);
+
+        ComputeQueryStatistics(lane);
+        temporary[lane] = (queryEmbedding[lane] - queryMean) * queryInverseDeviation * ReadWeight(attentionNorm + lane) +
+            ReadWeight(attentionNorm + DIMENSION + lane);
+        barrier groupshared;
+        value = 0;
+        for (uint32 i = 0; i < DIMENSION; ++i)
+        {
+            value += ReadWeight(queryWeights + lane * DIMENSION + i) * temporary[i];
+        }
+        queryProjection[lane] = value;
+        for (uint32 index = lane; index < NEIGHBORS * ATTENTION_CHANNELS; index += DIMENSION)
+        {
+            uint32 neighbor = index / ATTENTION_CHANNELS;
+            uint32 channel = index % ATTENTION_CHANNELS;
+            float32x3 relativePositionModel = ReadAnchorPosition(neighborIndices[neighbor]) - positionModel;
+            value = ReadWeight(positionFirst + POSITION_CHANNELS * ATTENTION_CHANNELS + channel);
+            for (uint32 i = 0; i < POSITION_CHANNELS; ++i)
+            {
+                value += ReadWeight(positionFirst + channel * POSITION_CHANNELS + i) * relativePositionModel[i];
+            }
+            positionHidden[index] = max(value, 0);
+        }
+        barrier groupshared;
+        for (uint32 neighborBegin = 0; neighborBegin < NEIGHBORS; neighborBegin += NEIGHBOR_TILE_SIZE)
+        {
+            for (uint32 localNeighbor = 0; localNeighbor < NEIGHBOR_TILE_SIZE; ++localNeighbor)
+            {
+                value = 0;
+                for (uint32 i = 0; i < DIMENSION; ++i)
+                {
+                    value += ReadWeight(keyWeights + lane * DIMENSION + i) *
+                        ReadAnchorFeature(neighborIndices[neighborBegin + localNeighbor], i);
+                }
+                keys[localNeighbor * DIMENSION + lane] = value;
+            }
+            barrier groupshared;
+            for (uint32 index = lane; index < NEIGHBOR_TILE_SIZE * ATTENTION_CHANNELS; index += DIMENSION)
+            {
+                uint32 localNeighbor = index / ATTENTION_CHANNELS;
+                uint32 neighbor = neighborBegin + localNeighbor;
+                uint32 channel = index % ATTENTION_CHANNELS;
+                value = ReadWeight(attentionFirst + DIMENSION * ATTENTION_CHANNELS + channel);
+                for (uint32 i = 0; i < DIMENSION; ++i)
+                {
+                    float32 difference = keys[localNeighbor * DIMENSION + i] - queryProjection[i] +
+                        ReadPositionEmbedding(positionSecond, neighbor, i);
+                    value += ReadWeight(attentionFirst + channel * DIMENSION + i) * difference;
+                }
+                attentionHidden[neighbor * ATTENTION_CHANNELS + channel] = max(value, 0);
+            }
+            barrier groupshared;
+        }
+        // Every element is written by the logit loop below before it is read.
+        float32 logits[NEIGHBORS] = void;
+        float32 maximum = LOWEST_FINITE;
+        for (uint32 neighbor = 0; neighbor < NEIGHBORS; ++neighbor)
+        {
+            value = ReadWeight(attentionSecond + ATTENTION_CHANNELS * DIMENSION + lane);
+            for (uint32 i = 0; i < ATTENTION_CHANNELS; ++i)
+            {
+                value += ReadWeight(attentionSecond + lane * ATTENTION_CHANNELS + i) *
+                    attentionHidden[neighbor * ATTENTION_CHANNELS + i];
+            }
+            logits[neighbor] = value;
+            maximum = max(maximum, value);
+        }
+        float32 denominator = 0;
+        for (uint32 neighbor = 0; neighbor < NEIGHBORS; ++neighbor)
+        {
+            logits[neighbor] = exp(logits[neighbor] - maximum);
+            denominator += logits[neighbor];
+        }
+        float32 aggregate = 0;
+        for (uint32 neighborBegin = 0; neighborBegin < NEIGHBORS; neighborBegin += NEIGHBOR_TILE_SIZE)
+        {
+            for (uint32 localNeighbor = 0; localNeighbor < NEIGHBOR_TILE_SIZE; ++localNeighbor)
+            {
+                value = 0;
+                for (uint32 i = 0; i < DIMENSION; ++i)
+                {
+                    value += ReadWeight(keyWeights + lane * DIMENSION + i) *
+                        ReadAnchorFeature(neighborIndices[neighborBegin + localNeighbor], i);
+                }
+                keys[localNeighbor * DIMENSION + lane] = value;
+            }
+            barrier groupshared;
+            for (uint32 localNeighbor = 0; localNeighbor < NEIGHBOR_TILE_SIZE; ++localNeighbor)
+            {
+                uint32 neighbor = neighborBegin + localNeighbor;
+                value = ReadPositionEmbedding(positionSecond, neighbor, lane);
+                // The released decoder applies V to projected K, not raw latents.
+                for (uint32 i = 0; i < DIMENSION; ++i)
+                {
+                    value += ReadWeight(valueWeights + lane * DIMENSION + i) * keys[localNeighbor * DIMENSION + i];
+                }
+                aggregate += value * (logits[neighbor] / denominator);
+            }
+            barrier groupshared;
+        }
+        work[lane] = aggregate;
+        barrier groupshared;
+        value = ReadWeight(attentionOutput + DIMENSION * DIMENSION + lane);
+        for (uint32 i = 0; i < DIMENSION; ++i)
+        {
+            value += ReadWeight(attentionOutput + lane * DIMENSION + i) * work[i];
+        }
+        queryEmbedding[lane] += value;
+        barrier groupshared;
+        ComputeQueryStatistics(lane);
+        temporary[lane] = (queryEmbedding[lane] - queryMean) * queryInverseDeviation * ReadWeight(feedForwardNorm + lane) +
+            ReadWeight(feedForwardNorm + DIMENSION + lane);
+        barrier groupshared;
+        for (uint32 channel = lane; channel < FEED_FORWARD_CHANNELS; channel += DIMENSION)
+        {
+            value = ReadWeight(feedForwardFirst + DIMENSION * FEED_FORWARD_CHANNELS + channel);
+            for (uint32 i = 0; i < DIMENSION; ++i)
+            {
+                value += ReadWeight(feedForwardFirst + channel * DIMENSION + i) * temporary[i];
+            }
+            work[channel] = max(value, 0);
+        }
+        barrier groupshared;
+        value = ReadWeight(feedForwardSecond + FEED_FORWARD_CHANNELS * DIMENSION + lane);
+        for (uint32 i = 0; i < FEED_FORWARD_CHANNELS; ++i)
+        {
+            value += ReadWeight(feedForwardSecond + lane * FEED_FORWARD_CHANNELS + i) * work[i];
+        }
+        queryEmbedding[lane] += value;
+        barrier groupshared;
+    }
+    offset =
+        LUDUS_LIGHT_TRANSFORMER_PRE_QUERY_SIZE + LUDUS_LIGHT_TRANSFORMER_DEPTH * LUDUS_LIGHT_TRANSFORMER_BLOCK_SIZE;
+    if (lane == 0)
+    {
+        if (isValidQuery == 0)
+        {
+            WriteResult(queryIndex, float32x4(asfloat(QUIET_NAN_BITS), 0, 0, 0));
+            return;
+        }
+        float32x3 prediction = 0;
+        for (uint32 channel = 0; channel < OUTPUT_CHANNELS; ++channel)
+        {
+            value = ReadWeight(offset + DIMENSION * OUTPUT_CHANNELS + channel);
+            for (uint32 i = 0; i < DIMENSION; ++i)
+            {
+                value += ReadWeight(offset + channel * DIMENSION + i) * queryEmbedding[i];
+            }
+            prediction[channel] = value > LUDUS_LIGHT_TRANSFORMER_SOFTPLUS_THRESHOLD ? value : log(1 + exp(value));
+        }
+        WriteResult(queryIndex, float32x4(prediction, 0));
+    }
+}

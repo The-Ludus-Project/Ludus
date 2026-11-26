@@ -35,7 +35,9 @@ def require_shader_helpers(sdk):
     """Keep required inventory admission active under Python optimization."""
     for name in ('photon_layout.h', 'light_transformer_layout.h', 'light_transformer_encoder_layout.h',
                  'point_search.slang', 'point_search_layout.h', 'renderer_light_transformer_query.slang',
-                 'renderer_light_transformer_encoder.slang', 'renderer_light_transformer_encoded_queries.slang'):
+                 'renderer_light_transformer_encoder.lusl', 'renderer_light_transformer_encoded_queries.lusl',
+                 'renderer_light_transformer_decoder.luslh', 'light_transformer_layout.luslh',
+                 'light_transformer_encoder_layout.luslh'):
         path = sdk / 'lib/cmake/Ludus/shaders' / name
         if not path.is_file():
             raise RuntimeError(f'Missing installed shader helper: {path}; reinstall the SDK with shader recipes')
