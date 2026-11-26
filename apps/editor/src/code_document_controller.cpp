@@ -267,7 +267,7 @@ void CodeDocumentController::Synchronize(bool shouldRestoreView)
         const QTextCursor current = mEditor.textCursor();
         if (isNewBinding == true)
         {
-            mEditor.setPlainText(text);
+            mEditor.ReplaceHostedText(text);
         }
         else
         {

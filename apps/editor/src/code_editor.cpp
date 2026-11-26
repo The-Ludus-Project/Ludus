@@ -48,6 +48,7 @@
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
+#include <QShowEvent>
 #include <QSignalBlocker>
 #include <QStringList>
 #include <QStringView>
@@ -834,6 +835,20 @@ void CodeEditor::SetLanguage(CodeLanguage language)
     mSelectionUpdate.start(0);
 }
 
+void CodeEditor::ReplaceHostedText(const QString& text)
+{
+    // The widget setter reapplies its insertion format across the whole document.
+    // A source projection uses the document's default format and syntax colors.
+    // Thanks to The Qt Company, Qt 6.12 QWidgetTextControlPrivate::setContent:
+    // https://github.com/qt/qtbase/blob/v6.12.0/src/widgets/widgets/qwidgettextcontrol.cpp#L421-L440
+    document()->setPlainText(text);
+    setTextCursor(QTextCursor(document()));
+    if (isVisible() == true)
+    {
+        refreshInitialVisibleSyntax();
+    }
+}
+
 void CodeEditor::SetLanguageServerStatus(const QString& text, const QString& detail)
 {
     if (mLanguageServerStatus != text || mLanguageServerDetail != detail)
@@ -1012,6 +1027,15 @@ void CodeEditor::RevealTextCursor(const QTextCursor& cursor)
 CodeStructureView& CodeEditor::GetStructure() const noexcept
 {
     return *mStructure;
+}
+
+void CodeEditor::refreshInitialVisibleSyntax()
+{
+    if (mLanguage != CodeLanguage::PlainText && mHighlighter->UsesVisibleFallback() == true)
+    {
+        mVisibleSyntaxUpdate.stop();
+        refreshVisibleSyntax();
+    }
 }
 
 void CodeEditor::refreshVisibleSyntax()
@@ -1635,6 +1659,14 @@ void CodeEditor::updateGutterWidth()
     const QRect rectangle = contentsRect();
     mGutter->setGeometry(rectangle.left(), rectangle.top() + header, width, qMax(0, rectangle.height() - header));
     mStructure->LayoutHeader(rectangle, width);
+}
+
+void CodeEditor::showEvent(QShowEvent* event)
+{
+    QPlainTextEdit::showEvent(event);
+    // A newly opened tab was still hidden when its text was bound. Refresh
+    // against the visible viewport before Qt sends its first paint.
+    refreshInitialVisibleSyntax();
 }
 
 void CodeEditor::resizeEvent(QResizeEvent* event)

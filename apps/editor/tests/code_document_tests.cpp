@@ -2301,6 +2301,37 @@ QColor GetForeground(const CodeEditor& editor, int position)
 }
 } // namespace
 
+TEST_CASE("A large hosted source colors visible code before the event loop runs", "[editor][text][history]")
+{
+    constexpr int32 SOURCE_LINES = 5000;
+    const QByteArray line = QByteArrayLiteral("void Paint();\n");
+    const QByteArray text = line.repeated(SOURCE_LINES);
+    CodeEditor editor;
+    editor.resize(900, 640);
+    editor.SetLanguage(CodeLanguage::Cpp);
+    MemoryCodeDocument document(text);
+    CodeDocumentController controller(editor);
+    SECTION("The source is bound before the editor is shown")
+    {
+        controller.Bind(&document);
+        editor.show();
+    }
+    SECTION("The view replaces its binding while already visible")
+    {
+        MemoryCodeDocument previous(QByteArrayLiteral("void Previous();\n"));
+        controller.Bind(&previous);
+        editor.show();
+        editor.moveCursor(QTextCursor::End);
+        controller.Bind(&document);
+    }
+    CHECK(editor.textCursor().position() == 0);
+    CHECK(editor.document()->blockCount() == SOURCE_LINES + 1);
+    CHECK(GetForeground(editor, 0).isValid() == true);
+    CHECK(GetForeground(editor, static_cast<int32>(line.size())).isValid() == true);
+    CHECK(document.GetState().Text == text);
+    CHECK(document.CanUndo() == false);
+}
+
 TEST_CASE("LUSL sources color their keywords and fixed-width types", "[editor][text][lusl]")
 {
     CodeEditor editor;
