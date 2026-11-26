@@ -1,6 +1,7 @@
 """Drive a cooked floor and wall through the actual macOS player."""
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import struct
@@ -9,7 +10,7 @@ import sys
 import tempfile
 
 
-def make_fixture(path):
+def make_fixture(path, orientation=(0, 0, 0, 1)):
     # Version 4 indexed LUSCN. The wall faces +Z two metres in front of spawn.
     scene = bytearray(b"LUSCN01\0")
 
@@ -41,10 +42,20 @@ def make_fixture(path):
     digest = hashlib.sha256(scene).hexdigest()
     header = dict(version=2, renderer="raster", world="room", source="room.world.json", worldSha256=digest,
                   sceneSha256=digest, entities=[dict(id="room"), dict(id="start", spawn=dict(
-                      eyeWorld=[0, 1.601, 0], orientation=[0, 0, 0, 1], speed=4))],
+                      eyeWorld=[0, 1.601, 0], orientation=orientation, speed=4))],
                   objects=[dict(entity="room", sourceId=str(i), staticCollider=True) for i in (1, 2)],
                   artifacts=[], warnings=[], earthObserver={}, atmosphere=sky, climate=None)
     path.write_bytes(json.dumps(header).encode() + b"\n" + scene)
+
+
+def run_fixture(player, path):
+    run = subprocess.run([player, path, "start", "--verify-fixture"], capture_output=True, text=True, timeout=180)
+    output = run.stdout + run.stderr
+    if run.returncode:
+        raise RuntimeError(f"Player exited {run.returncode} in {path.name}: {output[-4000:]}")
+    poses = {int(frame): tuple(map(float, values)) for frame, *values in re.findall(
+        r"Fixture frame (\d+) eye (\S+) (\S+) (\S+) yaw (\S+) pitch (\S+)", output)}
+    return output, poses
 
 
 def verify(player):
@@ -55,12 +66,7 @@ def verify(player):
             failed = subprocess.run([player, file, spawn], capture_output=True, text=True, timeout=15)
             if failed.returncode == 0 or repair not in failed.stdout + failed.stderr:
                 raise RuntimeError(f"Expected repair '{repair}': {failed.stdout}{failed.stderr}")
-        run = subprocess.run([player, path, "start", "--verify-fixture"], capture_output=True, text=True, timeout=180)
-        output = run.stdout + run.stderr
-        if run.returncode:
-            raise RuntimeError(f"Player exited {run.returncode}: {output[-4000:]}")
-        poses = {int(frame): tuple(map(float, values)) for frame, *values in
-                 re.findall(r"Fixture frame (\d+) eye (\S+) (\S+) (\S+) yaw (\S+)", output)}
+        output, poses = run_fixture(player, path)
         # Walk into the wall, then strafe right along an unobstructed route.
         if not (-1.80 < poses[59][2] < -1.70 and poses[120][0] > 3.5
                 and max(p[1] for p in poses.values()) > 2.3 and poses[120][3] < 0):
@@ -71,6 +77,24 @@ def verify(player):
                 or any(not (rgb and textures and lights) for _, rgb, textures, lights in samples)):
             raise RuntimeError(f"Expected distinct wall and sky pixels with textures and shadow maps: {samples}")
         print(f"Metal presented {len(poses)} frames. Wall hit z={poses[59][2]}, clear strafe x={poses[120][0]}.")
+        # Thanks to Eric Arnebäck, Showing the Correctness of Quaternion Rotation,
+        # https://erkaman.github.io/posts/quaternion_rotation.html, for the vector action.
+        # A quarter-turn pitch followed by +90° yaw sends local -Z to ±Y and +X
+        # to -Z. The down quaternion uses the equivalent negated representation.
+        for spawn, orientation, expected_pitch in (
+            ("look-up", (0.5, 0.5, -0.5, 0.5), 1.4),
+            ("look-down", (0.5, -0.5, -0.5, -0.5), -1.4),
+        ):
+            vertical_path = path.with_name(f"{spawn}.luplay")
+            make_fixture(vertical_path, orientation)
+            _, poses = run_fixture(player, vertical_path)
+            _, _, _, yaw, pitch = poses[0]
+            if (not math.isclose(yaw, math.pi / 2, abs_tol=1e-5)
+                    or not math.isclose(pitch, expected_pitch, abs_tol=1e-5)
+                    or poses[59][0] >= -3.5
+                    or not math.isclose(poses[120][3], yaw - 0.0025, abs_tol=1e-5)):
+                raise RuntimeError(f"Unexpected {spawn} poses: {poses[0]}, {poses[59]}, {poses[120]}")
+            print(f"Metal presented {len(poses)} frames at {spawn}. Initial yaw={yaw}, pitch={pitch}.")
 
 
 if __name__ == "__main__":

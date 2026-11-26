@@ -264,6 +264,10 @@ graph, including supported material maps, analytic lights, shadows and static
 Atmosphere. A project using this built-in path can launch with the Editor and
 its tools alone.
 
+The player applies its normal look limits to the starting pitch. When the
+authored view points straight up or down, the spawn's right axis sets the initial
+walking heading.
+
 Use **WASD** to walk and **Space** to jump. In a separate window, **Enter**
 captures the mouse and **Escape** releases it. In an editor-hosted viewport,
 click to capture the pointer and use **Shift+F1** to return it to the Editor.
@@ -284,7 +288,8 @@ otherwise unreadable snapshot asks for a fresh preparation instead.
 
 The macOS desktop fixture exercises the native player with an authored textured
 wall, a floor collider, directional shadows and static Atmosphere. It verifies
-presented frames, a blocked walk, an unobstructed strafe, jump and look.
+presented frames, a blocked walk, an unobstructed strafe, jump and look. It also
+checks initial aim and continued input from straight-up and straight-down spawns.
 
 ```sh
 python3 apps/first_person_player/tests/native_fixture.py /path/to/ludus_first_person_player

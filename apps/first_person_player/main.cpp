@@ -4,6 +4,7 @@
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
 #include <ludus/foundation/math/projection.hpp>
+#include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
@@ -108,11 +109,27 @@ bool Play(const PlayableSnapshot& snapshot,
     {
         return false;
     }
-    const math::Vector3 directionWorld = math::Rotate(spawn.Pose.Orientation, {0, 0, -1});
-    camera::CameraControlView aim{
-        math::Atan2(-directionWorld.X, -directionWorld.Z),
-        math::Atan2(directionWorld.Y,
-                    math::Sqrt(directionWorld.X * directionWorld.X + directionWorld.Z * directionWorld.Z))};
+    constexpr camera::CameraLookSettings LOOK_SETTINGS{};
+    // Near vertical, float32 cancellation can swamp the projected forward axis.
+    // Camera right is horizontal there and still gives the authored heading.
+    constexpr float32 MINIMUM_HORIZONTAL_FORWARD_LENGTH = 1e-6F;
+    const math::Vector3 spawnForwardWorld = math::Rotate(spawn.Pose.Orientation, {0, 0, -1});
+    const float32 horizontalForwardLength =
+        math::Sqrt(spawnForwardWorld.X * spawnForwardWorld.X + spawnForwardWorld.Z * spawnForwardWorld.Z);
+    float32 yaw;
+    if (horizontalForwardLength > MINIMUM_HORIZONTAL_FORWARD_LENGTH)
+    {
+        yaw = math::Atan2(-spawnForwardWorld.X, -spawnForwardWorld.Z);
+    }
+    else
+    {
+        const math::Vector3 rightWorld = math::Rotate(spawn.Pose.Orientation, {1, 0, 0});
+        yaw = math::Atan2(-rightWorld.Z, rightWorld.X);
+    }
+    camera::CameraControlView aim{yaw,
+                                  math::Clamp(math::Atan2(spawnForwardWorld.Y, horizontalForwardLength),
+                                              LOOK_SETTINGS.Pitch.Minimum,
+                                              LOOK_SETTINGS.Pitch.Maximum)};
     math::Vector3d eyeWorld = spawn.Pose.Position;
     Controls controls;
     const InputAttachment inputAttachment{inoutWindow};
@@ -182,8 +199,11 @@ bool Play(const PlayableSnapshot& snapshot,
             motion.Horizontal = frames == FIXTURE_LOOK_FRAME ? 1 : 0;
         }
         const math::Vector3d priorEyeWorld = eyeWorld;
-        if (camera::TryAdvanceControlView(aim, {{motion.Horizontal, motion.Vertical}, {}}, {}, elapsed, aim) !=
-            camera::CameraStatus::Success)
+        if (camera::TryAdvanceControlView(aim,
+                                          {{motion.Horizontal, motion.Vertical}, {}},
+                                          LOOK_SETTINGS,
+                                          elapsed,
+                                          aim) != camera::CameraStatus::Success)
         {
             return false;
         }
@@ -291,12 +311,13 @@ bool Play(const PlayableSnapshot& snapshot,
                                report.Resources.DirectionalShadowLights);
             }
             LUDUS_LOG_INFO(LOG_PLAYER,
-                           "Fixture frame {} eye {} {} {} yaw {}",
+                           "Fixture frame {} eye {} {} {} yaw {} pitch {}",
                            frames,
                            eyeWorld.X,
                            eyeWorld.Y,
                            eyeWorld.Z,
-                           aim.Yaw);
+                           aim.Yaw,
+                           aim.Pitch);
             if (frames == FIXTURE_LOOK_FRAME)
             {
                 return true;
