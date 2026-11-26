@@ -139,12 +139,7 @@ math::Vector3d WidenVector(math::Vector3 value) noexcept
 {
     return {static_cast<float64>(value.X), static_cast<float64>(value.Y), static_cast<float64>(value.Z)};
 }
-/// Coordinates in the interaction frustum's transverse basis, in world-distance units.
-struct ProjectedPointFrustum final
-{
-    float64 X;
-    float64 Y;
-};
+} // namespace
 bool IsProjectedPointBlocked(const ReferenceSceneData& scene,
                              const WaveInteractionRegion& region,
                              const ProjectedPointFrustum& positionFrustum) noexcept
@@ -192,7 +187,6 @@ bool IsProjectedPointBlocked(const ReferenceSceneData& scene,
     }
     return false;
 }
-} // namespace
 rhi::RasterStatus TraceWaveBallistic(const ReferenceSceneData& scene,
                                      math::EllipticalCone rayCone,
                                      const WaveExcludedTriangles& excluded,

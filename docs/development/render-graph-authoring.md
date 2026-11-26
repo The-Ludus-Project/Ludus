@@ -11519,10 +11519,12 @@ and physical-device qualification remain distinct from any local macOS result.
 The **Wave tracing — scene optical transport** template (`wave-tracing`) uses the
 selected World's camera, geometry, lights, emissive meshes, textures and supported
 reflection materials. It samples truncated surface paths, with coherent scalar
-connections to finite lights. A connection either propagates a Gaussian mode through
-an angular-spectrum lattice (the default) or, with `IS_WT_UTD_ENABLED`, adds
-[UTD edge diffraction](#utd-edge-diffraction-connections) to the straight ray. Its
-CPU oracle and GPU implementation estimate the same declared integral for each
+connections to finite lights. `WT_OPTICAL_CONNECTION` selects the connection
+operator: `0` (the default) propagates a Gaussian mode through an angular-spectrum
+lattice, `1` adds [UTD edge diffraction](#utd-edge-diffraction-connections) to the
+straight ray, and `2` adds
+[Fraunhofer edge diffraction](#fraunhofer-edge-diffraction-connections). Its CPU
+oracle and GPU implementation estimate the same declared integral for each
 operator; transport, shading and accumulation execute on the GPU when GPU compute
 is selected.
 
@@ -11530,7 +11532,12 @@ The design adopts scene interaction regions and coherent field sums from Shlomi
 Steinberg and Matt Pharr,
 [Wave Tracing: Generalizing The Path Integral To Wave Optics](https://doi.org/10.1111/cgf.70322),
 Computer Graphics Forum 45(2), e70322 (2026), Sections 3.1 and 4.2, and its UTD-based
-free-space diffraction from Section 5.2.2. Thank you to the authors; to Robert G.
+and Fraunhofer edge-based free-space diffraction from Section 5.2.2. Thank you to the
+authors; to Shlomi Steinberg, Ravi Ramamoorthi, Benedikt Bitterli, Arshiya
+Mollazainali, Eugene d'Eon and Matt Pharr,
+[A Free-Space Diffraction BSDF](https://doi.org/10.1145/3658166), ACM Transactions on
+Graphics 43(4), Article 113 (2024), for the edge-based formulation of Fraunhofer
+diffraction; to Robert G.
 Kouyoumjian and Prabhakar H. Pathak,
 [A Uniform Geometrical Theory of Diffraction for an Edge in a Perfectly Conducting Surface](https://doi.org/10.1109/PROC.1974.9651),
 Proceedings of the IEEE 62(11), 1448–1461 (1974), for the wedge coefficient and its
@@ -11623,15 +11630,16 @@ with an actionable diagnostic, preserving the last accepted image.
 
 This is a scene-capable **scalar paraxial connection profile**, with classical RGB
 surface scattering between connections. It is not the paper's full polarimetric
-bidirectional cone path tracer: Fraunhofer edge operators, multiple and corner
-edge diffraction, interference-aware material-direction rejection sampling,
-coherent reflection/transmission between surface events and spectral material
-transport are not implemented here. The
-[UTD connection](#utd-edge-diffraction-connections) covers single edge diffraction.
+bidirectional cone path tracer: multiple edge diffraction, UTD corner diffraction,
+interference-aware material-direction rejection sampling, coherent
+reflection/transmission between surface events and spectral material transport
+are not implemented here. The [UTD](#utd-edge-diffraction-connections) and
+[Fraunhofer](#fraunhofer-edge-diffraction-connections) connections cover single
+edge diffraction.
 
 ### UTD edge diffraction connections
 
-Set `IS_WT_UTD_ENABLED` to replace the angular-spectrum lattice with the paper's
+Set `WT_OPTICAL_CONNECTION` to `1` to replace the angular-spectrum lattice with the paper's
 UTD-based free-space diffraction (Section 5.2.2). A finite light connection from
 source `S` to receiver `R`, of length `r`, then has the field, relative to the
 unobstructed free-space field `exp(-i*k*r)/r`,
@@ -11708,7 +11716,7 @@ Evidence for the UTD connection, on an Apple M5 with Metal:
   `2.3e-6` and `6.7e-5`; the test admits `5e-4`.
 - The `[wave-utd]` raw-AOV case of `reference_compute_tests.cpp` meets the same CPU
   oracle and GPU compute bounds as the lattice operator's optical case.
-- `wave_scene_graph_tests.cpp` cooks the template with `IS_WT_UTD_ENABLED` and
+- `wave_scene_graph_tests.cpp` cooks the template with `WT_OPTICAL_CONNECTION` `1` and
   renders the open, blocked and half-screen Worlds. On the half screen it checks
   transmission between 0.15 and 0.25 on the shadowed side and between 0.25 and 0.4
   on the lit side.
@@ -11719,16 +11727,122 @@ Evidence for the UTD connection, on an Apple M5 with Metal:
   0.00128 for UTD and 0.00110 for the lattice, with largest component differences
   of 0.032. The two operators' mean radiances differ by 0.006%.
 
+### Fraunhofer edge diffraction connections
+
+Set `WT_OPTICAL_CONNECTION` to `2` to replace the angular-spectrum lattice with the
+paper's Fraunhofer edge-based free-space diffraction (Section 5.2.2), which follows
+Steinberg et al.'s free-space diffraction BSDF. The connection keeps the lattice
+operator's Gaussian mode. For a receiver on the axis at `z = L`, a point at depth
+`z` and transverse position `rho` couples through the kernel
+`exp(-beta(z)*rho*rho/2)`, the mode at that depth followed by Fresnel propagation to
+the receiver:
+
+```text
+beta(z) = 1/(Sigma + i*z/k) - i*k/(L - z)
+u(R)    = U_ballistic + sum over boundary edges e of
+          (1/(2*pi)) * integral along e of exp(-beta(z)*rho*rho/2) * dot(rho, m)/dot(rho, rho) ds
+```
+
+`U_ballistic` is the same binary straight-ray term as the UTD connection. The
+obstacle is the union of the interaction region's triangles projected along the
+connection axis, and `m` is the unit normal of a projected edge, pointing away from
+the obstacle. For a thin screen at one depth, the divergence theorem makes this
+exact: Kirchhoff's obstacle integral of the Gaussian kernel equals the ballistic
+step plus this boundary-diffraction wave (the Maggi–Rubinowicz decomposition).
+Each edge diffracts exactly half the ballistic field where it crosses the axis, so
+the field is continuous across shadow boundaries. A straight knife edge gives one
+quarter of the power on its boundary.
+
+The edge integral is the paper's Fraunhofer edge-diffracted wave (Steinberg et al.,
+Eqs. 22, 23, 26 and 27). Each edge is cut into segments. On each segment the kernel's
+amplitude is linear between its ends and its phase is linear, the Fraunhofer
+approximation. The segment then integrates in closed form to
+`exp(i*phi_mid)*(mean*sinc(x) - i*change*(cos(x) - sinc(x))/(2*x))`, where `x` is
+half the phase change along the segment. That closed form is multiplied by the exact
+segment average of `dot(rho, m)/dot(rho, rho)`, the angle the segment subtends at
+the axis divided by its length. Segments start at `0.2/sqrt(|beta|)` at the edge's
+stationary point, its closest point to the axis. They lengthen by a tenth of their
+distance from that point, with at most 160 segments on each side. Edges are clipped
+to the envelope radius `3*sqrt(2*Sigma)`.
+
+This connection departs from the BSDF paper in two ways:
+
+- **Coherent sum instead of the clamped term.** The paper renders a clamped
+  diffracted term (its Eqs. 28–30) that removes each edge wave's central lobe. A
+  point-to-point connection always observes inside the beam's central lobe, so that
+  term removes nearly all of the diffraction. In a prototype of the knife edge, at
+  one Fresnel unit into the shadow, the clamped term carried 12% of the Kirchhoff
+  power with 16 segments and 0.5% with 79. The connection instead adds the
+  unclamped edge waves coherently to the ballistic term.
+- **Exact segment weights.** The paper evaluates `dot(m, xi)/dot(xi, xi)` at a point
+  of each edge. The connection uses the segment average instead, because the point
+  value diverges as an edge approaches the axis.
+
+Edges are admitted per connection:
+
+- Triangles share an edge when their corner positions are bit-for-bit equal, and
+  each shared edge is evaluated once. An edge with three or more faces is skipped.
+- A segment bounds the obstacle when the edge's own faces cover exactly one side
+  of it. Coverage is tested at the segment midpoint, with fixed-mip texture and
+  vertex alpha. The open side must also be uncovered by every projected triangle
+  in the region, sampled 1/64 of the segment length away (at least the
+  connection's rounding guard). Interior and flat edges therefore cancel, and back
+  faces bound the obstacle just as front faces do. Partly covered edges diffract
+  only along their open parts. Polygon corners are included.
+- Each point uses the kernel at its own depth. Edges with an end outside the
+  connection, or inside the endpoints' escape distances, are skipped.
+- Single diffraction. The source must see an edge's stationary point up to the
+  region's near plane, and the receiver must see it past the far plane, ignoring the
+  edge's faces. Otherwise the whole edge is dropped. Edges of different regions
+  add coherently. One edge's wave is never diffracted by another edge.
+- The screen is absorbing (Kirchhoff). Section 5.2.2 notes that Fraunhofer
+  diffraction ignores wedge geometry and boundary conditions; use the UTD
+  connection for wedges. Coincident edges of separate meshes that do not share
+  corners may be counted twice. Alpha-tested holes inside a triangle are not edges.
+
+The GPU evaluates the same segments in binary32. Edge-phase magnitudes stay near
+`9*L/(L - z)` radians, so the phase error is roughly `1e-7` of that.
+The same input admission, region capacity and propagation limits apply as for the
+lattice operator. Too many segments report a propagation capacity failure.
+
+Evidence for the Fraunhofer connection, on an Apple M5 with Metal:
+
+- `wave_fraunhofer_diffraction_tests.cpp` (`[wave-fraunhofer]`, CPU only) compares
+  the operator with the Kirchhoff area integral of the same Gaussian beam, evaluated
+  by separable Simpson quadrature with no shared code. The cases are a knife-edge
+  sweep across its shadow boundary (exactly one half on the boundary), five
+  rectangles with corners (blocking and clearing the axis), and the knife-edge and
+  double-slit screens as scene connections. The largest field-component difference
+  is 0.0018; the test admits 0.003. A screen wound the other way agrees to `1e-12`.
+  The test also checks the rejection of depths outside the connection and of an
+  invalid beam.
+- `wave_tracing_parity_tests.cpp` (`[wave-fraunhofer][parity]`) runs the production
+  kernel on the GPU for the double slit and the wedge at 5 mm, and for a knife edge
+  at 550 nm. Its largest field-component differences from the float64 oracle are
+  `1.2e-7`, `1.0e-7` and `5.5e-8`; the test admits `5e-4`.
+- The `[wave-fraunhofer]` raw-AOV case of `reference_compute_tests.cpp` meets the
+  same CPU oracle and GPU compute bounds as the lattice operator's optical case.
+- `wave_scene_graph_tests.cpp` cooks the template with `WT_OPTICAL_CONNECTION` `2`
+  and renders the open, blocked and half-screen Worlds. On the half screen,
+  transmission is 0.203 to 0.245 on the shadowed side and 0.255 to 0.305 on the lit
+  side, inside the same bounds as the UTD case.
+- On staircase2 (64 × 32, 16 spp, 3 vertices, 550 nm), the Fraunhofer CPU and GPU
+  captures differ by RGB RMSE 0.0167, with the same float32 path-branch pixel as the
+  other operators. Without that pixel the RMSE is 0.00125, with a largest component
+  difference of 0.032. The mean radiance differs from the lattice operator's by
+  0.008%.
+
 ### CPU oracle and validation
 
 Set `ReferenceCaptureDescription::OpticalWavelengthWorld` to a positive wavelength
 in metres to select the same connection profile in reference captures. Zero
 preserves the geometric reference profile. `ReferenceCaptureDescription::OpticalConnection`
-selects `AngularSpectrum` (the default) or `UtdEdgeDiffraction`; UTD without a
-wavelength is rejected. Select `CpuOracle` or `GpuCompute` and `UniformArea` light
+selects `AngularSpectrum` (the default), `UtdEdgeDiffraction` or
+`FraunhoferEdgeDiffraction`; an edge operator without a wavelength is rejected. Select `CpuOracle` or `GpuCompute` and `UniformArea` light
 sampling; incompatible native-query or resampled requests reject explicitly.
 Changing the wavelength or operator resets progressive accumulation. Raw `LUHDR01`
-exports retain the wavelength at byte 92, optical flag 256 and, for UTD, flag 2048.
+exports retain the wavelength at byte 92, optical flag 256 and, for UTD, flag 2048
+or, for Fraunhofer, flag 4096.
 
 The existing scene benchmark accepts an optional final wavelength in nanometres:
 
@@ -11738,8 +11852,9 @@ ludus_reference_benchmark COOKED_SCENE 64 32 16 3 gpu 1 550
 ```
 
 `LUDUS_REFERENCE_BENCHMARK_OUTPUT` saves raw linear RGB for matched comparisons.
-`LUDUS_REFERENCE_BENCHMARK_OPTICAL_CONNECTION=utd` selects the UTD connection;
-`angular-spectrum`, the default, selects the lattice.
+`LUDUS_REFERENCE_BENCHMARK_OPTICAL_CONNECTION=utd` selects the UTD connection and
+`fraunhofer` the Fraunhofer connection; `angular-spectrum`, the default, selects the
+lattice.
 The benchmark retains authored analytic lights and HDR environments. It does not
 add lights when the authored scene is dark.
 

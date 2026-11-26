@@ -65,7 +65,8 @@ if(LUDUS_SLANG_COMPILER)
         LUDUS_RENDERER_SKIN_SHADERS=1)
 endif()
 target_sources(ludus_graphics_renderer PRIVATE src/wave_tracing.cpp src/wave_scene_queries.cpp src/wave_connection.cpp
-    src/wave_edge_diffraction.cpp)
+    src/wave_edge_diffraction.cpp
+    src/wave_fraunhofer_diffraction.cpp)
 target_sources(ludus_graphics_renderer PRIVATE src/reference_sky.cpp)
 add_library(Ludus::GraphicsRenderer ALIAS ludus_graphics_renderer)
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/pbrt/LICENSE.txt" DESTINATION "${CMAKE_INSTALL_DATADIR}/${LUDUS_ENGINE_PACKAGE_NAME}/licenses" RENAME pbrt-LICENSE)
@@ -157,7 +158,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
 endif()
 install(FILES shaders/wave_scene_layout.h shaders/wave_scene_queries.slang shaders/wave_connection_layout.h
-    shaders/wave_connection.slang shaders/wave_edge_diffraction.slang shaders/wave_reference_scene.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+    shaders/wave_connection.slang shaders/wave_edge_diffraction.slang shaders/wave_fraunhofer_diffraction.slang shaders/wave_reference_scene.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 install(FILES shaders/renderer_shadow_depth.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 install(FILES shaders/renderer_celestial_constants.h shaders/renderer_reference_sky_layout.h
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
@@ -274,6 +275,7 @@ if(LUDUS_BUILD_TESTS)
         tests/wave_tracing_tests.cpp
         tests/wave_scene_queries_tests.cpp
         tests/wave_edge_diffraction_tests.cpp
+        tests/wave_fraunhofer_diffraction_tests.cpp
         tests/atmosphere_environment_tests.cpp
         tests/world_feature_tests.cpp
         "$<TARGET_OBJECTS:ludus_renderer_earth_sky_quadrature>"
@@ -832,24 +834,32 @@ if(TARGET ludus_renderer_render_tests)
         MANIFEST "${wave_scene_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET wave_scene_graph_RUNTIME_PACKAGE PARENT_PATH wave_scene_directory)
     target_compile_definitions(ludus_wave_graph_tests PRIVATE LUDUS_WAVE_SCENE_TEMPLATE_DIRECTORY="${wave_scene_directory}")
-    # The same template with its IS_WT_UTD_ENABLED setting on, so the graph tests run the UTD edge connection.
+    # The same template with WT_OPTICAL_CONNECTION set to each edge operator, so the graph tests run the UTD (1)
+    # and Fraunhofer (2) edge connections.
     set(wave_scene_template "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/wave_tracing")
-    set(wave_scene_utd_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/wave_scene_utd_graph")
-    ludus_stage_render_graph_inputs("${wave_scene_template}" "${wave_scene_utd_staged}")
     file(READ "${wave_scene_template}/main.lushader.json.in" wave_scene_manifest)
-    string(REGEX REPLACE "(\"IS_WT_UTD_ENABLED\"[^}]*\"value\": )false" "\\1true" wave_scene_utd_manifest
-        "${wave_scene_manifest}")
-    if(wave_scene_utd_manifest STREQUAL wave_scene_manifest)
-        message(FATAL_ERROR "The wave-tracing template no longer declares IS_WT_UTD_ENABLED with value false; "
-            "update the UTD graph variant in ${CMAKE_CURRENT_LIST_FILE}.")
-    endif()
-    file(CONFIGURE OUTPUT "${wave_scene_utd_staged}/main.lushader.json" CONTENT "${wave_scene_utd_manifest}" @ONLY)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${wave_scene_template}/main.lushader.json.in")
-    ludus_compile_render_graph(TARGET ludus_wave_graph_tests NAME wave_scene_utd_graph
-        MANIFEST "${wave_scene_utd_staged}/main.lushader.json" RUNTIME_PACKAGE)
-    cmake_path(GET wave_scene_utd_graph_RUNTIME_PACKAGE PARENT_PATH wave_scene_utd_directory)
-    target_compile_definitions(ludus_wave_graph_tests PRIVATE
-        LUDUS_WAVE_SCENE_UTD_TEMPLATE_DIRECTORY="${wave_scene_utd_directory}")
+    foreach(wave_scene_variant IN ITEMS "utd;1;UTD" "fraunhofer;2;FRAUNHOFER")
+        list(GET wave_scene_variant 0 wave_scene_variant_name)
+        list(GET wave_scene_variant 1 wave_scene_variant_value)
+        list(GET wave_scene_variant 2 wave_scene_variant_macro)
+        set(wave_scene_variant_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/wave_scene_${wave_scene_variant_name}_graph")
+        ludus_stage_render_graph_inputs("${wave_scene_template}" "${wave_scene_variant_staged}")
+        string(REGEX REPLACE "(\"WT_OPTICAL_CONNECTION\"[^}]*\"value\": )0" "\\1${wave_scene_variant_value}"
+            wave_scene_variant_manifest "${wave_scene_manifest}")
+        if(wave_scene_variant_manifest STREQUAL wave_scene_manifest)
+            message(FATAL_ERROR "The wave-tracing template no longer declares WT_OPTICAL_CONNECTION with value 0; "
+                "update the edge-connection graph variants in ${CMAKE_CURRENT_LIST_FILE}.")
+        endif()
+        file(CONFIGURE OUTPUT "${wave_scene_variant_staged}/main.lushader.json" CONTENT "${wave_scene_variant_manifest}"
+            @ONLY)
+        ludus_compile_render_graph(TARGET ludus_wave_graph_tests NAME wave_scene_${wave_scene_variant_name}_graph
+            MANIFEST "${wave_scene_variant_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET wave_scene_${wave_scene_variant_name}_graph_RUNTIME_PACKAGE PARENT_PATH
+            wave_scene_variant_directory)
+        target_compile_definitions(ludus_wave_graph_tests PRIVATE
+            LUDUS_WAVE_SCENE_${wave_scene_variant_macro}_TEMPLATE_DIRECTORY="${wave_scene_variant_directory}")
+    endforeach()
     # Every template correctness case gets its own bounded acceptance deadline.
     catch_discover_tests(ludus_wave_graph_tests TEST_SPEC "~[.]" TEST_PREFIX "ludus_wave_graph_pixels: "
         TEST_LIST LUDUS_WAVE_GRAPH_CASES EXTRA_ARGS --durations yes

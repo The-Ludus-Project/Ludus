@@ -64,7 +64,7 @@ def decode(data, *, keep_pixels=True):
     schema, profile, sampler, header, width, height, target, depth, roulette, flags = struct.unpack_from('<10I', data, 8)
     # Sampler 1 is UniformArea light sampling; flag 128 marks the resampled samplers, 2 for
     # ResampledProjectedSolidAngle and 3 for ResampledFormFactor. Sampler 4 separates directional lights.
-    if (schema, header) != (1, HEADER_BYTES) or profile not in (1, 2, 3, 4, 5, 6, 7, 8) or not width or not height or flags & ~4095 or (flags & 1 and flags & 64):
+    if (schema, header) != (1, HEADER_BYTES) or profile not in (1, 2, 3, 4, 5, 6, 7, 8) or not width or not height or flags & ~8191 or (flags & 1 and flags & 64):
         raise ValueError('Unsupported capture profile/header')
     if (sampler, bool(flags & 128)) not in ((1, False), (2, True), (3, True), (4, False)):
         raise ValueError('Unsupported sampler version or light-sampling flag')
@@ -77,9 +77,12 @@ def decode(data, *, keep_pixels=True):
         raise ValueError('Invalid optical wavelength/flag')
     if flags & 256 and (sampler != 1 or not flags & (1 | 64)):
         raise ValueError('Optical captures require UniformArea and CPU oracle or GPU compute')
-    # Flag 2048 marks ReferenceOpticalConnection::UtdEdgeDiffraction, which only optical captures select.
-    if flags & 2048 and not flags & 256:
-        raise ValueError('UTD edge diffraction requires an optical capture')
+    # Flags 2048 and 4096 mark ReferenceOpticalConnection::UtdEdgeDiffraction and FraunhoferEdgeDiffraction,
+    # which only optical captures select, one at a time.
+    if flags & (2048 | 4096) and not flags & 256:
+        raise ValueError('Edge diffraction requires an optical capture')
+    if flags & 2048 and flags & 4096:
+        raise ValueError('Only one optical connection operator may be selected')
     # Flag 512 marks a bounded absorbing medium: RGB absorption per metre at byte 184, boundary triangles at 196.
     absorption = list(struct.unpack_from('<3f', data, 184))
     medium_triangles = struct.unpack_from('<I', data, 196)[0]
@@ -96,7 +99,8 @@ def decode(data, *, keep_pixels=True):
     seed, revision, low, high = struct.unpack_from('<4Q', data, 48)
     metadata = dict(schema=schema, profile=profile, sampler=sampler, width=width, height=height,
                     optical_wavelength_world=optical_wavelength,
-                    optical_connection=('utd_edge_diffraction' if flags & 2048 else 'angular_spectrum')
+                    optical_connection=('utd_edge_diffraction' if flags & 2048 else
+                                        'fraunhofer_edge_diffraction' if flags & 4096 else 'angular_spectrum')
                     if flags & 256 else None,
                     target_samples=target, max_depth=depth, roulette_depth=roulette, flags=flags,
                     seed=seed, revision=revision, scene_fingerprint=f'{high:016x}{low:016x}',

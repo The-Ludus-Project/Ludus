@@ -56,19 +56,29 @@ enum class WaveConnection : uint8
 {
     /// The shipped default: the angular-spectrum lattice.
     AngularSpectrum,
-    /// The same template cooked with IS_WT_UTD_ENABLED.
+    /// The same template cooked with WT_OPTICAL_CONNECTION 1.
     UtdEdgeDiffraction,
+    /// The same template cooked with WT_OPTICAL_CONNECTION 2.
+    FraunhoferEdgeDiffraction,
 };
 void LoadPackage(WaveConnection connection, renderer::RenderGraphPackage& outPackage)
 {
     filesystem::Directory directory;
-    const bool isUtd = connection == WaveConnection::UtdEdgeDiffraction;
-    REQUIRE(
-        directory.Open(isUtd == true ? LUDUS_WAVE_SCENE_UTD_TEMPLATE_DIRECTORY : LUDUS_WAVE_SCENE_TEMPLATE_DIRECTORY)
-            .Succeeded() == true);
+    const char* directoryPath = LUDUS_WAVE_SCENE_TEMPLATE_DIRECTORY;
+    const char* packageName = "wave_scene_graph.lurgrt";
+    if (connection == WaveConnection::UtdEdgeDiffraction)
+    {
+        directoryPath = LUDUS_WAVE_SCENE_UTD_TEMPLATE_DIRECTORY;
+        packageName = "wave_scene_utd_graph.lurgrt";
+    }
+    else if (connection == WaveConnection::FraunhoferEdgeDiffraction)
+    {
+        directoryPath = LUDUS_WAVE_SCENE_FRAUNHOFER_TEMPLATE_DIRECTORY;
+        packageName = "wave_scene_fraunhofer_graph.lurgrt";
+    }
+    REQUIRE(directory.Open(directoryPath).Succeeded() == true);
     filesystem::File file;
-    REQUIRE(directory.OpenRead(isUtd == true ? "wave_scene_utd_graph.lurgrt" : "wave_scene_graph.lurgrt", file)
-                .Succeeded() == true);
+    REQUIRE(directory.OpenRead(packageName, file).Succeeded() == true);
     Array<uint8> bytes;
     REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
     REQUIRE(file.ReadAt(0, MakeSpan(bytes)).BytesRead == bytes.GetSize());
@@ -388,14 +398,16 @@ TEST_CASE("Scene wave graph diffracts beyond a half screen from the current Worl
     CheckSceneWaveGraph(2);
 }
 
-TEST_CASE("Scene wave graph with UTD edge diffraction lights, blocks and diffracts from the current World",
-          "[renderer][gpu][wave-tracing][wave-utd][graph]")
+namespace
 {
-    // The open beam, the full screen and the half screen, through the template cooked with IS_WT_UTD_ENABLED.
+/// Run the open beam, the full screen and the half screen through a template cooked with an edge connection, then
+/// check the half screen's shadow-boundary powers.
+void CheckEdgeConnectionGraph(WaveConnection connection)
+{
     for (uint32 screen = 0; screen <= 2; ++screen)
     {
         CAPTURE(screen);
-        RunSceneWaveGraph(screen, nullptr, nullptr, WaveConnection::UtdEdgeDiffraction);
+        RunSceneWaveGraph(screen, nullptr, nullptr, connection);
     }
     // The half screen's straight edge at x = 0 lies midway between the light at z = 3 and the receiver at z = 1.
     // Every receiver pixel is within 0.14 Fresnel units of the shadow boundary, where Fresnel knife-edge diffraction
@@ -405,7 +417,7 @@ TEST_CASE("Scene wave graph with UTD edge diffraction lights, blocks and diffrac
     constexpr float32 SHADOW_MINIMUM_POWER = 0.15F;
     constexpr float32 LIT_MAXIMUM_POWER = 0.4F;
     WaveDevice device;
-    CreateWaveDevice(device, WaveConnection::UtdEdgeDiffraction);
+    CreateWaveDevice(device, connection);
     Array<math::Vector3> pixels;
     CaptureSceneWavePass(device, 2, nullptr, TRANSMISSION_PASS, pixels);
     for (usize index = 0; index < pixels.GetSize(); ++index)
@@ -422,6 +434,19 @@ TEST_CASE("Scene wave graph with UTD edge diffraction lights, blocks and diffrac
             CHECK(pixels[index].X <= LIT_MAXIMUM_POWER);
         }
     }
+}
+} // namespace
+
+TEST_CASE("Scene wave graph with UTD edge diffraction lights, blocks and diffracts from the current World",
+          "[renderer][gpu][wave-tracing][wave-utd][graph]")
+{
+    CheckEdgeConnectionGraph(WaveConnection::UtdEdgeDiffraction);
+}
+
+TEST_CASE("Scene wave graph with Fraunhofer edge diffraction lights, blocks and diffracts from the current World",
+          "[renderer][gpu][wave-tracing][wave-fraunhofer][graph]")
+{
+    CheckEdgeConnectionGraph(WaveConnection::FraunhoferEdgeDiffraction);
 }
 
 #if defined(LUDUS_PLATFORM_MACOS)

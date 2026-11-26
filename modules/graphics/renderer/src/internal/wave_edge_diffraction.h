@@ -3,10 +3,71 @@
 
 #include "wave_connection.h"
 
-// Uniform Theory of Diffraction (UTD) connection operator of the wave-tracing profile. See
-// wave_edge_diffraction.cpp for the declared field, attribution and limits.
+// Edge-diffraction connections of the wave-tracing profile: the shared connection driver and the Uniform Theory
+// of Diffraction (UTD) operator. See wave_edge_diffraction.cpp for the UTD field, attribution and limits, and
+// wave_fraunhofer_diffraction.h for the Fraunhofer edge operator.
 namespace ludus::graphics::renderer::internal
 {
+/// Corners of a triangle.
+inline constexpr uint32 WAVE_TRIANGLE_CORNERS = 3;
+/// FindWaveTriangleCorner's result when no corner matches.
+inline constexpr uint32 WAVE_NO_TRIANGLE_CORNER = WAVE_TRIANGLE_CORNERS;
+/// Inputs that an edge operator shares across the interaction regions of one connection.
+struct WaveEdgeConnection final
+{
+    math::Vector3d SourceWorld{};
+    math::Vector3d ReceiverWorld{};
+    /// Unit propagation axis from the source towards the receiver.
+    math::Vector3d DirectionWorld{};
+    /// Unit transverse axis of the connection frame; the other is Cross(DirectionWorld, AxisXWorld).
+    math::Vector3d AxisXWorld{};
+    float64 DistanceWorld = 0;
+    float64 WavelengthWorld = 0;
+    /// Sigma^2 = distance / wavenumber of the connection's Gaussian beam, in square metres.
+    float64 SigmaWorldSquared = 0;
+    /// Radius around the axis beyond which the Gaussian envelope ignores geometry.
+    float64 EnvelopeRadiusWorld = 0;
+    /// Span at each endpoint whose own surface geometry is not diffracted.
+    float64 EndpointEscapeWorld = 0;
+    /// Coordinate rounding scale of the connection, for offsets that must stay resolvable.
+    float64 RoundoffWorld = 0;
+    /// The centre ray between the escaped endpoints is blocked.
+    bool IsBallisticBlocked = false;
+};
+/// Adds one operator's diffracted fields for the edges of `region` to inoutField; failure may leave it partial.
+using AddWaveEdgeRegionFields = rhi::RasterStatus (*)(const ReferenceSceneData& scene,
+                                                      const WaveEdgeConnection& connection,
+                                                      const WaveInteractionRegion& region,
+                                                      WaveField& inoutField) noexcept;
+/// Shared edge-connection driver: the ballistic field (one when the centre ray between the escaped endpoints is
+/// clear, otherwise zero) plus the fields `addRegionFields` adds for each interaction region along the connection.
+/// Endpoint escapes are excluded, and geometry continuing straight past a region is skipped as the angular-spectrum
+/// operator skips it. Accepts and rejects the same inputs as EvaluateWaveConnectionToReceiver; too many regions
+/// return Unsupported. Failure preserves outField. No allocation or shared state.
+[[nodiscard]] rhi::RasterStatus EvaluateWaveEdgeConnection(const ReferenceSceneData& scene,
+                                                           math::Vector3d sourceWorld,
+                                                           math::Vector3d receiverWorld,
+                                                           math::Vector3d directionWorld,
+                                                           float64 distanceWorld,
+                                                           float64 wavelengthWorld,
+                                                           AddWaveEdgeRegionFields addRegionFields,
+                                                           WaveField& outField) noexcept;
+/// Whether the segment from nearWorld past `beginWorld` to farMarginWorld before `endWorld` is clear of covered
+/// triangles other than `excluded`. Ready publishes outIsClear; a malformed hierarchy returns InvalidDescription.
+[[nodiscard]] rhi::RasterStatus IsWaveSegmentClear(const ReferenceSceneData& scene,
+                                                   math::Vector3d beginWorld,
+                                                   math::Vector3d endWorld,
+                                                   float64 nearWorld,
+                                                   float64 farMarginWorld,
+                                                   const WaveExcludedTriangles& excluded,
+                                                   bool& outIsClear) noexcept;
+/// Corner of `triangle` whose position equals `position` bit for bit, or WAVE_NO_TRIANGLE_CORNER.
+[[nodiscard]] uint32 FindWaveTriangleCorner(const ReferenceTriangle& triangle, math::Vector3 position) noexcept;
+/// Coverage of `triangle` at barycentric `weights` of its corners, as ordinary visibility sees it. Geometry-only
+/// scenes without instances are opaque.
+[[nodiscard]] bool IsWaveTriangleCovered(const ReferenceSceneData& scene,
+                                         const ReferenceTriangle& triangle,
+                                         const StaticArray<float64, WAVE_TRIANGLE_CORNERS>& weights) noexcept;
 /// Most faces that meet at a diffracting edge: one for a half-plane, two for a wedge.
 inline constexpr usize UTD_MAX_EDGE_FACES = 2;
 /// A straight edge segment and the faces that meet along it.

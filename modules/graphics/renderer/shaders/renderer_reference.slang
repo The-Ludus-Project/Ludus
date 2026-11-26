@@ -74,6 +74,7 @@ static const uint RESAMPLED_LIGHT_FLAG = LUDUS_REFERENCE_RESAMPLED_LIGHT_FLAG;
 static const uint FORM_FACTOR_TARGET_FLAG = LUDUS_REFERENCE_FORM_FACTOR_TARGET_FLAG;
 static const uint MULTIPLE_SCATTERING_FLAG = LUDUS_REFERENCE_MULTIPLE_SCATTERING_FLAG;
 static const uint UTD_CONNECTION_FLAG = LUDUS_REFERENCE_UTD_CONNECTION_FLAG;
+static const uint FRAUNHOFER_CONNECTION_FLAG = LUDUS_REFERENCE_FRAUNHOFER_CONNECTION_FLAG;
 static const uint LINEAR_FILTER_FLAG = 1;
 static const uint REPEAT_U_FLAG = 2;
 static const uint REPEAT_V_FLAG = 4;
@@ -1350,22 +1351,33 @@ bool TraceProposal(inout PathSample inoutPath,
     if (Options.y > 0 && proposal.HasFiniteEndpoint == true)
     {
         float2 field = float2(0);
-        // ReferenceOpticalConnection::UtdEdgeDiffraction, else the angular-spectrum lattice.
-        WaveQuery status = (Sampling.z & UTD_CONNECTION_FLAG) != 0
-                               ? EvaluateUtdConnectionToReceiver((SceneContext)0,
-                                                                 endWorld,
-                                                                 shadow.OriginWorld,
-                                                                 -shadow.DirectionWorld,
-                                                                 shadow.MaximumDistanceWorld,
-                                                                 Options.y,
-                                                                 field)
-                               : EvaluateWaveConnectionToReceiver((SceneContext)0,
-                                                                  endWorld,
-                                                                  shadow.OriginWorld,
-                                                                  -shadow.DirectionWorld,
-                                                                  shadow.MaximumDistanceWorld,
-                                                                  Options.y,
-                                                                  field);
+        // ReferenceOpticalConnection::UtdEdgeDiffraction or FraunhoferEdgeDiffraction, else the angular-spectrum
+        // lattice.
+        WaveQuery status;
+        if ((Sampling.z & UTD_CONNECTION_FLAG) != 0)
+            status = EvaluateUtdConnectionToReceiver((SceneContext)0,
+                                                     endWorld,
+                                                     shadow.OriginWorld,
+                                                     -shadow.DirectionWorld,
+                                                     shadow.MaximumDistanceWorld,
+                                                     Options.y,
+                                                     field);
+        else if ((Sampling.z & FRAUNHOFER_CONNECTION_FLAG) != 0)
+            status = EvaluateFraunhoferConnectionToReceiver((SceneContext)0,
+                                                            endWorld,
+                                                            shadow.OriginWorld,
+                                                            -shadow.DirectionWorld,
+                                                            shadow.MaximumDistanceWorld,
+                                                            Options.y,
+                                                            field);
+        else
+            status = EvaluateWaveConnectionToReceiver((SceneContext)0,
+                                                      endWorld,
+                                                      shadow.OriginWorld,
+                                                      -shadow.DirectionWorld,
+                                                      shadow.MaximumDistanceWorld,
+                                                      Options.y,
+                                                      field);
         if (status != WaveQuery::Ready)
         {
             if (status != WaveQuery::Invalid)

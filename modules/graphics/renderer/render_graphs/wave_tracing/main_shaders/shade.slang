@@ -1,13 +1,20 @@
 #include "hit_record.slang"
 // Scene optical renderer: truncated RGB surface paths with coherent, scalar finite-light connections.
 // Thanks to Steinberg and Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics", CGF45(2),
-// e70322 (2026), Sections3.1, 4.2 and 5.2.2, https://doi.org/10.1111/cgf.70322 . See wave_connection.cpp for
-// the Gaussian angular-spectrum connection and wave_edge_diffraction.cpp for the UTD edge connection, which
-// IS_WT_UTD_ENABLED selects.
+// e70322 (2026), Sections3.1, 4.2 and 5.2.2, https://doi.org/10.1111/cgf.70322 . WT_OPTICAL_CONNECTION selects
+// the Gaussian angular-spectrum connection (wave_connection.cpp), the UTD edge connection
+// (wave_edge_diffraction.cpp) or the Fraunhofer edge connection (wave_fraunhofer_diffraction.cpp).
 // All geometry, lights, textures and supported typed reflection materials come from the current World.
 // Each surface path samples light endpoints only by NEE. Secondary emitter/environment hits are omitted,
 // so the scalar optical visibility and classical continuation visibility cannot receive inconsistent MIS.
 static const float WAVE_METRES_PER_NANOMETRE = 0.000000001;
+/// The scalar connection operator that WT_OPTICAL_CONNECTION selects.
+enum WaveOpticalConnection : uint
+{
+    AngularSpectrum = 0,
+    UtdEdgeDiffraction = 1,
+    FraunhoferEdgeDiffraction = 2,
+};
 static const float WAVE_MAXIMUM_TRACE_DISTANCE_WORLD = 2000000;
 static const uint WAVE_VERTEX_LIMIT = 8;
 static const uint WAVE_RANDOM_VERTEX_STRIDE = 8;
@@ -46,20 +53,32 @@ float EvaluateOpticalVisibility(SceneContext scene,
     float distanceWorld = length(deltaWorld);
     float2 field = float2(0);
     float wavelengthWorld = WT_WAVELENGTH_NANOMETERS * WAVE_METRES_PER_NANOMETRE;
-    WaveQuery status = IS_WT_UTD_ENABLED == true ? EvaluateUtdConnectionToReceiver(scene,
-                                                                                   sourceWorld,
-                                                                                   shadow.OriginWorld,
-                                                                                   deltaWorld / distanceWorld,
-                                                                                   distanceWorld,
-                                                                                   wavelengthWorld,
-                                                                                   field)
-                                                 : EvaluateWaveConnectionToReceiver(scene,
-                                                                                    sourceWorld,
-                                                                                    shadow.OriginWorld,
-                                                                                    deltaWorld / distanceWorld,
-                                                                                    distanceWorld,
-                                                                                    wavelengthWorld,
-                                                                                    field);
+    WaveOpticalConnection connection = WaveOpticalConnection(WT_OPTICAL_CONNECTION);
+    WaveQuery status;
+    if (connection == WaveOpticalConnection::UtdEdgeDiffraction)
+        status = EvaluateUtdConnectionToReceiver(scene,
+                                                 sourceWorld,
+                                                 shadow.OriginWorld,
+                                                 deltaWorld / distanceWorld,
+                                                 distanceWorld,
+                                                 wavelengthWorld,
+                                                 field);
+    else if (connection == WaveOpticalConnection::FraunhoferEdgeDiffraction)
+        status = EvaluateFraunhoferConnectionToReceiver(scene,
+                                                        sourceWorld,
+                                                        shadow.OriginWorld,
+                                                        deltaWorld / distanceWorld,
+                                                        distanceWorld,
+                                                        wavelengthWorld,
+                                                        field);
+    else
+        status = EvaluateWaveConnectionToReceiver(scene,
+                                                  sourceWorld,
+                                                  shadow.OriginWorld,
+                                                  deltaWorld / distanceWorld,
+                                                  distanceWorld,
+                                                  wavelengthWorld,
+                                                  field);
     if (status != WaveQuery::Ready)
     {
         FailSceneQuery(queries,
