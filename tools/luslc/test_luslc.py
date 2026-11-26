@@ -10,6 +10,8 @@ import unittest
 
 LUSLC = None
 REPOSITORY = None
+# Paths one luslc call accepts: shader_compiler::MAX_SOURCE_FILES, the snapshot file limit.
+MAX_FORMAT_FILES = 64
 
 
 def run(*arguments, root):
@@ -147,9 +149,23 @@ class LuslcTests(unittest.TestCase):
                          for path in root.rglob(suffix)
                          if "out" not in path.relative_to(root).parts and ".git" not in path.relative_to(root).parts)
         self.assertTrue(sources)
-        result = subprocess.run([LUSLC, "format", "--check", "--root", str(root), *sources],
-                                capture_output=True, text=True, check=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        # One call takes at most MAX_FORMAT_FILES paths, so check the growing repository in batches.
+        for start in range(0, len(sources), MAX_FORMAT_FILES):
+            batch = sources[start:start + MAX_FORMAT_FILES]
+            result = subprocess.run([LUSLC, "format", "--check", "--root", str(root), *batch],
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_too_many_paths_name_the_limit(self):
+        """A format call beyond the snapshot's file limit says how to repair it instead of printing usage."""
+        names = [f"file{i}.lusl" for i in range(MAX_FORMAT_FILES + 1)]
+        for name in names:
+            self.write(name, "static const uint32 COUNT = 4;\n")
+        self.assertEqual(run("format", "--check", *names[:MAX_FORMAT_FILES], root=self.root).returncode, 0)
+        result = run("format", "--check", *names, root=self.root)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(f"at most {MAX_FORMAT_FILES} FILE arguments", result.stderr)
+        self.assertIn("split the list into several calls", result.stderr)
 
     def test_usage(self):
         result = subprocess.run([LUSLC], capture_output=True, text=True, check=False)
