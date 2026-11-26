@@ -49,6 +49,31 @@ TEST_CASE("Activity labels follow priority and say nothing when idle", "[editor]
     CHECK(FormatProblemCount(0, QStringLiteral("Problem"), QStringLiteral("Problems")) == QStringLiteral("0 Problems"));
 }
 
+TEST_CASE("Activity chip says Not checked when there is no problem report", "[editor][activity]")
+{
+    StatusActivityBar bar;
+    bar.show();
+    bar.SetCounts(0, 0, false);
+    bar.Flush();
+    QToolButton* problems = bar.findChild<QToolButton*>(QStringLiteral("statusProblems"));
+    QToolButton* warnings = bar.findChild<QToolButton*>(QStringLiteral("statusWarnings"));
+    REQUIRE(problems != nullptr);
+    REQUIRE(warnings != nullptr);
+    CHECK(problems->text() == QStringLiteral("–"));
+    CHECK(problems->accessibleName() == QStringLiteral("Not checked"));
+    CHECK(problems->toolTip().startsWith(QStringLiteral("Not checked")) == true);
+    CHECK(warnings->accessibleName() == QStringLiteral("Not checked"));
+    // A real count is still a count, even if the graph has no report.
+    bar.SetCounts(2, 0, false);
+    bar.Flush();
+    CHECK(problems->text() == QStringLiteral("2"));
+    CHECK(problems->accessibleName() == QStringLiteral("2 Problems"));
+    bar.SetCounts(0, 0, true);
+    bar.Flush();
+    CHECK(problems->text() == QStringLiteral("0"));
+    CHECK(problems->accessibleName() == QStringLiteral("0 Problems"));
+}
+
 TEST_CASE("Activity chip shows a dot or a bar, hides when idle and opens the Error List", "[editor][activity]")
 {
     StatusActivityBar bar;

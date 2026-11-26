@@ -19,6 +19,8 @@
 #include "internal/main_window.h"
 #include "internal/options_dialog.h"
 #include "internal/project_explorer.h"
+#include "internal/render_graph_canvas.h"
+#include "internal/render_graph_diagnostics.h"
 #include "internal/render_graph_job.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
@@ -384,8 +386,11 @@ void MainWindow::renderActivity()
     mActivityBarOrNull->SetActivity(
         GetActivityLabel(Controller_->State().OperationPhase, Content_->Importing(), Renderer_->IsJobActive()),
         -1.0);
+    const bool hasProblemReport =
+        Renderer_->GetCanvas().GetDiagnostics().GetFreshness() != RenderGraphDiagnosticFreshness::None;
     mActivityBarOrNull->SetCounts(mErrorList->GetCount(ErrorListSeverity::Error),
-                                  mErrorList->GetCount(ErrorListSeverity::Warning));
+                                  mErrorList->GetCount(ErrorListSeverity::Warning),
+                                  hasProblemReport);
 }
 
 void MainWindow::updateContextStrip()

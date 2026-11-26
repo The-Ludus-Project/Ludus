@@ -5,6 +5,7 @@
 #include "internal/main_window.h"
 #include "internal/setup_guidance.h"
 #include "internal/state_view.h"
+#include "internal/theme_colour.h"
 #include "internal/workspace.h"
 
 #include <ludus/foundation/base/types.h>
@@ -15,6 +16,7 @@
 #include <QDir>
 #include <QFile>
 #include <QLabel>
+#include <QPalette>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QStringList>
@@ -217,6 +219,8 @@ TEST_CASE("Changed SDK or tool inputs offer a repair, not the settings file", "[
     CHECK(stale.Detail == QStringLiteral("SDK or tool inputs changed; run repair to refresh presets and caches"));
     CHECK(stale.PlainCause == QStringLiteral("Ludus or its build tools changed since this project was set up."));
     CHECK(stale.IsRepairable == true);
+    CHECK(stale.IsOutOfDate == true);
+    CHECK(stale.StatusPhrase == QStringLiteral("Setup is out of date"));
 
     QTemporaryDir directory;
     QFile fixture(QStringLiteral(LUDUS_EDITOR_SOURCE_DIR) + QStringLiteral("/tests/fixtures/valid_v2_cmake.json"));
@@ -236,12 +240,21 @@ TEST_CASE("Changed SDK or tool inputs offer a repair, not the settings file", "[
     REQUIRE(primaryOrNull != nullptr);
     REQUIRE(headlineOrNull != nullptr);
     CHECK(headlineOrNull->text() == QStringLiteral("This project's build setup is out of date."));
-    CHECK(primaryOrNull->text() == QStringLiteral("Repair project"));
+    CHECK(primaryOrNull->text() == QStringLiteral("Update setup"));
     CHECK(primaryOrNull->property("opensSettings").toBool() == false);
-    // Repair is the fix, so it is enabled, primary, and says what pressing it does.
+    // Update setup is the fix, so it is enabled, primary, and says what pressing it does.
     CHECK(primaryOrNull->isEnabled() == true);
     CHECK(primaryOrNull->property("visualRole").toString() == QStringLiteral("primary"));
     CHECK(primaryOrNull->toolTip().contains(QStringLiteral("builds and tests the project")) == true);
+    QToolBar* noticeOrNull = window.findChild<QToolBar*>(QStringLiteral("projectSetupNotice"));
+    REQUIRE(noticeOrNull != nullptr);
+    CHECK(noticeOrNull->autoFillBackground() == true);
+    CHECK(noticeOrNull->palette().color(QPalette::Window) ==
+          GetThemeQColour(design::ThemeColour::StatusWarningSurface));
+    QLabel* statusOrNull = window.findChild<QLabel*>(QStringLiteral("workspaceStatus"));
+    REQUIRE(statusOrNull != nullptr);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Setup is out of date")) == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Setup needs repair")) == false);
 }
 
 TEST_CASE("A settings problem offers Project Settings, not a repair that cannot help", "[editor][setup][guidance]")
@@ -312,9 +325,12 @@ TEST_CASE("The setup banner says what Repair will do, and why it can't start whe
     // Repair can start: the cause in plain words, then what pressing the button does, and the button is enabled.
     const SetupNoticeContent ready = DescribeSetupNotice(stale, QString());
     CHECK(ready.Headline == QStringLiteral("This project's build setup is out of date."));
-    CHECK(ready.Detail == QStringLiteral("Ludus or its build tools changed since this project was set up. Repair "
-                                         "project refreshes its build settings, then checks that it builds."));
-    CHECK(ready.ActionLabel == QStringLiteral("Repair project"));
+    CHECK(ready.Detail ==
+          QStringLiteral("Ludus or its build tools changed since this project was set up. Update setup refreshes "
+                         "its build settings and caches, then builds and tests the project."));
+    CHECK(ready.ActionLabel == QStringLiteral("Update setup"));
+    CHECK(ready.IsOutOfDate == true);
+    CHECK(ready.StatusPhrase == QStringLiteral("Setup is out of date"));
     CHECK(ready.IsActionEnabled == true);
     CHECK(ready.IsOpeningSettings == false);
     CHECK(ready.ActionTooltip.contains(QStringLiteral("builds and tests the project")) == true);
@@ -330,7 +346,7 @@ TEST_CASE("The setup banner says what Repair will do, and why it can't start whe
     const QString blocker = QStringLiteral("Save project settings first; repair works from the saved settings.");
     const SetupNoticeContent blocked = DescribeSetupNotice(stale, blocker);
     CHECK(blocked.IsActionEnabled == false);
-    CHECK(blocked.ActionLabel == QStringLiteral("Repair project"));
+    CHECK(blocked.ActionLabel == QStringLiteral("Update setup"));
     CHECK(blocked.ActionTooltip == blocker);
     CHECK(blocked.Detail.endsWith(blocker) == true);
     CHECK(blocked.Tooltip.contains(blocker) == true);
@@ -411,7 +427,7 @@ TEST_CASE("The banner's Repair button is enabled whenever repair can start, and 
     REQUIRE(detailOrNull != nullptr);
     REQUIRE(controller.Caps().CanProjectSetup == true);
     CHECK(repairOrNull->isEnabled() == true);
-    CHECK(detailOrNull->text().contains(QStringLiteral("Repair project refreshes")) == true);
+    CHECK(detailOrNull->text().contains(QStringLiteral("Update setup refreshes")) == true);
 
     ProjectDescriptor draft = controller.State().Draft;
     draft.Name = QStringLiteral("Changed project settings");

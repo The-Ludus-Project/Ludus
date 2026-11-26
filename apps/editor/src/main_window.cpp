@@ -34,6 +34,7 @@
 #include "internal/settings_page.h"
 #include "internal/setup_guidance.h"
 #include "internal/state_view.h"
+#include "internal/theme_colour.h"
 #include "internal/timing_panel.h"
 #include "internal/workspace_style.h"
 #include "internal/world_workspace.h"
@@ -63,6 +64,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPalette>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
@@ -1860,6 +1862,12 @@ void MainWindow::renderSetupNotice(bool hasSetupProblem)
             detail = notice.Detail;
             tooltip = notice.Tooltip;
             isRepairShown = true;
+            // A stale setup is a routine update, not a broken project: use the information icon and
+            // the warning (not danger) tokens so the banner matches what it actually means.
+            if (notice.IsOutOfDate == true)
+            {
+                icon = EditorIcon::Information;
+            }
             break;
         }
         case SetupNoticeStage::Working:
@@ -1878,6 +1886,18 @@ void MainWindow::renderSetupNotice(bool hasSetupProblem)
             detail = QStringLiteral("Setup finished and the project builds.");
             break;
     }
+    const bool isOutOfDateNotice = stage == SetupNoticeStage::NeedsRepair && notice.IsOutOfDate == true;
+    QPalette noticePalette = palette();
+    if (isOutOfDateNotice == true)
+    {
+        noticePalette.setColor(QPalette::Window, GetThemeQColour(design::ThemeColour::StatusWarningSurface));
+        noticePalette.setColor(QPalette::WindowText, GetThemeQColour(design::ThemeColour::StatusWarning));
+        noticePalette.setColor(QPalette::ButtonText, GetThemeQColour(design::ThemeColour::StatusWarning));
+    }
+    mSetupNoticeOrNull->setAutoFillBackground(isOutOfDateNotice);
+    mSetupNoticeOrNull->setPalette(noticePalette);
+    mSetupNoticeTextOrNull->setPalette(noticePalette);
+    mSetupNoticeDetailOrNull->setPalette(noticePalette);
     mSetupNoticeIconOrNull->setPixmap(GetEditorIcon(icon).pixmap(QSize(EDITOR_ICON_SIZE, EDITOR_ICON_SIZE)));
     mSetupNoticeTextOrNull->setText(headline);
     mSetupNoticeTextOrNull->setToolTip(tooltip);
@@ -2070,10 +2090,11 @@ void MainWindow::RenderStatus()
     {
         // The banner already shows the problem with its Repair button; only a hidden banner
         // leaves this line to say what is wrong.
+        const SetupGuidance setupGuidance = DescribeSetupProblem(state.SetupProblem);
         parts.append(isSetupNoticeShown == true
                          ? (mSetupNoticeStage == SetupNoticeStage::Working ? QStringLiteral("Setup in progress")
-                                                                           : QStringLiteral("Setup needs repair"))
-                         : DescribeSetupProblem(state.SetupProblem).Headline);
+                                                                           : setupGuidance.StatusPhrase)
+                         : setupGuidance.Headline);
     }
     else if (setupSummary.isEmpty() == false &&
              (resultSummary.isEmpty() == true || setupSummary.contains(resultSummary) == false))

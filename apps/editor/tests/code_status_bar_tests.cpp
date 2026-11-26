@@ -110,7 +110,7 @@ TEST_CASE("Status bar follows the active tab's language server lifecycle", "[cod
 
     CodeStatusBar bar;
     bar.SetActiveTab(tab);
-    CHECK(bar.GetToolStateText() == QStringLiteral("No language server"));
+    CHECK(bar.GetToolStateText() == QStringLiteral("Not started in this tab"));
     assistance.Request(false);
     CHECK(bar.GetToolStateText() == QStringLiteral("slangd starting"));
     REQUIRE(QTest::qWaitFor([&bar]() { return bar.GetToolStateText() == QStringLiteral("slangd restarting"); }));
@@ -118,12 +118,12 @@ TEST_CASE("Status bar follows the active tab's language server lifecycle", "[cod
 
     CodeDocumentTab other(nullptr, QStringLiteral("notes.txt"));
     bar.SetActiveTab(&other);
-    CHECK(bar.GetToolStateText() == QStringLiteral("No language server"));
+    CHECK(bar.GetToolStateText().isEmpty() == true);
     bar.SetActiveTab(tab);
     CHECK(bar.GetToolStateText() == QStringLiteral("slangd ready"));
 
     assistance.ClearContext();
-    CHECK(bar.GetToolStateText() == QStringLiteral("No language server"));
+    CHECK(bar.GetToolStateText() == QStringLiteral("Not started in this tab"));
     program = directory.filePath(QStringLiteral("missing-slangd"));
     assistance.Request(false);
     REQUIRE(QTest::qWaitFor([&bar]() { return bar.GetToolStateText() == QStringLiteral("slangd failed"); }));

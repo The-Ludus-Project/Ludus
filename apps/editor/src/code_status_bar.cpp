@@ -180,11 +180,34 @@ void CodeStatusBar::Refresh()
 void CodeStatusBar::updateToolState()
 {
     const CodeEditor* editorOrNull = this->editorOrNull();
-    if (editorOrNull != nullptr)
+    if (editorOrNull == nullptr)
     {
-        const QString& status = editorOrNull->GetLanguageServerStatus();
-        mToolState->setText(status.isEmpty() == true ? QStringLiteral("No language server") : status);
+        mToolState->hide();
+        return;
+    }
+    const QString& status = editorOrNull->GetLanguageServerStatus();
+    if (status.isEmpty() == false)
+    {
+        mToolState->setText(status);
         mToolState->setToolTip(editorOrNull->GetLanguageServerDetail());
+        mToolState->show();
+        return;
+    }
+    // The Code tab never starts a language server. Don't advertise one for a language that
+    // has no service, and for Slang say clearly that this tab does not start it.
+    if (HasCodeLanguageService(editorOrNull->GetLanguage()) == true)
+    {
+        mToolState->setText(QStringLiteral("Not started in this tab"));
+        mToolState->setToolTip(
+            QStringLiteral("The Code tab does not start a language server. Shader assistance is available on the "
+                           "render graph."));
+        mToolState->show();
+    }
+    else
+    {
+        mToolState->setText(QString());
+        mToolState->setToolTip(QString());
+        mToolState->hide();
     }
 }
 
