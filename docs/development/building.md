@@ -69,9 +69,11 @@ command) before building. Configure and build do not download or repair tools.
   the Ludus source repository. Browser GLSL ES and translated Metal compute also need
   `./scripts/bootstrap-spirv-cross`. If tools moved, update
   `LUDUS_SLANG_COMPILER`, `LUDUS_SPIRV_VALIDATOR`, or `LUDUS_SPIRV_CROSS`.
-  A browser build or SDK consumer that compiles a LUSL (`.lusl`) shader also
-  needs a host `luslc`: run `./scripts/bootstrap-luslc` and set `LUDUS_LUSLC` to
-  the path it prints. The browser preset scripts do this themselves
+  A browser build that compiles a LUSL (`.lusl`) shader also needs a host
+  `luslc`: run `./scripts/bootstrap-luslc` and set `LUDUS_LUSLC` to the path it
+  prints. The browser preset scripts do this themselves. An installed browser
+  SDK ships that compiler for consumers on the same kind of host; on another
+  host, its consumers set `LUDUS_LUSLC` too
   ([cross builds](../modules/tooling/shader-language.md#resources-and-bindings)).
   The macOS presets select the prepared repository-local translator for every
   build flavor, including fresh Debug and Release build directories. A custom

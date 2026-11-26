@@ -388,7 +388,6 @@ add_subdirectory(modules/ui)
 # Input is configured before Platform: Platform depends on Input for the
 # normalized keyboard record/sink vocabulary (one-way dependency).
 add_subdirectory(modules/input)
-add_subdirectory(apps/world_demo)
 # Private pinned miniaudio C dependency (locked source bootstrap, hash-verified
 # at configure time). Added before the audio module, which links it PRIVATE. It
 # deliberately enables the C language for its own targets; the root project
@@ -405,6 +404,9 @@ add_subdirectory(modules/tooling/shader_language)
 if(NOT EMSCRIPTEN)
     add_subdirectory(tools/luslc)
 endif()
+# The world demo compiles LUSL renderer recipes, which a native tree lowers with the luslc target
+# defined above (cmake/LudusShaders.cmake resolves it while configuring the demo).
+add_subdirectory(apps/world_demo)
 # The SDK .luslh generator needs the Slang-linked compiler of shader-worker builds.
 if(TARGET ludus_shader_compiler)
     add_subdirectory(tools/lusl-declarations)
@@ -809,6 +811,15 @@ install(
 )
 
 install(FILES cmake/LudusDependencies.cmake cmake/LudusShaders.cmake cmake/LudusRendererShaders.cmake cmake/LudusRenderGraph.cmake cmake/LudusWindowsDistribution.cmake DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus")
+if(CMAKE_CROSSCOMPILING AND LUDUS_LUSLC)
+    # A cross SDK's consumers lower LUSL shaders, including the built-in renderer recipes, on the
+    # build machine. Install the host luslc this tree lowered them with as bin/luslc, with the host
+    # it runs on, so a consumer on that kind of host needs no LUDUS_LUSLC (cmake/LudusShaders.cmake).
+    install(PROGRAMS "${LUDUS_LUSLC}" DESTINATION "${CMAKE_INSTALL_BINDIR}" RENAME luslc)
+    file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/LudusHostLuslc.cmake"
+        CONTENT "set(LUDUS_SDK_LUSLC_HOST \"@CMAKE_HOST_SYSTEM_NAME@-@CMAKE_HOST_SYSTEM_PROCESSOR@\")\n" @ONLY)
+    install(FILES "${PROJECT_BINARY_DIR}/LudusHostLuslc.cmake" DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus")
+endif()
 install(FILES cmake/render_graph/build.py DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph")
 install(FILES scripts/export-light-transformer DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph" RENAME export-light-transformer.py)
 install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/errors.py

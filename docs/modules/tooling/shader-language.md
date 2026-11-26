@@ -894,8 +894,11 @@ ludus_compile_shader(TARGET my_game NAME composite
   tools and prints the compiler path. Each run rebuilds it incrementally.
   `scripts/build`, `scripts/test` and `scripts/check` for the `web-emscripten-*`
   presets, and `scripts/build-web-editor`, run it and pass the result. An
-  installed browser SDK consumer that compiles a `.lusl` shader passes
-  `-DLUDUS_LUSLC=<path>` like `LUDUS_SLANG_COMPILER`. A missing setting fails
+  installed browser SDK carries that host compiler as its `bin/luslc`, with
+  the build machine it runs on recorded in `lib/cmake/Ludus/LudusHostLuslc.cmake`.
+  A consumer on the same kind of host (system and processor) uses it without
+  `LUDUS_LUSLC`. On another host, set `-DLUDUS_LUSLC=<path>` to a host
+  compiler, as for `LUDUS_SLANG_COMPILER`. A missing setting fails
   configuration and names that command. `INCLUDES` accepts shared roots outside the source directory. LUSL
   searches beside the file naming the include, then in the source directory,
   then in the supplied roots in order. A depfile tracks the original files

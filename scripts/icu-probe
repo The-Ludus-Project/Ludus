@@ -345,6 +345,11 @@ def main() -> None:
         options = ["-DLUDUS_BUILD_ICU_PROBE=ON", "-DLUDUS_BUILD_UNICODE=ON", "-DLUDUS_WARNINGS_AS_ERRORS=ON"]
         if args.preset.startswith("web-"):
             options += ["-DLUDUS_BUILD_SMOKE_APP=OFF", "-DLUDUS_BUILD_WEB_PROBES=OFF"]
+            # The browser tree has no luslc target, and the renderer library takes its recipes'
+            # slot tables from luslc, so the configure needs the host build (scripts/bootstrap-luslc).
+            sys.path.insert(0, str(ROOT / "scripts/python"))
+            import host_luslc
+            options.append(f"-DLUDUS_LUSLC={host_luslc.ensure(ROOT)}")
         if args.preset.endswith(("release", "profile")):
             options.append("-DLUDUS_COMPILED_LOG_LEVEL=2")
         run([host_tool("cmake"), "--preset", args.preset, *options])
