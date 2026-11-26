@@ -54,7 +54,7 @@ static_assert(blur_slots::SKIN_SOURCE_TEXTURE == skin_slots::SKIN_SOURCE_TEXTURE
               blur_slots::SKIN_PROFILES == skin_slots::SKIN_PROFILES);
 /// The profile table is the recipes' last binding.
 constexpr usize SKIN_BINDING_COUNT = skin_slots::SKIN_PROFILES + 1;
-#if defined(LUDUS_RENDERER_TEST_READBACK)
+#if defined(LUDUS_RENDERER_TEST_READBACK) && defined(LUDUS_RENDERER_SKIN_SHADERS)
 bool hasSkinShadersForTesting = false;
 SkinDiffusionShaders skinShadersForTesting{};
 #endif
@@ -192,10 +192,13 @@ Status SelectBindings(BorrowedView<const rhi::RasterBinding> declared,
 } // namespace
 
 #if defined(LUDUS_RENDERER_TEST_READBACK)
-void SetSkinDiffusionShadersForTesting(const SkinDiffusionShaders* shadersOrNull) noexcept
+void SetSkinDiffusionShadersForTesting([[maybe_unused]] const SkinDiffusionShaders* shadersOrNull) noexcept
 {
+    // Without offline shader tools the renderer builds no skin programs, so there is nothing to override.
+#    if defined(LUDUS_RENDERER_SKIN_SHADERS)
     hasSkinShadersForTesting = shadersOrNull != nullptr;
     skinShadersForTesting = shadersOrNull != nullptr ? *shadersOrNull : SkinDiffusionShaders{};
+#    endif
 }
 #endif
 RenderGraphDeferredProgram::~RenderGraphDeferredProgram() noexcept

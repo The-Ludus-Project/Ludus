@@ -38,7 +38,8 @@ struct SkinDiffusionShaders final
 /// Test builds only (LUDUS_RENDERER_TEST_READBACK): deferred programs whose skin resources are created after this call
 /// draw with shadersOrNull's programs instead of the built-in recipes; nullptr restores the recipes. The programs must
 /// keep the recipes' binding slots (renderer_skin_composite_slots.h). The descriptions are copied; the artifacts they
-/// borrow must outlive the programs. Owner thread only, between graph preparations.
+/// borrow must outlive the programs. Owner thread only, between graph preparations. Without offline shader tools
+/// (LUDUS_RENDERER_SKIN_SHADERS undefined) the renderer has no skin programs and the call does nothing.
 void SetSkinDiffusionShadersForTesting(const SkinDiffusionShaders* shadersOrNull) noexcept;
 /// Graph-owned fullscreen geometry, shaders and immutable lighting/depth-copy pipelines.
 class RenderGraphDeferredProgram final
