@@ -297,11 +297,11 @@ TEST_CASE("Cancelling after the last job resolved keeps a successful outcome", "
 {
     for (const uint32 workers : {0u, 2u})
     {
+        uint32 calls = 0;
         JobSystem system;
         JobGraph graph;
         REQUIRE(system.Initialize({workers}) == JobStatus::Ok);
         REQUIRE(graph.Initialize({2, 1}) == JobStatus::Ok);
-        uint32 calls = 0;
         JobHandle first{};
         JobHandle second{};
         REQUIRE(graph.Add(Increment, &calls, first) == JobStatus::Ok);
@@ -315,11 +315,15 @@ TEST_CASE("Cancelling after the last job resolved keeps a successful outcome", "
             REQUIRE(graph.GetOutcome(second, outcome) == JobStatus::Ok);
             YieldThread();
         }
+        // Thanks to Matt Kline, "What every systems programmer should know about
+        // concurrency", §10.1, for the release/acquire payload example.
+        // https://assets.bitbashing.io/papers/concurrency-primer.pdf#page=8
+        // Read before Cancel or Wait can independently publish the worker's writes.
+        CHECK(calls == 2);
         REQUIRE(system.Cancel() == JobStatus::Ok);
         JobOutcome result{};
         REQUIRE(system.Wait(result) == JobStatus::Ok);
         REQUIRE(result == JobOutcome::Succeeded);
-        REQUIRE(calls == 2);
     }
 }
 
