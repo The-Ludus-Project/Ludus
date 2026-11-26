@@ -1,6 +1,7 @@
 #include <ludus/foundation/base/config.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
 
+#include "internal/device.h"
 #include "internal/gpu_scope_backend.h"
 #include "internal/measurement.h"
 #include "internal/resources.h"
@@ -65,7 +66,7 @@ bool MakeGpuDebugName(BorrowedView<const char> name, GpuDebugName& outName) noex
 }
 RasterStatus ArmGpuPassTimings(DeviceHandle device) noexcept
 {
-    const RasterStatus status = internal::ValidateMeasurementDevice(device);
+    const RasterStatus status = internal::ValidateDeviceReadiness(device);
     if (status != RasterStatus::Ready)
     {
         return status;
@@ -76,12 +77,12 @@ RasterStatus ArmGpuPassTimings(DeviceHandle device) noexcept
     }
     const RasterStatus armed =
         internal::GpuTimingRequested() == true ? backend::ArmPassTimings() : RasterStatus::Unsupported;
-    const RasterStatus completed = internal::ValidateMeasurementDevice(device);
+    const RasterStatus completed = internal::ValidateDeviceReadiness(device);
     return completed == RasterStatus::Ready ? armed : completed;
 }
 RasterStatus GetGpuPassTimings(DeviceHandle device, GpuPassTimings& outTimings) noexcept
 {
-    const RasterStatus status = internal::ValidateMeasurementDevice(device);
+    const RasterStatus status = internal::ValidateDeviceReadiness(device);
     if (status == RasterStatus::InvalidHandle)
     {
         return status;
@@ -93,7 +94,7 @@ RasterStatus GetGpuPassTimings(DeviceHandle device, GpuPassTimings& outTimings) 
     }
     outTimings = internal::GpuTimingRequested() == true ? backend::PollPassTimings()
                                                         : GpuPassTimings{ .State = GpuTimingState::Unavailable };
-    const RasterStatus completed = internal::ValidateMeasurementDevice(device);
+    const RasterStatus completed = internal::ValidateDeviceReadiness(device);
     if (completed != RasterStatus::Ready)
     {
         outTimings = {};
@@ -102,7 +103,7 @@ RasterStatus GetGpuPassTimings(DeviceHandle device, GpuPassTimings& outTimings) 
 }
 RasterStatus BeginGpuScope(DeviceHandle device, const GpuScopeDescription& scope) noexcept
 {
-    const RasterStatus status = internal::ValidateMeasurementDevice(device);
+    const RasterStatus status = internal::ValidateDeviceReadiness(device);
     if (status != RasterStatus::Ready)
     {
         return status;
@@ -125,7 +126,7 @@ RasterStatus BeginGpuScope(DeviceHandle device, const GpuScopeDescription& scope
 }
 RasterStatus EndGpuScope(DeviceHandle device) noexcept
 {
-    const RasterStatus status = internal::ValidateMeasurementDevice(device);
+    const RasterStatus status = internal::ValidateDeviceReadiness(device);
     return status == RasterStatus::Ready ? backend::EndScope() : status;
 }
 GpuScope::GpuScope(DeviceHandle device, const GpuScopeDescription& scope) noexcept : mDevice(device)
@@ -140,7 +141,7 @@ GpuScope::GpuScope(DeviceHandle device, const GpuScopeDescription& scope) noexce
 }
 GpuScope::~GpuScope() noexcept
 {
-    if (mIsActive == false || internal::ValidateMeasurementDevice(mDevice) != RasterStatus::Ready)
+    if (mIsActive == false || internal::ValidateDeviceReadiness(mDevice) != RasterStatus::Ready)
     {
         return;
     }

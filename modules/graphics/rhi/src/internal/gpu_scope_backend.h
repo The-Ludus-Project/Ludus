@@ -3,10 +3,6 @@
 #include "gpu_pass_timing_buffer.h"
 #include <ludus/graphics/rhi/gpu_scope.h>
 
-namespace ludus::graphics::rhi::internal
-{
-RasterStatus ValidateMeasurementDevice(DeviceHandle device) noexcept;
-}
 namespace ludus::graphics::rhi::backend
 {
 RasterStatus ArmPassTimings() noexcept;
