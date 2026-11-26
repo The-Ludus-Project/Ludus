@@ -5,7 +5,8 @@
 // Thanks to Shlomi Steinberg and Matt Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics",
 // CGF45(2), e70322 (2026), Sections3.1 and4.2, https://doi.org/10.1111/cgf.70322, for coherent field sums
 // and scene-derived interaction frusta. This scalar connection specialization uses a periodic paraxial
-// angular-spectrum lattice instead of their analytic Fraunhofer/UTD operators and bidirectional cone paths.
+// angular-spectrum lattice instead of their analytic Fraunhofer/UTD operators and bidirectional cone paths;
+// wave_edge_diffraction.cpp implements the selectable UTD operator.
 namespace ludus::graphics::renderer::internal
 {
 namespace
@@ -191,8 +192,11 @@ bool IsProjectedPointBlocked(const ReferenceSceneData& scene,
     }
     return false;
 }
-rhi::RasterStatus
-TraceBallistic(const ReferenceSceneData& scene, math::EllipticalCone rayCone, bool& outIsBlocked) noexcept
+} // namespace
+rhi::RasterStatus TraceWaveBallistic(const ReferenceSceneData& scene,
+                                     math::EllipticalCone rayCone,
+                                     const WaveExcludedTriangles& excluded,
+                                     bool& outIsBlocked) noexcept
 {
     rayCone.RadiusWorld = 0;
     rayCone.Slope = 0;
@@ -240,6 +244,10 @@ TraceBallistic(const ReferenceSceneData& scene, math::EllipticalCone rayCone, bo
             {
                 return rhi::RasterStatus::InvalidDescription;
             }
+            if (excluded.Contains(triangleIndex) == true)
+            {
+                continue;
+            }
             const ReferenceTriangle& triangle = scene.Triangles[triangleIndex];
             const math::ConeTriangle geometry{WidenVector(triangle.Positions[0]),
                                               WidenVector(triangle.Positions[1]),
@@ -276,15 +284,10 @@ TraceBallistic(const ReferenceSceneData& scene, math::EllipticalCone rayCone, bo
     outIsBlocked = false;
     return rhi::RasterStatus::Ready;
 }
-struct WaveOriginEscape final
-{
-    float64 DistanceWorld = 0;
-    bool IsBlocked = false;
-    bool IsEntirelyBallistic = false;
-};
 rhi::RasterStatus EscapeWaveOrigin(const ReferenceSceneData& scene,
                                    const math::EllipticalCone& cone,
                                    float64 wavelengthWorld,
+                                   bool shouldTraceBallistic,
                                    WaveOriginEscape& outEscape) noexcept
 {
     float64 distanceWorld = cone.NearWorld;
@@ -299,9 +302,9 @@ rhi::RasterStatus EscapeWaveOrigin(const ReferenceSceneData& scene,
         math::EllipticalCone segment = cone;
         segment.NearWorld = previousWorld;
         segment.FarWorld = distanceWorld;
-        if (distanceWorld > previousWorld)
+        if (shouldTraceBallistic == true && distanceWorld > previousWorld)
         {
-            const rhi::RasterStatus status = TraceBallistic(scene, segment, outEscape.IsBlocked);
+            const rhi::RasterStatus status = TraceWaveBallistic(scene, segment, {}, outEscape.IsBlocked);
             if (status != rhi::RasterStatus::Ready || outEscape.IsBlocked == true)
             {
                 return status;
@@ -327,7 +330,11 @@ rhi::RasterStatus EscapeWaveOrigin(const ReferenceSceneData& scene,
             segment.NearWorld = distanceWorld;
             segment.FarWorld = cone.FarWorld;
             outEscape.IsEntirelyBallistic = true;
-            return TraceBallistic(scene, segment, outEscape.IsBlocked);
+            if (shouldTraceBallistic == false)
+            {
+                return rhi::RasterStatus::Ready;
+            }
+            return TraceWaveBallistic(scene, segment, {}, outEscape.IsBlocked);
         }
         previousWorld = distanceWorld;
         distanceWorld = math::Min(maximumBallisticWorld, distanceWorld * LUDUS_WAVE_CONNECTION_BALLISTIC_SCALE);
@@ -335,7 +342,6 @@ rhi::RasterStatus EscapeWaveOrigin(const ReferenceSceneData& scene,
     return rhi::RasterStatus::Unsupported;
 }
 
-} // namespace
 rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& scene,
                                                    math::Vector3d sourceWorld,
                                                    math::Vector3d receiverWorld,
@@ -380,7 +386,7 @@ rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& sce
     cone.NearWorld = endpointEscapeWorld;
     cone.FarWorld = distanceWorld - cone.NearWorld;
     WaveOriginEscape escapeResult;
-    rhi::RasterStatus escapeStatus = EscapeWaveOrigin(scene, cone, wavelengthWorld, escapeResult);
+    rhi::RasterStatus escapeStatus = EscapeWaveOrigin(scene, cone, wavelengthWorld, true, escapeResult);
     const float64 sourceEscapeWorld = escapeResult.DistanceWorld;
     if (escapeStatus != rhi::RasterStatus::Ready)
     {
@@ -394,7 +400,7 @@ rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& sce
     math::EllipticalCone reverse = cone;
     reverse.OriginWorld = receiverWorld;
     reverse.DirectionWorld = -directionWorld;
-    escapeStatus = EscapeWaveOrigin(scene, reverse, wavelengthWorld, escapeResult);
+    escapeStatus = EscapeWaveOrigin(scene, reverse, wavelengthWorld, true, escapeResult);
     const float64 receiverEscapeWorld = escapeResult.DistanceWorld;
     if (escapeStatus != rhi::RasterStatus::Ready)
     {
@@ -534,7 +540,7 @@ rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& sce
             escape.OriginWorld = sourceWorld + directionWorld * cone.NearWorld;
             escape.FarWorld = cone.FarWorld - cone.NearWorld;
             escape.NearWorld = math::Min(escape.FarWorld, endpointEscapeWorld);
-            const rhi::RasterStatus escaped = EscapeWaveOrigin(scene, escape, wavelengthWorld, escapeResult);
+            const rhi::RasterStatus escaped = EscapeWaveOrigin(scene, escape, wavelengthWorld, true, escapeResult);
             const float64 escapedWorld = escapeResult.DistanceWorld;
             if (escaped != rhi::RasterStatus::Ready)
             {

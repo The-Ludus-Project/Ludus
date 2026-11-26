@@ -21,3 +21,5 @@
 #define LUDUS_WAVE_PARITY_REGION_HASH_FACTOR 1664525
 
 #define LUDUS_WAVE_PARITY_CONNECTION_TAG 0x434f4e4e
+// UTD connection mode: the region cone records carry source, unit direction, distance and wavelength.
+#define LUDUS_WAVE_PARITY_UTD_CONNECTION_TAG 0x55544443

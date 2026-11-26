@@ -1,7 +1,8 @@
 #pragma once
 #include "wave_connection_layout.h"
 #include "wave_scene_queries.slang"
-// See wave_connection.cpp for attribution, declared Gaussian-mode coupling and the scalar paraxial departure.
+// See wave_connection.cpp for attribution, declared Gaussian-mode coupling and the scalar paraxial departure, and
+// wave_edge_diffraction.cpp for the UTD edge operator included at the end of this file.
 // All FFT propagation, geometry coverage and coherent accumulation execute here on the GPU.
 static const float WAVE_CONNECTION_FRAME_HELPER_COSINE = 0.9;
 static const float WAVE_CONNECTION_MAX_WAVELENGTH_TO_DISTANCE = 1.0 / 32;
@@ -126,7 +127,11 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
     }
     return false;
 }
-[noinline] WaveQuery TraceWaveBallistic(SceneContext scene, EllipticalCone rayCone, out bool outIsBlocked)
+/// No excluded triangle: the ballistic segment tests every triangle.
+static const uint WAVE_CONNECTION_NO_EXCLUDED_TRIANGLE = 0xffffffff;
+/// Trace the zero-radius centre ray of rayCone, ignoring the one or two triangles in `excluded`.
+[noinline] WaveQuery
+TraceWaveBallistic(SceneContext scene, EllipticalCone rayCone, uint2 excluded, out bool outIsBlocked)
 {
     outIsBlocked = false;
     rayCone.RadiusWorld = 0;
@@ -160,6 +165,8 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
             TriangleData triangle = GetTriangle(scene, triangleIndex);
             if (triangle.IsValid == false)
                 return WaveQuery::Invalid;
+            if (triangleIndex == excluded.x || triangleIndex == excluded.y)
+                continue;
             ConeTriangle geometry;
             geometry.FirstWorld = triangle.Position0World;
             geometry.SecondWorld = triangle.Position1World;
@@ -177,9 +184,11 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
     }
     return WaveQuery::Ready;
 }
+/// shouldTraceBallistic also tests the centre ray across the skipped span and stops when it is blocked.
 [noinline] WaveQuery EscapeWaveOrigin(SceneContext scene,
                                       EllipticalCone cone,
                                       float wavelengthWorld,
+                                      bool shouldTraceBallistic,
                                       out float outDistanceWorld,
                                       out bool outIsBlocked,
                                       out bool outIsEntirelyBallistic)
@@ -196,9 +205,10 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
         EllipticalCone segment = cone;
         segment.NearWorld = previousWorld;
         segment.FarWorld = distanceWorld;
-        if (distanceWorld > previousWorld)
+        if (shouldTraceBallistic == true && distanceWorld > previousWorld)
         {
-            WaveQuery status = TraceWaveBallistic(scene, segment, outIsBlocked);
+            WaveQuery status =
+                TraceWaveBallistic(scene, segment, uint2(WAVE_CONNECTION_NO_EXCLUDED_TRIANGLE), outIsBlocked);
             if (status != WaveQuery::Ready || outIsBlocked == true)
                 return status;
         }
@@ -218,7 +228,9 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
             segment.NearWorld = distanceWorld;
             segment.FarWorld = cone.FarWorld;
             outIsEntirelyBallistic = true;
-            return TraceWaveBallistic(scene, segment, outIsBlocked);
+            if (shouldTraceBallistic == false)
+                return WaveQuery::Ready;
+            return TraceWaveBallistic(scene, segment, uint2(WAVE_CONNECTION_NO_EXCLUDED_TRIANGLE), outIsBlocked);
         }
         previousWorld = distanceWorld;
         distanceWorld = min(maximumBallisticWorld, distanceWorld * LUDUS_WAVE_CONNECTION_BALLISTIC_SCALE);
@@ -264,7 +276,7 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
     bool isBlocked;
     bool isEntirelyBallistic;
     WaveQuery escapeStatus =
-        EscapeWaveOrigin(scene, cone, wavelengthWorld, sourceEscapeWorld, isBlocked, isEntirelyBallistic);
+        EscapeWaveOrigin(scene, cone, wavelengthWorld, true, sourceEscapeWorld, isBlocked, isEntirelyBallistic);
     if (escapeStatus != WaveQuery::Ready)
         return escapeStatus;
     if (isBlocked == true || isEntirelyBallistic == true)
@@ -277,7 +289,7 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
     reverse.DirectionWorld = -directionWorld;
     float receiverEscapeWorld;
     escapeStatus =
-        EscapeWaveOrigin(scene, reverse, wavelengthWorld, receiverEscapeWorld, isBlocked, isEntirelyBallistic);
+        EscapeWaveOrigin(scene, reverse, wavelengthWorld, true, receiverEscapeWorld, isBlocked, isEntirelyBallistic);
     if (escapeStatus != WaveQuery::Ready)
         return escapeStatus;
     if (isBlocked == true || isEntirelyBallistic == true)
@@ -379,7 +391,7 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
             escape.NearWorld = min(escape.FarWorld, endpointEscapeWorld);
             float escapedWorld;
             WaveQuery escaped =
-                EscapeWaveOrigin(scene, escape, wavelengthWorld, escapedWorld, isBlocked, isEntirelyBallistic);
+                EscapeWaveOrigin(scene, escape, wavelengthWorld, true, escapedWorld, isBlocked, isEntirelyBallistic);
             if (escaped != WaveQuery::Ready)
                 return escaped;
             if (isBlocked == true)
@@ -409,3 +421,4 @@ WaveQuery EvaluateWaveConnection(SceneContext scene,
                                             wavelengthWorld,
                                             inoutField);
 }
+#include "wave_edge_diffraction.slang"

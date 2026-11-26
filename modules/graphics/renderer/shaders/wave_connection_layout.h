@@ -18,3 +18,13 @@
 
 // Avoid denormal/overflow-dependent GPU Gaussian denominators at the admitted paraxial distance boundary.
 #define LUDUS_WAVE_CONNECTION_MIN_WAVELENGTH_WORLD 1e-9
+
+// Uniform Theory of Diffraction edge operator (wave_edge_diffraction.cpp and .slang).
+// Transition-function arguments below this limit use the power series; larger ones use the continued fraction.
+#define LUDUS_WAVE_UTD_SERIES_LIMIT 2.25
+// Power-series terms: the next term is below 1e-14 of the largest at the limit.
+#define LUDUS_WAVE_UTD_SERIES_TERMS 32
+// Continued-fraction depth: relative error about 4e-9 at the series limit, decreasing with the argument.
+#define LUDUS_WAVE_UTD_FRACTION_DEPTH 48
+// Below this magnitude, sin(x)/x uses its two-term Taylor series.
+#define LUDUS_WAVE_UTD_SINC_LIMIT 0.0001

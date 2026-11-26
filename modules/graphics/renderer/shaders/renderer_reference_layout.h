@@ -33,6 +33,8 @@
 #define LUDUS_REFERENCE_FORM_FACTOR_TARGET_FLAG 128
 // Parameters Sampling.z flag selecting ReferenceMaterialProfile::MultipleScatteringGgx.
 #define LUDUS_REFERENCE_MULTIPLE_SCATTERING_FLAG 256
+// Parameters Sampling.z flag selecting ReferenceOpticalConnection::UtdEdgeDiffraction for optical connections.
+#define LUDUS_REFERENCE_UTD_CONNECTION_FLAG 512
 
 // Sampler 4 keeps the version-1 addresses and reserves a separate dimension per
 // depth after all version-2/3 bounce dimensions. Tile.x carries the directional

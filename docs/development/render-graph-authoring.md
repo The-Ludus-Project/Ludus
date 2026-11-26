@@ -11519,15 +11519,22 @@ and physical-device qualification remain distinct from any local macOS result.
 The **Wave tracing — scene optical transport** template (`wave-tracing`) uses the
 selected World's camera, geometry, lights, emissive meshes, textures and supported
 reflection materials. It samples truncated surface paths, with coherent scalar
-Gaussian-mode connections to finite lights. Its CPU oracle and GPU implementation
-estimate the same declared integral; transport, shading and accumulation execute
-on the GPU when GPU compute is selected.
+connections to finite lights. A connection either propagates a Gaussian mode through
+an angular-spectrum lattice (the default) or, with `IS_WT_UTD_ENABLED`, adds
+[UTD edge diffraction](#utd-edge-diffraction-connections) to the straight ray. Its
+CPU oracle and GPU implementation estimate the same declared integral for each
+operator; transport, shading and accumulation execute on the GPU when GPU compute
+is selected.
 
 The design adopts scene interaction regions and coherent field sums from Shlomi
 Steinberg and Matt Pharr,
 [Wave Tracing: Generalizing The Path Integral To Wave Optics](https://doi.org/10.1111/cgf.70322),
-Computer Graphics Forum 45(2), e70322 (2026), Sections 3.1 and 4.2. Thank you to the
-authors, and to Umut Emre, Aryan Kanak and Shlomi Steinberg,
+Computer Graphics Forum 45(2), e70322 (2026), Sections 3.1 and 4.2, and its UTD-based
+free-space diffraction from Section 5.2.2. Thank you to the authors; to Robert G.
+Kouyoumjian and Prabhakar H. Pathak,
+[A Uniform Geometrical Theory of Diffraction for an Edge in a Perfectly Conducting Surface](https://doi.org/10.1109/PROC.1974.9651),
+Proceedings of the IEEE 62(11), 1448–1461 (1974), for the wedge coefficient and its
+transition function; and to Umut Emre, Aryan Kanak and Shlomi Steinberg,
 [High-Performance Elliptical Cone Tracing](https://doi.org/10.1111/cgf.70230),
 Computer Graphics Forum 44(7), e70230 (2025), for the cone/triangle geometric
 formulation. These implementations are original; no noncommercial reference
@@ -11616,18 +11623,112 @@ with an actionable diagnostic, preserving the last accepted image.
 
 This is a scene-capable **scalar paraxial connection profile**, with classical RGB
 surface scattering between connections. It is not the paper's full polarimetric
-bidirectional cone path tracer: Fraunhofer/UTD edge operators, interference-aware
-material-direction rejection sampling, coherent reflection/transmission between
-surface events and spectral material transport are not implemented here.
+bidirectional cone path tracer: Fraunhofer edge operators, multiple and corner
+edge diffraction, interference-aware material-direction rejection sampling,
+coherent reflection/transmission between surface events and spectral material
+transport are not implemented here. The
+[UTD connection](#utd-edge-diffraction-connections) covers single edge diffraction.
+
+### UTD edge diffraction connections
+
+Set `IS_WT_UTD_ENABLED` to replace the angular-spectrum lattice with the paper's
+UTD-based free-space diffraction (Section 5.2.2). A finite light connection from
+source `S` to receiver `R`, of length `r`, then has the field, relative to the
+unobstructed free-space field `exp(-i*k*r)/r`,
+
+```text
+u(R) = U_ballistic + sum over diffracting edges e of u_e(R)
+u_e(R) = -exp(-i*pi/4) * r / (s' + s) * [c+ G(k*L*a+) + c- G(k*L*a-)] / (2*n*sqrt(2*pi))
+         * exp(-i*k*(s' + s - r))
+```
+
+`U_ballistic` is one when the straight segment is clear and zero when it is
+blocked, using the same fixed-mip coverage as ordinary visibility. Each edge
+contributes at its diffraction point `Q`, where incident and diffracted rays make
+equal angles with the edge (Keller's law), with `s' = |Q - S|` and `s = |R - Q|`.
+The bracket is the incident shadow-boundary half of Kouyoumjian and Pathak's wedge
+coefficient for exterior wedge angle `n*pi`, with their distance parameter
+`L = s*s'*sin^2(beta0)/(s + s')`. `G(X) = F(X)/sqrt(X)` is their transition
+function divided by `sqrt(X)`. Each `c` is `cot((pi ± beta)/(2n))*sqrt(a)`, which
+stays finite at the shadow boundary, so the edge supplies exactly minus half the
+ballistic field there. The total is continuous, and the power is one quarter on
+the boundary of a straight edge. Distinct light samples add powers; the edges of
+one connection add fields before squaring, so slit and aperture fringes interfere.
+
+The operator treats every opaque edge as an absorbing (Kirchhoff) edge. Ludus
+surfaces scatter through their classical BSDFs, so there is no coherent reflected
+field for the coefficient's reflection-boundary terms to complete. Both
+polarizations then share the same coefficient, and near the shadow boundary the
+result reduces to Fresnel knife-edge diffraction. Edges are admitted per
+connection:
+
+- Edges come from the triangles that the connection's Gaussian envelope gathers in
+  each interaction region. That is the same envelope, with radius
+  `3*sqrt(2*Sigma)`, as the lattice operator. A diffraction point must lie inside
+  the envelope and its region. Diffraction from farther edges is omitted; it is at
+  least about 26 dB below the unobstructed field at the region midpoint.
+- Triangles share an edge when their corner positions are bit-for-bit equal. One
+  face makes a thin half-plane (`n = 2`), and two faces make a wedge whose exterior
+  is the angular sector holding the source. An edge with three or more faces is not
+  diffracted. Faces that are transparent at the diffraction point do not bound the
+  edge.
+- The receiver must lie in the same exterior. The edge must be a silhouette seen
+  from the source or the receiver, with exactly one face front-facing. Flat edges
+  between coplanar triangles and concave edges therefore never diffract.
+- The diffraction point must lie strictly inside the edge segment. Diffraction by
+  edge endpoints (corner diffraction) is omitted.
+- The incident ray `S` to `Q` and the diffracted ray `Q` to `R` must both be clear,
+  ignoring the edge's own faces.
+- Each connection takes at most one diffraction. Edges inside the endpoints'
+  escape distances, or inside spans that the region walk skips past grazing
+  geometry, do not diffract.
+
+The GPU evaluates the same formula in binary32. The path difference `s' + s - r`
+is computed from the unfolded geometry as `2*rho*rho'*(1 + cos(phi - phi'))/(s' + s + r)`,
+so its relative error stays near binary32 precision. At visible wavelengths and
+metre-scale distances from the shadow boundary, an absolute phase error of about
+`k * 1e-7 m` remains. Fringes between several distant edges are therefore
+qualified at the 5 mm design wavelength, and near the shadow boundary at 550 nm.
+The same input admission, region capacity and propagation limits apply as for
+the lattice operator.
+
+Evidence for the UTD connection, on an Apple M5 with Metal:
+
+- `wave_edge_diffraction_tests.cpp` (`[wave-utd]`, CPU only) checks the transition
+  function against an independent quadrature (within `1e-8`). It checks the knife
+  edge against Fresnel–Kirchhoff diffraction: within 1.5% of the power from 3.5
+  Fresnel units inside the shadow to 1.2 units into the lit side, and one quarter on
+  the boundary. It checks a right-angle wedge for continuity and reciprocity across
+  its shadow boundary, the admission rules, and the double-slit scene against the
+  Fresnel–Kirchhoff two-slit pattern (within 0.01 of the unobstructed power, with
+  25 mm fringes). It also checks a blocked diffracted ray.
+- `wave_tracing_parity_tests.cpp` (`[wave-utd][parity]`) runs the production kernel
+  on the GPU for the double slit and the wedge at 5 mm, and for a knife edge at
+  550 nm. Its largest field-component differences from the float64 oracle are
+  `2.3e-6` and `6.7e-5`; the test admits `5e-4`.
+- The `[wave-utd]` raw-AOV case of `reference_compute_tests.cpp` meets the same CPU
+  oracle and GPU compute bounds as the lattice operator's optical case.
+- `wave_scene_graph_tests.cpp` cooks the template with `IS_WT_UTD_ENABLED` and
+  renders the open, blocked and half-screen Worlds. On the half screen it checks
+  transmission between 0.15 and 0.25 on the shadowed side and between 0.25 and 0.4
+  on the lit side.
+- On staircase2 (33,447 triangles, 64 × 32, 16 spp, 3 vertices, 550 nm), UTD CPU and
+  GPU captures differ by RGB RMSE 0.0167. In the same build, the lattice operator
+  differs by 0.0167. In both, one pixel takes a different surface-path branch in
+  float32 (one closest query more on the CPU). Without that pixel the RMSE is
+  0.00128 for UTD and 0.00110 for the lattice, with largest component differences
+  of 0.032. The two operators' mean radiances differ by 0.006%.
 
 ### CPU oracle and validation
 
 Set `ReferenceCaptureDescription::OpticalWavelengthWorld` to a positive wavelength
 in metres to select the same connection profile in reference captures. Zero
-preserves the geometric reference profile. Select `CpuOracle` or `GpuCompute` and
-`UniformArea` light sampling; incompatible native-query or resampled requests
-reject explicitly. Changing wavelength resets progressive accumulation. Raw
-`LUHDR01` exports retain the wavelength at byte 92 and optical flag 256.
+preserves the geometric reference profile. `ReferenceCaptureDescription::OpticalConnection`
+selects `AngularSpectrum` (the default) or `UtdEdgeDiffraction`; UTD without a
+wavelength is rejected. Select `CpuOracle` or `GpuCompute` and `UniformArea` light
+sampling; incompatible native-query or resampled requests reject explicitly.
+Changing the wavelength or operator resets progressive accumulation. Raw `LUHDR01`
+exports retain the wavelength at byte 92, optical flag 256 and, for UTD, flag 2048.
 
 The existing scene benchmark accepts an optional final wavelength in nanometres:
 
@@ -11637,6 +11738,8 @@ ludus_reference_benchmark COOKED_SCENE 64 32 16 3 gpu 1 550
 ```
 
 `LUDUS_REFERENCE_BENCHMARK_OUTPUT` saves raw linear RGB for matched comparisons.
+`LUDUS_REFERENCE_BENCHMARK_OPTICAL_CONNECTION=utd` selects the UTD connection;
+`angular-spectrum`, the default, selects the lattice.
 The benchmark retains authored analytic lights and HDR environments. It does not
 add lights when the authored scene is dark.
 

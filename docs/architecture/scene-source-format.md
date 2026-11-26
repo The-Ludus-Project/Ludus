@@ -161,7 +161,11 @@ For a quantitative comparison, use receiver irradiance or derive it from raw lin
 wall radiance using the wall's Lambertian factor. Match the source and receiver geometry,
 wavelength and material assumptions to the reference. The cook regression covers geometry
 and lighting inputs. The [scalar paraxial Wave Tracing profile](../development/render-graph-authoring.md#trace-scene-optical-connections)
-exercises angular-spectrum propagation in its own tests. Its scope excludes UTD edge operators.
+exercises angular-spectrum propagation in its own tests. Its
+[UTD connection](../development/render-graph-authoring.md#utd-edge-diffraction-connections)
+reproduces the knife-edge, wedge and double-slit geometry of these scenes in
+`wave_edge_diffraction_tests.cpp`. Those tests compare it with Fresnel–Kirchhoff references for
+absorbing screens; the conducting-wedge comparison remains open.
 
 ## Document layout
 
