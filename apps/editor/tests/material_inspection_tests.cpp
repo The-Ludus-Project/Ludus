@@ -76,6 +76,16 @@ RenderScene MakeScene(format::MaterialModel thirdModel = format::MaterialModel::
     definition->Textures[1].Width = 4;
     definition->Textures[1].Height = 4;
     definition->Textures[1].IsLinear = true;
+    const usize surfaceTexelCount = static_cast<usize>(definition->Textures[1].Width) * definition->Textures[1].Height;
+    REQUIRE(definition->Textures[1].Pixels.TryResize(surfaceTexelCount * format::TEXEL_BYTES) == true);
+    const StaticArray<uint8, format::TEXEL_BYTES> surfaceTexel{{128, 128, 192, 0}};
+    for (usize index = 0; index < definition->Textures[1].Pixels.GetSize(); ++index)
+    {
+        definition->Textures[1].Pixels[index] = surfaceTexel[index % format::TEXEL_BYTES];
+    }
+    // The second texel carries an independent roughness and a nonzero metallic multiplier.
+    definition->Textures[1].Pixels[format::TEXEL_BYTES + 2] = 32;
+    definition->Textures[1].Pixels[format::TEXEL_BYTES + 3] = 224;
     REQUIRE(definition->Materials.TryResize(OBJECT_COUNT) == true);
 
     ludus::resources::SceneMaterial& conductor = definition->Materials[0];
@@ -207,6 +217,8 @@ TEST_CASE("Material inspection offers swatches and thumbnails beside the numbers
     const MaterialPropertyRow* surfaceOrNull = FindRowOrNull(rows, QStringLiteral("Surface map"));
     REQUIRE(surfaceOrNull != nullptr);
     CHECK(surfaceOrNull->Thumbnail.isNull() == true);
+    CHECK(FindRowOrNull(rows, QStringLiteral("Roughness map")) == nullptr);
+    CHECK(FindRowOrNull(rows, QStringLiteral("Metallic map")) == nullptr);
     // A material that emits nothing shows no emission swatch; an emitter does.
     const MaterialPropertyRow* dormantOrNull = FindRowOrNull(rows, QStringLiteral("Emission"));
     REQUIRE(dormantOrNull != nullptr);
@@ -215,6 +227,27 @@ TEST_CASE("Material inspection offers swatches and thumbnails beside the numbers
     const MaterialPropertyRow* emitterOrNull = FindRowOrNull(rows, QStringLiteral("Emission"));
     REQUIRE(emitterOrNull != nullptr);
     CHECK(emitterOrNull->Swatch.isValid() == true);
+}
+
+TEST_CASE("Material inspection previews cooked surface multipliers independently", "[editor][world][material]")
+{
+    QVector<MaterialPropertyRow> rows;
+    REQUIRE(DescribeSceneObjectMaterial(MakeScene(), QString(COATED_ID), rows) == true);
+    const MaterialPropertyRow* surfaceOrNull = FindRowOrNull(rows, QStringLiteral("Surface map"));
+    REQUIRE(surfaceOrNull != nullptr);
+    CHECK(surfaceOrNull->Detail.contains(QStringLiteral("R/G encode tangent-space normal X/Y")) == true);
+    const MaterialPropertyRow* roughnessOrNull = FindRowOrNull(rows, QStringLiteral("Roughness map"));
+    REQUIRE(roughnessOrNull != nullptr);
+    CHECK(roughnessOrNull->Value == QStringLiteral("Blue (B)"));
+    REQUIRE(roughnessOrNull->Thumbnail.isNull() == false);
+    CHECK(roughnessOrNull->Thumbnail.pixelColor(0, 0) == QColor(192, 192, 192));
+    CHECK(roughnessOrNull->Thumbnail.pixelColor(1, 0) == QColor(32, 32, 32));
+    const MaterialPropertyRow* metallicOrNull = FindRowOrNull(rows, QStringLiteral("Metallic map"));
+    REQUIRE(metallicOrNull != nullptr);
+    CHECK(metallicOrNull->Value == QStringLiteral("Alpha (A)"));
+    REQUIRE(metallicOrNull->Thumbnail.isNull() == false);
+    CHECK(metallicOrNull->Thumbnail.pixelColor(0, 0) == QColor(0, 0, 0));
+    CHECK(metallicOrNull->Thumbnail.pixelColor(1, 0) == QColor(224, 224, 224));
 }
 
 TEST_CASE("Material inspection names dielectrics and their index", "[editor][world][material]")
