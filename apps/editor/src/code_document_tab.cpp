@@ -9,6 +9,7 @@
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
+#include <QElapsedTimer>
 #include <QEvent>
 #include <QScrollBar>
 #include <QVBoxLayout>
@@ -22,6 +23,7 @@ namespace ludus::editor
 {
 using foundation::BorrowedView;
 using foundation::int32;
+using foundation::int64;
 using foundation::isize;
 
 namespace
@@ -34,8 +36,10 @@ constexpr const char* VIEW_STATE_SCROLL = "scroll";
 // In the native open profile, 40,000 short lines already took about 100 ms.
 constexpr foundation::usize STAGED_OPEN_LINE_COUNT = 32768;
 constexpr int32 FIRST_PAINT_LINES = 128;
-constexpr isize PROJECTION_SLICE_UNITS = 16384;
-constexpr int32 PROJECTION_YIELD_MILLISECONDS = 1;
+constexpr isize PROJECTION_CHUNK_UNITS = 16384;
+constexpr int32 MAX_PROJECTION_CHUNKS_PER_SLICE = 4;
+constexpr int64 PROJECTION_SLICE_BUDGET_NANOSECONDS = 8'000'000;
+constexpr int32 FIRST_PAINT_YIELD_MILLISECONDS = 1;
 } // namespace
 
 CodeDocumentTab::CodeDocumentTab(CodeFileDocument* hostOrNull,
@@ -124,7 +128,7 @@ bool CodeDocumentTab::beginStagedOpen()
         return false;
     }
     mOpeningIdentity = snapshot.Identity;
-    const QStringView prefix = QStringView(mOpeningText).left(qMin(PROJECTION_SLICE_UNITS, mOpeningText.size()));
+    const QStringView prefix = QStringView(mOpeningText).left(qMin(PROJECTION_CHUNK_UNITS, mOpeningText.size()));
     for (int32 line = 0; line < FIRST_PAINT_LINES; ++line)
     {
         const isize newline = prefix.indexOf(QLatin1Char('\n'), mProjectedUnits);
@@ -156,7 +160,7 @@ bool CodeDocumentTab::eventFilter(QObject* watched, QEvent* event)
     if (watched == mEditor->viewport() && event->type() == QEvent::Paint)
     {
         mEditor->viewport()->removeEventFilter(this);
-        mOpeningTimer.start(PROJECTION_YIELD_MILLISECONDS);
+        mOpeningTimer.start(FIRST_PAINT_YIELD_MILLISECONDS);
     }
     else if (watched == mEditor && (event->type() == QEvent::KeyPress || event->type() == QEvent::InputMethod))
     {
@@ -166,7 +170,7 @@ bool CodeDocumentTab::eventFilter(QObject* watched, QEvent* event)
     return QWidget::eventFilter(watched, event);
 }
 
-void CodeDocumentTab::appendOpeningText(isize lastUnit)
+void CodeDocumentTab::appendOpeningText(QTextCursor& inoutCursor, isize lastUnit)
 {
     if (lastUnit < mOpeningText.size() && mOpeningText.at(lastUnit).isLowSurrogate() == true)
     {
@@ -174,19 +178,33 @@ void CodeDocumentTab::appendOpeningText(isize lastUnit)
     }
     if (lastUnit > mProjectedUnits)
     {
-        QTextCursor cursor(mEditor->document());
-        cursor.movePosition(QTextCursor::End);
-        cursor.insertText(mOpeningText.sliced(mProjectedUnits, lastUnit - mProjectedUnits));
+        inoutCursor.insertText(mOpeningText.sliced(mProjectedUnits, lastUnit - mProjectedUnits));
         mProjectedUnits = lastUnit;
     }
 }
 
 void CodeDocumentTab::advanceStagedOpen()
 {
-    appendOpeningText(qMin(mProjectedUnits + PROJECTION_SLICE_UNITS, mOpeningText.size()));
+    // Group document updates within a short event-loop turn. Thanks to The Qt
+    // Company, "QTextCursor" and "QTimer", for the edit-block and zero-timer APIs.
+    // https://doc.qt.io/qt-6/qtextcursor.html#beginEditBlock
+    // https://doc.qt.io/qt-6/qtimer.html#interval-prop
+    QElapsedTimer slice;
+    slice.start();
+    QTextCursor cursor(mEditor->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.beginEditBlock();
+    int32 chunkCount = 0;
+    do
+    {
+        appendOpeningText(cursor, qMin(mProjectedUnits + PROJECTION_CHUNK_UNITS, mOpeningText.size()));
+        ++chunkCount;
+    } while (mProjectedUnits < mOpeningText.size() && chunkCount < MAX_PROJECTION_CHUNKS_PER_SLICE &&
+             slice.nsecsElapsed() < PROJECTION_SLICE_BUDGET_NANOSECONDS);
+    cursor.endEditBlock();
     if (mProjectedUnits < mOpeningText.size())
     {
-        mOpeningTimer.start(PROJECTION_YIELD_MILLISECONDS);
+        mOpeningTimer.start(0);
     }
     else
     {
@@ -201,9 +219,12 @@ void CodeDocumentTab::FinishStagedOpen()
         return;
     }
     const CodeDocumentIdentity projectedIdentity = mOpeningIdentity;
-    if (mHostOrNull != nullptr && mHostOrNull->GetSnapshot().Identity == projectedIdentity)
+    if (mProjectedUnits < mOpeningText.size() && mHostOrNull != nullptr &&
+        mHostOrNull->GetSnapshot().Identity == projectedIdentity)
     {
-        appendOpeningText(mOpeningText.size());
+        QTextCursor cursor(mEditor->document());
+        cursor.movePosition(QTextCursor::End);
+        appendOpeningText(cursor, mOpeningText.size());
     }
     CancelStagedOpen();
     if (mBanner->IsShowingConflict() == false)

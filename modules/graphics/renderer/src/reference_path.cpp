@@ -2,6 +2,7 @@
 #include "internal/reference_dielectric.h"
 #include "internal/wave_connection.h"
 #include "internal/wave_edge_diffraction.h"
+#include "internal/wave_fraunhofer_diffraction.h"
 
 #include <ludus/foundation/math/status.hpp>
 
@@ -454,22 +455,39 @@ rhi::RasterStatus QueueShadow(const ReferenceJob& job,
         const math::Vector3d opticalDirectionWorld{-static_cast<float64>(direction.X),
                                                    -static_cast<float64>(direction.Y),
                                                    -static_cast<float64>(direction.Z)};
-        const rhi::RasterStatus opticalStatus =
-            job.Description.OpticalConnection == ReferenceOpticalConnection::UtdEdgeDiffraction
-                ? EvaluateUtdConnectionToReceiver(job.Scene,
-                                                  opticalSourceWorld,
-                                                  opticalReceiverWorld,
-                                                  opticalDirectionWorld,
-                                                  static_cast<float64>(distance),
-                                                  static_cast<float64>(job.Description.OpticalWavelengthWorld),
-                                                  field)
-                : EvaluateWaveConnectionToReceiver(job.Scene,
-                                                   opticalSourceWorld,
-                                                   opticalReceiverWorld,
-                                                   opticalDirectionWorld,
-                                                   static_cast<float64>(distance),
-                                                   static_cast<float64>(job.Description.OpticalWavelengthWorld),
-                                                   field);
+        const ReferenceOpticalConnection connection = job.Description.OpticalConnection;
+        const float64 opticalWavelengthWorld = static_cast<float64>(job.Description.OpticalWavelengthWorld);
+        rhi::RasterStatus opticalStatus = rhi::RasterStatus::Ready;
+        if (connection == ReferenceOpticalConnection::UtdEdgeDiffraction)
+        {
+            opticalStatus = EvaluateUtdConnectionToReceiver(job.Scene,
+                                                            opticalSourceWorld,
+                                                            opticalReceiverWorld,
+                                                            opticalDirectionWorld,
+                                                            static_cast<float64>(distance),
+                                                            opticalWavelengthWorld,
+                                                            field);
+        }
+        else if (connection == ReferenceOpticalConnection::FraunhoferEdgeDiffraction)
+        {
+            opticalStatus = EvaluateFraunhoferConnectionToReceiver(job.Scene,
+                                                                   opticalSourceWorld,
+                                                                   opticalReceiverWorld,
+                                                                   opticalDirectionWorld,
+                                                                   static_cast<float64>(distance),
+                                                                   opticalWavelengthWorld,
+                                                                   field);
+        }
+        else
+        {
+            opticalStatus = EvaluateWaveConnectionToReceiver(job.Scene,
+                                                             opticalSourceWorld,
+                                                             opticalReceiverWorld,
+                                                             opticalDirectionWorld,
+                                                             static_cast<float64>(distance),
+                                                             opticalWavelengthWorld,
+                                                             field);
+        }
         if (opticalStatus != rhi::RasterStatus::Ready)
         {
             return FailReferencePath(inoutInfo,

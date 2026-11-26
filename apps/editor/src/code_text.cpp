@@ -1,9 +1,11 @@
 #include "internal/code_text.h"
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/core.h>
 
 #include <QChar>
 #include <QStringDecoder>
+#include <QtEndian>
 
 namespace ludus::editor
 {
@@ -16,6 +18,23 @@ constexpr uint8 THREE_BYTE_PREFIX = 0xE0;
 constexpr uint8 FOUR_BYTE_PREFIX = 0xF0;
 constexpr usize THREE_BYTE_WIDTH = 3;
 constexpr usize FOUR_BYTE_WIDTH = 4;
+constexpr usize ASCII_WORD_BYTES = sizeof(uint64);
+constexpr int32 ASCII_WORD_UTF16_UNITS = static_cast<int32>(ASCII_WORD_BYTES);
+constexpr uint64 BYTE_LOW_BITS = 0x0101010101010101ULL;
+constexpr uint64 BYTE_HIGH_BITS = 0x8080808080808080ULL;
+constexpr uint64 CARRIAGE_RETURN_BYTES = BYTE_LOW_BITS * static_cast<uint64>('\r');
+
+// ASCII bytes other than CR advance both coordinates by one. XOR turns a CR
+// into a zero byte, so a word containing CR or a high bit needs the scalar walk.
+// Thanks to Alan Mycroft and Stephen M. Bennet, as collected by Sean Eron Anderson:
+// https://graphics.stanford.edu/~seander/bithacks.html#ZeroInWord
+LUDUS_INLINE bool IsSingleUnitAsciiWord(const char* bytes) noexcept
+{
+    const uint64 word = qFromLittleEndian<uint64>(bytes);
+    const uint64 carriageReturns = word ^ CARRIAGE_RETURN_BYTES;
+    const uint64 zeroByteHighBits = (carriageReturns - BYTE_LOW_BITS) & ~carriageReturns & BYTE_HIGH_BITS;
+    return ((word & BYTE_HIGH_BITS) | zeroByteHighBits) == 0;
+}
 
 usize GetScalarWidth(uint8 lead) noexcept
 {
@@ -233,6 +252,13 @@ bool AdvanceCodeByteOffset(const QByteArray& bytes,
     int32 units = inoutFrom.Position;
     while (offset < length && units < position)
     {
+        if (position - units >= ASCII_WORD_UTF16_UNITS && length - offset >= ASCII_WORD_BYTES &&
+            IsSingleUnitAsciiWord(bytes.constData() + offset) == true)
+        {
+            offset += ASCII_WORD_BYTES;
+            units += ASCII_WORD_UTF16_UNITS;
+            continue;
+        }
         const usize width = GetScalarWidth(static_cast<uint8>(bytes.at(static_cast<isize>(offset))));
         if (width > length - offset)
         {
@@ -279,6 +305,12 @@ bool AdvanceCodeCursorPosition(const QByteArray& bytes,
     int32 units = inoutFrom.Position;
     while (byte < offset)
     {
+        if (offset - byte >= ASCII_WORD_BYTES && IsSingleUnitAsciiWord(bytes.constData() + byte) == true)
+        {
+            byte += ASCII_WORD_BYTES;
+            units += ASCII_WORD_UTF16_UNITS;
+            continue;
+        }
         const usize width = GetScalarWidth(static_cast<uint8>(bytes.at(static_cast<isize>(byte))));
         usize consumed = width;
         if (bytes.at(static_cast<isize>(byte)) == '\r' && byte + 1 < static_cast<usize>(bytes.size()) &&

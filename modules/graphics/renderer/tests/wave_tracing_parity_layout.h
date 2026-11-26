@@ -23,3 +23,5 @@
 #define LUDUS_WAVE_PARITY_CONNECTION_TAG 0x434f4e4e
 // UTD connection mode: the region cone records carry source, unit direction, distance and wavelength.
 #define LUDUS_WAVE_PARITY_UTD_CONNECTION_TAG 0x55544443
+// Fraunhofer connection mode: the same records as the UTD mode.
+#define LUDUS_WAVE_PARITY_FRAUNHOFER_CONNECTION_TAG 0x46524e43

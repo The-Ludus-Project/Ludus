@@ -124,6 +124,9 @@ constexpr usize HDR_MEDIUM_TRIANGLES_OFFSET = 196;
 constexpr uint32 HDR_MULTIPLE_SCATTERING_FLAG = 1024;
 /// LUHDR01 flags bit identifying ReferenceOpticalConnection::UtdEdgeDiffraction; always set with HDR_OPTICAL_FLAG.
 constexpr uint32 HDR_UTD_CONNECTION_FLAG = 2048;
+/// LUHDR01 flags bit identifying ReferenceOpticalConnection::FraunhoferEdgeDiffraction; always set with
+/// HDR_OPTICAL_FLAG.
+constexpr uint32 HDR_FRAUNHOFER_CONNECTION_FLAG = 4096;
 constexpr usize HDR_SCENE_FINGERPRINT_OFFSET = 64;
 constexpr usize HDR_OPTICAL_WAVELENGTH_OFFSET = 92;
 
@@ -158,6 +161,10 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
     if (inoutJob.Description.OpticalConnection == ReferenceOpticalConnection::UtdEdgeDiffraction)
     {
         uniform.Sampling[2] |= LUDUS_REFERENCE_UTD_CONNECTION_FLAG;
+    }
+    if (inoutJob.Description.OpticalConnection == ReferenceOpticalConnection::FraunhoferEdgeDiffraction)
+    {
+        uniform.Sampling[2] |= LUDUS_REFERENCE_FRAUNHOFER_CONNECTION_FLAG;
     }
     uniform.Options.Y = inoutJob.Description.OpticalWavelengthWorld;
     uniform.Tile[0] = inoutJob.DirectionalLightCount;
@@ -297,8 +304,9 @@ Status ValidateReferenceDescription(const ReferenceCaptureDescription& d, LightS
         return Status::InvalidDescription;
     }
     if ((d.OpticalConnection != ReferenceOpticalConnection::AngularSpectrum &&
-         d.OpticalConnection != ReferenceOpticalConnection::UtdEdgeDiffraction) ||
-        (d.OpticalConnection == ReferenceOpticalConnection::UtdEdgeDiffraction && d.OpticalWavelengthWorld == 0))
+         d.OpticalConnection != ReferenceOpticalConnection::UtdEdgeDiffraction &&
+         d.OpticalConnection != ReferenceOpticalConnection::FraunhoferEdgeDiffraction) ||
+        (d.OpticalConnection != ReferenceOpticalConnection::AngularSpectrum && d.OpticalWavelengthWorld == 0))
     {
         return Status::InvalidDescription;
     }
@@ -2084,7 +2092,10 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
              ? HDR_MULTIPLE_SCATTERING_FLAG
              : 0U) |
         (job.Description.OpticalConnection == ReferenceOpticalConnection::UtdEdgeDiffraction ? HDR_UTD_CONNECTION_FLAG
-                                                                                             : 0U);
+                                                                                             : 0U) |
+        (job.Description.OpticalConnection == ReferenceOpticalConnection::FraunhoferEdgeDiffraction
+             ? HDR_FRAUNHOFER_CONNECTION_FLAG
+             : 0U);
     Put32(output + 44, flags);
     Put64(output + 48, job.Description.Seed);
     Put64(output + 56, job.Info.Revision);

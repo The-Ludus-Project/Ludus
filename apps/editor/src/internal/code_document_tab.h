@@ -117,7 +117,7 @@ Q_SIGNALS:
 private:
     void bindHost(const CodeDocumentIdentity* projectedIdentityOrNull = nullptr);
     [[nodiscard]] bool beginStagedOpen();
-    void appendOpeningText(foundation::isize lastUnit);
+    void appendOpeningText(QTextCursor& inoutCursor, foundation::isize lastUnit);
     void advanceStagedOpen();
     bool eventFilter(QObject* watched, QEvent* event) override;
 

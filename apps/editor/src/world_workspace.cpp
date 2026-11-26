@@ -55,6 +55,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHash>
@@ -151,6 +152,7 @@ constexpr foundation::int32 WORLD_LISTS_MINIMUM_HEIGHT = 180;
 constexpr foundation::int32 ENTITY_SECTION_PADDING = design::SPACING_EXTRA_SMALL;
 /// The extension every World file carries; the breadcrumb leaves it out.
 constexpr QLatin1StringView WORLD_FILE_SUFFIX(".world.json");
+constexpr QLatin1StringView LEVEL_FILE_SUFFIX(".lulevel");
 /// A project-relative World path as a breadcrumb: "authoring/starter.world.json" reads "authoring › starter".
 QString MakeWorldBreadcrumb(const QString& relativePath)
 {
@@ -735,6 +737,37 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     QVBoxLayout* header = new QVBoxLayout(mHeader);
     header->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(mHeader);
+
+    QFrame* openProblem = new QFrame(this);
+    openProblem->setObjectName(QStringLiteral("worldOpenProblem"));
+    openProblem->setFrameShape(QFrame::StyledPanel);
+    mOpenProblem = openProblem;
+    QVBoxLayout* problemLayout = new QVBoxLayout(openProblem);
+    problemLayout->setSpacing(design::SPACING_SMALL);
+    mOpenProblemText = new QLabel(openProblem);
+    mOpenProblemText->setObjectName(QStringLiteral("worldOpenProblemText"));
+    mOpenProblemText->setTextFormat(Qt::PlainText);
+    mOpenProblemText->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    mOpenProblemText->setWordWrap(true);
+    problemLayout->addWidget(mOpenProblemText);
+    QHBoxLayout* problemActions = new QHBoxLayout;
+    mRetryOpen = new QPushButton(GetEditorIcon(EditorIcon::Error), QStringLiteral("Retry open"), openProblem);
+    mRetryOpen->setObjectName(QStringLiteral("worldRetryOpen"));
+    problemActions->addWidget(mRetryOpen);
+    QPushButton* chooseAnother = new QPushButton(QStringLiteral("Choose another World…"), openProblem);
+    chooseAnother->setObjectName(QStringLiteral("worldChooseAnother"));
+    problemActions->addWidget(chooseAnother);
+    problemActions->addStretch();
+    problemLayout->addLayout(problemActions);
+    layout->addWidget(openProblem);
+    openProblem->hide();
+    connect(mRetryOpen, &QPushButton::clicked, this, [this]() {
+        const QString path = mFailedOpenPath;
+        if (path.isEmpty() == false)
+        {
+            static_cast<void>(Open(path));
+        }
+    });
 #if defined(Q_OS_WASM)
     // The browser note says where Worlds live; it stays visible instead of a tooltip.
     QLabel* intro = new QLabel(this);
@@ -1264,6 +1297,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         picker->open();
     };
     connect(open, &QPushButton::clicked, this, [pick]() { pick(false); });
+    connect(chooseAnother, &QPushButton::clicked, this, [pick]() { pick(false); });
     connect(create, &QPushButton::clicked, this, [pick]() { pick(true); });
     const auto updateSelection = [this]() {
         if (Rendering_ == true || Pending_ == true)
@@ -1448,7 +1482,9 @@ void WorldWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     Importing_ = false;
     SavePending_ = false;
     SaveValidated_ = false;
-    ConversionPath_.clear();
+    mConversionSource.clear();
+    mShouldDiscardOnConversion = false;
+    clearOpenFailure();
     Root_ = canonical;
     Epoch_ = epoch;
     Path_.clear();
@@ -1488,69 +1524,132 @@ bool WorldWorkspace::Inside(const QString& path, bool existing) const
     const QFileInfo parent(info.absolutePath());
     return info.exists() == false && parent.isDir() && parent.canonicalFilePath() == parent.absoluteFilePath();
 }
-bool WorldWorkspace::LoadProjectSchema(WorldDocument& candidate, QByteArray& schema, bool worldDemo)
+bool WorldWorkspace::loadProjectSchema(WorldDocument& inoutCandidate,
+                                       QByteArray& outSchema,
+                                       QString& outError,
+                                       bool isWorldDemo) const
 {
-    const auto path = QDir(Root_).filePath(QStringLiteral("authoring/world.schema.json"));
-    QString error;
+    const QString path = QDir(Root_).filePath(QStringLiteral("authoring/world.schema.json"));
     if (QFileInfo::exists(path) == false && QFileInfo(path).isSymLink() == false)
     {
-        if (worldDemo)
+        if (isWorldDemo == true)
         {
             QFile builtin(QStringLiteral(":/world-demo/world.schema.json"));
             if (builtin.open(QIODevice::ReadOnly) == false)
             {
-                Changed(QStringLiteral("The World demo adapter schema is unavailable."));
+                outError = QStringLiteral("The World demo schema is unavailable. Reinstall the Editor and retry.");
                 return false;
             }
-            schema = builtin.readAll();
+            outSchema = builtin.readAll();
         }
-        else
+        else if (ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), outSchema, outError) == false)
         {
-            if (ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == false)
-            {
-                Changed(error);
-                return false;
-            }
+            return false;
         }
-        return candidate.LoadSchema(schema, error);
+        return inoutCandidate.LoadSchema(outSchema, outError);
     }
-    if (Inside(path, true) == false || Read(path, schema, WorldDocument::MAX_SCHEMA_BYTES) == false)
+    if (Inside(path, true) == false || Read(path, outSchema, WorldDocument::MAX_SCHEMA_BYTES) == false)
     {
-        Changed(QStringLiteral("Unreadable or unsafe authoring/world.schema.json. Repair the declared schema before "
-                               "opening or creating a World."));
+        outError = QStringLiteral("The project schema authoring/world.schema.json is unreadable or unsafe. "
+                                  "Restore a readable project schema and retry.");
         return false;
     }
-    if (candidate.LoadSchema(schema, error) == false)
+    if (inoutCandidate.LoadSchema(outSchema, outError) == false)
     {
-        Changed(QStringLiteral("Schema: ") + error);
+        outError = QStringLiteral("The project schema authoring/world.schema.json could not be loaded. %1 "
+                                  "Restore the matching project schema from a working revision and retry.")
+                       .arg(outError);
         return false;
     }
     return true;
 }
+
+bool WorldWorkspace::reportOpenFailure(const QString& path, const WorldOpenFailure& failure)
+{
+    mFailedOpenPath = path;
+    const QString repair = failure.NextStep.isEmpty() == true
+                               ? QStringLiteral("Open a working backup from this project, or restore a known-good "
+                                                "copy from version control and retry.")
+                               : failure.NextStep;
+    const QString message =
+        QStringLiteral("Could not open “%1”. %2 %3").arg(QFileInfo(path).fileName(), failure.Reason, repair);
+    mOpenProblemText->setText(message);
+    mOpenProblem->show();
+    Q_EMIT OpenProblemChanged(path, message);
+    return false;
+}
+
+void WorldWorkspace::clearOpenFailure()
+{
+    if (mOpenProblem->isHidden() == true)
+    {
+        return;
+    }
+    mFailedOpenPath.clear();
+    mOpenProblemText->clear();
+    mOpenProblem->hide();
+    Q_EMIT OpenProblemChanged({}, {});
+}
+
+void WorldWorkspace::FocusOpenProblem()
+{
+    if (mOpenProblem->isHidden() == false)
+    {
+        mRetryOpen->setFocus();
+    }
+}
+
 bool WorldWorkspace::Open(const QString& path)
 {
     if (isSceneWorkerActive() == true)
     {
-        Changed(QStringLiteral("Wait for the scene operation to finish before opening a World."));
-        return false;
+        return reportOpenFailure(path,
+                                 {
+                                     .Reason = QStringLiteral("A scene operation is still running."),
+                                     .NextStep = QStringLiteral("Wait for it to finish or cancel it, then retry."),
+                                 });
     }
-    if (path.endsWith(QStringLiteral(".lulevel")))
+    if (Inside(path, true) == false)
     {
-        if (Inside(path, true) == false)
+        const QString reason = QFileInfo::exists(path) == true
+                                   ? QStringLiteral("This location is outside the project or is a symbolic link.")
+                                   : QStringLiteral("The file is missing.");
+        return reportOpenFailure(
+            path,
+            {
+                .Reason = reason,
+                .NextStep = QStringLiteral("Choose a regular file inside the project, or restore it at this "
+                                           "location and retry."),
+            });
+    }
+    if (path.endsWith(LEVEL_FILE_SUFFIX) == true)
+    {
+        const QString destination = path.chopped(LEVEL_FILE_SUFFIX.size()) + WORLD_FILE_SUFFIX;
+        if (Inside(destination, false) == false)
         {
-            return false;
+            return reportOpenFailure(
+                path,
+                {
+                    .Reason = QStringLiteral("Conversion needs a new sibling file named “%1”.")
+                                  .arg(QFileInfo(destination).fileName()),
+                    .NextStep = QStringLiteral("Open the sibling World if it already exists, or copy the "
+                                               "level to a new name inside the project and retry."),
+                });
         }
-        const auto destination = path.chopped(8) + QStringLiteral(".world.json");
         WorldDocument candidate;
         QByteArray schema;
         QString error;
-        if (Inside(destination, false) == false || LoadProjectSchema(candidate, schema) == false ||
-            candidate.New(error) == false || ConfirmDiscard() == false)
+        if (loadProjectSchema(candidate, schema, error) == false || candidate.New(error) == false)
         {
-            Changed(QStringLiteral("Choose a level without an existing converted World document."));
+            return reportOpenFailure(path, { .Reason = error });
+        }
+        const WorldCloseDecision decision = requestCloseDecision();
+        if (decision == WorldCloseDecision::Cancel)
+        {
             return false;
         }
-        ConversionPath_ = destination;
+        mConversionSource = path;
+        mShouldDiscardOnConversion = decision == WorldCloseDecision::Discard;
         ConversionSchema_ = foundation::Move(schema);
         SceneGeneration_ = DocumentGeneration_;
         Importing_ = true;
@@ -1558,53 +1657,98 @@ bool WorldWorkspace::Open(const QString& path)
         if (Scene_->Open(path) == false)
         {
             Importing_ = false;
-            ConversionPath_.clear();
-            return false;
+            mConversionSource.clear();
+            mShouldDiscardOnConversion = false;
+            return reportOpenFailure(path, { .Reason = Scene_->StatusText() });
         }
         Changed(QStringLiteral("Converting the level to a World document; the original level is preserved."));
         return true;
     }
     WorldDocument candidate;
-    QByteArray schema, bytes;
+    QByteArray schema;
+    QByteArray bytes;
     QString error;
-    if (Inside(path, true) == false || Read(path, bytes, WorldDocument::MAX_BYTES) == false)
+    if (Read(path, bytes, WorldDocument::MAX_BYTES) == false)
     {
-        Changed(QStringLiteral("Open a regular world file inside the project's source folder (at most 512 KiB)."));
-        return false;
+        const foundation::int64 size = QFileInfo(path).size();
+        if (size > WorldDocument::MAX_BYTES)
+        {
+            return reportOpenFailure(
+                path,
+                {
+                    .Reason = QStringLiteral("The file is %1 bytes. This Editor can open Worlds up to %2 bytes.")
+                                  .arg(size)
+                                  .arg(WorldDocument::MAX_BYTES),
+                    .NextStep = QStringLiteral("Open a smaller backup, or use the Editor version that saved "
+                                               "this World."),
+                });
+        }
+        return reportOpenFailure(
+            path,
+            {
+                .Reason = QStringLiteral("The file could not be read."),
+                .NextStep = QStringLiteral("Check that you have read access or choose a working backup, "
+                                           "then retry."),
+            });
     }
-    const auto incoming = QJsonDocument::fromJson(bytes).object();
+    const QJsonObject incoming = QJsonDocument::fromJson(bytes).object();
     const bool isLegacy =
         incoming.contains(QStringLiteral("schema")) == false && incoming.contains(QStringLiteral("settings"));
-    const bool demo =
-        isLegacy || incoming.value(QStringLiteral("schema")) == QJsonValue(QStringLiteral("ludus.world-demo.v1"));
-    if (LoadProjectSchema(candidate, schema, demo) == false)
+    const bool isDemo = isLegacy == true ||
+                        incoming.value(QStringLiteral("schema")) == QJsonValue(QStringLiteral("ludus.world-demo.v1"));
+    if (loadProjectSchema(candidate, schema, error, isDemo) == false)
+    {
+        return reportOpenFailure(path, { .Reason = error });
+    }
+    const QString destination =
+        isLegacy == true
+            ? QFileInfo(path).dir().filePath(QFileInfo(path).completeBaseName() + QStringLiteral(".world.json"))
+            : path;
+    if (isLegacy == true && Inside(destination, false) == false)
+    {
+        return reportOpenFailure(
+            path,
+            {
+                .Reason = QStringLiteral("Conversion needs a new sibling file named “%1”.")
+                              .arg(QFileInfo(destination).fileName()),
+                .NextStep = QStringLiteral("Open the sibling World if it already exists, or copy the "
+                                           "legacy document to a new name inside the project and retry."),
+            });
+    }
+    if ((isLegacy == true ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
+    {
+        return reportOpenFailure(path, { .Reason = error });
+    }
+    const WorldCloseDecision decision = requestCloseDecision();
+    if (decision == WorldCloseDecision::Cancel)
     {
         return false;
     }
-    const QString destination = isLegacy ? QFileInfo(path).absolutePath() + QLatin1Char('/') +
-                                               QFileInfo(path).completeBaseName() + QStringLiteral(".world.json")
-                                         : path;
-    if ((isLegacy && Inside(destination, false) == false) ||
-        (isLegacy ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
-    {
-        Changed(error);
-        return false;
-    }
-    if (ConfirmDiscard() == false)
-    {
-        return false;
-    }
-    // Save in the confirmation can change the same file being reopened.
+    // Save in the confirmation can change the same file being reopened. Keep any edits
+    // marked for discard until the replacement has passed validation.
     // Validate the current bytes again before replacing the live document.
     QByteArray currentSchema;
     WorldDocument currentDefinition;
-    if (LoadProjectSchema(currentDefinition, currentSchema, demo) == false || currentSchema != schema ||
-        Read(path, bytes, WorldDocument::MAX_BYTES) == false ||
-        (isLegacy ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
+    if (loadProjectSchema(currentDefinition, currentSchema, error, isDemo) == false || currentSchema != schema ||
+        Inside(path, true) == false || (isLegacy == true && Inside(destination, false) == false) ||
+        Read(path, bytes, WorldDocument::MAX_BYTES) == false)
     {
-        Changed(QStringLiteral("Incoming world/schema changed while opening. Retry Open World."));
-        return false;
+        return reportOpenFailure(
+            path,
+            {
+                .Reason = QStringLiteral("The World file or project schema changed while opening."),
+                .NextStep = QStringLiteral("Wait for the file to finish updating, then retry."),
+            });
     }
+    if ((isLegacy == true ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
+    {
+        return reportOpenFailure(path, { .Reason = error });
+    }
+    if (decision == WorldCloseDecision::Discard)
+    {
+        removeDiscardedRecovery();
+    }
+    clearOpenFailure();
     RecoveryFailed_ = false;
     StopPreview();
     invalidateScene();
@@ -1644,18 +1788,16 @@ bool WorldWorkspace::Create(const QString& path)
     WorldDocument candidate;
     QByteArray schema;
     QString error;
-    if (LoadProjectSchema(candidate, schema, IsWorldDemo(Document_)) == false || candidate.New(error) == false)
+    if (loadProjectSchema(candidate, schema, error, IsWorldDemo(Document_)) == false || candidate.New(error) == false)
     {
-        if (error.isEmpty() == false)
-        {
-            Changed(error);
-        }
+        Changed(error);
         return false;
     }
     if (ConfirmDiscard() == false)
     {
         return false;
     }
+    clearOpenFailure();
     RecoveryFailed_ = false;
     StopPreview();
     invalidateScene();
@@ -1993,16 +2135,22 @@ void WorldWorkspace::SceneCompleted(bool accepted)
     {
         return;
     }
-    const bool importing = Importing_;
+    const bool isImporting = Importing_;
     Importing_ = false;
-    const auto conversion = ConversionPath_;
-    ConversionPath_.clear();
+    const QString conversionSource = mConversionSource;
+    const bool shouldDiscard = mShouldDiscardOnConversion;
+    mConversionSource.clear();
+    mShouldDiscardOnConversion = false;
+    const bool isConverting = conversionSource.isEmpty() == false;
     if (accepted == false)
     {
         SceneError_ = Scene_->StatusText();
         Render();
-        // Without a previous frame to retain, show why in whichever viewport the World displays.
-        if (Document_.Draft().contains(QStringLiteral("scene")) == false)
+        if (isConverting == true)
+        {
+            static_cast<void>(reportOpenFailure(conversionSource, { .Reason = SceneError_ }));
+        }
+        else if (Document_.Draft().contains(QStringLiteral("scene")) == false)
         {
             Render_->ShowSceneFailure(SceneError_);
         }
@@ -2020,21 +2168,35 @@ void WorldWorkspace::SceneCompleted(bool accepted)
     }
     SceneError_.clear();
     ShowImportReports();
-    if (conversion.isEmpty() == false)
+    if (isConverting == true)
     {
+        const QString conversion = conversionSource.chopped(LEVEL_FILE_SUFFIX.size()) + WORLD_FILE_SUFFIX;
         WorldDocument candidate;
         QString error;
         WorldDocument currentDefinition;
         QByteArray currentSchema;
-        if (Inside(conversion, false) == false || LoadProjectSchema(currentDefinition, currentSchema) == false ||
+        if (Inside(conversion, false) == false || loadProjectSchema(currentDefinition, currentSchema, error) == false ||
             currentSchema != ConversionSchema_ || candidate.LoadSchema(ConversionSchema_, error) == false ||
             candidate.New(error) == false || candidate.ImportScene(Scene_->Document(), error) == false)
         {
             invalidateScene();
             RefreshScene();
-            Changed(error.isEmpty() ? QStringLiteral("Conversion inputs changed; previous World retained.") : error);
+            static_cast<void>(reportOpenFailure(
+                conversionSource,
+                {
+                    .Reason = error.isEmpty() == true
+                                  ? QStringLiteral("The destination or project schema changed during conversion.")
+                                  : error,
+                    .NextStep = QStringLiteral(
+                        "If the sibling World now exists, open it directly. Otherwise retry conversion."),
+                }));
             return;
         }
+        if (shouldDiscard == true)
+        {
+            removeDiscardedRecovery();
+        }
+        clearOpenFailure();
         Document_ = foundation::Move(candidate);
         SchemaDisk_ = ConversionSchema_;
         Disk_.clear();
@@ -2050,7 +2212,7 @@ void WorldWorkspace::SceneCompleted(bool accepted)
         Render_->SetWorld(Root_, &Document_);
     }
     ValidatedScene_ = Scene_->Document();
-    if (importing && conversion.isEmpty())
+    if (isImporting == true && isConverting == false)
     {
         QString error;
         if (Document_.ImportScene(Scene_->Document(), error, Scene_->ImportedEntities()) == false)
@@ -2065,8 +2227,9 @@ void WorldWorkspace::SceneCompleted(bool accepted)
     }
     ValidatedWorld_ = Document_.Encode();
     Render();
-    Changed(importing ? QStringLiteral("Scene imported. Select its entities to edit placement and gameplay components.")
-                      : QStringLiteral("Scene assets validated."));
+    Changed(isImporting == true
+                ? QStringLiteral("Scene imported. Select its entities to edit placement and gameplay components.")
+                : QStringLiteral("Scene assets validated."));
     if (SavePending_)
     {
         SavePending_ = false;
@@ -5181,7 +5344,8 @@ bool WorldWorkspace::Save()
     }
     QByteArray schema;
     WorldDocument definition;
-    if (LoadProjectSchema(definition, schema, IsWorldDemo(Document_)) == false || schema != SchemaDisk_)
+    QString schemaError;
+    if (loadProjectSchema(definition, schema, schemaError, IsWorldDemo(Document_)) == false || schema != SchemaDisk_)
     {
         Changed(QStringLiteral("The project schema changed. Save was refused; keep this world open and reconcile the "
                                "schema before retrying."));
@@ -5306,9 +5470,10 @@ bool WorldWorkspace::Recover()
     QByteArray envelope, current, schema;
     const auto header = RecoveryHeader();
     WorldDocument definition;
+    QString schemaError;
     if (isSceneWorkerActive() || Dirty() || Unsaved_ || Inside(Path_, true) == false ||
         Read(Path_, current, WorldDocument::MAX_BYTES) == false || current != Disk_ ||
-        LoadProjectSchema(definition, schema, IsWorldDemo(Document_)) == false || schema != SchemaDisk_ ||
+        loadProjectSchema(definition, schema, schemaError, IsWorldDemo(Document_)) == false || schema != SchemaDisk_ ||
         Read(Path_ + QStringLiteral(".ludus-recovery"),
              envelope,
              WorldDocument::MAX_BYTES + MAX_RECOVERY_HEADER_BYTES) == false ||
@@ -5347,7 +5512,7 @@ bool WorldWorkspace::Recover()
     Changed(QStringLiteral("Recovery restored for review. Save World to publish it."));
     return true;
 }
-bool WorldWorkspace::ConfirmDiscard()
+WorldWorkspace::WorldCloseDecision WorldWorkspace::requestCloseDecision()
 {
     WorldMaterialDocument* materialOrNull = mMaterialDocumentOrNull.data();
     if (materialOrNull != nullptr && materialOrNull->isVisible() == true && materialOrNull->HasUnappliedEdits() == true)
@@ -5355,16 +5520,16 @@ bool WorldWorkspace::ConfirmDiscard()
         materialOrNull->ShowError(QStringLiteral("Apply or reset these fields before closing or changing the World."));
         materialOrNull->raise();
         materialOrNull->activateWindow();
-        return false;
+        return WorldCloseDecision::Cancel;
     }
-    if (SceneBusy())
+    if (SceneBusy() == true)
     {
         Changed(QStringLiteral("Wait for the scene operation to finish before closing or changing documents."));
-        return false;
+        return WorldCloseDecision::Cancel;
     }
     if (Dirty() == false)
     {
-        return true;
+        return WorldCloseDecision::Proceed;
     }
     const auto answer =
         QMessageBox::warning(this,
@@ -5375,31 +5540,40 @@ bool WorldWorkspace::ConfirmDiscard()
                              QMessageBox::Cancel);
     if (answer == QMessageBox::Save)
     {
-        const bool requested = Save();
-        return requested && isSceneWorkerActive() == false && SavePending_ == false && Dirty() == false;
+        const bool hasRequestedSave = Save();
+        return hasRequestedSave == true && isSceneWorkerActive() == false && SavePending_ == false && Dirty() == false
+                   ? WorldCloseDecision::Proceed
+                   : WorldCloseDecision::Cancel;
     }
-    if (answer != QMessageBox::Discard)
-    {
-        return false;
-    }
-    Pending_ = false;
-    Document_.Discard();
-    checkTerrainBase();
-    RefreshScene();
-    Render_->WorldChanged();
-    // Keep a new world marked unsaved until its caller closes/replaces it.
-    // Discard only author-owned recovery for the same baseline, never symlinks.
+    return answer == QMessageBox::Discard ? WorldCloseDecision::Discard : WorldCloseDecision::Cancel;
+}
+void WorldWorkspace::removeDiscardedRecovery()
+{
+    // Discard only author-owned recovery for the same baseline.
     QByteArray envelope;
     if (Read(Path_ + QStringLiteral(".ludus-recovery"),
              envelope,
-             WorldDocument::MAX_BYTES + MAX_RECOVERY_HEADER_BYTES) &&
-        envelope.startsWith(RecoveryHeader()))
+             WorldDocument::MAX_BYTES + MAX_RECOVERY_HEADER_BYTES) == true &&
+        envelope.startsWith(RecoveryHeader()) == true)
     {
         (void)QFile::remove(Path_ + QStringLiteral(".ludus-recovery"));
     }
-    Render();
-    Changed(QStringLiteral("Changes discarded."));
-    return true;
+}
+bool WorldWorkspace::ConfirmDiscard()
+{
+    const WorldCloseDecision decision = requestCloseDecision();
+    if (decision == WorldCloseDecision::Discard)
+    {
+        Pending_ = false;
+        Document_.Discard();
+        checkTerrainBase();
+        RefreshScene();
+        Render_->WorldChanged();
+        removeDiscardedRecovery();
+        Render();
+        Changed(QStringLiteral("Changes discarded."));
+    }
+    return decision != WorldCloseDecision::Cancel;
 }
 void WorldWorkspace::UseProjectGraph(RendererWorkspace& inoutWorkspace)
 {

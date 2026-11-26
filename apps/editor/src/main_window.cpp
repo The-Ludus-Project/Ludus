@@ -188,6 +188,21 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
         }
     });
     connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
+    connect(World_, &WorldWorkspace::OpenProblemChanged, this, [this](const QString& path, const QString& message) {
+        QList<ErrorListEntry> entries;
+        if (message.isEmpty() == false)
+        {
+            ErrorListEntry entry;
+            entry.Severity = ErrorListSeverity::Error;
+            entry.Producer = ErrorListProducer::WorldOpen;
+            entry.Code = QStringLiteral("WorldOpenFailed");
+            entry.Description = message;
+            entry.File = path;
+            entry.Origin = QStringLiteral("World");
+            entries.append(entry);
+        }
+        mErrorList->ReplaceEntries(ErrorListProducer::WorldOpen, entries);
+    });
     mBuildErrorsTimer.setSingleShot(true);
     mBuildErrorsTimer.setInterval(BUILD_ERRORS_DELAY_MILLISECONDS);
     connect(&mBuildErrorsTimer, &QTimer::timeout, this, &MainWindow::renderBuildErrors);

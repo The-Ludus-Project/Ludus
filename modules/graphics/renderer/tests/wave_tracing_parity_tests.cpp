@@ -1,5 +1,6 @@
 #include "../src/internal/wave_connection.h"
 #include "../src/internal/wave_edge_diffraction.h"
+#include "../src/internal/wave_fraunhofer_diffraction.h"
 #include "../src/internal/wave_scene_queries.h"
 #include "wave_tracing_parity.h"
 #include "wave_tracing_parity_layout.h"
@@ -558,8 +559,11 @@ void PackParityScene(const ludus::graphics::renderer::internal::ReferenceSceneDa
 }
 } // namespace
 
-TEST_CASE("UTD edge diffraction GPU connections match the CPU oracle",
-          "[renderer][gpu][reference-compute][wave-utd][parity]")
+namespace
+{
+/// Run the edge-connection sweeps through the GPU fixture in the mode `tag` names and compare each with the CPU
+/// oracle of the same operator.
+void CheckEdgeConnectionParity(uint32 tag)
 {
     namespace internal = ludus::graphics::renderer::internal;
     rhi::Shutdown();
@@ -618,7 +622,7 @@ TEST_CASE("UTD edge diffraction GPU connections match the CPU oracle",
     Array<uint32> words;
     REQUIRE(words.TryResize(CASE_WORDS, uint32{0}) == true);
     PackParityScene(scene, words);
-    words[3] = LUDUS_WAVE_PARITY_UTD_CONNECTION_TAG;
+    words[3] = tag;
     for (usize index = 0; index < CASE_COUNT; ++index)
     {
         const math::Vector3d receiverWorld{receiverFirstX + receiverStepX * static_cast<float64>(index), 0, -1};
@@ -657,13 +661,17 @@ TEST_CASE("UTD edge diffraction GPU connections match the CPU oracle",
                                             ReadFloat(words, base + 6)};
         const float64 distanceWorld = ReadFloat(words, base + 14);
         WaveField field;
-        REQUIRE(internal::EvaluateUtdConnectionToReceiver(scene,
-                                                          originWorld,
-                                                          originWorld + directionWorld * distanceWorld,
-                                                          directionWorld,
-                                                          distanceWorld,
-                                                          ReadFloat(words, base + 15),
-                                                          field) == RasterStatus::Ready);
+        using EdgeConnectionEvaluator = decltype(&internal::EvaluateUtdConnectionToReceiver);
+        const EdgeConnectionEvaluator evaluate = tag == LUDUS_WAVE_PARITY_FRAUNHOFER_CONNECTION_TAG
+                                                     ? internal::EvaluateFraunhoferConnectionToReceiver
+                                                     : internal::EvaluateUtdConnectionToReceiver;
+        REQUIRE(evaluate(scene,
+                         originWorld,
+                         originWorld + directionWorld * distanceWorld,
+                         directionWorld,
+                         distanceWorld,
+                         ReadFloat(words, base + 15),
+                         field) == RasterStatus::Ready);
         const usize destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS * WORDS_PER_RECORD;
         const float64 gpuReal = ReadFloat(results, destination);
         const float64 gpuImaginary = ReadFloat(results, destination + 1);
@@ -679,4 +687,17 @@ TEST_CASE("UTD edge diffraction GPU connections match the CPU oracle",
         }
     }
     CHECK(diffractingCount > CASE_COUNT / 2);
+}
+} // namespace
+
+TEST_CASE("UTD edge diffraction GPU connections match the CPU oracle",
+          "[renderer][gpu][reference-compute][wave-utd][parity]")
+{
+    CheckEdgeConnectionParity(LUDUS_WAVE_PARITY_UTD_CONNECTION_TAG);
+}
+
+TEST_CASE("Fraunhofer edge diffraction GPU connections match the CPU oracle",
+          "[renderer][gpu][reference-compute][wave-fraunhofer][parity]")
+{
+    CheckEdgeConnectionParity(LUDUS_WAVE_PARITY_FRAUNHOFER_CONNECTION_TAG);
 }

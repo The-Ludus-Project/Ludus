@@ -26,6 +26,17 @@ struct WaveExcludedTriangles final
         return false;
     }
 };
+/// Coordinates in the interaction frustum's transverse basis, in world-distance units.
+struct ProjectedPointFrustum final
+{
+    float64 X = 0;
+    float64 Y = 0;
+};
+/// Whether any triangle of `region`, projected along its frustum direction onto the transverse plane through the
+/// frustum origin, covers `positionFrustum` with nonzero opacity. Degenerate projections cover nothing.
+[[nodiscard]] bool IsProjectedPointBlocked(const ReferenceSceneData& scene,
+                                           const WaveInteractionRegion& region,
+                                           const ProjectedPointFrustum& positionFrustum) noexcept;
 /// Outcome of escaping a connection endpoint past nearby geometry.
 struct WaveOriginEscape final
 {

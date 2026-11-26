@@ -28,3 +28,18 @@
 #define LUDUS_WAVE_UTD_FRACTION_DEPTH 48
 // Below this magnitude, sin(x)/x uses its two-term Taylor series.
 #define LUDUS_WAVE_UTD_SINC_LIMIT 0.0001
+
+// Fraunhofer edge operator (wave_fraunhofer_diffraction.cpp and .slang).
+// Shortest segment as a fraction of 1/sqrt(|beta|), the Gaussian-beam kernel's length scale: about 0.5% power
+// error on the knife edge and rectangle checks, converging quadratically as it shrinks.
+#define LUDUS_WAVE_FRAUNHOFER_SEGMENT_SCALE 0.2
+// Segments lengthen in proportion to their distance from the edge's stationary point, where the field oscillates
+// fastest relative to its weight, so a segment count grows logarithmically with the edge's extent.
+#define LUDUS_WAVE_FRAUNHOFER_SEGMENT_GROWTH 0.1
+// Segments on each side of the stationary point. The admitted 1/32 wavelength-to-distance ratio and endpoint
+// escapes need at most about 120; more report a propagation capacity failure.
+#define LUDUS_WAVE_FRAUNHOFER_SIDE_SEGMENTS 160
+// Half-phase magnitude below which (cos(x) - sin(x)/x) / 2x uses its series; float32 keeps 1e-6 relative error.
+#define LUDUS_WAVE_FRAUNHOFER_SERIES_LIMIT 0.5
+// Coverage samples sit this fraction of a segment's length to either side of it.
+#define LUDUS_WAVE_FRAUNHOFER_SIDE_OFFSET 0.015625

@@ -109,6 +109,8 @@ public:
     void UseProjectGraph(RendererWorkspace& inoutWorkspace);
     void SetProject(const QString& root, foundation::uint64 epoch);
     [[nodiscard]] bool Open(const QString& path);
+    /// Move keyboard focus to the failed open's recovery action, if a failure is shown.
+    void FocusOpenProblem();
     [[nodiscard]] bool Create(const QString& path);
     [[nodiscard]] bool Save();
     [[nodiscard]] bool ConfirmDiscard();
@@ -225,10 +227,12 @@ Q_SIGNALS:
     /// A game started or stopped playing in the World viewport (GetPlaySourceOrNull changed).
     void PlayInViewportChanged();
     /// The World or its viewport reported what an edit, import, save, pause or Play did; the window shows it in its
-    /// status bar. The World keeps no wrapped status line of its own, so a message never resizes the viewport.
+    /// status bar without resizing the viewport. OpenProblemChanged reports failed opens separately.
     /// @param message One or more sentences for the user, already including any recovery warning or repair.
     /// @param isFailure True for a refusal or failure, which stays shown until another message replaces it.
     void StatusMessage(const QString& message, bool isFailure);
+    /// The current World-open failure. Empty arguments clear the previous failure.
+    void OpenProblemChanged(const QString& path, const QString& message);
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -236,7 +240,25 @@ protected:
 private:
     [[nodiscard]] PlayViewportStartResult beginPlayInViewport();
     bool eventFilter(QObject* watched, QEvent* event) override;
-    [[nodiscard]] bool LoadProjectSchema(WorldDocument& candidate, QByteArray& schema, bool worldDemo = false);
+    [[nodiscard]] bool loadProjectSchema(WorldDocument& inoutCandidate,
+                                         QByteArray& outSchema,
+                                         QString& outError,
+                                         bool isWorldDemo = false) const;
+    struct WorldOpenFailure final
+    {
+        QString Reason;
+        QString NextStep = {};
+    };
+    [[nodiscard]] bool reportOpenFailure(const QString& path, const WorldOpenFailure& failure);
+    void clearOpenFailure();
+    enum class WorldCloseDecision : foundation::uint8
+    {
+        Proceed,
+        Discard,
+        Cancel,
+    };
+    [[nodiscard]] WorldCloseDecision requestCloseDecision();
+    void removeDiscardedRecovery();
     [[nodiscard]] bool Inside(const QString& path, bool existing) const;
     /// A blocking scene operation runs, or a full assembly waits for a background placement cook;
     /// World edits and the viewport gizmo wait. A placement cook alone keeps them available.
@@ -404,6 +426,10 @@ private:
     QWidget* mPropertiesPanel;
     /// File, import and render controls above the viewport; SetChromeVisible hides it.
     QWidget* mHeader;
+    QWidget* mOpenProblem;
+    QLabel* mOpenProblemText;
+    QPushButton* mRetryOpen;
+    QString mFailedOpenPath;
     /// Entity hierarchy column of the splitter; SetChromeVisible hides it.
     QWidget* mHierarchy;
     /// The "+" Add World Preset button beside the entity search; hidden for project schemas.
@@ -474,7 +500,8 @@ private:
     QByteArray mPlacementWorld;
     foundation::uint64 mPlacementDocumentGeneration = 0;
     QString SceneError_;
-    QString ConversionPath_;
+    QString mConversionSource;
+    bool mShouldDiscardOnConversion = false;
     QByteArray ConversionSchema_;
     foundation::uint64 SceneGeneration_ = 0;
 
