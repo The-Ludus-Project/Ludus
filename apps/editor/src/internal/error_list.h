@@ -45,6 +45,8 @@ enum class ErrorListProducer : foundation::uint8
     /// CE10). Shown with the Analysis origin, apart from the authoritative build
     /// rows, and never brings the list forward while the author types.
     Analysis,
+    /// Failed to open a World. Activating the row returns to its recovery actions.
+    WorldOpen,
 };
 
 /// One copied diagnostic.
@@ -59,7 +61,7 @@ struct ErrorListEntry final
     QString File;
     /// Compact position: `line:column` (e.g. `75:12`), a bare line, or a configuration/node path.
     QString Location;
-    /// "Render graph", "Shader", "Renderer preview", "Build" or "Analysis".
+    /// "Render graph", "Shader", "Renderer preview", "Build", "Analysis" or "World".
     QString Origin;
     /// Producer-owned index used for navigation: the RendererWorkspace diagnostic row
     /// for render graphs, or the zero-based Output line for builds. Preview rows open Render Preview.

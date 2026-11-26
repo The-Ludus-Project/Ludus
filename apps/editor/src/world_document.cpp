@@ -1117,12 +1117,12 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                 if (v.isUndefined() == true)
                 {
                     // Older Worlds may omit fields added by the built-in schema extensions. A World
-                    // saved before the aurora layer keeps it off at its default emission and time.
+                    // saved before the aurora or cloud layers keeps those layers off by default.
                     const bool isNewAtmosphereField =
                         HasBuiltInSchema() == true && c.key() == GetWorldAtmosphereComponentId() &&
                         (property == QStringLiteral("moon") || property == QStringLiteral("stars") ||
                          property == QStringLiteral("aurora") || property == QStringLiteral("auroraEmission") ||
-                         property == QStringLiteral("auroraTime"));
+                         property == QStringLiteral("auroraTime") || property.startsWith(QStringLiteral("cloud")));
                     const bool isNewTerrainField =
                         HasBuiltInTerrain() == true && c.key() == terrainComponent &&
                         (IsTerrainSurfaceProperty(property) == true || property == GetTerrainNoiseLayoutKey());
@@ -1137,7 +1137,9 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     {
                         continue;
                     }
-                    return Fail(error, QStringLiteral("%1 has missing or unknown properties.").arg(c.key()));
+                    return Fail(error,
+                                QStringLiteral("Entity “%1” is missing the “%2” field of its “%3” component.")
+                                    .arg(e.value(QStringLiteral("name")).toString(), property, c.key()));
                 }
                 ++recognizedPropertyCount;
                 if (Value(p, v, error) == false)
@@ -1182,7 +1184,10 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             hasAuthoredTerrainPayload = hasAuthoredTerrainPayload == true || terrainPayloads != 0;
             if (recognizedPropertyCount + terrainPayloads != props.size())
             {
-                return Fail(error, QStringLiteral("%1 has missing or unknown properties.").arg(c.key()));
+                return Fail(error,
+                            QStringLiteral("Entity “%1” has fields that this Editor does not recognize in its "
+                                           "“%2” component.")
+                                .arg(e.value(QStringLiteral("name")).toString(), c.key()));
             }
             if (isBuiltInLight == true && props.value(QStringLiteral("bakeAlwaysOn")).toBool() == true &&
                 (props.value(QStringLiteral("staticTransform")).toBool() == false ||

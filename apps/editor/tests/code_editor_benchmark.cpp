@@ -8,23 +8,27 @@
 // M2/M4, so the cursor and diagnostics cases measure the pre-feature baseline
 // the later milestones must not regress, and say so in their output.
 //
-// Each sample sends a real key event through CodeEditor::keyPressEvent and then
-// drains the event loop, so "handling" covers key handling, the document change,
-// relayout and the offscreen paint. The view's CodeLatencyProbe separately
-// reports keypress-to-paint from the end of key handling to the paint that shows
-// the edit. Offscreen Qt only: this excludes native input and compositor
-// latency, so it is a relative baseline, not the reference-machine budget, which
-// M9 qualifies with native runs. Run with:
+// Older workloads drain the event loop inside their handling timer, which
+// includes document changes, relayout and paint. The hosted C++ workloads time
+// synchronous key handling separately from key-to-paint. CodeLatencyProbe
+// measures from entry to the key handler to the end of the editor's paint.
+// Run the full corpus offscreen, or select [hosted-typing] on a native Qt
+// platform for the hosted workloads. Both time input injected into Qt, and
+// key-to-paint stops at the viewport paint before compositor presentation.
+// Offscreen run:
 //   QT_QPA_PLATFORM=offscreen ludus_code_editor_tests "[.benchmark]"
 // Each case prints one WARN summary; record those summaries in the task ledger.
 
 #include "internal/code_document_controller.h"
+#include "internal/code_document_tab.h"
 #include "internal/code_editor.h"
+#include "internal/code_editor_area.h"
 #include "internal/code_file_document.h"
 #include "internal/code_file_limits.h"
 #include "internal/code_latency_probe.h"
 #include "internal/code_multi_cursor.h"
 #include "internal/code_syntax_highlighter.h"
+#include "internal/code_syntax_service.h"
 #include "internal/code_text_profile.h"
 
 #include <ludus/foundation/containers/sort.hpp>
@@ -36,6 +40,8 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QGuiApplication>
+#include <QKeyEvent>
 #include <QList>
 #include <QString>
 #include <QSysInfo>
@@ -444,4 +450,106 @@ TEST_CASE("corpus: long-line file opened through the file host", "[.benchmark][e
             .arg(CODE_LONG_LINE_UTF16_UNITS)
             .arg(QSysInfo::prettyProductName(), QSysInfo::currentCpuArchitecture(), QString::fromUtf8(qVersion()));
     WARN(summary.toStdString());
+}
+
+namespace
+{
+void MeasureHostedCppTyping(bool hasDiagnostics)
+{
+    constexpr int32 DIAGNOSTIC_COUNT = 200;
+    constexpr int32 DIAGNOSTIC_LINE_STRIDE = 10;
+    constexpr int32 DIAGNOSTIC_UNDERLINE_LENGTH = 6;
+    constexpr int32 SYNTAX_TIMEOUT_MILLISECONDS = 30000;
+    constexpr int32 PAINT_TIMEOUT_MILLISECONDS = 2000;
+    const QByteArray function("void Paint() {\n    DrawOnePrimitive();\n}\n\n");
+    const QByteArray source = function.repeated(LONG_LINE_BYTES / function.size());
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString path = QDir(directory.path()).filePath(QStringLiteral("ordinary.cpp"));
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly) == true);
+        REQUIRE(file.write(source) == source.size());
+    }
+    CodeEditorArea area;
+    area.resize(VIEW_WIDTH, VIEW_HEIGHT);
+    area.show();
+    REQUIRE(area.OpenFile(path, false) == true);
+    CodeDocumentTab* tabOrNull = area.GetActiveTabOrNull();
+    REQUIRE(tabOrNull != nullptr);
+    CodeEditor& editor = tabOrNull->GetEditor();
+    REQUIRE(editor.GetLanguage() == CodeLanguage::Cpp);
+    REQUIRE(editor.isReadOnly() == false);
+    const int32 middleLine = editor.blockCount() / 2;
+    editor.GoToLine(middleLine);
+    editor.moveCursor(QTextCursor::EndOfBlock);
+    const CodeSyntaxService* syntaxOrNull = editor.document()->findChild<CodeSyntaxService*>();
+    REQUIRE(syntaxOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([syntaxOrNull] { return syntaxOrNull->GetCurrentResultOrNull() != nullptr; },
+                            SYNTAX_TIMEOUT_MILLISECONDS) == true);
+    const int32 expectedDiagnostics = hasDiagnostics == true ? DIAGNOSTIC_COUNT : 0;
+    if (hasDiagnostics == true)
+    {
+        QList<CodeDiagnostic> diagnostics;
+        diagnostics.reserve(DIAGNOSTIC_COUNT);
+        const int32 firstLine = middleLine - DIAGNOSTIC_COUNT / 2 * DIAGNOSTIC_LINE_STRIDE;
+        for (int32 index = 0; index < DIAGNOSTIC_COUNT; ++index)
+        {
+            CodeDiagnostic diagnostic;
+            diagnostic.Line = firstLine + index * DIAGNOSTIC_LINE_STRIDE;
+            diagnostic.Column = 1;
+            diagnostic.Length = DIAGNOSTIC_UNDERLINE_LENGTH;
+            diagnostic.Severity = CodeDiagnosticSeverity::Warning;
+            diagnostic.Message = QStringLiteral("Corpus diagnostic");
+            diagnostics.append(diagnostic);
+        }
+        editor.SetDiagnostics(diagnostics, true);
+    }
+    REQUIRE(editor.GetDiagnosticCount() == expectedDiagnostics);
+    FinishEvents();
+    const int32 initialSize = editor.document()->characterCount();
+    QVector<int64> samples;
+    samples.reserve(SAMPLE_COUNT);
+    CodeLatencyProbe& probe = editor.GetLatencyProbe();
+    probe.Start();
+    // Measure only the synchronous key event on the UI thread here. The probe
+    // measures from key arrival until the viewport paints the edit.
+    for (int32 index = 0; index < SAMPLE_COUNT; ++index)
+    {
+        QKeyEvent key(QEvent::KeyPress, Qt::Key_X, Qt::NoModifier, QStringLiteral("x"));
+        QElapsedTimer timer;
+        timer.start();
+        QCoreApplication::sendEvent(&editor, &key);
+        samples.append(timer.nsecsElapsed());
+        REQUIRE(editor.document()->characterCount() == initialSize + 1);
+        REQUIRE(QTest::qWaitFor([&probe, index] { return probe.GetSampleCount() == index + 1; },
+                                PAINT_TIMEOUT_MILLISECONDS) == true);
+        editor.Undo();
+        REQUIRE(editor.document()->characterCount() == initialSize);
+        FinishEvents();
+    }
+    probe.Stop();
+    CHECK(tabOrNull->GetController().Capture().Text == source);
+    CHECK(editor.GetDiagnosticCount() == expectedDiagnostics);
+    ReportSamples("hosted 1 MiB C++ typing",
+                  QStringLiteral("synchronous key handling, %1 diagnostic markers, %2 platform")
+                      .arg(expectedDiagnostics)
+                      .arg(QGuiApplication::platformName()),
+                  static_cast<int32>(source.size()),
+                  editor.blockCount(),
+                  samples,
+                  probe);
+}
+} // namespace
+
+TEST_CASE("corpus: hosted 1 MiB C++ typing without diagnostics",
+          "[.benchmark][editor][text][code-editor][hosted-typing]")
+{
+    MeasureHostedCppTyping(false);
+}
+
+TEST_CASE("corpus: hosted 1 MiB C++ typing with diagnostics",
+          "[.benchmark][editor][text][code-editor][hosted-typing][diagnostics]")
+{
+    MeasureHostedCppTyping(true);
 }

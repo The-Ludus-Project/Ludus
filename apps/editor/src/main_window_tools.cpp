@@ -111,13 +111,11 @@ void MainWindow::openProjectItem(ProjectItemKind kind, const QString& path)
             static_cast<void>(mDocuments->OpenDocument(ProjectSettings_));
             return;
         case ProjectItemKind::World:
-            // Opening another World asks about unsaved changes first, like World > Open.
-            if (QFileInfo(path).canonicalFilePath() != QFileInfo(World_->Path()).canonicalFilePath() &&
-                (World_->ConfirmDiscard() == false || World_->Open(path) == false))
-            {
-                return;
-            }
             static_cast<void>(mDocuments->OpenDocument(World_));
+            if (path != World_->Path())
+            {
+                static_cast<void>(World_->Open(path));
+            }
             return;
         case ProjectItemKind::RenderGraph:
         case ProjectItemKind::Shader: {
@@ -274,6 +272,12 @@ bool MainWindow::offerSunRepair()
 }
 void MainWindow::activateErrorEntry(const ErrorListEntry& entry)
 {
+    if (entry.Producer == ErrorListProducer::WorldOpen)
+    {
+        static_cast<void>(mDocuments->OpenDocument(World_));
+        World_->FocusOpenProblem();
+        return;
+    }
     if (entry.Producer == ErrorListProducer::RenderPreview)
     {
         // A missing World feature is repaired in the graph's code: land on the table naming the function to call.
