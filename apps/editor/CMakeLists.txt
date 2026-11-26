@@ -740,6 +740,7 @@ ludus_editor_add_objects(ludus_editor_presentation
     src/internal/flow_layout.h src/flow_layout.cpp
     src/internal/property_panel_fit.h src/property_panel_fit.cpp
     src/internal/chip_strip.h src/chip_strip.cpp
+    src/internal/action_strip.h src/action_strip.cpp
     src/internal/editor_icons.h src/editor_icons.cpp
     src/internal/theme_fonts.h src/theme_fonts.cpp)
 target_link_libraries(ludus_editor_presentation PUBLIC Qt6::Widgets Ludus::FoundationBase Ludus::FoundationContainers)

@@ -1,4 +1,5 @@
 #include "internal/error_list.h"
+#include "design_tokens.h"
 #include "internal/editor_icons.h"
 #include "internal/item_selection.h"
 #include "internal/path_text.h"
@@ -43,8 +44,9 @@ constexpr foundation::int32 ENTRY_ROLE = Qt::UserRole;
 // Output lines longer than this are not compiler diagnostics worth matching.
 constexpr qsizetype MAX_DIAGNOSTIC_LINE_CHARACTERS = 4096;
 constexpr foundation::int32 MAX_DETAILS_HEIGHT = 100;
-// Starting column widths in pixels: room for `Error`, an error code, a file name, `75:12` and `Shader · metal, spirv`.
-constexpr foundation::int32 SEVERITY_COLUMN_WIDTH = 84;
+// Starting column widths in pixels: the severity icon and its cell padding, room for an error code,
+// a file name, `75:12` and `Shader · metal, spirv`.
+constexpr foundation::int32 SEVERITY_COLUMN_WIDTH = EDITOR_ICON_SIZE + 2 * design::SPACING_SMALL;
 constexpr foundation::int32 CODE_COLUMN_WIDTH = 150;
 constexpr foundation::int32 FILE_COLUMN_WIDTH = 170;
 constexpr foundation::int32 LOCATION_COLUMN_WIDTH = 64;
@@ -417,6 +419,13 @@ ErrorList::ErrorList(QWidget* parentOrNull)
                                        QStringLiteral("File"),
                                        QStringLiteral("Location"),
                                        QStringLiteral("Origin")});
+    QTableWidgetItem* severityHeader = mTable->horizontalHeaderItem(SEVERITY_COLUMN);
+    if (severityHeader != nullptr)
+    {
+        severityHeader->setToolTip(QStringLiteral("Severity"));
+        severityHeader->setWhatsThis(QStringLiteral("Severity"));
+        severityHeader->setData(Qt::AccessibleTextRole, QStringLiteral("Severity"));
+    }
     mTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     mTable->horizontalHeader()->setSectionResizeMode(DESCRIPTION_COLUMN, QHeaderView::Stretch);
     mTable->setColumnWidth(SEVERITY_COLUMN, SEVERITY_COLUMN_WIDTH);
@@ -632,8 +641,11 @@ void ErrorList::render()
         }
         const foundation::int32 row = mTable->rowCount();
         mTable->insertRow(row);
-        QTableWidgetItem* severity = new QTableWidgetItem(GetSeverityName(entry.Severity));
+        const QString severityName = GetSeverityName(entry.Severity);
+        QTableWidgetItem* severity = new QTableWidgetItem();
         severity->setIcon(GetEditorIcon(GetSeverityIcon(entry.Severity)));
+        severity->setToolTip(severityName);
+        severity->setData(Qt::AccessibleTextRole, severityName);
         severity->setData(ENTRY_ROLE, static_cast<foundation::int32>(index));
         mTable->setItem(row, SEVERITY_COLUMN, severity);
         mTable->setItem(row, CODE_COLUMN, new QTableWidgetItem(entry.Code));
@@ -659,6 +671,17 @@ void ErrorList::render()
         originItem->setToolTip(origin);
         mTable->setItem(row, ORIGIN_COLUMN, originItem);
     }
+    bool hasCode = false;
+    for (foundation::int32 row = 0; row < mTable->rowCount(); ++row)
+    {
+        const QTableWidgetItem* codeOrNull = mTable->item(row, CODE_COLUMN);
+        if (codeOrNull != nullptr && codeOrNull->text().isEmpty() == false)
+        {
+            hasCode = true;
+            break;
+        }
+    }
+    mTable->setColumnHidden(CODE_COLUMN, hasCode == false);
     if (mTable->rowCount() > 0)
     {
         mTable->setCurrentCell(0, SEVERITY_COLUMN);

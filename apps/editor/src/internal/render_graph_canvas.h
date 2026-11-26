@@ -338,7 +338,9 @@ private:
     void refreshFeedback();
     [[nodiscard]] QString previewAdmittedLink(const QString& endpoint);
     void updateLinkFeedback(QPointF position);
-    void fitBounds(const QRectF& bounds);
+    /// Frame bounds in the viewport. With shouldClearMinimap the minimap's corner is left free, so a fitted graph
+    /// never starts with cards hidden under it.
+    void fitBounds(const QRectF& bounds, bool shouldClearMinimap = false);
     /// Pin the minimap to the viewport's bottom-right corner, above the scene.
     void placeMinimap();
     /// Pin the availability notice to the viewport's top edge, above the scene.
@@ -381,6 +383,8 @@ private:
     RenderGraphDeviceProfile mDeviceProfile;
     RenderGraphConfigurationAvailability mAvailability;
     foundation::float64 mPresentedScale = 0;
+    /// Whether the presented zoom is the overview (no port labels), where resting wires recede further.
+    bool mIsOverview = false;
     QGraphicsRectItem* mDiagnosticMarkerOrNull = nullptr;
     QGraphicsSimpleTextItem* mDiagnosticLabelOrNull = nullptr;
     QString mDiagnosticText;

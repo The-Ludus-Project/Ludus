@@ -81,6 +81,7 @@
 #include <QScrollBar>
 #include <QSettings>
 #include <QSignalSpy>
+#include <QSplitter>
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -8235,4 +8236,58 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     CHECK(scene.Atmosphere.IsEnabled == false);
     CHECK(scene.AtmosphereStatus.isEmpty() == true);
     CHECK(scene.ShouldUseEmptyWorldView() == true);
+}
+
+TEST_CASE("The World entity list sizes to its rows and leaves leftover height to Lights", "[editor][world][layout]")
+{
+    QTemporaryDir directory;
+    const auto path = Fixture(directory);
+    WorldWorkspace view;
+    view.SetProject(directory.path(), 1);
+    REQUIRE(view.Open(path) == true);
+    ApplyWorkspaceStyle(&view);
+    view.resize(1470, 920);
+    view.show();
+    QApplication::processEvents();
+    QTest::qWait(50);
+    QSplitter* sectionsOrNull = view.findChild<QSplitter*>(QStringLiteral("worldHierarchySections"));
+    REQUIRE(sectionsOrNull != nullptr);
+    REQUIRE(sectionsOrNull->count() == 2);
+    QTreeWidget* entitiesOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    REQUIRE(entitiesOrNull->topLevelItemCount() == 2);
+    QWidget* entityColumnOrNull = sectionsOrNull->widget(0);
+    QWidget* listsOrNull = sectionsOrNull->widget(1);
+    REQUIRE(entityColumnOrNull != nullptr);
+    REQUIRE(listsOrNull != nullptr);
+    // Two starter entities should not keep half the column empty above Lights.
+    CHECK(entityColumnOrNull->height() * 2 < sectionsOrNull->height());
+    QTreeWidgetItem* lastOrNull = entitiesOrNull->topLevelItem(entitiesOrNull->topLevelItemCount() - 1);
+    REQUIRE(lastOrNull != nullptr);
+    const QRect lastRow = entitiesOrNull->visualItemRect(lastOrNull);
+    const ludus::foundation::int32 unused = entitiesOrNull->viewport()->height() - lastRow.bottom();
+    const ludus::foundation::int32 rowHeight =
+        entitiesOrNull->sizeHintForRow(0) > lastRow.height() ? entitiesOrNull->sizeHintForRow(0) : lastRow.height();
+    // The list keeps a few rows of minimum height, not a large empty region above Lights.
+    CHECK(unused <= rowHeight * 4);
+    CHECK(listsOrNull->isVisibleTo(&view) == true);
+    CHECK(listsOrNull->height() > entityColumnOrNull->height());
+
+    // A user-dragged divider is left as they placed it when the World refreshes.
+    const ludus::foundation::int32 draggedEntity = sectionsOrNull->height() / 2;
+    sectionsOrNull->handle(1)->setFocus();
+    const QPoint centre = sectionsOrNull->handle(1)->rect().center();
+    QTest::mousePress(sectionsOrNull->handle(1), Qt::LeftButton, Qt::KeyboardModifiers(), centre);
+    QTest::mouseMove(sectionsOrNull->handle(1), QPoint(centre.x(), centre.y() + draggedEntity / 4));
+    QTest::mouseRelease(sectionsOrNull->handle(1),
+                        Qt::LeftButton,
+                        Qt::KeyboardModifiers(),
+                        QPoint(centre.x(), centre.y() + draggedEntity / 4));
+    QApplication::processEvents();
+    const QList<int> afterDrag = sectionsOrNull->sizes();
+    REQUIRE(afterDrag.size() == 2);
+    view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"))
+        ->setCurrentItem(entitiesOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
+    QApplication::processEvents();
+    CHECK(sectionsOrNull->sizes() == afterDrag);
 }

@@ -1,3 +1,4 @@
+#include "internal/action_strip.h"
 #include "internal/chip_strip.h"
 #include "internal/content_browser.h"
 #include "internal/content_import.h"
@@ -1236,26 +1237,47 @@ TEST_CASE("Content filters and actions fit a narrow dock without clipping a labe
         }
     }
     CHECK(hiddenCount == strip->GetOverflowCount());
-    // Every footer action is whole: the row wraps rather than squeezing a label. Wrapped actions share one width,
-    // so their column has a straight edge instead of a ragged one.
-    QList<QPushButton*> actions;
+    // Footer actions stay on one row. Those that do not fit move into More instead of wrapping
+    // and squeezing the list, and a shown action keeps its full label.
+    ActionStrip* actions = workspace.findChild<ActionStrip*>(QStringLiteral("contentActions"));
+    REQUIRE(actions != nullptr);
+    QList<QPushButton*> shownActions;
     for (QPushButton* action : workspace.findChildren<QPushButton*>())
     {
-        if (action->isVisible() == true)
+        if (action->parent() == actions && action->isVisible() == true)
         {
             checkWhole(*action, workspace);
-            actions.append(action);
+            shownActions.append(action);
         }
     }
-    REQUIRE(actions.size() > 1);
+    REQUIRE(shownActions.isEmpty() == false);
     QSet<int32> rowTops;
-    for (const QPushButton* action : std::as_const(actions))
+    for (const QPushButton* action : std::as_const(shownActions))
     {
         rowTops.insert(action->y());
-        CHECK(action->width() == actions.front()->width());
-        CHECK(action->x() == actions.front()->x());
     }
-    CHECK(rowTops.size() == actions.size());
+    CHECK(rowTops.size() == 1);
+    CHECK(actions->GetOverflowCount() > 0);
+    CHECK(actions->GetOverflowButton().isVisible() == true);
+    checkWhole(actions->GetOverflowButton(), workspace);
+    QMenu* actionMenu = actions->GetOverflowButton().menu();
+    REQUIRE(actionMenu != nullptr);
+    Q_EMIT actionMenu->aboutToShow();
+    QList<QPushButton*> hiddenActions;
+    for (QPushButton* action : workspace.findChildren<QPushButton*>())
+    {
+        // Retry is withdrawn until an import fails, so it is hidden without going into More.
+        if (action->parent() == actions && action->isHidden() == true &&
+            action->objectName() != QStringLiteral("contentRetry"))
+        {
+            hiddenActions.append(action);
+        }
+    }
+    const QList<QAction*> overflowEntries = actionMenu->actions();
+    REQUIRE(overflowEntries.size() == hiddenActions.size());
+    CHECK(overflowEntries.size() == actions->GetOverflowCount());
+    REQUIRE(overflowEntries.isEmpty() == false);
+    CHECK(overflowEntries.front()->text() == hiddenActions.front()->text());
 
     // The More menu offers the hidden chips; choosing one turns that filter on and lights More.
     QMenu* menu = strip->GetOverflowButton().menu();
@@ -1284,17 +1306,22 @@ TEST_CASE("Content filters and actions fit a narrow dock without clipping a labe
     CHECK(hiddenChips[enabledIndex]->isChecked() == true);
     CHECK(strip->GetOverflowButton().isChecked() == true);
 
-    // At a middle width the actions form a grid of equal cells, two or more to a row.
+    // At a middle width the actions still share one row; overflow holds the rest.
     workspace.resize(GRID_DOCK_WIDTH, DOCK_HEIGHT);
     QApplication::processEvents();
-    QSet<int32> gridTops;
-    for (const QPushButton* action : std::as_const(actions))
+    QSet<int32> midTops;
+    int32 shownMid = 0;
+    for (QPushButton* action : workspace.findChildren<QPushButton*>())
     {
-        checkWhole(*action, workspace);
-        gridTops.insert(action->y());
-        CHECK(action->width() == actions.front()->width());
+        if (action->parent() == actions && action->isVisible() == true)
+        {
+            checkWhole(*action, workspace);
+            midTops.insert(action->y());
+            ++shownMid;
+        }
     }
-    CHECK(gridTops.size() < actions.size());
+    CHECK(shownMid > 0);
+    CHECK(midTops.size() == 1);
 
     // With room for every chip, More goes away and the chips show in order.
     workspace.resize(WIDE_DOCK_WIDTH, DOCK_HEIGHT);
@@ -1308,6 +1335,52 @@ TEST_CASE("Content filters and actions fit a narrow dock without clipping a labe
     workspace.Shutdown();
 }
 
+TEST_CASE("A short Content dock keeps the list above one action row", "[editor][content][widget][layout]")
+{
+    constexpr int32 NARROW_DOCK_WIDTH = 220;
+    // Tall enough for the action row to stay on screen, short enough that a
+    // wrapped grid of buttons would have stolen list rows.
+    constexpr int32 SHORT_DOCK_HEIGHT = 400;
+    constexpr int32 MINIMUM_LIST_ROWS = 5;
+    constexpr int32 CLEAR_BUTTON_RESERVE = 28;
+    QTemporaryDir root;
+    WriteSceneProject(root.path());
+    ContentWorkspace workspace;
+    workspace.SetProject(QDir(root.path()).filePath(QStringLiteral("content")), 1, root.path());
+    Wait(workspace);
+    workspace.resize(NARROW_DOCK_WIDTH, SHORT_DOCK_HEIGHT);
+    workspace.show();
+    QApplication::processEvents();
+
+    QLineEdit* searchOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("contentSearch"));
+    REQUIRE(searchOrNull != nullptr);
+    CHECK(searchOrNull->placeholderText() == QStringLiteral("Search by name or type"));
+    const int32 placeholderWidth = searchOrNull->fontMetrics().horizontalAdvance(searchOrNull->placeholderText());
+    CHECK(placeholderWidth + CLEAR_BUTTON_RESERVE <= searchOrNull->width());
+
+    QTableView* tableOrNull = workspace.findChild<QTableView*>(QStringLiteral("contentTable"));
+    REQUIRE(tableOrNull != nullptr);
+    const int32 rowHeight = tableOrNull->verticalHeader()->defaultSectionSize();
+    REQUIRE(rowHeight > 0);
+    const int32 visibleRows = tableOrNull->viewport()->height() / rowHeight;
+    CHECK(visibleRows >= MINIMUM_LIST_ROWS);
+
+    ActionStrip* actionsOrNull = workspace.findChild<ActionStrip*>(QStringLiteral("contentActions"));
+    REQUIRE(actionsOrNull != nullptr);
+    CHECK(actionsOrNull->isVisibleTo(&workspace) == true);
+    CHECK(actionsOrNull->geometry().bottom() <= workspace.height());
+    QSet<int32> rowTops;
+    for (QPushButton* action : workspace.findChildren<QPushButton*>())
+    {
+        if (action->parent() == actionsOrNull && action->isVisible() == true)
+        {
+            rowTops.insert(action->y());
+            CHECK(action->width() >= action->sizeHint().width());
+        }
+    }
+    CHECK(rowTops.size() == 1);
+    workspace.Shutdown();
+}
 #if !defined(LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS) && !defined(Q_OS_WASM)
 namespace
 {

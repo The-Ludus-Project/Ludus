@@ -144,6 +144,21 @@
       "light": "#4a5a65",
       "use": "Viewport grid, every tenth line"
     },
+    "graph.raster": {
+      "dark": "#1f6f73",
+      "light": "#1f6f73",
+      "use": "Graph canvas: header of a raster pass card, and of a subgraph whose heaviest work is raster"
+    },
+    "graph.compute": {
+      "dark": "#933f6e",
+      "light": "#933f6e",
+      "use": "Graph canvas: header of a compute pass card, and of a subgraph whose heaviest work is compute"
+    },
+    "graph.rayTracing": {
+      "dark": "#5050b8",
+      "light": "#5050b8",
+      "use": "Graph canvas: header of a ray tracing pass card, and of a subgraph that traces rays"
+    },
     "axis.x": {
       "dark": "#e5645c",
       "light": "#e5645c",
@@ -303,7 +318,10 @@
       "syntax.namespace": "#b4bee7",
       "syntax.operator": "#c6dce4",
       "syntax.punctuation": "#b5c5c9",
-      "syntax.invalid": "#ff9ca9"
+      "syntax.invalid": "#ff9ca9",
+      "graph.raster": "#145052",
+      "graph.compute": "#702a50",
+      "graph.rayTracing": "#3a3a8c"
     },
     "light": {
       "surface.workspace": "#ffffff",
@@ -347,7 +365,10 @@
       "syntax.namespace": "#495585",
       "syntax.operator": "#42575f",
       "syntax.punctuation": "#475b60",
-      "syntax.invalid": "#9f2945"
+      "syntax.invalid": "#9f2945",
+      "graph.raster": "#145052",
+      "graph.compute": "#702a50",
+      "graph.rayTracing": "#3a3a8c"
     }
   },
   "spacing": {
@@ -700,6 +721,9 @@
     {"foreground": "syntax.namespace", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor namespace"},
     {"foreground": "syntax.operator", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor operator"},
     {"foreground": "syntax.punctuation", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor punctuation"},
-    {"foreground": "syntax.invalid", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor invalid"}
+    {"foreground": "syntax.invalid", "background": "surface.panel", "minimum": 4.5, "highContrastMinimum": 7, "label": "Code editor invalid"},
+    {"foreground": "text.hud", "background": "graph.raster", "minimum": 4.5, "highContrastMinimum": 7, "label": "Card title on a raster pass header"},
+    {"foreground": "text.hud", "background": "graph.compute", "minimum": 4.5, "highContrastMinimum": 7, "label": "Card title on a compute pass header"},
+    {"foreground": "text.hud", "background": "graph.rayTracing", "minimum": 4.5, "highContrastMinimum": 7, "label": "Card title on a ray tracing pass header"}
   ]
 }

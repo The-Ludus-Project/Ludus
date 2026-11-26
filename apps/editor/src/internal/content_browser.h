@@ -34,6 +34,7 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
+class ActionStrip;
 struct ContentRow final
 {
     QString Id;
@@ -316,6 +317,7 @@ private:
     QProgressBar* mProgressBarOrNull = nullptr;
     QLabel* Status_ = nullptr;
     StateView* mProblemOrNull = nullptr;
+    ActionStrip* mActionsOrNull = nullptr;
     QPushButton* Refresh_ = nullptr;
     QPushButton* Import_ = nullptr;
     QPushButton* Reimport_ = nullptr;
