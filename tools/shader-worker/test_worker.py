@@ -392,6 +392,8 @@ def main():
     parser.add_argument('--compiler', type=Path, default=ROOT / 'out/shader-tools/slang/bin/slangc')
     parser.add_argument('--validator', type=Path, default=ROOT / 'out/shader-tools/spirv-tools/usr/bin/spirv-val')
     parser.add_argument('--spirv-cross', type=Path, default=ROOT / 'out/shader-tools/spirv-cross/bin/spirv-cross')
+    # The built-in renderer recipes are LUSL; a fixture project outside the tree has no luslc target.
+    parser.add_argument('--luslc', type=Path)
     args = parser.parse_args()
     if IS_WINDOWS:
         if args.renderer and not args.dxc:
@@ -445,6 +447,8 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
                 command += ['-DLUDUS_SPIRV_CROSS=' + str(args.spirv_cross)]
             if sys.platform != 'darwin':
                 command += ['-DLUDUS_SPIRV_VALIDATOR=' + str(args.validator)]
+            if args.luslc is not None:
+                command += ['-DLUDUS_LUSLC=' + str(args.luslc)]
             configured = subprocess.run(command, capture_output=True, text=True)
             if configured.returncode:
                 raise RuntimeError(configured.stdout + configured.stderr)

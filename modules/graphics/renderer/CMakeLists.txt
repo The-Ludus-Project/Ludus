@@ -782,16 +782,24 @@ if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND 
     math(EXPR render_graph_dxil_last_shard "${render_graph_dxil_shard_count} - 1")
     foreach(shard_index RANGE 0 ${render_graph_dxil_last_shard})
         add_test(NAME ludus_render_graph_dxil_tests_${shard_index} COMMAND ludus_render_graph_dxil_tests
-            --shard-count ${render_graph_dxil_shard_count} --shard-index ${shard_index} --durations yes)
+            "~[skin-parity]" --shard-count ${render_graph_dxil_shard_count} --shard-index ${shard_index}
+            --durations yes)
         set_tests_properties(ludus_render_graph_dxil_tests_${shard_index} PROPERTIES
             LABELS "unit;render-graph;dxil;gpu" TIMEOUT ${render_graph_dxil_timeout_seconds})
     endforeach()
+    # The LUSL skin parity case draws 13 skin scenes, each on its own device. Beside the four other
+    # skin cases in the same contiguous shard it exceeded 600 s on a slow WARP runner (batch
+    # 45870747083: those four took 307 s before it started), so it runs with its own deadline.
+    add_test(NAME ludus_render_graph_dxil_skin_parity COMMAND ludus_render_graph_dxil_tests "[skin-parity]"
+        --durations yes)
+    set_tests_properties(ludus_render_graph_dxil_skin_parity PROPERTIES
+        LABELS "unit;render-graph;dxil;gpu" TIMEOUT ${render_graph_dxil_timeout_seconds})
     if(TARGET ludus-shader-worker)
         add_test(NAME ludus_shader_reload_gpu COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tools/shader-worker/test_worker.py"
             --worker "$<TARGET_FILE:ludus-shader-worker>" --client "$<TARGET_FILE:ludus_shader_compiler_tests>"
             --renderer "$<TARGET_FILE:ludus_render_graph_dxil_tests>"
-            --compiler "${LUDUS_SLANG_COMPILER}" --dxc "${LUDUS_DXC_DIRECTORY}")
+            --compiler "${LUDUS_SLANG_COMPILER}" --dxc "${LUDUS_DXC_DIRECTORY}" --luslc "$<TARGET_FILE:luslc>")
         set_tests_properties(ludus_shader_reload_gpu PROPERTIES LABELS "shader;renderer;gpu;dxil" TIMEOUT 180)
     endif()
 endif()
@@ -846,7 +854,7 @@ if(TARGET ludus_renderer_render_tests)
         add_test(NAME ludus_shader_reload_gpu COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tools/shader-worker/test_worker.py"
             --worker "$<TARGET_FILE:ludus-shader-worker>" --client "$<TARGET_FILE:ludus_shader_compiler_tests>"
-            --renderer "$<TARGET_FILE:ludus_renderer_render_tests>")
+            --renderer "$<TARGET_FILE:ludus_renderer_render_tests>" --luslc "$<TARGET_FILE:luslc>")
         set_tests_properties(ludus_shader_reload_gpu PROPERTIES LABELS "shader;renderer;gpu" TIMEOUT 120)
     endif()
 endif()
