@@ -6,12 +6,14 @@
 #include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/editor_identity.h"
+#include "internal/error_list.h"
 #include "internal/inspector_section.h"
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
 #include "internal/material_inspection.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_viewport.h"
+#include "internal/project_explorer.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_panel.h"
 #include "internal/render_preview.h"
@@ -772,6 +774,20 @@ TEST_CASE("World failed replacement keeps pending fields and a cancelled close p
         view.Open(QDir(QFileInfo(dir.path()).canonicalFilePath()).filePath(QStringLiteral("missing.world.json"))));
     CHECK(field->text() == QStringLiteral("-"));
     CHECK(view.Dirty());
+
+    const QString replacement = QFileInfo(path).dir().filePath(QStringLiteral("replacement.world.json"));
+    Write(replacement, Starter());
+    QTimer::singleShot(0, [&replacement]() {
+        Write(replacement, QByteArrayLiteral("{damaged"));
+        QMessageBox* boxOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        REQUIRE(boxOrNull != nullptr);
+        boxOrNull->done(QMessageBox::Discard);
+    });
+    CHECK(view.Open(replacement) == false);
+    CHECK(view.Path() == path);
+    CHECK(view.Dirty() == true);
+    CHECK(field->text() == QStringLiteral("-"));
+
     CHECK_FALSE(view.Create(path));
     CHECK(field->text() == QStringLiteral("-"));
     QTimer::singleShot(0, []() {
@@ -782,6 +798,69 @@ TEST_CASE("World failed replacement keeps pending fields and a cancelled close p
     CHECK_FALSE(view.ConfirmDiscard());
     CHECK(view.Dirty());
     CHECK(field->text() == QStringLiteral("-"));
+}
+
+TEST_CASE("A failed Explorer World open shows recovery in the World tab and Error List", "[editor][world][open]")
+{
+    QTemporaryDir directory;
+    const QString goodPath = Fixture(directory);
+    const QString incomingPath = QFileInfo(goodPath).dir().filePath(QStringLiteral("trail.world.json"));
+    Write(incomingPath, QByteArrayLiteral("{broken"));
+
+    ToolingPaths tooling;
+    EditorController controller(tooling, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    WorldWorkspace* worldOrNull = window.findChild<WorldWorkspace*>();
+    ProjectExplorer* explorerOrNull = window.findChild<ProjectExplorer*>();
+    ErrorList* errorsOrNull = window.findChild<ErrorList*>();
+    QDockWidget* errorDockOrNull = window.findChild<QDockWidget*>(QStringLiteral("errorListDock"));
+    QDockWidget* propertiesOrNull = window.findChild<QDockWidget*>(QStringLiteral("propertiesDock"));
+    REQUIRE(worldOrNull != nullptr);
+    REQUIRE(explorerOrNull != nullptr);
+    REQUIRE(errorsOrNull != nullptr);
+    REQUIRE(errorDockOrNull != nullptr);
+    REQUIRE(propertiesOrNull != nullptr);
+    worldOrNull->SetProject(QFileInfo(directory.path()).canonicalFilePath(), 1);
+    window.GetDocumentWell().SetDocumentAvailable(worldOrNull, true);
+    window.show();
+    REQUIRE(worldOrNull->Open(goodPath) == true);
+    window.GetDocumentWell().CloseDocument(worldOrNull);
+    propertiesOrNull->hide();
+    errorDockOrNull->hide();
+    REQUIRE(window.GetDocumentWell().GetActiveDocumentOrNull() != worldOrNull);
+
+    Q_EMIT explorerOrNull->OpenRequested(ProjectItemKind::World, incomingPath);
+    CHECK(window.GetDocumentWell().GetActiveDocumentOrNull() == worldOrNull);
+    CHECK(worldOrNull->Path() == goodPath);
+    CHECK(worldOrNull->Dirty() == false);
+    QLabel* problemOrNull = worldOrNull->findChild<QLabel*>(QStringLiteral("worldOpenProblemText"));
+    QPushButton* retryOrNull = worldOrNull->findChild<QPushButton*>(QStringLiteral("worldRetryOpen"));
+    QPushButton* chooseAnotherOrNull = worldOrNull->findChild<QPushButton*>(QStringLiteral("worldChooseAnother"));
+    REQUIRE(problemOrNull != nullptr);
+    REQUIRE(retryOrNull != nullptr);
+    REQUIRE(chooseAnotherOrNull != nullptr);
+    CHECK(problemOrNull->isVisible() == true);
+    CHECK(chooseAnotherOrNull->isVisible() == true);
+    CHECK(problemOrNull->text().contains(QStringLiteral("trail.world.json")) == true);
+    CHECK(problemOrNull->text().contains(QStringLiteral("Invalid JSON")) == true);
+    CHECK(problemOrNull->text().contains(QStringLiteral("working backup")) == true);
+    CHECK(errorDockOrNull->isVisible() == true);
+    REQUIRE(errorsOrNull->GetCount(ErrorListSeverity::Error) == 1);
+    const QList<ErrorListEntry>& entries = errorsOrNull->GetEntries();
+    CHECK(entries.last().Producer == ErrorListProducer::WorldOpen);
+    CHECK(entries.last().File == incomingPath);
+    CHECK(entries.last().Description == problemOrNull->text());
+
+    window.GetDocumentWell().CloseDocument(worldOrNull);
+    REQUIRE(errorsOrNull->ActivateVisibleRow(errorsOrNull->GetVisibleCount() - 1) == true);
+    CHECK(window.GetDocumentWell().GetActiveDocumentOrNull() == worldOrNull);
+    CHECK(problemOrNull->isVisible() == true);
+
+    Write(incomingPath, Starter());
+    retryOrNull->click();
+    CHECK(worldOrNull->Path() == incomingPath);
+    CHECK(problemOrNull->isVisible() == false);
+    CHECK(errorsOrNull->GetCount(ErrorListSeverity::Error) == 0);
 }
 
 TEST_CASE("World menu Save and history own the active document and Close Project can cancel", "[editor][world]")
@@ -8075,22 +8154,36 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     QJsonObject components = atmosphere.value(QStringLiteral("components")).toObject();
     QJsonObject values = components.value(atmosphereComponent).toObject();
     values.insert(QStringLiteral("sun"), sunId);
-    // An A1 world omits the A2 fields, and a World saved before the aurora layer omits its
-    // fields; both keep the defaults after loading.
+    // Older Worlds omit celestial, aurora and cloud fields and keep the defaults after loading.
     values.remove(QStringLiteral("stars"));
     values.remove(QStringLiteral("moon"));
     values.remove(QStringLiteral("aurora"));
     values.remove(QStringLiteral("auroraEmission"));
     values.remove(QStringLiteral("auroraTime"));
+    const QStringList propertyNames = values.keys();
+    for (const QString& name : propertyNames)
+    {
+        if (name.startsWith(QStringLiteral("cloud")) == true)
+        {
+            values.remove(name);
+        }
+    }
     components.insert(atmosphereComponent, values);
     REQUIRE(document.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==
             true);
-    // Open validates the saved bytes, not the edited draft (examples/light-court before the fix).
-    WorldDocument savedWithoutAurora;
-    REQUIRE(savedWithoutAurora.LoadSchema(schema, error) == true);
-    REQUIRE(savedWithoutAurora.Load(QJsonDocument(document.Draft()).toJson(), error) == true);
-    REQUIRE(RenderScene::Load(directory.path(), document, scene, error) == true);
+    const QString trailPath = directory.filePath(QStringLiteral("trail.world.json"));
+    const QByteArray legacyBytes = document.Encode();
+    Write(trailPath, legacyBytes);
+    WorldWorkspace workspace;
+    workspace.SetProject(QFileInfo(directory.path()).canonicalFilePath(), 1);
+    REQUIRE(workspace.Open(QFileInfo(trailPath).canonicalFilePath()) == true);
+    CHECK(workspace.Dirty() == false);
+    CHECK(Read(trailPath) == legacyBytes);
+    REQUIRE(RenderScene::Load(directory.path(), workspace.Document(), scene, error) == true);
     CHECK(scene.Atmosphere.Aurora.IsEnabled == false);
+    CHECK(scene.Atmosphere.Clouds.IsEnabled == false);
+    CHECK(scene.Atmosphere.Clouds.BaseHeightMetres ==
+          ludus::graphics::renderer::CloudLayerDescription::DEFAULT_BASE_HEIGHT_METRES);
     CHECK(scene.Atmosphere.IsEnabled == true);
     CHECK(scene.Atmosphere.DirectionToSunWorld.Y == Catch::Approx(1));
     CHECK(scene.Atmosphere.SolarIlluminance.X == Catch::Approx(10));
