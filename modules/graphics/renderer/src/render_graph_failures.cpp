@@ -53,6 +53,7 @@ static_assert(ToCode(RenderGraphFailureReason::PhotonCapacity) == LUDUS_SCENE_FA
 static_assert(ToCode(RenderGraphFailureReason::PhotonDispatch) == LUDUS_SCENE_FAILURE_PHOTON_DISPATCH);
 static_assert(MAX_RENDER_GRAPH_FAILURE_REASONS == LUDUS_SCENE_FAILURE_REASON_COUNT);
 static_assert(ToCode(RenderGraphFailureReason::LuslBounds) == LUDUS_SCENE_FAILURE_LUSL_BOUNDS);
+static_assert(ToCode(RenderGraphFailureReason::WaveInterface) == LUDUS_SCENE_FAILURE_WAVE_INTERFACE);
 static_assert(LUDUS_GRAPH_FAILURE_WORDS == MAX_RENDER_GRAPH_FAILURE_REASONS + 1);
 
 const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
@@ -74,6 +75,10 @@ const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
         case RenderGraphFailureReason::WavePropagationCapacity:
             return "The optical connection crosses too many successive regions. Increase wavelength to widen the "
                    "interaction depth or shorten the connection; no partial field was accepted.";
+        case RenderGraphFailureReason::WaveInterface:
+            return "An optical connection relayed through glass met dielectrics that disagree about one leg's medium, "
+                   "such as touching or nested glass of different indices, or more than eight glass events. "
+                   "Separate the surfaces or give touching glass one index; no sample was accepted.";
         case RenderGraphFailureReason::WaveConnection:
             return "The optical connection needs a finite positive distance and wavelength no greater than distance / "
                    "32. Reduce wavelength or move coincident light and surface endpoints apart.";

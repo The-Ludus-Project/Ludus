@@ -15,3 +15,4 @@
 #define LUDUS_SCENE_FAILURE_WAVE_CAPACITY 24             // An optical region exceeds its triangle workspace.
 #define LUDUS_SCENE_FAILURE_WAVE_CONNECTION 25           // Invalid scalar paraxial geometry or wavelength.
 #define LUDUS_SCENE_FAILURE_WAVE_PROPAGATION_CAPACITY 26 // Too many successive optical interaction regions.
+#define LUDUS_SCENE_FAILURE_WAVE_INTERFACE 29 // A relayed connection's dielectric media disagree or exceed its legs.

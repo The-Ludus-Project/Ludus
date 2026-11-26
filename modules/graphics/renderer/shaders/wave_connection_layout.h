@@ -3,6 +3,9 @@
 #define LUDUS_WAVE_CONNECTION_AXIS 16
 #define LUDUS_WAVE_CONNECTION_CELLS (LUDUS_WAVE_CONNECTION_AXIS * LUDUS_WAVE_CONNECTION_AXIS)
 #define LUDUS_WAVE_CONNECTION_REGIONS 64
+// Straight legs of one relayed connection: the leg from the light, then one after each of up to eight specular
+// interface events (reflection or transmission). The 64 regions above are shared by all of a connection's legs.
+#define LUDUS_WAVE_CONNECTION_LEGS 9
 #define LUDUS_WAVE_CONNECTION_ESCAPE_ATTEMPTS 16
 #define LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS 3
 #define LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS 2

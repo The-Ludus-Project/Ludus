@@ -126,6 +126,11 @@ QString DescribeReferenceFailure(renderer::ReferenceFailure failure)
         case renderer::ReferenceFailure::InvalidMediumCrossing:
             return QStringLiteral("A path crossed the medium boundary inconsistently. Close the boundary mesh and "
                                   "orient its front faces outward; no sample was accepted.");
+        case renderer::ReferenceFailure::OpticalInterface:
+            return QStringLiteral("An optical connection relayed through glass met two dielectrics that disagree "
+                                  "about one leg's medium, such as touching or nested glass of different indices. "
+                                  "Separate the surfaces, give touching glass one index, or select the geometric "
+                                  "renderer; no sample was accepted.");
         case renderer::ReferenceFailure::None:
             return QStringLiteral("no path validation failure recorded");
     }

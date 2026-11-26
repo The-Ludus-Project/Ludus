@@ -676,6 +676,42 @@ rhi::RasterStatus SampleResampledEmitter(const ReferenceJob& job,
 }
 // Attenuate the segment the path just traced, from its ray origin to the hit or the end of its range. The
 // primary segment first derives the camera's medium from all crossings along its ray.
+// Thanks to Shlomi Steinberg and Matt Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics", CGF
+// 45(2), e70322 (2026), Sections 3, 4.2 and 5.2, https://doi.org/10.1111/cgf.70322 : a smooth Fresnel interface is a
+// region-to-region interaction that carries the incident field on (their Eqs. 9 and 13), while a rough statistical
+// surface scatters in expectation, which the classical BSDF evaluates. Glass events therefore relay a light's coherent
+// connection instead of ending it; the next rough vertex squares it. This relay is an original implementation.
+// Field of the light's connection from sourceWorld, relayed through the chain's glass events to its receiver, divided
+// by the unobstructed field of the same chain. Ready with outIsAdmitted false rejects the chain's media.
+rhi::RasterStatus EvaluateOpticalRelay(const ReferenceJob& job,
+                                       const ReferenceOpticalRelay& relay,
+                                       math::Vector3 sourceWorld,
+                                       bool& outIsAdmitted,
+                                       WaveField& outField) noexcept
+{
+    outIsAdmitted = false;
+    if (relay.HasConflict == true || relay.SegmentCount < 2 || relay.SegmentCount > LUDUS_WAVE_CONNECTION_LEGS)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    WaveConnectionChain chain;
+    if (TryMakeWaveRelayChain(relay, sourceWorld, chain) == false)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    outIsAdmitted = true;
+    const float64 wavelengthWorld = static_cast<float64>(job.Description.OpticalWavelengthWorld);
+    switch (job.Description.OpticalConnection)
+    {
+        case ReferenceOpticalConnection::UtdEdgeDiffraction:
+            return EvaluateUtdChainConnection(job.Scene, chain, wavelengthWorld, outField);
+        case ReferenceOpticalConnection::FraunhoferEdgeDiffraction:
+            return EvaluateFraunhoferChainConnection(job.Scene, chain, wavelengthWorld, outField);
+        case ReferenceOpticalConnection::AngularSpectrum:
+            break;
+    }
+    return EvaluateWaveChainConnection(job.Scene, chain, wavelengthWorld, outField);
+}
 rhi::RasterStatus AttenuateTracedSegment(const ReferenceJob& job,
                                          ReferenceCaptureInfo& inoutInfo,
                                          ReferencePath& inoutPath,
@@ -708,6 +744,10 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     path.ShadowCount = 0;
     path.HasNext = false;
     path.IsActive = false;
+    if (path.Depth == 0 && job.Description.OpticalWavelengthWorld > 0)
+    {
+        BeginWaveRelay(path.OpticalRelay, ReferenceOrigin(path.Ray));
+    }
     const usize lights = GetReferenceLightCount(job);
     if (hit.Hit == 0)
     {
@@ -797,10 +837,40 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         {
             return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidEmitterPdf);
         }
-        const float32 weight =
+        float32 weight =
             path.Depth == 0 || path.IsPreviousSpecular == true
                 ? 1
                 : (job.Description.OpticalWavelengthWorld > 0 ? 0 : ReferencePowerWeight(path.PreviousPdf, pdf));
+        if (path.Depth > 0 && path.IsPreviousSpecular == true && job.Description.OpticalWavelengthWorld > 0)
+        {
+            // Relay the emitter's connection back through the glass events to the vertex that ended coherence.
+            ++inoutInfo.VisibilityQueries;
+            bool isAdmitted = false;
+            WaveField field;
+            const rhi::RasterStatus status =
+                EvaluateOpticalRelay(job, path.OpticalRelay, Offset(point, triangle, view), isAdmitted, field);
+            if (status != rhi::RasterStatus::Ready)
+            {
+                return FailReferencePath(inoutInfo,
+                                         path,
+                                         status == rhi::RasterStatus::Unsupported
+                                             ? ReferenceFailure::OpticalPropagationCapacity
+                                             : (status == rhi::RasterStatus::CapacityExceeded
+                                                    ? ReferenceFailure::OpticalRegionCapacity
+                                                    : ReferenceFailure::InvalidShadowSegment));
+            }
+            if (isAdmitted == false)
+            {
+                return FailReferencePath(inoutInfo, path, ReferenceFailure::OpticalInterface);
+            }
+            const float32 transmission =
+                static_cast<float32>(field.Real * field.Real + field.Imaginary * field.Imaginary);
+            if (math::IsFinite(transmission) == false || transmission < 0)
+            {
+                return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidDirectContribution);
+            }
+            weight *= transmission;
+        }
         AddTransport(path,
                      math::Hadamard(path.Throughput, SampleReferenceEmission(instance, Uv(triangle, hit.U, hit.V))) *
                          weight,
@@ -985,6 +1055,22 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     if (math::IsFinite(origin) == false)
     {
         return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidRayOrigin);
+    }
+    if (job.Description.OpticalWavelengthWorld > 0)
+    {
+        if (sample.IsSpecular == true)
+        {
+            AppendWaveRelayEvent(path.OpticalRelay,
+                                 bsdf.Scattering.Model == content::scene_format::MaterialModel::Dielectric,
+                                 bsdf.Scattering.Eta[0],
+                                 bsdf.IsViewerInside,
+                                 isTransmitted == false,
+                                 point);
+        }
+        else
+        {
+            BeginWaveRelay(path.OpticalRelay, origin);
+        }
     }
     path.Next = ReferenceRay(origin, sample.Direction, job.Description.SecondaryDistance);
     path.HasNext = true;

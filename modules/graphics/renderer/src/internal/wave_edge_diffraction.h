@@ -33,6 +33,13 @@ struct WaveEdgeConnection final
     float64 RoundoffWorld = 0;
     /// The centre ray between the escaped endpoints is blocked.
     bool IsBallisticBlocked = false;
+    /// Depth from SourceWorld at which this leg's own geometry begins: zero for a straight connection. Past a
+    /// relay's interface event, SourceWorld is the virtual (apparent-depth) source, so the incident ray is tested for
+    /// clearance only beyond this depth.
+    float64 LegBeginWorld = 0;
+    /// Depth from SourceWorld at which this leg's geometry ends: DistanceWorld for a straight connection. The
+    /// diffracted ray is tested for clearance only before it.
+    float64 LegEndWorld = 0;
 };
 /// Adds one operator's diffracted fields for the edges of `region` to inoutField; failure may leave it partial.
 using AddWaveEdgeRegionFields = rhi::RasterStatus (*)(const ReferenceSceneData& scene,
@@ -52,6 +59,18 @@ using AddWaveEdgeRegionFields = rhi::RasterStatus (*)(const ReferenceSceneData& 
                                                            float64 wavelengthWorld,
                                                            AddWaveEdgeRegionFields addRegionFields,
                                                            WaveField& outField) noexcept;
+/// The shared edge-connection driver relayed through a chain of legs. Each leg is evaluated as the virtual straight
+/// connection a paraxial observer in its medium sees: the source and receiver at the refractive index times their
+/// reduced distances (apparent depth) along the leg's axis, at the wavelength in the medium. That connection has the
+/// reduced chain's Gaussian kernel. Only the leg's own interaction regions are visited, and diffracted rays are tested
+/// for clearance within the leg. The result is single diffraction along the chain: the product of the legs' ballistic
+/// fields plus each leg's diffracted field times the other legs' ballistic fields. A one-leg chain is
+/// EvaluateWaveEdgeConnection. Accepts and rejects what EvaluateWaveChainConnection does; failure preserves outField.
+[[nodiscard]] rhi::RasterStatus EvaluateWaveEdgeChain(const ReferenceSceneData& scene,
+                                                      const WaveConnectionChain& chain,
+                                                      float64 wavelengthWorld,
+                                                      AddWaveEdgeRegionFields addRegionFields,
+                                                      WaveField& outField) noexcept;
 /// Whether the segment from nearWorld past `beginWorld` to farMarginWorld before `endWorld` is clear of covered
 /// triangles other than `excluded`. Ready publishes outIsClear; a malformed hierarchy returns InvalidDescription.
 [[nodiscard]] rhi::RasterStatus IsWaveSegmentClear(const ReferenceSceneData& scene,
@@ -114,4 +133,9 @@ struct UtdEdgeField final
                                                                 float64 distanceWorld,
                                                                 float64 wavelengthWorld,
                                                                 WaveField& outField) noexcept;
+/// UTD connection relayed through the chain's interface events: EvaluateWaveEdgeChain with the UTD edge operator.
+[[nodiscard]] rhi::RasterStatus EvaluateUtdChainConnection(const ReferenceSceneData& scene,
+                                                           const WaveConnectionChain& chain,
+                                                           float64 wavelengthWorld,
+                                                           WaveField& outField) noexcept;
 } // namespace ludus::graphics::renderer::internal

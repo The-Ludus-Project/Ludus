@@ -2018,6 +2018,8 @@ PathSample TracePath(uint pixel, uint sample)
     float3 previousPositionWorld = 0;
     float previousPdf = 0;
     bool isPreviousSpecular = false;
+    // Glass events since the last rough vertex, for relayed optical connections (reference_path.cpp).
+    WaveRelay relay = BeginWaveRelay(ray.OriginWorld);
     uint lights = GetLightCount();
     // The resampled modes keep the previous vertex's receiver and Z-hat for the BSDF-hit density.
     bool isResampled = IsResampled();
@@ -2106,6 +2108,50 @@ PathSample TracePath(uint pixel, uint sample)
             }
             float weight =
                 depth == 0 || isPreviousSpecular == true ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, pdf));
+            if (depth > 0 && isPreviousSpecular == true && Options.y > 0)
+            {
+                // Relay the emitter's connection back through the glass events to the vertex that ended coherence.
+                CountQuery(path, true);
+                WaveConnectionOperator connectionOperator =
+                    (Sampling.z & UTD_CONNECTION_FLAG) != 0 ? WaveConnectionOperator::UtdEdgeDiffraction
+                                                            : ((Sampling.z & FRAUNHOFER_CONNECTION_FLAG) != 0
+                                                                   ? WaveConnectionOperator::FraunhoferEdgeDiffraction
+                                                                   : WaveConnectionOperator::AngularSpectrum);
+                float2 field = float2(0);
+                bool isAdmitted;
+                WaveQuery status = EvaluateWaveRelay((SceneContext)0,
+                                                     relay,
+                                                     OffsetOrigin(positionWorld, triangle, viewWorld),
+                                                     Options.y,
+                                                     connectionOperator,
+                                                     isAdmitted,
+                                                     field);
+                if (status != WaveQuery::Ready)
+                {
+                    if (status != WaveQuery::Invalid)
+                        path.Status |= LUDUS_REFERENCE_CAPACITY_FLAG;
+                    MarkInvalid(path,
+                                depth,
+                                status == WaveQuery::Capacity
+                                    ? LUDUS_REFERENCE_FAILURE_OPTICAL_REGION_CAPACITY
+                                    : (status == WaveQuery::Invalid
+                                           ? LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT
+                                           : LUDUS_REFERENCE_FAILURE_OPTICAL_PROPAGATION_CAPACITY));
+                    return path;
+                }
+                if (isAdmitted == false)
+                {
+                    MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_OPTICAL_INTERFACE);
+                    return path;
+                }
+                float transmission = dot(field, field);
+                if (isfinite(transmission) == false || transmission < 0)
+                {
+                    MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_DIRECT_CONTRIBUTION);
+                    return path;
+                }
+                weight *= transmission;
+            }
             AddTransport(path, throughput * SampleEmission(instance, uv) * weight, depth, true);
         }
         // pbrt-v4's reflection models scatter on the viewer's side of the surface (reference_path.cpp cites the
@@ -2327,6 +2373,18 @@ PathSample TracePath(uint pixel, uint sample)
             {
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RAY_ORIGIN);
                 return path;
+            }
+            if (Options.y > 0)
+            {
+                if (isSpecular == true)
+                    AppendWaveRelayEvent(relay,
+                                         bsdf.Model == MaterialModel::Dielectric,
+                                         bsdf.Eta.x,
+                                         bsdf.IsViewerInside,
+                                         isTransmitted == false,
+                                         positionWorld);
+                else
+                    relay = BeginWaveRelay(next.OriginWorld);
             }
         }
         if (HasValidTransport(path) == false)

@@ -330,10 +330,12 @@ struct ReferenceCaptureDescription final
     /// Zero retains geometric reference transport. Positive metres enable scalar paraxial Gaussian-mode
     /// coupling on finite light connections, including coherent diffraction by successive scene regions.
     /// The positive range starts at one nanometre; smaller values reject before capture preparation.
-    /// Surface scattering stays RGB and unpolarized. Uses next-event estimation alone for light endpoints;
-    /// continuation emission/environment after the primary is omitted, avoiding double counting with optical
-    /// visibility. Requires UniformArea and CpuOracle/GpuCompute; NativeQueries rejects this profile.
-    /// Lattice, projection and range limits are documented in render-graph-authoring.md, "Wave tracing".
+    /// Rough surface scattering stays RGB and unpolarized. Uses next-event estimation alone for light endpoints
+    /// reached from rough vertices: continuation emission/environment after them is omitted, avoiding double counting
+    /// with optical visibility. Emission reached through glass (smooth dielectric reflection and transmission, which
+    /// no light sample reaches) keeps full weight; its connection is relayed coherently back through the glass events
+    /// to the last rough vertex or the camera. Requires UniformArea and CpuOracle/GpuCompute; NativeQueries rejects
+    /// this profile. Lattice, projection and range limits are documented in render-graph-authoring.md, "Wave tracing".
     /// Changing wavelength resets accumulation. Nonfinite/negative values are rejected. No silent fallback.
     foundation::float32 OpticalWavelengthWorld = 0;
     /// Optional borrowed bounded absorbing medium, validated and copied during Begin/Update; null is
@@ -420,6 +422,9 @@ enum class ReferenceFailure : ludus::foundation::uint8
     OpticalPropagationCapacity,
     /// A segment's ordered medium-boundary crossings left the inside count outside {0, 1}.
     InvalidMediumCrossing,
+    /// An optical connection relayed through glass found the dielectrics on one of its legs disagreeing about the
+    /// leg's medium (touching or nested glass of different indices), or more specular events than it admits.
+    OpticalInterface,
 };
 
 /// Bounded capture progress, reproducibility and failure evidence.

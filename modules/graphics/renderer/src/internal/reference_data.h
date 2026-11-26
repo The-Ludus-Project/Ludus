@@ -19,6 +19,7 @@
 
 #include "../../shaders/renderer_gpu_preview_layout.h"
 #include "../../shaders/renderer_reference_layout.h"
+#include "../../shaders/wave_connection_layout.h"
 #include "environment_data.h"
 #include "reference_light_sampling.h"
 #include "reference_medium.h"
@@ -169,6 +170,23 @@ inline constexpr usize REFERENCE_MAX_SHADOWS_PER_VERTEX = REFERENCE_LIGHT_TECHNI
                ? REFERENCE_MAX_SHADOWS_PER_VERTEX + 1
                : 2;
 }
+/// Camera segments of a specular chain: the glass events a path followed since its last non-specular vertex (or the
+/// camera). When the chain reaches an emitter, the optical profile relays the light's connection back through them.
+struct ReferenceOpticalRelay final
+{
+    /// Start of each camera segment: the receiver's offset ray origin (the vertex whose scattering ended coherence, or
+    /// the camera), then each glass event's surface position. A transmitted ray's offset origin lies beyond its
+    /// interface, so events keep the surface point and the connection's endpoint escapes clear the interface.
+    StaticArray<math::Vector3, LUDUS_WAVE_CONNECTION_LEGS> OriginsWorld{};
+    /// Real refractive index of each segment's medium; zero until an event on that segment infers it.
+    StaticArray<float32, LUDUS_WAVE_CONNECTION_LEGS> RefractiveIndices{};
+    /// The event that ends segment i reflects; otherwise it transmits.
+    StaticArray<bool, LUDUS_WAVE_CONNECTION_LEGS> IsReflected{};
+    /// Segments begun: one more than the specular events recorded.
+    uint32 SegmentCount = 0;
+    /// Two events disagreed about a segment's medium, or the chain needs more than LUDUS_WAVE_CONNECTION_LEGS legs.
+    bool HasConflict = false;
+};
 struct ReferencePath final
 {
     math::Vector3 Emission{}, Direct{}, Indirect{}, Throughput{1, 1, 1};
@@ -183,6 +201,8 @@ struct ReferencePath final
     float32 PreviousPdf = 0;
     /// The previous scattering event was a specular delta lobe: emission it reaches takes full weight.
     bool IsPreviousSpecular = false;
+    /// Specular chain since the last non-specular vertex, for relayed optical connections.
+    ReferenceOpticalRelay OpticalRelay{};
     /// Medium inside count (0 or 1) at the current ray's origin; derived from the primary ray's crossings.
     uint32 MediumInside = 0;
     /// Resampled modes: the previous vertex's receiver and its Z-hat cache, read bit-identically by the

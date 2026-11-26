@@ -261,6 +261,7 @@ enum class RenderGraphFailureReason : foundation::uint8
     WavePropagationCapacity,    ///< An optical connection exceeds the admitted number of successive regions.
     FixedDimensionMaterial,     ///< An assigned surface lacks continuous reflection with a fixed sample dimension.
     LuslBounds,                 ///< A development LUSL callback indexed outside its declared bounds.
+    WaveInterface,              ///< A relayed optical connection's dielectric media disagree or exceed its legs.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;

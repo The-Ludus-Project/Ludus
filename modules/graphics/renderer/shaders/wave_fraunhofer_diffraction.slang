@@ -269,11 +269,16 @@ WaveQuery AddFraunhoferRegionFields(SceneContext scene,
             uint2 excluded = uint2(faceTriangles[0], faceTriangles[1]);
             float incidentLengthWorld = length(pointWorld - connection.SourceWorld);
             float incidentFraction = min(1.0, region.Frustum.NearWorld / pointDepthWorld);
+            // Past an interface event the source is virtual: the incident ray is tested within the leg only.
+            float incidentNearWorld =
+                connection.LegBeginWorld > 0
+                    ? connection.EndpointEscapeWorld + connection.LegBeginWorld * incidentLengthWorld / pointDepthWorld
+                    : connection.EndpointEscapeWorld;
             bool isIncidentClear;
             WaveQuery status = IsWaveSegmentClear(scene,
                                                   connection.SourceWorld,
                                                   pointWorld,
-                                                  connection.EndpointEscapeWorld,
+                                                  incidentNearWorld,
                                                   incidentLengthWorld * (1 - incidentFraction),
                                                   excluded,
                                                   isIncidentClear);
@@ -284,12 +289,17 @@ WaveQuery AddFraunhoferRegionFields(SceneContext scene,
             float diffractedLengthWorld = length(connection.ReceiverWorld - pointWorld);
             float diffractedFraction =
                 max(0.0, (region.Frustum.FarWorld - pointDepthWorld) / (connection.DistanceWorld - pointDepthWorld));
+            float beyondLegWorld = connection.DistanceWorld - connection.LegEndWorld;
+            float diffractedMarginWorld =
+                beyondLegWorld > 0 ? connection.EndpointEscapeWorld + beyondLegWorld * diffractedLengthWorld /
+                                                                          (connection.DistanceWorld - pointDepthWorld)
+                                   : connection.EndpointEscapeWorld;
             bool isDiffractedClear;
             status = IsWaveSegmentClear(scene,
                                         pointWorld,
                                         connection.ReceiverWorld,
                                         diffractedLengthWorld * diffractedFraction,
-                                        connection.EndpointEscapeWorld,
+                                        diffractedMarginWorld,
                                         excluded,
                                         isDiffractedClear);
             if (status != WaveQuery::Ready)
@@ -300,49 +310,4 @@ WaveQuery AddFraunhoferRegionFields(SceneContext scene,
     }
     return WaveQuery::Ready;
 }
-/// Ballistic field plus the coherent Fraunhofer boundary-diffraction waves of each region's projected obstacle,
-/// relative to the unobstructed Gaussian beam. Accepts and rejects the same inputs as
-/// EvaluateWaveConnectionToReceiver; failure preserves the output.
-[noinline] WaveQuery EvaluateFraunhoferConnectionToReceiver(SceneContext scene,
-                                                            float3 sourceWorld,
-                                                            float3 receiverWorld,
-                                                            float3 directionWorld,
-                                                            float distanceWorld,
-                                                            float wavelengthWorld,
-                                                            inout float2 inoutField)
-{
-    WaveEdgeWalk walk;
-    WaveQuery status = BeginWaveEdgeConnection(scene,
-                                               sourceWorld,
-                                               receiverWorld,
-                                               directionWorld,
-                                               distanceWorld,
-                                               wavelengthWorld,
-                                               walk);
-    if (status != WaveQuery::Ready)
-        return status;
-    for (uint interaction = 0; interaction < LUDUS_WAVE_CONNECTION_REGIONS; ++interaction)
-    {
-        if (walk.IsComplete == true || walk.Cone.NearWorld >= walk.Cone.FarWorld)
-        {
-            inoutField = walk.Field;
-            return WaveQuery::Ready;
-        }
-        WaveInteractionRegion region = (WaveInteractionRegion)0;
-        status = FindWaveInteractionRegion(scene, walk.Cone, region);
-        if (status != WaveQuery::Ready)
-            return status;
-        if (region.TriangleCount == 0)
-        {
-            inoutField = walk.Field;
-            return WaveQuery::Ready;
-        }
-        status = AddFraunhoferRegionFields(scene, walk.Connection, region, walk.Field);
-        if (status != WaveQuery::Ready)
-            return status;
-        status = AdvanceWaveEdgeWalk(scene, region, walk);
-        if (status != WaveQuery::Ready)
-            return status;
-    }
-    return WaveQuery::PropagationCapacity;
-}
+#include "wave_relay.slang"

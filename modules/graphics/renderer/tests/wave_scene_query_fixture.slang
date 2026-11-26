@@ -67,6 +67,30 @@ bool IsWaveTriangleCovered(SceneContext scene, uint triangleIndex, float2 baryce
 void EvaluateWaveSceneQueryFixture(uint index)
 {
     uint base = LUDUS_WAVE_PARITY_REGION_CONE_FIRST + index * LUDUS_WAVE_PARITY_REGION_CONE_RECORDS;
+    uint destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS;
+    if (Cases[0].w == LUDUS_WAVE_PARITY_CHAIN_TAG)
+    {
+        uint4 settings = Cases[LUDUS_WAVE_PARITY_CHAIN_RECORD];
+        WaveConnectionChain chain = (WaveConnectionChain)0;
+        uint legCount = min(settings.z, LUDUS_WAVE_PARITY_REGION_CONE_RECORDS - 1);
+        bool isValid = true;
+        for (uint leg = 0; leg < legCount; ++leg)
+            isValid = isValid && TryAppendWaveConnectionLeg(chain,
+                                                            asfloat(Cases[base + leg]).xyz,
+                                                            asfloat(Cases[base + leg + 1]).xyz,
+                                                            asfloat(Cases[base + leg]).w,
+                                                            (settings.w & (1u << leg)) != 0);
+        float2 field = float2(0);
+        WaveQuery status = isValid == true ? EvaluateWaveChain((SceneContext)0,
+                                                               chain,
+                                                               asfloat(settings.x),
+                                                               WaveConnectionOperator(settings.y),
+                                                               field)
+                                           : WaveQuery::Invalid;
+        Results[destination] = uint4(asuint(field), asuint(dot(field, field)), uint(status));
+        Results[destination + 1] = uint4(0);
+        return;
+    }
     EllipticalCone cone;
     cone.OriginWorld = asfloat(Cases[base]).xyz;
     cone.RadiusWorld = asfloat(Cases[base]).w;
@@ -107,7 +131,6 @@ void EvaluateWaveSceneQueryFixture(uint index)
                                             cone.FarWorld,
                                             wavelengthWorld,
                                             field);
-        uint destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS;
         Results[destination] = uint4(asuint(field), asuint(dot(field, field)), uint(status));
         Results[destination + 1] = uint4(0);
         return;
@@ -117,7 +140,6 @@ void EvaluateWaveSceneQueryFixture(uint index)
     uint hash = 0;
     for (uint slot = 0; slot < region.TriangleCount; ++slot)
         hash = hash * LUDUS_WAVE_PARITY_REGION_HASH_FACTOR + region.Triangles[slot];
-    uint destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS;
     Results[destination] =
         uint4(asuint(region.Frustum.NearWorld), asuint(region.Frustum.FarWorld), region.TriangleCount, uint(status));
     Results[destination + 1] = uint4(hash, 0, 0, 0);

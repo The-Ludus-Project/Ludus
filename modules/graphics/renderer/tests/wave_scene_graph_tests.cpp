@@ -133,6 +133,75 @@ void CreateWaveDevice(WaveDevice& outDevice, WaveConnection connection = WaveCon
     REQUIRE(renderer::RequiresHardwareRayTracing(outDevice.Plan) == false);
     REQUIRE(outDevice.Plan.Passes.GetSize() == EXPORT_PASSES + 1);
 }
+/// Capture one exported pass of a World and return each pixel's mean over `samples` samples per pixel.
+void RunSceneWaveCapture(const WaveDevice& device,
+                         BorrowedView<const renderer::RenderGraphMesh> meshes,
+                         BorrowedView<const renderer::RenderGraphItem> items,
+                         BorrowedView<const renderer::ViewDescription> cameras,
+                         const renderer::SceneShaderInputs& inputs,
+                         uint32 pass,
+                         uint32 samples,
+                         Array<math::Vector3>& outPixels,
+                         uint32 width,
+                         uint32 height)
+{
+    const renderer::RenderGraphPlan& plan = device.Plan;
+    renderer::RenderGraphCapture capture;
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = plan.Passes[pass].Color;
+    settings.TargetSamples = samples;
+    const RasterStatus started =
+        capture.Start(device.Device, device.Surface, plan, device.Programs, width, height, settings);
+    REQUIRE((started == RasterStatus::Ready || started == RasterStatus::Pending));
+    const uint64 beginning = time::NowTicks();
+    while (capture.GetPhase() == renderer::RenderGraphCapturePhase::Initializing &&
+           time::NowTicks() - beginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
+    {
+        capture.Service();
+        threading::SleepFor(COMPLETION_POLL_INTERVAL);
+    }
+    REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::AwaitingScene);
+    const uint64 captureBeginning = time::NowTicks();
+    const RasterStatus submitted = capture.SubmitScene(meshes, items, cameras, 1, &inputs);
+    CAPTURE(submitted);
+    REQUIRE((submitted == RasterStatus::Ready || submitted == RasterStatus::Pending));
+    while (capture.GetPhase() != renderer::RenderGraphCapturePhase::Complete &&
+           capture.GetPhase() != renderer::RenderGraphCapturePhase::Failed &&
+           time::NowTicks() - captureBeginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
+    {
+        capture.Service();
+        threading::SleepFor(COMPLETION_POLL_INTERVAL);
+    }
+    const uint64 elapsedNanoseconds = time::NowTicks() - captureBeginning;
+    renderer::RenderGraphRayFailures failures;
+    if (capture.GetProblem() == renderer::RenderGraphCaptureProblem::LatchedPixels)
+    {
+        RasterStatus polled = capture.PollRayFailures(pass, failures);
+        while (polled == RasterStatus::Pending &&
+               time::NowTicks() - captureBeginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
+        {
+            capture.Service();
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
+            polled = capture.PollRayFailures(pass, failures);
+        }
+    }
+    INFO("latched pixels " << failures.TotalPixels << ", main reason " << failures.MainReason << ": "
+                           << renderer::DescribeRenderGraphFailureReason(failures.MainReason));
+    CAPTURE(pass,
+            capture.GetPhase(),
+            capture.GetStatus(),
+            capture.GetProblem(),
+            elapsedNanoseconds,
+            COLD_CAPTURE_TIMEOUT_NANOSECONDS);
+    REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::Complete);
+    const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+    REQUIRE(pixels.GetSize() == usize{width} * height);
+    REQUIRE(outPixels.TryResize(pixels.GetSize()) == true);
+    for (usize index = 0; index < pixels.GetSize(); ++index)
+    {
+        outPixels[index] = pixels[index].Mean;
+    }
+}
 /// Capture one exported pass of the receiver (and, for a nonzero screen, the screen) with one sample per pixel.
 /// @param materialOrNull The receiver's material, or null for the neutral default.
 void CaptureSceneWavePass(const WaveDevice& device,
@@ -177,67 +246,17 @@ void CaptureSceneWavePass(const WaveDevice& device,
         inputs.Materials = {materialOrNull, 1};
         items[0].MaterialOverrides = {&materialIndex, 1};
     }
-    const renderer::RenderGraphPlan& plan = device.Plan;
-    renderer::RenderGraphCapture capture;
-    renderer::RenderGraphCaptureSettings settings;
-    settings.Output = plan.Passes[pass].Color;
-    settings.TargetSamples = 1;
-    const RasterStatus started =
-        capture.Start(device.Device, device.Surface, plan, device.Programs, width, height, settings);
-    REQUIRE((started == RasterStatus::Ready || started == RasterStatus::Pending));
-    const uint64 beginning = time::NowTicks();
-    while (capture.GetPhase() == renderer::RenderGraphCapturePhase::Initializing &&
-           time::NowTicks() - beginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
-    {
-        capture.Service();
-        threading::SleepFor(COMPLETION_POLL_INTERVAL);
-    }
-    REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::AwaitingScene);
     const usize itemCount = screen == 0 ? 1 : TABLE_COUNT;
-    const uint64 captureBeginning = time::NowTicks();
-    const RasterStatus submitted = capture.SubmitScene({meshes.GetData(), itemCount},
-                                                       {items.GetData(), itemCount},
-                                                       {cameras.GetData(), CAMERA_COUNT},
-                                                       1,
-                                                       &inputs);
-    REQUIRE((submitted == RasterStatus::Ready || submitted == RasterStatus::Pending));
-    while (capture.GetPhase() != renderer::RenderGraphCapturePhase::Complete &&
-           capture.GetPhase() != renderer::RenderGraphCapturePhase::Failed &&
-           time::NowTicks() - captureBeginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
-    {
-        capture.Service();
-        threading::SleepFor(COMPLETION_POLL_INTERVAL);
-    }
-    const uint64 elapsedNanoseconds = time::NowTicks() - captureBeginning;
-    renderer::RenderGraphRayFailures failures;
-    if (capture.GetProblem() == renderer::RenderGraphCaptureProblem::LatchedPixels)
-    {
-        RasterStatus polled = capture.PollRayFailures(pass, failures);
-        while (polled == RasterStatus::Pending &&
-               time::NowTicks() - captureBeginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
-        {
-            capture.Service();
-            threading::SleepFor(COMPLETION_POLL_INTERVAL);
-            polled = capture.PollRayFailures(pass, failures);
-        }
-    }
-    INFO("latched pixels " << failures.TotalPixels << ", main reason " << failures.MainReason << ": "
-                           << renderer::DescribeRenderGraphFailureReason(failures.MainReason));
-    CAPTURE(pass,
-            screen,
-            capture.GetPhase(),
-            capture.GetStatus(),
-            capture.GetProblem(),
-            elapsedNanoseconds,
-            COLD_CAPTURE_TIMEOUT_NANOSECONDS);
-    REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::Complete);
-    const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
-    REQUIRE(pixels.GetSize() == usize{width} * height);
-    REQUIRE(outPixels.TryResize(pixels.GetSize()) == true);
-    for (usize index = 0; index < pixels.GetSize(); ++index)
-    {
-        outPixels[index] = pixels[index].Mean;
-    }
+    RunSceneWaveCapture(device,
+                        {meshes.GetData(), itemCount},
+                        {items.GetData(), itemCount},
+                        {cameras.GetData(), CAMERA_COUNT},
+                        inputs,
+                        pass,
+                        1,
+                        outPixels,
+                        width,
+                        height);
 }
 /// Capture the scene wave graph once per exported pass with an optional receiver material.
 /// @param materialOrNull The receiver's material, or null for the neutral default.
@@ -447,6 +466,152 @@ TEST_CASE("Scene wave graph with Fraunhofer edge diffraction lights, blocks and 
           "[renderer][gpu][wave-tracing][wave-fraunhofer][graph]")
 {
     CheckEdgeConnectionGraph(WaveConnection::FraunhoferEdgeDiffraction);
+}
+
+namespace
+{
+/// Samples per pixel of the glass relay captures: each sample either passes the pane or reflects away from the lamp.
+constexpr uint32 GLASS_RELAY_SAMPLES = 8;
+/// Capture the optical and geometric exports of a lamp seen through a thin glass pane, optionally with a half screen
+/// between the pane and the lamp, and return their pixel means.
+void CaptureGlassRelay(WaveConnection connection,
+                       bool hasScreen,
+                       Array<math::Vector3>& outOptical,
+                       Array<math::Vector3>& outGeometric)
+{
+    // The camera looks down from its near plane at z = 1.5 through a pane at z = 1.25 onto a lamp at z = 1. The half
+    // screen at z = 1.1 covers x <= 0, so each lit pixel sees the lamp past its edge. The lamp and screen are black, so
+    // nothing reaches the camera by scattering from them.
+    constexpr usize GLASS_TABLE_COUNT = 3;
+    constexpr float32 PANE_DEPTH_WORLD = 1.25F;
+    constexpr float32 SCREEN_DEPTH_WORLD = 1.1F;
+    constexpr float32 LAMP_DEPTH_WORLD = 1;
+    constexpr float32 GLASS_ETA = 1.5F;
+    constexpr float32 LAMP_RADIANCE = 4;
+    const StaticArray<math::Vector3, QUAD_VERTICES> paneWorld{
+        {{-1, -1, PANE_DEPTH_WORLD}, {1, -1, PANE_DEPTH_WORLD}, {-1, 1, PANE_DEPTH_WORLD}, {1, 1, PANE_DEPTH_WORLD}}};
+    const StaticArray<math::Vector3, QUAD_VERTICES> screenWorld{{{-1, -1, SCREEN_DEPTH_WORLD},
+                                                                 {0, -1, SCREEN_DEPTH_WORLD},
+                                                                 {-1, 1, SCREEN_DEPTH_WORLD},
+                                                                 {0, 1, SCREEN_DEPTH_WORLD}}};
+    const StaticArray<math::Vector3, QUAD_VERTICES> lampWorld{
+        {{-1, -1, LAMP_DEPTH_WORLD}, {1, -1, LAMP_DEPTH_WORLD}, {-1, 1, LAMP_DEPTH_WORLD}, {1, 1, LAMP_DEPTH_WORLD}}};
+    const StaticArray<uint32, QUAD_INDICES> indices{{0, 1, 2, 1, 3, 2}};
+    StaticArray<renderer::RenderGraphMesh, GLASS_TABLE_COUNT> meshes;
+    meshes[0].Geometry = {paneWorld.GetData(), paneWorld.GetSize(), indices.GetData(), indices.GetSize()};
+    meshes[1].Geometry = {lampWorld.GetData(), lampWorld.GetSize(), indices.GetData(), indices.GetSize()};
+    meshes[2].Geometry = {screenWorld.GetData(), screenWorld.GetSize(), indices.GetData(), indices.GetSize()};
+    StaticArray<renderer::SceneShaderMaterial, GLASS_TABLE_COUNT> materials;
+    materials[0].Scattering.Model = MaterialModel::ThinDielectric;
+    materials[0].Scattering.Eta = {{GLASS_ETA, GLASS_ETA, GLASS_ETA}};
+    materials[0].Scattering.AlphaU = ludus::content::scene_format::MIN_MATERIAL_ALPHA;
+    materials[0].Scattering.AlphaV = ludus::content::scene_format::MIN_MATERIAL_ALPHA;
+    materials[1].BaseColor = {0, 0, 0};
+    materials[1].Scattering.Model = MaterialModel::Diffuse;
+    materials[1].Emission = {LAMP_RADIANCE, LAMP_RADIANCE, LAMP_RADIANCE};
+    materials[2].BaseColor = {0, 0, 0};
+    materials[2].Scattering.Model = MaterialModel::Diffuse;
+    const StaticArray<uint32, GLASS_TABLE_COUNT> materialIndices{{0, 1, 2}};
+    StaticArray<renderer::RenderGraphItem, GLASS_TABLE_COUNT> items;
+    for (usize item = 0; item < GLASS_TABLE_COUNT; ++item)
+    {
+        items[item].SourceId = static_cast<uint32>(item + 1);
+        items[item].MeshIndex = static_cast<uint32>(item);
+        items[item].Material.Color = {1, 1, 1, 1};
+        items[item].MaterialOverrides = {&materialIndices[item], 1};
+    }
+    StaticArray<renderer::ViewDescription, CAMERA_COUNT> cameras;
+    cameras[0].OrthographicCamera = true;
+    cameras[0].WorldToClip.Columns[0].X = 10000;
+    cameras[0].WorldToClip.Columns[1].Y = 10000;
+    cameras[0].WorldToClip.Columns[2].Z = -2;
+    cameras[0].WorldToClip.Columns[3].Z = 3;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    WaveDevice device;
+    CreateWaveDevice(device, connection);
+    const usize itemCount = hasScreen == true ? GLASS_TABLE_COUNT : GLASS_TABLE_COUNT - 1;
+    RunSceneWaveCapture(device,
+                        {meshes.GetData(), itemCount},
+                        {items.GetData(), itemCount},
+                        {cameras.GetData(), CAMERA_COUNT},
+                        inputs,
+                        WAVE_PASS,
+                        GLASS_RELAY_SAMPLES,
+                        outOptical,
+                        EXTENT,
+                        EXTENT);
+    RunSceneWaveCapture(device,
+                        {meshes.GetData(), itemCount},
+                        {items.GetData(), itemCount},
+                        {cameras.GetData(), CAMERA_COUNT},
+                        inputs,
+                        GEOMETRIC_PASS,
+                        GLASS_RELAY_SAMPLES,
+                        outGeometric,
+                        EXTENT,
+                        EXTENT);
+}
+/// The lamp behind the pane, which the template omitted before glass relays, and its diffraction past a half screen.
+void CheckGlassRelayGraph(WaveConnection connection)
+{
+    // The thin pane transmits 1 - 0.0769 of each sample at normal incidence (two interfaces of index 1.5 and their
+    // internal reflections), so the geometric mean of 8 samples lies between 0.6 and 1 of the lamp's radiance.
+    constexpr float32 LAMP_RADIANCE = 4;
+    constexpr float32 MINIMUM_TRANSMITTED_FRACTION = 0.6F;
+    // Unobstructed, the relayed field equals the free beam's, so both exports agree to float32 rounding.
+    constexpr float32 OPEN_RATIO_TOLERANCE = 0.01F;
+    Array<math::Vector3> optical;
+    Array<math::Vector3> geometric;
+    CaptureGlassRelay(connection, false, optical, geometric);
+    for (usize index = 0; index < optical.GetSize(); ++index)
+    {
+        CAPTURE(index, optical[index].X, geometric[index].X);
+        CHECK(geometric[index].X >= MINIMUM_TRANSMITTED_FRACTION * LAMP_RADIANCE);
+        CHECK(geometric[index].X <= LAMP_RADIANCE);
+        CHECK(math::Abs(optical[index].X - geometric[index].X) <= OPEN_RATIO_TOLERANCE * geometric[index].X);
+    }
+    // Past the half screen, each lit pixel lies 0 to 0.7 Fresnel units from the edge's shadow boundary (the lamp is
+    // 0.1 m below the screen and the camera 0.4 m above it). Fresnel knife-edge diffraction gives 0.25 to 0.65 of the
+    // unobstructed power there; classical scattering at the pane would see the whole lamp.
+    constexpr float32 BOUNDARY_POWER = 0.25F;
+    constexpr float32 LIT_MAXIMUM_POWER = 0.75F;
+    CaptureGlassRelay(connection, true, optical, geometric);
+    for (usize index = 0; index < optical.GetSize(); ++index)
+    {
+        CAPTURE(index, optical[index].X, geometric[index].X);
+        REQUIRE(math::IsFinite(optical[index].X) == true);
+        if (index % EXTENT < EXTENT / 2)
+        {
+            // The screen hides the lamp from these pixels' camera paths.
+            CHECK(geometric[index].X == 0);
+            CHECK(optical[index].X == 0);
+            continue;
+        }
+        REQUIRE(geometric[index].X >= MINIMUM_TRANSMITTED_FRACTION * LAMP_RADIANCE);
+        const float32 ratio = optical[index].X / geometric[index].X;
+        CHECK(ratio >= BOUNDARY_POWER * (1 - OPEN_RATIO_TOLERANCE));
+        CHECK(ratio <= LIT_MAXIMUM_POWER);
+    }
+}
+} // namespace
+
+TEST_CASE("Scene wave graph relays a lamp through glass and diffracts it past a screen",
+          "[renderer][gpu][wave-tracing][wave-relay][graph]")
+{
+    CheckGlassRelayGraph(WaveConnection::AngularSpectrum);
+}
+
+TEST_CASE("Scene wave graph with UTD edge diffraction relays a lamp through glass",
+          "[renderer][gpu][wave-tracing][wave-utd][wave-relay][graph]")
+{
+    CheckGlassRelayGraph(WaveConnection::UtdEdgeDiffraction);
+}
+
+TEST_CASE("Scene wave graph with Fraunhofer edge diffraction relays a lamp through glass",
+          "[renderer][gpu][wave-tracing][wave-fraunhofer][wave-relay][graph]")
+{
+    CheckGlassRelayGraph(WaveConnection::FraunhoferEdgeDiffraction);
 }
 
 #if defined(LUDUS_PLATFORM_MACOS)
