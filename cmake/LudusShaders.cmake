@@ -1,14 +1,25 @@
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/LudusDependencies.cmake")
-# The luslc that lowers LUSL sources: the source tree's luslc target, else the host LUDUS_LUSLC
-# (cross builds such as Emscripten, whose luslc target would be a target binary), else the SDK's
-# bin/luslc. Sets out_luslc to the command and out_depends to what the lowering depends on.
+# The luslc that lowers LUSL sources: the source tree's luslc target, else the host LUDUS_LUSLC,
+# else the SDK's bin/luslc. Sets out_luslc to the command and out_depends to what the lowering
+# depends on. A cross build (Emscripten) cannot run its own luslc target; a cross SDK installs the
+# host luslc it was built with as bin/luslc and records that host in LudusHostLuslc.cmake, so its
+# consumers use it on the same kind of build machine and otherwise set LUDUS_LUSLC.
 function(_ludus_resolve_luslc out_luslc out_depends context)
     set(sdk_luslc "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../bin/luslc${CMAKE_EXECUTABLE_SUFFIX}")
+    set(is_sdk_luslc_runnable TRUE)
+    if(CMAKE_CROSSCOMPILING)
+        set(sdk_luslc "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../bin/luslc")
+        set(LUDUS_SDK_LUSLC_HOST "")
+        include("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/LudusHostLuslc.cmake" OPTIONAL)
+        if(NOT LUDUS_SDK_LUSLC_HOST STREQUAL "${CMAKE_HOST_SYSTEM_NAME}-${CMAKE_HOST_SYSTEM_PROCESSOR}")
+            set(is_sdk_luslc_runnable FALSE)
+        endif()
+    endif()
     if(TARGET luslc AND NOT CMAKE_CROSSCOMPILING)
         set(${out_luslc} "$<TARGET_FILE:luslc>" PARENT_SCOPE)
         set(${out_depends} luslc PARENT_SCOPE)
-    elseif(LUDUS_LUSLC OR CMAKE_CROSSCOMPILING OR NOT EXISTS "${sdk_luslc}")
+    elseif(LUDUS_LUSLC OR NOT is_sdk_luslc_runnable OR NOT EXISTS "${sdk_luslc}")
         ludus_require_tool(LUDUS_LUSLC "LUSL shader lowering (${context})"
             "From the Ludus source repository root: ./scripts/bootstrap-luslc\n  It builds the host luslc from the same sources; set LUDUS_LUSLC to the path it prints.")
         set(${out_luslc} "${LUDUS_LUSLC}" PARENT_SCOPE)

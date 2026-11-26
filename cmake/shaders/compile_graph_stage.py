@@ -354,7 +354,10 @@ def compile_graph_stage(args, lock):
         code, varyings = glsl_varyings(artifact.read_text(), cross, stage)
         code = share_glsl_fetch_samplers(code, cross)
         interface['blocks'], interface['textures'] = glsl_interface(code, interface, cross)
-        cross_links = [{'location': loc, 'type': {'float': 'Float32', 'vec2': 'Float2', 'vec3': 'Float3', 'vec4': 'Float4'}[ty]} for loc, ty in varyings]
+        link_types = {'float': 'Float32', 'vec2': 'Float2', 'vec3': 'Float3', 'vec4': 'Float4'}
+        if any(ty not in link_types for _, ty in varyings):
+            raise RuntimeError('Render-graph stage varyings must be float scalars or vectors')
+        cross_links = [{'location': loc, 'type': link_types[ty]} for loc, ty in varyings]
         links = verify_glsl_links(links, cross_links, stage)
         artifact.write_text(code)
         emitted = 'main'

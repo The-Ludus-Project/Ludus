@@ -137,6 +137,36 @@ class DependencyDiagnosticsTests(unittest.TestCase):
                                 f"-DLUDUS_LUSLC={self.tool}")
         self.assertEqual(native.returncode, 0, native.stdout)
 
+    def test_cross_sdk_supplies_its_host_luslc_on_the_same_host(self):
+        # A browser SDK installs the host luslc it was built with and the host it runs on, so its
+        # consumers configure without LUDUS_LUSLC (batch 45839408533); another host still needs it.
+        package = self.root / "web sdk/lib/cmake/Ludus"
+        package.mkdir(parents=True)
+        for path in self.cmake.iterdir():
+            if path.is_file():
+                shutil.copy2(path, package)
+        (self.root / "web sdk/bin").mkdir()
+        shutil.copy2(self.tool, self.root / "web sdk/bin/luslc")
+        self.shader = self.root / "sample.lusl"
+        self.shader.write_text("// fixture\n")
+        Path(str(self.tool) + ".build.json").write_text("{}")
+        args = (f"-DLUDUS_SLANG_COMPILER={self.tool}", f"-DLUDUS_SPIRV_VALIDATOR={self.tool}",
+                f"-DLUDUS_SPIRV_CROSS={self.tool}")
+        self.cmake = package
+        body = self.shader_body("Emscripten", "set(EMSCRIPTEN TRUE)\nset(CMAKE_CROSSCOMPILING TRUE)")
+        record = package / "LudusHostLuslc.cmake"
+        with self.subTest(record="absent"):
+            self.assert_failure(self.configure(body, *args), "LUDUS_LUSLC", "./scripts/bootstrap-luslc")
+        record.write_text('set(LUDUS_SDK_LUSLC_HOST "OtherSystem-other")\n')
+        with self.subTest(record="other host"):
+            self.assert_failure(self.configure(body, *args), "LUDUS_LUSLC", "./scripts/bootstrap-luslc")
+        record.write_text('set(LUDUS_SDK_LUSLC_HOST "${CMAKE_HOST_SYSTEM_NAME}-${CMAKE_HOST_SYSTEM_PROCESSOR}")\n')
+        with self.subTest(record="this host"):
+            result = self.configure(body, *args)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            commands = (self.root / "build/build.ninja").read_text()
+            self.assertIn(str(self.root / "web sdk/bin/luslc"), commands)
+
     def test_missing_shader_source(self):
         self.shader.unlink()
         self.assert_failure(self.configure(self.shader_body(), f"-DLUDUS_SLANG_COMPILER={self.tool}"),

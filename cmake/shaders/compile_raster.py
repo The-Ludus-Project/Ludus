@@ -721,6 +721,12 @@ def wgsl_contract(code, reflected, stage):
     return code
 
 
+GLSL_FLOAT_VARYINGS = ('float', 'vec2', 'vec3', 'vec4')
+# GLSL ES 3.00 (section 4.3.4/4.3.6) requires integer stage inputs and outputs to be flat; LUSL
+# carries flat values, such as the renderer grid's bit patterns, in integer fields.
+GLSL_INTEGER_VARYINGS = ('int', 'ivec2', 'ivec3', 'ivec4', 'uint', 'uvec2', 'uvec3', 'uvec4')
+
+
 def glsl_varyings(code, reflection, stage):
     """ES 3.00 links varying identifiers rather than Vulkan location decorations."""
     direction = 'outputs' if stage == 'vertex' else 'inputs'
@@ -728,11 +734,14 @@ def glsl_varyings(code, reflection, stage):
     interface = []
     for value in reflection.get(direction, []):
         location, kind = value.get('location'), value.get('type')
-        if not isinstance(location, int) or kind not in ('float', 'vec2', 'vec3', 'vec4') or value.get('array'):
+        if (not isinstance(location, int) or kind not in GLSL_FLOAT_VARYINGS + GLSL_INTEGER_VARYINGS or
+                value.get('array')):
             raise RuntimeError('GLSL ES varyings require bounded scalar/vector locations')
         old = re.sub(r'[^A-Za-z_0-9]', '_', value['name'])
         new = f'ludusVarying{location}'
-        if re.search(r'\b' + qualifier + r'\s+(?:highp\s+|mediump\s+|lowp\s+)?' + kind + r'\s+' + re.escape(old) + r'\s*;', code) is None:
+        interpolation = r'\bflat\s+' if kind in GLSL_INTEGER_VARYINGS else r'\b'
+        if re.search(interpolation + qualifier + r'\s+(?:highp\s+|mediump\s+|lowp\s+)?' + kind + r'\s+' +
+                     re.escape(old) + r'\s*;', code) is None:
             raise RuntimeError('GLSL ES emitted varying differs from location reflection')
         if old != new and re.search(r'\b' + new + r'\b', code):
             raise RuntimeError('GLSL ES canonical varying identifier conflicts with source')

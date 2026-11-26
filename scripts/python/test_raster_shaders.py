@@ -388,6 +388,21 @@ class RasterReflectionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'differs from location reflection'):
             glsl_varyings(vertex,{'outputs':[{'name':'absent','type':'vec2','location':0}]},'vertex')
 
+    def test_essl_integer_varyings_link_only_when_flat(self):
+        # spirv-cross spelling for the renderer grid's bit-pattern fields (batch 45839408533).
+        vertex='flat out uvec4 vertex_bits; out vec2 vertex_uv; void main() { vertex_bits=uvec4(0u); }'
+        fragment='precision highp int;\nflat in highp uvec4 input_bits; in vec2 input_uv; void main() {}'
+        outputs={'outputs':[{'name':'vertex.bits','type':'uvec4','location':1},{'name':'vertex.uv','type':'vec2','location':0}]}
+        inputs={'inputs':[{'name':'input.bits','type':'uvec4','location':1},{'name':'input.uv','type':'vec2','location':0}]}
+        a,iface_a=glsl_varyings(vertex,outputs,'vertex')
+        b,iface_b=glsl_varyings(fragment,inputs,'fragment')
+        self.assertEqual(iface_a,[(0,'vec2'),(1,'uvec4')]);verify_varyings(iface_a,iface_b)
+        self.assertIn('flat out uvec4 ludusVarying1;',a);self.assertIn('flat in highp uvec4 ludusVarying1;',b)
+        with self.assertRaisesRegex(RuntimeError,'differs from location reflection'):
+            glsl_varyings(vertex.replace('flat out uvec4','out uvec4'),outputs,'vertex')
+        with self.assertRaisesRegex(RuntimeError,'bounded scalar/vector'):
+            glsl_varyings(vertex,{'outputs':[{'name':'vertex.bits','type':'uvec4','location':1,'array':[2]}]},'vertex')
+
     def compute_fixture(self):
         return {'parameters':[{'name':'records','binding':{'kind':'descriptorTableSlot','index':0},
                   'type':{'kind':'resource','baseShape':'structuredBuffer','access':'readWrite',
