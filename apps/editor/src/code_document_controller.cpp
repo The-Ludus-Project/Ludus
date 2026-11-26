@@ -99,6 +99,17 @@ bool CodeDocumentController::IsBound() const noexcept
 
 void CodeDocumentController::Bind(CodeDocumentHost* hostOrNull)
 {
+    bind(hostOrNull, nullptr);
+}
+
+void CodeDocumentController::BindProjectedText(CodeDocumentHost& inoutHost,
+                                               const CodeDocumentIdentity& projectedIdentity)
+{
+    bind(&inoutHost, &projectedIdentity);
+}
+
+void CodeDocumentController::bind(CodeDocumentHost* hostOrNull, const CodeDocumentIdentity* projectedIdentityOrNull)
+{
     if (mHostOrNull != hostOrNull)
     {
         BreakUndoGroup();
@@ -112,7 +123,7 @@ void CodeDocumentController::Bind(CodeDocumentHost* hostOrNull)
         mEditor.SetDocumentHistory(hostOrNull != nullptr);
     }
     const CodeDocumentIdentity previous = mIdentity;
-    Synchronize();
+    synchronize(false, projectedIdentityOrNull);
     if (IsBound() == true && mEditor.GetLanguage() == CodeLanguage::Slang &&
         (mIdentity.Document != previous.Document || mIdentity.Epoch != previous.Epoch))
     {
@@ -230,6 +241,11 @@ void CodeDocumentController::RestoreSelectionSet(foundation::BorrowedView<const 
 
 void CodeDocumentController::Synchronize(bool shouldRestoreView)
 {
+    synchronize(shouldRestoreView, nullptr);
+}
+
+void CodeDocumentController::synchronize(bool shouldRestoreView, const CodeDocumentIdentity* projectedIdentityOrNull)
+{
     if (mIsSynchronizing == true)
     {
         return;
@@ -252,7 +268,11 @@ void CodeDocumentController::Synchronize(bool shouldRestoreView)
         snapshot.Identity.Epoch != mIdentity.Epoch || snapshot.Identity.Document != mIdentity.Document;
     const QByteArray bytes = CopyCodeText(snapshot.Text);
     const bool hasTextChanged = bytes != mBytes;
-    if (shouldRestoreView == true || isNewBinding == true || hasTextChanged == true)
+    if (projectedIdentityOrNull != nullptr && snapshot.Identity == *projectedIdentityOrNull)
+    {
+        mEditor.document()->setModified(false);
+    }
+    else if (shouldRestoreView == true || isNewBinding == true || hasTextChanged == true)
     {
         QString text;
         if (DecodeCodeText(bytes, text) == false)

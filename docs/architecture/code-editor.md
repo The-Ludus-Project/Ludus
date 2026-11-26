@@ -531,6 +531,15 @@ the file host:
   If this limit misses its target, the escape hatch is in the
   [alternatives](#decisions-and-alternatives).
 
+**Opening line-dense files.** For an editable normal-mode file with at least
+32,768 lines, the Project Explorer paints the first screen with lexical colors
+and shows **Preparing editor…**. The tab builds the remaining lines in short
+UI-thread slices after that paint. The complete host draft is available
+throughout. A Search result within the prepared lines can paint at its
+destination while the rest loads. An editing key press or a jump beyond those
+lines finishes the projection before applying the action. Workspace
+restoration uses a complete projection for the saved caret.
+
 **Hidden tabs.** A tab that is not visible keeps its host and projection but
 drops layout caches and decoration sets beyond its last viewport. The
 registry keeps decoration caches for the 16 most recently used hidden documents.

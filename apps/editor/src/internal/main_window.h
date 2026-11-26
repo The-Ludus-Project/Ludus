@@ -174,7 +174,7 @@ private:
     /// reported in the status bar, where Open Externally stays available on
     /// native hosts. Files owned by a render-graph package route to its Source
     /// pane instead, in openProjectItem, before this is reached.
-    void openCodeFile(const QString& path, bool isPreview);
+    void openCodeFile(const QString& path, bool isPreview, foundation::int32 line = 0, foundation::int32 column = 0);
     void changeProjectItem(ProjectItemAction action, ProjectItemKind kind, const QString& path);
     void activateErrorEntry(const ErrorListEntry& entry);
     /// Offer the preview warning's luminaire repair in a confirmation box (Cancel is the default) and apply it to the

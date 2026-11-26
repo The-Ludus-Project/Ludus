@@ -258,6 +258,12 @@ void CodeEditorArea::addTabToGroup(int32 group, CodeDocumentTab* tab, bool isPre
 {
     QTabWidget* tabs = mGroups.at(group).Tabs;
     tab->SetPreview(isPreview);
+    connect(tab, &CodeDocumentTab::OpeningFinished, this, [this, tab]() {
+        if (GetActiveTabOrNull() == tab)
+        {
+            Q_EMIT ActiveTabChanged(tab);
+        }
+    });
     const int index = tabs->addTab(tab, titleFor(tab->GetPath()));
     tabs->setCurrentIndex(index);
     updateTabDecoration(tab);
@@ -302,6 +308,7 @@ void CodeEditorArea::removeTab(CodeDocumentTab* tab)
     {
         return;
     }
+    tab->CancelStagedOpen();
     for (int32 groupIndex = 0; groupIndex < mGroups.size(); ++groupIndex)
     {
         Group& group = mGroups[groupIndex];
@@ -397,12 +404,17 @@ void CodeEditorArea::onCurrentChanged()
     Q_EMIT ActiveTabChanged(active);
 }
 
-CodeDocumentTab* CodeEditorArea::openIn(int32 group, const QString& absolutePath, bool isPreview)
+CodeDocumentTab*
+CodeEditorArea::openIn(int32 group, const QString& absolutePath, bool isPreview, bool shouldStageOpening)
 {
     // Reuse an existing tab of this file in the group; a permanent open promotes
     // a reused preview tab.
     if (CodeDocumentTab* existing = findTabInGroup(group, absolutePath); existing != nullptr)
     {
+        if (shouldStageOpening == false)
+        {
+            existing->FinishStagedOpen();
+        }
         if (isPreview == false)
         {
             existing->MakePermanent();
@@ -420,7 +432,7 @@ CodeDocumentTab* CodeEditorArea::openIn(int32 group, const QString& absolutePath
         Q_EMIT OpenFailed(absolutePath, explanation);
         return nullptr;
     }
-    CodeDocumentTab* tab = new CodeDocumentTab(host, absolutePath, this);
+    CodeDocumentTab* tab = new CodeDocumentTab(host, absolutePath, this, shouldStageOpening);
     mTabHosts.insert(tab, host);
     mExternalChanges.Watch(host->GetCanonicalPath());
     // A preview open replaces the group's current preview tab.
@@ -438,6 +450,28 @@ CodeDocumentTab* CodeEditorArea::openIn(int32 group, const QString& absolutePath
 bool CodeEditorArea::OpenFile(const QString& absolutePath, bool isPreview)
 {
     return openIn(activeGroupIndex(), absolutePath, isPreview) != nullptr;
+}
+
+bool CodeEditorArea::OpenFileFromProjectExplorer(const QString& absolutePath)
+{
+    return openIn(activeGroupIndex(), absolutePath, true, true) != nullptr;
+}
+
+bool CodeEditorArea::OpenFileAtLocation(const QString& absolutePath, int32 line, int32 column)
+{
+    CodeDocumentTab* tabOrNull = openIn(activeGroupIndex(), absolutePath, false, true);
+    if (tabOrNull == nullptr)
+    {
+        return false;
+    }
+    CodeEditor& editor = tabOrNull->GetEditor();
+    // The last block can be an empty or truncated boundary in the staged prefix.
+    if (tabOrNull->IsOpening() == true && line >= editor.blockCount())
+    {
+        tabOrNull->FinishStagedOpen();
+    }
+    editor.GoToLine(line, column);
+    return true;
 }
 
 CodeDocumentTab& CodeEditorArea::OpenSessionTab(const QString& key, const QString& path, bool isPreview)
