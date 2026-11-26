@@ -434,6 +434,48 @@ TEST_CASE("UTF-8 positions distinguish bytes UTF-16 surrogates BOM and CRLF", "[
     CHECK(edit.Inserted.GetSize() == 4);
 }
 
+TEST_CASE("UTF-8 mapping preserves CRLF and surrogate boundaries after ASCII runs", "[editor][text][positions]")
+{
+    constexpr int32 ASCII_PREFIX_LENGTHS[] = {15, 16, 17};
+    constexpr int32 ASCII_SUFFIX_LENGTH = 19;
+    for (const int32 prefixLength : ASCII_PREFIX_LENGTHS)
+    {
+        CAPTURE(prefixLength);
+        const QByteArray text = QByteArray(prefixLength, 'a') + QByteArrayLiteral("\r\n😀") +
+                                QByteArray(ASCII_SUFFIX_LENGTH, 'b') + QByteArrayLiteral("\rc");
+        const usize byteAfterCrLf = static_cast<usize>(prefixLength) + 2;
+        const int32 positionAfterCrLf = prefixLength + 1;
+        const usize byteAfterEmoji = byteAfterCrLf + 4;
+        const int32 positionAfterEmoji = positionAfterCrLf + 2;
+        const usize endByte = static_cast<usize>(text.size());
+        const int32 endPosition = positionAfterEmoji + ASCII_SUFFIX_LENGTH + 2;
+
+        // Advance from an unaligned starting boundary, then continue past the
+        // multibyte characters to exercise both walks across the ASCII suffix.
+        CodePositionOffset fromPosition{ .Position = 1, .OffsetBytes = 1 };
+        usize byte = 0;
+        REQUIRE(AdvanceCodeByteOffset(text, positionAfterCrLf, fromPosition, byte) == true);
+        CHECK(byte == byteAfterCrLf);
+        CHECK(AdvanceCodeByteOffset(text, positionAfterCrLf + 1, fromPosition, byte) == false);
+        CHECK(byte == byteAfterCrLf);
+        CHECK(fromPosition.Position == positionAfterCrLf);
+        CHECK(fromPosition.OffsetBytes == byteAfterCrLf);
+        REQUIRE(AdvanceCodeByteOffset(text, endPosition, fromPosition, byte) == true);
+        CHECK(byte == endByte);
+
+        CodePositionOffset fromByte;
+        int32 position = 0;
+        CHECK(AdvanceCodeCursorPosition(text, byteAfterCrLf - 1, fromByte, position) == false);
+        CHECK(position == 0);
+        CHECK(fromByte.Position == 0);
+        CHECK(fromByte.OffsetBytes == 0);
+        REQUIRE(AdvanceCodeCursorPosition(text, byteAfterEmoji, fromByte, position) == true);
+        CHECK(position == positionAfterEmoji);
+        REQUIRE(AdvanceCodeCursorPosition(text, endByte, fromByte, position) == true);
+        CHECK(position == endPosition);
+    }
+}
+
 #if !defined(Q_OS_WASM)
 TEST_CASE("formatter applies one history group and preserves Unicode selection and CRLF", "[editor][text][format]")
 {
