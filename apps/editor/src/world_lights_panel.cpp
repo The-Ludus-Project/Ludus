@@ -1,6 +1,5 @@
 #include "internal/world_lights_panel.h"
 
-#include "internal/caption_label.h"
 #include "internal/render_scene.h"
 
 #include <ludus/foundation/base/core.h>
@@ -10,6 +9,7 @@
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLabel>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
@@ -291,6 +291,33 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
     rows.append(worldLights);
     return rows;
 }
+QString DescribeWorldLightsStatus(const QVector<WorldLightRow>& rows)
+{
+    bool hasLight = false;
+    bool isAnyLightOn = false;
+    for (const WorldLightRow& row : rows)
+    {
+        // A switch for a light the scene no longer has is listed, but it lights nothing.
+        if (row.Origin == WorldLightOrigin::Missing)
+        {
+            continue;
+        }
+        hasLight = true;
+        isAnyLightOn = isAnyLightOn == true || row.IsEnabled == true || row.IsBakedAlwaysOn == true;
+    }
+    if (hasLight == false)
+    {
+        return QStringLiteral("No lights yet. Add one with +, or import a scene that has lights. A scene with none "
+                              "renders dark unless the sky or an emissive surface lights it.");
+    }
+    if (isAnyLightOn == false)
+    {
+        return QStringLiteral("Every light is switched off, so lit surfaces render dark. Enable All switches them "
+                              "back on.");
+    }
+    return {};
+}
+
 WorldLightChange
 MakeWorldLightToggle(const QVector<WorldLightRow>& rows, const LightSwitchSet& current, qsizetype row, bool isEnabled)
 {
@@ -402,6 +429,9 @@ WorldLightsPanel::WorldLightsPanel(QWidget* parentOrNull) : QWidget(parentOrNull
     mTreeOrNull->setItemsExpandable(false);
     mTreeOrNull->setRootIsDecorated(false);
     mTreeOrNull->setMinimumHeight(MIN_LIST_HEIGHT);
+    // A long name loses its middle, as in the Materials list, so its start and its end both stay visible; the full
+    // name is in the row's tooltip.
+    mTreeOrNull->setTextElideMode(Qt::ElideMiddle);
     // Keyboard focus marks the whole row, as in the Materials list.
     mTreeOrNull->setAllColumnsShowFocus(true);
     mTreeOrNull->setToolTip(QStringLiteral("Switch any light on or off. An imported area light can cover several "
@@ -427,9 +457,13 @@ WorldLightsPanel::WorldLightsPanel(QWidget* parentOrNull) : QWidget(parentOrNull
     layout->addLayout(commands);
     // The panel is a tab page: it stays shown with an empty list and this one-line hint rather than hiding itself,
     // since showing a hidden page again would draw it over whichever tab is current.
-    mStatusOrNull = new CaptionLabel(this);
+    // The state wraps rather than ending in an ellipsis: the sentence that says why a frame may be dark is the part
+    // a narrow sidebar must not cut off.
+    mStatusOrNull = new QLabel(DescribeWorldLightsStatus({}), this);
     mStatusOrNull->setObjectName(QStringLiteral("worldLightsStatus"));
-    mStatusOrNull->SetCaption(QStringLiteral("No lights yet. Add one with +, or import a scene that has lights."));
+    mStatusOrNull->setTextFormat(Qt::PlainText);
+    mStatusOrNull->setWordWrap(true);
+    mStatusOrNull->setProperty("visualRole", QStringLiteral("secondary"));
     layout->addWidget(mStatusOrNull);
     connect(mTreeOrNull, &QTreeWidget::itemChanged, this, &WorldLightsPanel::rowChanged);
     connect(mTreeOrNull, &QTreeWidget::itemSelectionChanged, this, &WorldLightsPanel::selectionChanged);
@@ -486,7 +520,9 @@ void WorldLightsPanel::SetRows(QVector<WorldLightRow> rows, LightSwitchSet switc
         rebuildItems(hasSelection == true ? &previous : nullptr);
     }
     mIsRendering = false;
-    mStatusOrNull->setVisible(mRows.isEmpty());
+    const QString status = DescribeWorldLightsStatus(mRows);
+    mStatusOrNull->setText(status);
+    mStatusOrNull->setVisible(status.isEmpty() == false);
     updateCommands();
 }
 void WorldLightsPanel::updateItems()

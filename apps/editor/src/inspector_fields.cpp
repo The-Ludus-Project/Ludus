@@ -48,8 +48,6 @@ constexpr float64 SMALL_RANGE_LIMIT = 1.01;
 constexpr float64 MINIMUM_STEP = 0.001;
 constexpr float64 MAXIMUM_STEP = 1;
 constexpr float64 RANGE_DIVISOR = 1000;
-constexpr int32 SHOWN_HEAD = 8;
-constexpr int32 SHOWN_TAIL = 4;
 /// The shortest value a number field always has room for; it widens beyond this to fit the value it holds.
 constexpr QStringView NUMBER_FIELD_SAMPLE = u"-0.000";
 /// Pixels QLineEdit keeps between its contents rectangle and its text on each side (QLineEditPrivate's horizontal
@@ -769,6 +767,20 @@ QString ElidedLabel::GetShownText() const
     return fontMetrics().elidedText(text(), Qt::ElideMiddle, contentsRect().width() - 2 * margin() - indent());
 }
 
+void ElidedLabel::SetIsFlexibleWidth(bool isFlexible)
+{
+    mIsFlexibleWidth = isFlexible;
+    updateGeometry();
+}
+
+QSize ElidedLabel::sizeHint() const
+{
+    const QSize natural = QLabel::sizeHint();
+    // A flexible label asks for no more than it must, so a long text never pushes its row wider than the panel;
+    // the layout then hands it whatever width is left.
+    return mIsFlexibleWidth == true ? QSize(minimumSizeHint().width(), natural.height()) : natural;
+}
+
 QSize ElidedLabel::minimumSizeHint() const
 {
     const QString whole = text();
@@ -789,15 +801,6 @@ void ElidedLabel::paintEvent(QPaintEvent* event)
     QPainter painter(this);
     const QRect area = contentsRect().adjusted(margin(), margin(), -margin(), -margin());
     style()->drawItemText(&painter, area, alignment(), palette(), isEnabled(), GetShownText(), foregroundRole());
-}
-
-QString ShortenIdentifier(const QString& identifier)
-{
-    if (identifier.size() <= SHOWN_HEAD + SHOWN_TAIL + 1)
-    {
-        return identifier;
-    }
-    return identifier.left(SHOWN_HEAD) + QStringLiteral("…") + identifier.right(SHOWN_TAIL);
 }
 
 ScrubLabel::ScrubLabel(const QString& text, QLineEdit& inoutField, const ScrubSettings& settings, QWidget* parentOrNull)
@@ -1047,7 +1050,7 @@ void ColourChip::paintEvent(QPaintEvent* event)
 }
 
 IdentifierRow::IdentifierRow(const QString& identifier, QWidget* parentOrNull)
-    : QWidget(parentOrNull), mIdentifier(identifier), mText(new ElidedLabel(ShortenIdentifier(identifier), this)),
+    : QWidget(parentOrNull), mIdentifier(identifier), mText(new ElidedLabel(identifier, this)),
       mCopy(new QToolButton(this))
 {
     setObjectName(QStringLiteral("inspectorIdentifier"));
@@ -1056,6 +1059,9 @@ IdentifierRow::IdentifierRow(const QString& identifier, QWidget* parentOrNull)
     layout->setSpacing(design::SPACING_SMALL);
     mText->setObjectName(QStringLiteral("inspectorIdentifierText"));
     mText->setTextFormat(Qt::PlainText);
+    // The whole identifier is the text: the label shows as much of it as the row's width holds and elides the middle
+    // of the rest, so the start (which kind of thing it names) and the end (what tells two apart) both stay visible.
+    mText->SetIsFlexibleWidth(true);
     mText->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     mText->setToolTip(identifier);
     mCopy->setObjectName(QStringLiteral("inspectorIdentifierCopy"));

@@ -3480,8 +3480,17 @@ bool WorldWorkspace::openMaterialDocument(const QString& entityId, QString& outE
         return false;
     }
     const std::string_view sourceName = materialOrNull->Name.View();
+    // An unnamed material reads "Material N", as the Materials list and the Name row in Properties call it.
+    foundation::int32 surface = 0;
+    for (const PreviewObject& object : presentedScene.Objects)
+    {
+        if (object.Id == entityId)
+        {
+            surface = object.Surface;
+        }
+    }
     const QString materialName = sourceName.empty() == true
-                                     ? ShortenIdentifier(resourceId)
+                                     ? GetFallbackMaterialName(surface + 1)
                                      : QString::fromUtf8(sourceName.data(), static_cast<qsizetype>(sourceName.size()));
     MaterialDocumentState initial;
     DescribeMaterialDocument(Document_, Scene_->GetPresentedLevel(), presentedScene, entityId, resourceId, initial);

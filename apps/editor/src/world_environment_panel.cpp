@@ -257,8 +257,11 @@ void WorldEnvironmentPanel::buildLayout()
 
     QVBoxLayout* emptyLayout = new QVBoxLayout(mEmpty);
     QLabel* emptyText = new QLabel(
-        QStringLiteral("This World has no climate. Add one to author regional weather presets, schedules and regions."),
+        QStringLiteral("This World has no climate. Add one to author regional weather presets, schedules and regions. "
+                       "Without one the sky stays clear, with no clouds, fog or precipitation. That does not by itself "
+                       "darken a frame, so check Lights if the frame looks dark."),
         mEmpty);
+    emptyText->setObjectName(QStringLiteral("worldEnvironmentEmptyText"));
     emptyText->setWordWrap(true);
     emptyLayout->addWidget(emptyText);
     mAddClimate->setObjectName(QStringLiteral("worldEnvironmentAddClimate"));

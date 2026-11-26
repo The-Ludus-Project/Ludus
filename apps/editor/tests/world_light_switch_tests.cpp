@@ -823,7 +823,10 @@ TEST_CASE("The World Lights and Materials tabs each show only their own list and
     const QLabel* hintOrNull = lightsOrNull->findChild<QLabel*>(QStringLiteral("worldLightsStatus"));
     REQUIRE(hintOrNull != nullptr);
     CHECK(hintOrNull->isVisible() == true);
-    CHECK(hintOrNull->height() <= hintOrNull->fontMetrics().height() * 2);
+    // The hint wraps at the sidebar's width instead of ending in an ellipsis, and nothing of it is cut off.
+    CHECK(hintOrNull->wordWrap() == true);
+    CHECK(hintOrNull->height() >= hintOrNull->heightForWidth(hintOrNull->width()));
+    CHECK(hintOrNull->text() == DescribeWorldLightsStatus({}));
     CheckNoOverlappingChildren(*lightsOrNull);
     workspace.StopPreview();
 }
@@ -869,4 +872,38 @@ TEST_CASE("Materials that share a name read as different rows", "[editor][world]
     }
     // The focused row is marked across the whole row, not as a box around the name that reads as a text field.
     CHECK(treeOrNull->allColumnsShowFocus() == true);
+}
+
+TEST_CASE("The Lights tab says when missing or switched-off lights can explain a dark frame",
+          "[editor][world][lighting][light-switches]")
+{
+    // No lights at all: the text says what that can mean without claiming the frame is dark.
+    const QString empty = DescribeWorldLightsStatus({});
+    CHECK(empty.contains(QStringLiteral("No lights")) == true);
+    CHECK(empty.contains(QStringLiteral("dark")) == true);
+    CHECK(empty.contains(QStringLiteral("sky")) == true);
+
+    WorldLightRow on;
+    on.Origin = WorldLightOrigin::ImportedEmitter;
+    on.Label = QStringLiteral("Area light 1");
+    on.IsEnabled = true;
+    WorldLightRow off = on;
+    off.Label = QStringLiteral("Area light 2");
+    off.IsEnabled = false;
+    WorldLightRow missing = off;
+    missing.Origin = WorldLightOrigin::Missing;
+    WorldLightRow baked = off;
+    baked.IsBakedAlwaysOn = true;
+
+    // A list with a light on needs no explanation, however many are off.
+    CHECK(DescribeWorldLightsStatus({on}).isEmpty() == true);
+    CHECK(DescribeWorldLightsStatus({on, off}).isEmpty() == true);
+    // Every light off is known from the rows, so it is said.
+    const QString allOff = DescribeWorldLightsStatus({off, off});
+    CHECK(allOff.contains(QStringLiteral("Every light is switched off")) == true);
+    CHECK(allOff.contains(QStringLiteral("Enable All")) == true);
+    // A stale switch for a light the scene no longer has is not a light, and a baked light stays on.
+    CHECK(DescribeWorldLightsStatus({missing}) == empty);
+    CHECK(DescribeWorldLightsStatus({off, missing}).contains(QStringLiteral("Every light is switched off")) == true);
+    CHECK(DescribeWorldLightsStatus({off, baked}).isEmpty() == true);
 }

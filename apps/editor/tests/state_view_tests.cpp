@@ -14,11 +14,13 @@
 #include <QDir>
 #include <QGuiApplication>
 #include <QLabel>
+#include <QPlainTextEdit>
 #include <QPoint>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QVBoxLayout>
 
 using namespace ludus::editor;
 
@@ -129,4 +131,91 @@ TEST_CASE("The Start Page says what to do when there are no recent projects", "[
     CHECK(empty->isVisible() == true);
     CHECK(empty->GetContent().Message == QStringLiteral("No recent projects yet."));
     CHECK(empty->GetContent().ShortcutHint.contains(QStringLiteral("Open a project")) == true);
+}
+
+TEST_CASE("A cause with IDs and hashes fits a narrow dock: paths wrap, a word too long for one line is shortened",
+          "[editor][state][layout]")
+{
+    constexpr int NARROW_WIDTH = 220;
+    constexpr int WIDE_WIDTH = 900;
+    constexpr int HEIGHT = 600;
+    const QString id = QStringLiteral("material/0b2d8a4c-1f3e-4b7a-9c21-5d6e7f80448a");
+    // A hash has no slash to wrap at, so in a narrow dock it can only be shortened.
+    const QString digest = QStringLiteral("0b2d8a4c1f3e4b7a9c215d6e7f80448a0b2d8a4c");
+    StateViewContent content;
+    content.Icon = EditorIcon::Error;
+    content.Message = QStringLiteral("The content catalog could not be read.");
+    content.Cause = QStringLiteral("Cooked material %1 (assets/objects/brick1.bin) has a stale binding for "
+                                   "texture/checker, digest %2.")
+                        .arg(id, digest);
+    content.Fix = QStringLiteral("Recook the scene, then refresh.");
+    content.ActionLabel = QStringLiteral("Refresh");
+    content.Details = content.Cause;
+    QWidget host;
+    QVBoxLayout* layout = new QVBoxLayout(&host);
+    StateView* viewOrNull = new StateView(&host);
+    layout->addWidget(viewOrNull);
+    viewOrNull->SetContent(content);
+    LongWordLabel* causeOrNull = viewOrNull->findChild<LongWordLabel*>(QStringLiteral("stateCause"));
+    REQUIRE(causeOrNull != nullptr);
+
+    host.resize(NARROW_WIDTH, HEIGHT);
+    host.show();
+    QApplication::processEvents();
+    // The view fits its host. The path wraps at its slashes; the ID after the slash and the hash are too wide for
+    // one line, so each is shortened in the middle with the whole text in the tooltip, and the label has the height
+    // its wrapped text needs.
+    CHECK(viewOrNull->width() <= NARROW_WIDTH);
+    CHECK(causeOrNull->GetFullText() == content.Cause);
+    CHECK(causeOrNull->IsShortened() == true);
+    CHECK(causeOrNull->toolTip() == content.Cause);
+    CHECK(causeOrNull->text().contains(QStringLiteral("…")) == true);
+    // The start and the end of each long word stay visible around its gap.
+    CHECK(causeOrNull->text().contains(QStringLiteral("0b2d8a4c-")) == true);
+    CHECK(causeOrNull->text().contains(QStringLiteral("5d6e7f80448a")) == true);
+    CHECK(causeOrNull->text().contains(id) == false);
+    CHECK(causeOrNull->text().contains(digest) == false);
+    CHECK(causeOrNull->text().contains(QStringLiteral("stale binding")) == true);
+    CHECK(causeOrNull->height() >= causeOrNull->heightForWidth(causeOrNull->width()));
+    CHECK(causeOrNull->minimumSizeHint().width() <= NARROW_WIDTH);
+    for (const QWidget* widget : viewOrNull->findChildren<QWidget*>())
+    {
+        if (widget->isVisibleTo(viewOrNull) == true && widget->objectName().isEmpty() == false)
+        {
+            INFO(widget->objectName().toStdString());
+            const QRect inView(widget->mapTo(viewOrNull, QPoint(0, 0)), widget->size());
+            CHECK(inView.left() >= 0);
+            CHECK(inView.right() <= viewOrNull->width() - 1);
+        }
+    }
+    // The action row stacks instead of clipping a button.
+    for (const char* name : {"stateAction", "stateCopyDetails", "stateShowDetails"})
+    {
+        const QPushButton* buttonOrNull = viewOrNull->findChild<QPushButton*>(QString::fromLatin1(name));
+        REQUIRE(buttonOrNull != nullptr);
+        INFO(name);
+        CHECK(buttonOrNull->isVisibleTo(viewOrNull) == true);
+        CHECK(buttonOrNull->width() >= buttonOrNull->sizeHint().width());
+    }
+
+    // Details holds the whole text with nothing shortened, and is hidden until asked for.
+    QPlainTextEdit* detailsOrNull = viewOrNull->findChild<QPlainTextEdit*>(QStringLiteral("stateDetails"));
+    QPushButton* toggleOrNull = viewOrNull->findChild<QPushButton*>(QStringLiteral("stateShowDetails"));
+    REQUIRE(detailsOrNull != nullptr);
+    REQUIRE(toggleOrNull != nullptr);
+    CHECK(detailsOrNull->isVisibleTo(viewOrNull) == false);
+    toggleOrNull->click();
+    CHECK(detailsOrNull->isVisibleTo(viewOrNull) == true);
+    CHECK(detailsOrNull->toPlainText() == GetStateDetailsText(content));
+    CHECK(detailsOrNull->toPlainText().contains(digest) == true);
+    CHECK(toggleOrNull->text() == QStringLiteral("Hide Details"));
+    toggleOrNull->click();
+    CHECK(detailsOrNull->isVisibleTo(viewOrNull) == false);
+
+    // Wide enough for every word: nothing is shortened and the tooltip is gone.
+    host.resize(WIDE_WIDTH, HEIGHT);
+    QApplication::processEvents();
+    CHECK(causeOrNull->IsShortened() == false);
+    CHECK(causeOrNull->text() == content.Cause);
+    CHECK(causeOrNull->toolTip().isEmpty() == true);
 }

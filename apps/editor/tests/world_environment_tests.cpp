@@ -93,6 +93,12 @@ TEST_CASE("The Environment tool authors both regions in one World transaction wi
     ViewportObjectInteraction& overlay = Find<RenderPanel>(workspace, QString{}).GetViewport().GetObjectInteraction();
     REQUIRE(workspace.Document().Draft().contains(WORLD_CLIMATE) == false);
     REQUIRE(Find<QPushButton>(panel, u"worldEnvironmentAddClimate"_s).isVisible() == true);
+    // The empty state says what no climate means for the frame: clear sky, and no reason by itself for a dark one.
+    const QLabel& emptyText = Find<QLabel>(panel, u"worldEnvironmentEmptyText"_s);
+    CHECK(emptyText.isVisible() == true);
+    CHECK(emptyText.text().contains(u"no climate"_s) == true);
+    CHECK(emptyText.text().contains(u"does not by itself darken"_s) == true);
+    CHECK(emptyText.text().contains(u"Lights"_s) == true);
     const foundation::usize history = workspace.Document().GetHistory().GetCount();
 
     // A new climate and two regions stay a draft until Apply; the overlay follows the draft.

@@ -11,6 +11,7 @@
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
+class QLabel;
 class QPushButton;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -18,7 +19,6 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
-class CaptionLabel;
 struct RenderScene;
 
 // The World workspace's light list: imported emitter groups, imported analytic lights and
@@ -76,6 +76,11 @@ struct WorldLightRow final
 /// A name the importer made up ("Imported object 3") or none says nothing about the light, so it reads
 /// "Area light 3" instead; a name from the source scene is kept.
 [[nodiscard]] QString GetEmitterLabel(const QString& objectName, qsizetype emitterNumber);
+
+/// The state under the light list: why an empty list, or one with every light off, can leave a frame dark. Empty when
+/// the list needs no explanation. Switches are known from the rows alone, but whether the sky or an emissive surface
+/// lights the scene is not, so the empty-list text only says what having no lights can mean.
+[[nodiscard]] QString DescribeWorldLightsStatus(const QVector<WorldLightRow>& rows);
 
 /// A requested light edit: the complete new switch set and the authored lights to rewrite.
 struct WorldLightChange final
@@ -140,7 +145,7 @@ private:
     QPushButton* mEnableAllOrNull = nullptr;
     QPushButton* mRemoveMissingOrNull = nullptr;
     /// The hint shown while the list is empty.
-    CaptionLabel* mStatusOrNull = nullptr;
+    QLabel* mStatusOrNull = nullptr;
     /// The light last shown at the top of the list, restored when the list is recreated.
     WorldLightRow mTopRow;
     bool mHasTopRow = false;
