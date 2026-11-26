@@ -6,6 +6,7 @@
 #include "internal/preview_shading.h"
 #include "internal/reference_capture_window.h"
 #include "internal/theme_colour.h"
+#include "internal/tooltip_text.h"
 #include "internal/viewport_hud_text.h"
 #include "internal/viewport_pass_bars.h"
 #include "internal/viewport_screenshot.h"
@@ -311,6 +312,19 @@ constexpr QRgb MESSAGE_ERROR_EDGE = GetViewportArgb(design::ThemeColour::StatusD
 /// Translucent red panel behind live shader errors and restart notices.
 constexpr QRgb SHADER_ERROR_BACKGROUND =
     WithAlpha(GetViewportArgb(design::ThemeColour::StatusDangerSurface), SHADER_ERROR_OPACITY);
+/// The navigation help: three short lines, so it stays beside its button and off the picture.
+QString GetNavigationHelp()
+{
+#    if defined(Q_OS_MACOS)
+    const QString modifier = QStringLiteral("Option");
+#    else
+    const QString modifier = QStringLiteral("Alt");
+#    endif
+    return modifier + QStringLiteral("-drag: orbit · Shift-") + modifier +
+           QStringLiteral("-drag: pan · Scroll: zoom\n"
+                          "Hold right mouse to look; add WASD/QE to fly (scroll sets speed)\n"
+                          "F frames the selection · Home frames all");
+}
 /// Live shaders toggle tooltip; while an error is shown the tooltip carries its full text instead.
 QString GetLiveShadersToolTip()
 {
@@ -1911,10 +1925,8 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         }
     });
 #endif
-    setToolTip(
-        QStringLiteral("Right-drag to look · hold right mouse + WASD/QE to fly · Alt/Option-left-drag to orbit · "
-                       "Shift-Alt/Option-left-drag or middle-drag to pan · "
-                       "wheel to dolly (right mouse: fly speed) · F frames selection · Home frames all"));
+    // No tooltip on the viewport itself: it would open over the picture wherever the pointer rests. The
+    // navigation help button below carries the same text.
     mState->Preview = preview;
     mState->Source = frameSource;
     mState->IsAutomatic = isAutomatic;
@@ -2233,9 +2245,8 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     statistics->setObjectName(QStringLiteral("viewportStatisticsAction"));
     statistics->setCheckable(true);
     statistics->setChecked(preview->IsStatisticsVisible());
-    statistics->setToolTip(QStringLiteral("Overlay GPU frame time, CPU frame time, resolution and draw count, "
-                                          "averaged over recent frames. GPU shows n/a when the device has no "
-                                          "timestamp queries."));
+    statistics->setToolTip(QStringLiteral("Overlay GPU and CPU frame time, resolution and draw count, averaged over "
+                                          "recent frames."));
     QToolButton& statisticsButton =
         InsertCommand(*controls, nullptr, *statistics, QStringLiteral("viewportStatistics"));
     statisticsButton.setProperty("visualRole", QStringLiteral("toggle"));
@@ -2282,12 +2293,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     // so the rendered image keeps the height; clicking shows it without waiting for hover.
     // The overflow menu shows the full text when the button does not fit, where a bare "?" would not say what it is.
     QAction* navigationHint = new QAction(GetEditorIcon(EditorIcon::Help), QStringLiteral("Navigation help"), this);
-#if defined(Q_OS_MACOS)
-    navigationHint->setToolTip(QStringLiteral("Option-drag: orbit · Shift-Option-drag: pan · Scroll: zoom\n") +
-                               toolTip());
-#else
-    navigationHint->setToolTip(QStringLiteral("Alt-drag: orbit · Shift-Alt-drag: pan · Scroll: zoom\n") + toolTip());
-#endif
+    navigationHint->setToolTip(GetNavigationHelp());
     controls->addSeparator();
     QToolButton& navigationHintButton =
         InsertCommand(*controls, nullptr, *navigationHint, QStringLiteral("viewportNavigationHint"));
@@ -2297,7 +2303,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         // From the overflow menu the button is hidden, so the help opens below the toolbar's end instead.
         const QPoint anchor = button->isVisible() == true ? button->mapToGlobal(button->rect().bottomLeft())
                                                           : controls->mapToGlobal(controls->rect().bottomRight());
-        QToolTip::showText(anchor, navigationHint->toolTip(), controls);
+        ShowEditorToolTip(anchor, navigationHint->toolTip(), controls);
     });
     mState->Layout->addWidget(controls);
     new ViewportFocusStrip(*this, *controls);
@@ -2583,9 +2589,8 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     SetControlVisible(*mState->ControlsOrNull, findChild<QToolButton*>(QStringLiteral("viewportLiveShaders")), false);
     QAction* statistics = findChild<QAction*>(QStringLiteral("viewportStatisticsAction"));
     LUDUS_REQUIRE(statistics != nullptr);
-    statistics->setToolTip(QStringLiteral("Show delivered-image FPS, active CPU work, GPU device time and elapsed "
-                                          "readback/conversion latency. Times average the last 30 samples; "
-                                          "FPS falls to zero when idle. GPU shows n/a without timestamps."));
+    statistics->setToolTip(QStringLiteral("Show delivered-image FPS, CPU work, GPU time and readback latency, "
+                                          "averaged over the last 30 samples."));
     if (GetPresentation() == ViewportPresentation::SharedDevice)
     {
         SetFrameSource(&mState->ProjectGraph->GetDisplayFrames());

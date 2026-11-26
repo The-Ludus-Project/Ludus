@@ -712,7 +712,9 @@ the camera. Above the viewport, one row holds
 the World's path (hover for the full path) and its commands; **Restore
 Recovery**, **Cancel scene operation** and **Play saved World** appear only
 while they apply. The viewport's render controls share one row, and its
-navigation help is the **?** button's tooltip (click it to show it at once).
+navigation help is the **?** button's tooltip (click it to show it at once);
+the picture itself shows no tooltip. The keyboard context-menu key opens the World
+menu at the frame's top-left corner, not over the framed subject.
 The render surface receives the remaining height below its shading, framing and
 navigation controls, including after resize.
 
@@ -3106,10 +3108,13 @@ queries (Direct3D 12, WebGPU, WebGL and the browser canvas) the line reads
 Passes are summed per scope, so a scope that issues several encoders shows one
 row, and a scope that stops rendering leaves the list after 30 batches.
 
-CPU and GPU times show their mean, nearest-rank p95 and maximum over the last
-30 accepted samples (`VIEWPORT_STATISTICS_AVERAGE_FRAMES`). A low mean with a
-large maximum identifies intermittent stalls; these are separate CPU and GPU
-series, not synchronized frame pairs. The overlay refreshes four times a second.
+CPU and GPU times are the mean over the last 30 accepted samples
+(`VIEWPORT_STATISTICS_AVERAGE_FRAMES`); the full statistics text also carries the
+nearest-rank p95 and maximum, which a low mean with a large maximum uses to
+identify intermittent stalls. The overlay's tooltip is only its click hint
+("Click to collapse" or "Click to expand"), not a second copy of the statistics,
+so hovering never covers the frame. The CPU and GPU values are separate series,
+not synchronized frame pairs. The overlay refreshes four times a second.
 GPU timestamps are read back with latency and
 the editor never waits for them, so the GPU line shows `…` until the first
 sample arrives. It shows `GPU: n/a` when the device or browser provides no

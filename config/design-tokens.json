@@ -385,7 +385,8 @@
     "card": 8
   },
   "size": {
-    "checkbox": 14
+    "checkbox": 14,
+    "tooltipMaximumWidth": 320
   },
   "type": {
     "caption": 0.9,

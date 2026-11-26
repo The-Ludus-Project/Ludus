@@ -90,6 +90,12 @@ QString MakeStatisticsOverlayText(const QString& compactText, const QString& sum
                                                           : QStringLiteral("▾ Stats\n") + compactText;
 }
 
+QString GetStatisticsOverlayHint()
+{
+    return IsViewportStatisticsOverlayCollapsed() == true ? QStringLiteral("Click to expand")
+                                                          : QStringLiteral("Click to collapse");
+}
+
 qreal GetViewportHudColumnGap()
 {
     return design::SPACING_MEDIUM;
@@ -154,18 +160,14 @@ HudGridLabel::HudGridLabel(QWidget* parent) : QLabel(parent)
     setFont(GetViewportStatisticsFont());
     setTextFormat(Qt::PlainText);
     setCursor(Qt::PointingHandCursor);
-    setToolTip(QStringLiteral("Click to collapse the overlay and keep more of the frame visible."));
+    setToolTip(GetStatisticsOverlayHint());
 }
 
-void HudGridLabel::SetStatisticsText(const QString& compactText, const QString& fullText, const QString& summary)
+void HudGridLabel::SetStatisticsText(const QString& compactText, const QString& summary)
 {
     mCompactText = compactText;
-    mFullText = fullText;
     mSummary = summary;
-    const QString hint = IsViewportStatisticsOverlayCollapsed() == true
-                             ? QStringLiteral("Click to expand.")
-                             : QStringLiteral("Click to collapse and keep more of the frame visible.");
-    setToolTip(fullText.isEmpty() == true ? hint : hint + QLatin1Char('\n') + fullText);
+    setToolTip(GetStatisticsOverlayHint());
     applyStatisticsDisplay();
 }
 
@@ -180,7 +182,7 @@ void HudGridLabel::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::LeftButton && mCompactText.isEmpty() == false)
     {
         SetViewportStatisticsOverlayCollapsed(IsViewportStatisticsOverlayCollapsed() == false);
-        SetStatisticsText(mCompactText, mFullText, mSummary);
+        SetStatisticsText(mCompactText, mSummary);
         event->accept();
         return;
     }
