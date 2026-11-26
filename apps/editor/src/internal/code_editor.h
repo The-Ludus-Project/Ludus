@@ -166,6 +166,8 @@ public:
     /// Select coloring/comment syntax without changing text or undo history.
     void SetLanguage(CodeLanguage language);
     void SetLargeFileMode(bool isLarge);
+    /// Load a new host projection into the existing document and reset the caret to the start.
+    void ReplaceHostedText(const QString& text);
     /// Reveal collapsed ranges containing either endpoint before programmatic navigation.
     void RevealTextCursor(const QTextCursor& cursor);
     [[nodiscard]] CodeStructureView& GetStructure() const noexcept;
@@ -405,6 +407,7 @@ private:
     bool eventFilter(QObject* watched, QEvent* event) override;
     friend class CodeEditorGutter;
     friend class CodeStructureView;
+    void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void paintIndentGuides(const QPaintEvent* event);
@@ -454,6 +457,7 @@ private:
     [[nodiscard]] foundation::int32 getGutterWidth() const;
     void updateGutterWidth();
     void paintGutter(QPaintEvent* event);
+    void refreshInitialVisibleSyntax();
     void refreshVisibleSyntax();
     void updateFoldPresentation();
     [[nodiscard]] bool toggleGutterFold(const QPoint& position);
