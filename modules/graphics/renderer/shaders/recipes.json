@@ -1,14 +1,14 @@
 {
   "renderer_light_transformer_encoded_queries": {
-    "source": "renderer_light_transformer_encoded_queries.slang",
+    "source": "renderer_light_transformer_encoded_queries.lusl",
     "compute": "ComputeMain"
   },
   "renderer_light_transformer_encoder": {
-    "source": "renderer_light_transformer_encoder.slang",
+    "source": "renderer_light_transformer_encoder.lusl",
     "compute": "ComputeMain"
   },
   "renderer_light_transformer_decoder": {
-    "source": "renderer_light_transformer_decoder.slang",
+    "source": "renderer_light_transformer_decoder.lusl",
     "compute": "ComputeMain"
   },
   "renderer_lusl_layout_probe": {

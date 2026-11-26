@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RENDERER_SHADERS = Path('modules/graphics/renderer/shaders')
 RENDERER_HEADERS = Path('modules/graphics/renderer/include/ludus/graphics/renderer')
 GEOMETRY_HEADERS = Path('modules/foundation/geometry/include/ludus/foundation/geometry/detail')
+RENDER_GRAPH_HEADERS = Path('modules/content/render_graph_format/include/ludus/content/render_graph_format/detail')
 OWNERS = (
     (RENDERER_SHADERS / 'renderer_gpu_preview_layout.h', ('scene_shader_layout.luslh',)),
     (RENDERER_SHADERS / 'renderer_reference_layout.h', ('renderer_gpu_preview_layout.luslh',)),
@@ -16,6 +17,8 @@ OWNERS = (
     (RENDERER_HEADERS / 'detail' / 'deferred_binding_slots.inc', ()),
     (RENDERER_HEADERS / 'deferred_layout.h', ('deferred_binding_slots.luslh',)),
     (RENDERER_SHADERS / 'skin_diffusion_layout.h', ()),
+    (RENDER_GRAPH_HEADERS / 'light_transformer_layout.h', ()),
+    (RENDER_GRAPH_HEADERS / 'light_transformer_encoder_layout.h', ()),
 )
 # The preview owner includes the scene failure reason count for C++ and Slang.
 # The generated view includes its LUSL counterpart through OWNERS.
@@ -44,7 +47,8 @@ LIGHTING_INCLUDE = '#include "lighting_layout.h"\n'
 # A shared constant, `static const LightingLayoutValue NAME = expression;`, possibly over several lines.
 CONSTANT = re.compile(r'static const LightingLayoutValue ([A-Z_0-9]+) = (\S.*);')
 UNSIGNED_SUFFIX = re.compile(r"\b(0[xX][0-9a-fA-F]+|[0-9]+)[uU]\b")
-DEFINE = re.compile(r'#define (LUDUS_[A-Z_0-9]+)[ \t]+(\S.*)')
+# An object-like macro, or a function-like one such as LUDUS_LIGHT_TRANSFORMER_AFFINE_SIZE(inputCount, outputCount).
+DEFINE = re.compile(r'#define (LUDUS_[A-Z_0-9]+(?:\([A-Za-z_][A-Za-z_0-9]*(?:, *[A-Za-z_][A-Za-z_0-9]*)*\))?)[ \t]+(\S.*)')
 
 
 def render(source, owner, includes):

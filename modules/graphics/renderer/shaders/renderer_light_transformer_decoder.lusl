@@ -1,0 +1,49 @@
+// The Light Transformer query decoder over CPU-uploaded anchors (light_transformer.hpp). nodes holds
+// {query count, anchor count, point-tree root, X groups} and then the point tree; features holds each anchor's
+// position and latent words, then each query's position, normal and albedo words. The LUSL compiler assigns
+// the four buffer slots in declaration order, which is the Slang original's manual layout, and the renderer
+// binds the generated renderer_light_transformer_decoder_slots.h constants. A renderer GPU test compares its
+// results with its Slang original, renderer_light_transformer_decoder.slang, which stays as the differential
+// oracle (L5d wave 2). The decoder itself is renderer_light_transformer_decoder.luslh.
+StructuredBuffer<uint32x4> nodes;
+StructuredBuffer<float32> weights;
+StructuredBuffer<float32x4> features;
+RWStructuredBuffer<float32x4> results;
+
+#include "renderer_light_transformer_decoder.luslh"
+
+// The point tree follows the one-word parameter header.
+uint32x4 ReadPointSearchNodeWord(in uint32 index)
+{
+    return nodes[index + 1];
+}
+uint32x4 ReadParameters()
+{
+    return nodes[0];
+}
+// PrepareLightTransformerDecoder validates the anchors, queries and tree before uploading them.
+bool HasValidInputs()
+{
+    return true;
+}
+float32 ReadWeight(in uint32 index)
+{
+    return weights[index];
+}
+float32x3 ReadAnchorPosition(in uint32 anchor)
+{
+    return features[anchor * ANCHOR_WORDS].xyz;
+}
+float32 ReadAnchorFeature(in uint32 anchor, in uint32 channel)
+{
+    return features[anchor * ANCHOR_WORDS + 1 + channel / WORD_CHANNELS][channel % WORD_CHANNELS];
+}
+float32 ReadQueryFeature(in uint32 queryIndex, in uint32 channel)
+{
+    return features[nodes[0].y * ANCHOR_WORDS + queryIndex * QUERY_WORDS + channel / POSITION_CHANNELS]
+        [channel % POSITION_CHANNELS];
+}
+void WriteResult(in uint32 queryIndex, in float32x4 value)
+{
+    results[queryIndex] = value;
+}
