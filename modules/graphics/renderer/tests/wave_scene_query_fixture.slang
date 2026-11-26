@@ -77,15 +77,23 @@ void EvaluateWaveSceneQueryFixture(uint index)
     cone.MinorToMajor = limits.x;
     cone.NearWorld = limits.y;
     cone.FarWorld = limits.z;
-    if (Cases[0].w == LUDUS_WAVE_PARITY_CONNECTION_TAG)
+    if (Cases[0].w == LUDUS_WAVE_PARITY_CONNECTION_TAG || Cases[0].w == LUDUS_WAVE_PARITY_UTD_CONNECTION_TAG)
     {
         float2 field = float2(0);
-        WaveQuery status = EvaluateWaveConnection((SceneContext)0,
-                                                  cone.OriginWorld,
-                                                  cone.DirectionWorld,
-                                                  cone.FarWorld,
-                                                  asfloat(Cases[base + 3]).w,
-                                                  field);
+        WaveQuery status = Cases[0].w == LUDUS_WAVE_PARITY_UTD_CONNECTION_TAG
+                               ? EvaluateUtdConnectionToReceiver((SceneContext)0,
+                                                                 cone.OriginWorld,
+                                                                 cone.OriginWorld + cone.DirectionWorld * cone.FarWorld,
+                                                                 cone.DirectionWorld,
+                                                                 cone.FarWorld,
+                                                                 asfloat(Cases[base + 3]).w,
+                                                                 field)
+                               : EvaluateWaveConnection((SceneContext)0,
+                                                        cone.OriginWorld,
+                                                        cone.DirectionWorld,
+                                                        cone.FarWorld,
+                                                        asfloat(Cases[base + 3]).w,
+                                                        field);
         uint destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS;
         Results[destination] = uint4(asuint(field), asuint(dot(field, field)), uint(status));
         Results[destination + 1] = uint4(0);

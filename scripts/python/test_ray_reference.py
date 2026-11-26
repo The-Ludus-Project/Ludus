@@ -96,6 +96,11 @@ class ReferenceExportTests(unittest.TestCase):
         struct.pack_into('<f', data, 92, 550e-9)
         metadata, _ = hdr.decode(data)
         self.assertAlmostEqual(metadata['optical_wavelength_world'], 550e-9, delta=1e-13)
+        self.assertEqual(metadata['optical_connection'], 'angular_spectrum')
+        struct.pack_into('<I', data, 44, 32 | 64 | 256 | 2048)
+        metadata, _ = hdr.decode(data)
+        self.assertEqual(metadata['optical_connection'], 'utd_edge_diffraction')
+        self.assertIsNone(hdr.decode(self.capture())[0]['optical_connection'])
         for flags, wavelength in ((96, 550e-9), (352, 0), (288, 550e-9), (352, float('nan'))):
             with self.subTest(flags=flags, wavelength=wavelength):
                 struct.pack_into('<I', data, 44, flags)

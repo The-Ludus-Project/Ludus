@@ -1,4 +1,5 @@
 #include "../src/internal/wave_connection.h"
+#include "../src/internal/wave_edge_diffraction.h"
 #include "../src/internal/wave_scene_queries.h"
 #include "wave_tracing_parity.h"
 #include "wave_tracing_parity_layout.h"
@@ -513,4 +514,169 @@ TEST_CASE("Wave region GPU traversal matches the CPU scene BVH",
         CHECK(math::Abs(ReadFloat(results, destination + 2) - field.Real * field.Real -
                         field.Imaginary * field.Imaginary) < 3e-4);
     }
+}
+
+namespace
+{
+/// Pack the BVH, triangles and leaf order of `scene` after the case cones, as the region fixture reads them.
+void PackParityScene(const ludus::graphics::renderer::internal::ReferenceSceneData& scene, Array<uint32>& inoutWords)
+{
+    const usize nodeFirst = LUDUS_WAVE_PARITY_REGION_CONE_FIRST + CASE_COUNT * LUDUS_WAVE_PARITY_REGION_CONE_RECORDS;
+    const usize triangleFirst = nodeFirst + scene.Nodes.GetSize() * 3;
+    const usize orderFirst = triangleFirst + scene.Triangles.GetSize() * 3;
+    REQUIRE(orderFirst * WORDS_PER_RECORD + scene.Order.GetSize() < CASE_WORDS);
+    inoutWords[0] = static_cast<uint32>(nodeFirst);
+    inoutWords[1] = static_cast<uint32>(scene.Nodes.GetSize());
+    inoutWords[2] = static_cast<uint32>(triangleFirst);
+    inoutWords[4] = static_cast<uint32>(orderFirst);
+    inoutWords[5] = static_cast<uint32>(scene.Triangles.GetSize());
+    const auto writeVector = [&inoutWords](usize position, math::Vector3 value) {
+        WriteFloat(position, inoutWords, static_cast<float64>(value.X));
+        WriteFloat(position + 1, inoutWords, static_cast<float64>(value.Y));
+        WriteFloat(position + 2, inoutWords, static_cast<float64>(value.Z));
+    };
+    for (usize index = 0; index < scene.Nodes.GetSize(); ++index)
+    {
+        const ludus::graphics::renderer::internal::ReferenceBvhNode& node = scene.Nodes[index];
+        const usize base = (nodeFirst + index * 3) * WORDS_PER_RECORD;
+        writeVector(base, node.Bounds.Min);
+        writeVector(base + WORDS_PER_RECORD, node.Bounds.Max);
+        inoutWords[base + 3] = node.Left;
+        inoutWords[base + 7] = node.Right;
+        inoutWords[base + 8] = node.First;
+        inoutWords[base + 9] = node.Count;
+    }
+    for (usize index = 0; index < scene.Triangles.GetSize(); ++index)
+    {
+        for (usize corner = 0; corner < 3; ++corner)
+        {
+            writeVector((triangleFirst + index * 3 + corner) * WORDS_PER_RECORD,
+                        scene.Triangles[index].Positions[corner]);
+        }
+        inoutWords[orderFirst * WORDS_PER_RECORD + index] = scene.Order[index];
+    }
+}
+} // namespace
+
+TEST_CASE("UTD edge diffraction GPU connections match the CPU oracle",
+          "[renderer][gpu][reference-compute][wave-utd][parity]")
+{
+    namespace internal = ludus::graphics::renderer::internal;
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    // The double-slit scene's screen (two 4 cm openings 20 cm apart) and a right-angle wedge beside it. Receivers
+    // sweep the wall at z = -1 through the slit fringes, a lit slit image and the wedge's shadow boundary.
+    internal::ReferenceSceneData scene;
+    const auto addTriangle = [&scene](math::Vector3 first, math::Vector3 second, math::Vector3 third) {
+        internal::ReferenceTriangle triangle;
+        triangle.Positions[0] = first;
+        triangle.Positions[1] = second;
+        triangle.Positions[2] = third;
+        triangle.Area = 1;
+        triangle.GeometricNormal = {0, 0, 1};
+        REQUIRE(scene.Triangles.TryAdd(triangle) == true);
+    };
+    constexpr float32 HALF_HEIGHT_WORLD = 2;
+    const auto addRectangle = [&addTriangle](float32 left, float32 right) {
+        addTriangle({left, -HALF_HEIGHT_WORLD, 0}, {right, -HALF_HEIGHT_WORLD, 0}, {right, HALF_HEIGHT_WORLD, 0});
+        addTriangle({left, -HALF_HEIGHT_WORLD, 0}, {right, HALF_HEIGHT_WORLD, 0}, {left, HALF_HEIGHT_WORLD, 0});
+    };
+    float64 wavelengthWorld = 0.005;
+    math::Vector3d sourceWorld{0, 0, 0.5};
+    float64 receiverFirstX = -0.35;
+    float64 receiverStepX = 0.7 / static_cast<float64>(CASE_COUNT - 1);
+    SECTION("Design wavelength double slit")
+    {
+        addRectangle(-2, -0.12F);
+        addRectangle(-0.08F, 0.08F);
+        addRectangle(0.12F, 2);
+    }
+    SECTION("Visible wavelength knife edge")
+    {
+        // At 550 nm the envelope spans about a millimetre, so receivers straddle the edge's shadow boundary.
+        addRectangle(-2, 0);
+        wavelengthWorld = 550e-9;
+        receiverFirstX = -0.002;
+        receiverStepX = 0.004 / static_cast<float64>(CASE_COUNT - 1);
+    }
+    SECTION("Design wavelength wedge")
+    {
+        // Faces along -z and -x from the +y edge; the source at (-0.5, 0, 0.5) puts the shadow boundary at x = 1.
+        addTriangle({0, -HALF_HEIGHT_WORLD, 0}, {0, HALF_HEIGHT_WORLD, 0}, {0, -HALF_HEIGHT_WORLD, -1});
+        addTriangle({0, -HALF_HEIGHT_WORLD, 0}, {-1, -HALF_HEIGHT_WORLD, 0}, {0, HALF_HEIGHT_WORLD, 0});
+        sourceWorld = {-0.5, 0, 0.5};
+        receiverFirstX = 0.8;
+        receiverStepX = 0.4 / static_cast<float64>(CASE_COUNT - 1);
+    }
+    REQUIRE(internal::BuildReferenceBvh(scene) == RasterStatus::Ready);
+    Array<uint32> words;
+    REQUIRE(words.TryResize(CASE_WORDS, uint32{0}) == true);
+    PackParityScene(scene, words);
+    words[3] = LUDUS_WAVE_PARITY_UTD_CONNECTION_TAG;
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        const math::Vector3d receiverWorld{receiverFirstX + receiverStepX * static_cast<float64>(index), 0, -1};
+        const math::Vector3d deltaWorld = receiverWorld - sourceWorld;
+        const float64 distanceWorld = math::Sqrt(math::Dot(deltaWorld, deltaWorld));
+        const usize base =
+            (LUDUS_WAVE_PARITY_REGION_CONE_FIRST + index * LUDUS_WAVE_PARITY_REGION_CONE_RECORDS) * WORDS_PER_RECORD;
+        WriteFloat(base, words, sourceWorld.X);
+        WriteFloat(base + 1, words, sourceWorld.Y);
+        WriteFloat(base + 2, words, sourceWorld.Z);
+        WriteFloat(base + 4, words, deltaWorld.X / distanceWorld);
+        WriteFloat(base + 5, words, deltaWorld.Y / distanceWorld);
+        WriteFloat(base + 6, words, deltaWorld.Z / distanceWorld);
+        WriteFloat(base + 12, words, 1);
+        WriteFloat(base + 14, words, distanceWorld);
+        WriteFloat(base + 15, words, wavelengthWorld);
+    }
+    Array<uint32> results;
+    if (RunParityKernel(words, results) == false)
+    {
+        SKIP("GPU adapter unavailable");
+    }
+    // float32 GPU geometry and phases against the float64 oracle on the same float32 inputs. On an Apple M5 the
+    // largest component differences were 2.3e-6 at 5 mm and 6.7e-5 at 550 nm, where phases span more cycles.
+    constexpr float64 FIELD_TOLERANCE = 5e-4;
+    usize diffractingCount = 0;
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        const usize base =
+            (LUDUS_WAVE_PARITY_REGION_CONE_FIRST + index * LUDUS_WAVE_PARITY_REGION_CONE_RECORDS) * WORDS_PER_RECORD;
+        const math::Vector3d originWorld{ReadFloat(words, base),
+                                         ReadFloat(words, base + 1),
+                                         ReadFloat(words, base + 2)};
+        const math::Vector3d directionWorld{ReadFloat(words, base + 4),
+                                            ReadFloat(words, base + 5),
+                                            ReadFloat(words, base + 6)};
+        const float64 distanceWorld = ReadFloat(words, base + 14);
+        WaveField field;
+        REQUIRE(internal::EvaluateUtdConnectionToReceiver(scene,
+                                                          originWorld,
+                                                          originWorld + directionWorld * distanceWorld,
+                                                          directionWorld,
+                                                          distanceWorld,
+                                                          ReadFloat(words, base + 15),
+                                                          field) == RasterStatus::Ready);
+        const usize destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS * WORDS_PER_RECORD;
+        const float64 gpuReal = ReadFloat(results, destination);
+        const float64 gpuImaginary = ReadFloat(results, destination + 1);
+        INFO("connection " << index << " cpu " << field.Real << "," << field.Imaginary << " gpu " << gpuReal << ","
+                           << gpuImaginary);
+        REQUIRE(results[destination + 3] == LUDUS_WAVE_QUERY_READY);
+        CHECK(math::Abs(gpuReal - field.Real) < FIELD_TOLERANCE);
+        CHECK(math::Abs(gpuImaginary - field.Imaginary) < FIELD_TOLERANCE);
+        // Every sweep crosses diffracted fields; a GPU that dropped the edges would return only 0 or 1.
+        if (field.Imaginary != 0)
+        {
+            ++diffractingCount;
+        }
+    }
+    CHECK(diffractingCount > CASE_COUNT / 2);
 }

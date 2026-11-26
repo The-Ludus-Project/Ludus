@@ -474,6 +474,7 @@ struct ReferenceRawAovCase final
     usize LightCount = 1;
     bool HasEnvironmentMap = false;
     float32 OpticalWavelengthWorld = 0;
+    rr::ReferenceOpticalConnection OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
     bool IsFarConventional = false;
     rr::ReferenceLightSampling LightSampling = rr::ReferenceLightSampling::UniformArea;
     bool HasSecondDirectionalLight = false;
@@ -639,6 +640,7 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
     capture.TargetSamples = CAPTURE_SAMPLE_COUNT;
     capture.MaxDepth = test.MaxDepth;
     capture.OpticalWavelengthWorld = test.OpticalWavelengthWorld;
+    capture.OpticalConnection = test.OpticalConnection;
     capture.RouletteDepth = test.RouletteDepth;
     capture.Seed = test.Seed;
     capture.LightSampling = test.LightSampling;
@@ -823,6 +825,24 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: scalar optical scene conne
         .LightCount = 4,
         .HasEnvironmentMap = false,
         .OpticalWavelengthWorld = 0.001F,
+        .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: UTD edge diffraction scene connections",
+          "[renderer][gpu][reference-compute][wave-utd]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "UTD edge diffraction scene connections",
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 871,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0.001F,
+        .OpticalConnection = rr::ReferenceOpticalConnection::UtdEdgeDiffraction,
         .IsFarConventional = false,
     });
 }
@@ -4005,6 +4025,10 @@ TEST_CASE("Reference captures admit only closed bounded media on the supported t
     capture.OpticalWavelengthWorld = 5e-7F;
     CHECK(begin(MakeMedium(box, {1, 1, 1})) == S::Unsupported);
     capture.OpticalWavelengthWorld = 0;
+    // UTD edge diffraction is an optical connection operator: without a wavelength it is rejected, not ignored.
+    capture.OpticalConnection = rr::ReferenceOpticalConnection::UtdEdgeDiffraction;
+    CHECK(begin(MakeMedium(box, {1, 1, 1})) == S::InvalidDescription);
+    capture.OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
     // Changing the medium replaces the integral.
     const rr::ReferenceMediumDescription first = MakeMedium(box, {1, 1, 1});
     const rr::ReferenceMediumDescription second = MakeMedium(box, {2, 1, 1});

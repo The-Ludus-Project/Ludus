@@ -5,7 +5,8 @@
 // inflate. The radiance checksum identifies the converged image, so traversal changes that must not alter
 // results can be compared bit for bit.
 // When LUDUS_REFERENCE_BENCHMARK_OUTPUT names a directory, the last run's linear
-// radiance is published there as reference-{gpu,cpu}.rgb32f (float32 RGB rows).
+// radiance is published there as reference-{gpu,cpu}.rgb32f (float32 RGB rows). With a wavelength,
+// LUDUS_REFERENCE_BENCHMARK_OPTICAL_CONNECTION=utd selects UTD edge diffraction instead of the angular spectrum.
 //
 // usage: ludus_reference_benchmark SCENE [WIDTH HEIGHT SAMPLES DEPTH {gpu|cpu} RUNS [WAVELENGTH_NANOMETERS]]
 //
@@ -941,6 +942,17 @@ int main(int argc, char** argv)
         return 1;
     }
     description.OpticalWavelengthWorld = static_cast<float32>(wavelengthNanometers) * METRES_PER_NANOMETRE;
+    // LUDUS_REFERENCE_BENCHMARK_OPTICAL_CONNECTION=utd selects UTD edge diffraction for a wavelength's connections.
+    const char* connectionOrNull = std::getenv("LUDUS_REFERENCE_BENCHMARK_OPTICAL_CONNECTION");
+    if (connectionOrNull != nullptr && std::strcmp(connectionOrNull, "utd") == 0)
+    {
+        description.OpticalConnection = rr::ReferenceOpticalConnection::UtdEdgeDiffraction;
+    }
+    else if (connectionOrNull != nullptr && std::strcmp(connectionOrNull, "angular-spectrum") != 0)
+    {
+        std::fprintf(stderr, "LUDUS_REFERENCE_BENCHMARK_OPTICAL_CONNECTION must be utd or angular-spectrum\n");
+        return 1;
+    }
     resources::SceneDefinition scene;
     const std::string_view sceneName = argv[1];
     if (sceneName.starts_with(CORNELL_PREFIX) == true)

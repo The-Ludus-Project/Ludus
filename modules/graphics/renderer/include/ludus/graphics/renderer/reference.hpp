@@ -40,6 +40,20 @@ enum class ReferenceMaterialProfile : ludus::foundation::uint8
     /// of the deficit 1 - E(view) within each GGX proposal; sampling keeps three fixed dimensions.
     MultipleScatteringGgx,
 };
+/// Field operator of an optical reference capture's finite light connections (positive OpticalWavelengthWorld).
+/// Both operators are scalar and estimate the integral that render-graph-authoring.md declares for them, in
+/// "Trace scene optical connections"; the CPU oracle and GPU compute traversals implement both.
+enum class ReferenceOpticalConnection : ludus::foundation::uint8
+{
+    /// The default: a Gaussian mode propagated through the scene's interaction regions on a 16 x 16 paraxial
+    /// angular-spectrum lattice, which diffracts where geometry clips the mode.
+    AngularSpectrum,
+    /// The Uniform Theory of Diffraction: the ballistic field of the straight connection plus the coherent field
+    /// of each scene edge that diffracts it once, from the incident shadow-boundary terms of Kouyoumjian and
+    /// Pathak's wedge coefficient. Only edges whose diffraction points lie in the connection's Gaussian envelope
+    /// contribute; corner and multiple diffraction are omitted.
+    UtdEdgeDiffraction,
+};
 /// RT1 RGB reflection input. Scattering selects legacy metallic/roughness,
 /// Lambertian diffuse or isotropic rough conductor with complex-IOR Fresnel.
 /// CoatedDiffuse is a rough dielectric layer over Lambertian reflection with
@@ -303,6 +317,10 @@ struct ReferenceCaptureDescription final
     /// Reflection integral of GGX lobes, applied by every traversal. Recorded in the integral key: changing it replaces
     /// the job and resets accumulation. Values outside the enumeration are rejected.
     ReferenceMaterialProfile MaterialProfile = ReferenceMaterialProfile::SingleScattering;
+    /// Field operator of the optical connections that a positive OpticalWavelengthWorld, declared next, enables.
+    /// Recorded in the integral key: changing it replaces the job and resets accumulation. UtdEdgeDiffraction with a
+    /// zero wavelength, and values outside the enumeration, are rejected as InvalidDescription.
+    ReferenceOpticalConnection OpticalConnection = ReferenceOpticalConnection::AngularSpectrum;
     /// Zero retains geometric reference transport. Positive metres enable scalar paraxial Gaussian-mode
     /// coupling on finite light connections, including coherent diffraction by successive scene regions.
     /// The positive range starts at one nanometre; smaller values reject before capture preparation.

@@ -51,12 +51,24 @@ struct Session final
         rhi::Shutdown();
     }
 };
-void LoadPackage(renderer::RenderGraphPackage& outPackage)
+/// Connection operator of the cooked template a test captures.
+enum class WaveConnection : uint8
+{
+    /// The shipped default: the angular-spectrum lattice.
+    AngularSpectrum,
+    /// The same template cooked with IS_WT_UTD_ENABLED.
+    UtdEdgeDiffraction,
+};
+void LoadPackage(WaveConnection connection, renderer::RenderGraphPackage& outPackage)
 {
     filesystem::Directory directory;
-    REQUIRE(directory.Open(LUDUS_WAVE_SCENE_TEMPLATE_DIRECTORY).Succeeded() == true);
+    const bool isUtd = connection == WaveConnection::UtdEdgeDiffraction;
+    REQUIRE(
+        directory.Open(isUtd == true ? LUDUS_WAVE_SCENE_UTD_TEMPLATE_DIRECTORY : LUDUS_WAVE_SCENE_TEMPLATE_DIRECTORY)
+            .Succeeded() == true);
     filesystem::File file;
-    REQUIRE(directory.OpenRead("wave_scene_graph.lurgrt", file).Succeeded() == true);
+    REQUIRE(directory.OpenRead(isUtd == true ? "wave_scene_utd_graph.lurgrt" : "wave_scene_graph.lurgrt", file)
+                .Succeeded() == true);
     Array<uint8> bytes;
     REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
     REQUIRE(file.ReadAt(0, MakeSpan(bytes)).BytesRead == bytes.GetSize());
@@ -92,7 +104,7 @@ struct WaveDevice final
     renderer::RenderGraphPrograms Programs;
 };
 /// Create the device and load the package, or skip the test without a compute adapter.
-void CreateWaveDevice(WaveDevice& outDevice)
+void CreateWaveDevice(WaveDevice& outDevice, WaveConnection connection = WaveConnection::AngularSpectrum)
 {
     rhi::DeviceDescription description;
     description.Required.Compute = true;
@@ -104,7 +116,7 @@ void CreateWaveDevice(WaveDevice& outDevice)
         SKIP("No compute adapter");
     }
     REQUIRE(created == rhi::DeviceStatus::Ready);
-    LoadPackage(outDevice.Package);
+    LoadPackage(connection, outDevice.Package);
     outDevice.Plan = outDevice.Package.GetPlan();
     outDevice.Programs = outDevice.Package.GetPrograms(ludus::shaders::renderer_composite::Vertex(),
                                                        ludus::shaders::renderer_composite::Fragment());
@@ -222,10 +234,11 @@ void CaptureSceneWavePass(const WaveDevice& device,
 /// @param outGeometricOrNull When non-null, captures only GEOMETRIC_PASS and receives its pixel means.
 void RunSceneWaveGraph(uint32 screen,
                        const renderer::SceneShaderMaterial* materialOrNull,
-                       ExportedPixels* outGeometricOrNull = nullptr)
+                       ExportedPixels* outGeometricOrNull = nullptr,
+                       WaveConnection connection = WaveConnection::AngularSpectrum)
 {
     WaveDevice device;
-    CreateWaveDevice(device);
+    CreateWaveDevice(device, connection);
     // Primary pass index zero only writes shared hits. The following passes export wave, geometric and aperture.
     for (uint32 pass = 1; pass < device.Plan.Passes.GetSize(); ++pass)
     {
@@ -375,6 +388,42 @@ TEST_CASE("Scene wave graph diffracts beyond a half screen from the current Worl
     CheckSceneWaveGraph(2);
 }
 
+TEST_CASE("Scene wave graph with UTD edge diffraction lights, blocks and diffracts from the current World",
+          "[renderer][gpu][wave-tracing][wave-utd][graph]")
+{
+    // The open beam, the full screen and the half screen, through the template cooked with IS_WT_UTD_ENABLED.
+    for (uint32 screen = 0; screen <= 2; ++screen)
+    {
+        CAPTURE(screen);
+        RunSceneWaveGraph(screen, nullptr, nullptr, WaveConnection::UtdEdgeDiffraction);
+    }
+    // The half screen's straight edge at x = 0 lies midway between the light at z = 3 and the receiver at z = 1.
+    // Every receiver pixel is within 0.14 Fresnel units of the shadow boundary, where Fresnel knife-edge diffraction
+    // gives between 0.19 and 0.25 of the unobstructed power on the shadowed side and 0.25 to 0.32 on the lit side.
+    constexpr uint32 TRANSMISSION_PASS = 3;
+    constexpr float32 BOUNDARY_POWER = 0.25F;
+    constexpr float32 SHADOW_MINIMUM_POWER = 0.15F;
+    constexpr float32 LIT_MAXIMUM_POWER = 0.4F;
+    WaveDevice device;
+    CreateWaveDevice(device, WaveConnection::UtdEdgeDiffraction);
+    Array<math::Vector3> pixels;
+    CaptureSceneWavePass(device, 2, nullptr, TRANSMISSION_PASS, pixels);
+    for (usize index = 0; index < pixels.GetSize(); ++index)
+    {
+        CAPTURE(index, pixels[index].X);
+        if (index % EXTENT < EXTENT / 2)
+        {
+            CHECK(pixels[index].X >= SHADOW_MINIMUM_POWER);
+            CHECK(pixels[index].X <= BOUNDARY_POWER);
+        }
+        else
+        {
+            CHECK(pixels[index].X >= BOUNDARY_POWER);
+            CHECK(pixels[index].X <= LIT_MAXIMUM_POWER);
+        }
+    }
+}
+
 #if defined(LUDUS_PLATFORM_MACOS)
 TEST_CASE("Scene wave graph reaches an unobstructed receiver without Metal multiply-add contraction",
           "[renderer][gpu][wave-tracing][graph][reference-compute]")
@@ -507,7 +556,7 @@ TEST_CASE("Scene optical template captures a supplied cooked test scene", "[.wav
     REQUIRE(rhi::CreateDevice({}, { .Width = EXTENT, .Height = EXTENT }, deviceDescription, device, surface) ==
             rhi::DeviceStatus::Ready);
     renderer::RenderGraphPackage package;
-    LoadPackage(package);
+    LoadPackage(WaveConnection::AngularSpectrum, package);
     const renderer::RenderGraphPlan plan = package.GetPlan();
     const renderer::RenderGraphPrograms programs = package.GetPrograms(ludus::shaders::renderer_composite::Vertex(),
                                                                        ludus::shaders::renderer_composite::Fragment());

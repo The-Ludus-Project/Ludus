@@ -1,8 +1,9 @@
 #include "hit_record.slang"
-// Scene optical renderer: truncated RGB surface paths with coherent, scalar paraxial finite-light connections.
+// Scene optical renderer: truncated RGB surface paths with coherent, scalar finite-light connections.
 // Thanks to Steinberg and Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics", CGF45(2),
-// e70322 (2026), Sections3.1 and4.2, https://doi.org/10.1111/cgf.70322 . See wave_connection.cpp for the
-// Gaussian connection integral and angular-spectrum departure from their Fraunhofer/UTD operators.
+// e70322 (2026), Sections3.1, 4.2 and 5.2.2, https://doi.org/10.1111/cgf.70322 . See wave_connection.cpp for
+// the Gaussian angular-spectrum connection and wave_edge_diffraction.cpp for the UTD edge connection, which
+// IS_WT_UTD_ENABLED selects.
 // All geometry, lights, textures and supported typed reflection materials come from the current World.
 // Each surface path samples light endpoints only by NEE. Secondary emitter/environment hits are omitted,
 // so the scalar optical visibility and classical continuation visibility cannot receive inconsistent MIS.
@@ -44,13 +45,21 @@ float EvaluateOpticalVisibility(SceneContext scene,
     float3 deltaWorld = shadow.OriginWorld - sourceWorld;
     float distanceWorld = length(deltaWorld);
     float2 field = float2(0);
-    WaveQuery status = EvaluateWaveConnectionToReceiver(scene,
-                                                        sourceWorld,
-                                                        shadow.OriginWorld,
-                                                        deltaWorld / distanceWorld,
-                                                        distanceWorld,
-                                                        WT_WAVELENGTH_NANOMETERS * WAVE_METRES_PER_NANOMETRE,
-                                                        field);
+    float wavelengthWorld = WT_WAVELENGTH_NANOMETERS * WAVE_METRES_PER_NANOMETRE;
+    WaveQuery status = IS_WT_UTD_ENABLED == true ? EvaluateUtdConnectionToReceiver(scene,
+                                                                                   sourceWorld,
+                                                                                   shadow.OriginWorld,
+                                                                                   deltaWorld / distanceWorld,
+                                                                                   distanceWorld,
+                                                                                   wavelengthWorld,
+                                                                                   field)
+                                                 : EvaluateWaveConnectionToReceiver(scene,
+                                                                                    sourceWorld,
+                                                                                    shadow.OriginWorld,
+                                                                                    deltaWorld / distanceWorld,
+                                                                                    distanceWorld,
+                                                                                    wavelengthWorld,
+                                                                                    field);
     if (status != WaveQuery::Ready)
     {
         FailSceneQuery(queries,

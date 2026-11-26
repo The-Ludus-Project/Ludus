@@ -98,7 +98,8 @@ bool AreCapturesEqual(const ReferenceCaptureDescription& left, const ReferenceCa
            left.Lights == right.Lights && left.LightCount == right.LightCount && left.TextureMip == right.TextureMip &&
            left.Seed == right.Seed && left.CenterRays == right.CenterRays &&
            left.LightSampling == right.LightSampling && left.MaterialProfile == right.MaterialProfile &&
-           left.OpticalWavelengthWorld == right.OpticalWavelengthWorld && left.MediumOrNull == right.MediumOrNull &&
+           left.OpticalWavelengthWorld == right.OpticalWavelengthWorld &&
+           left.OpticalConnection == right.OpticalConnection && left.MediumOrNull == right.MediumOrNull &&
            left.AtmosphereBackgroundOrNull == right.AtmosphereBackgroundOrNull;
 }
 bool SameGpuTexture(const rhi::TextureCpuContent& a, const rhi::TextureCpuContent& b) noexcept
