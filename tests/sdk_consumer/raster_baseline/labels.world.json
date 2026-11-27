@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "schema": "ludus.world.starter.v1",
+  "entities": [
+    {
+      "id": "labels.foreground",
+      "name": "Foreground Cube",
+      "components": {
+        "transform": {
+          "x": -0.5,
+          "y": 0.5,
+          "z": 0,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        "presentation": {
+          "visible": true,
+          "asset": "mesh.cube",
+          "sound": "",
+          "caption": "object.cube",
+          "style": "solid"
+        },
+        "renderable": {
+          "mesh": "mesh.cube",
+          "texture": "",
+          "visible": true,
+          "r": 1,
+          "g": 0,
+          "b": 0
+        }
+      }
+    },
+    {
+      "id": "labels.rear",
+      "name": "Rear Cube",
+      "components": {
+        "transform": {
+          "x": 0.5,
+          "y": -0.5,
+          "z": -3,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        "presentation": {
+          "visible": true,
+          "asset": "mesh.cube",
+          "sound": "",
+          "caption": "object.cube",
+          "style": "solid"
+        },
+        "renderable": {
+          "mesh": "mesh.cube",
+          "texture": "",
+          "visible": true,
+          "r": 0,
+          "g": 0,
+          "b": 1
+        }
+      }
+    },
+    {
+      "id": "preview.camera",
+      "name": "Preview Camera",
+      "components": {
+        "transform": {
+          "x": 0.5,
+          "y": -0.5,
+          "z": 6,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        "camera": {
+          "projection": "orthographic",
+          "fov": 60,
+          "span": 8,
+          "near": 0.1,
+          "far": 100,
+          "follow": ""
+        }
+      }
+    }
+  ]
+}

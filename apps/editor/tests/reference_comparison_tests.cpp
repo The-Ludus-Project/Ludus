@@ -57,6 +57,9 @@ constexpr uint32 TEST_SAMPLES = 2;
 constexpr uint32 TEST_DEPTH = 3;
 constexpr uint32 TEST_LONG_SIDE = 24;
 constexpr int64 CAPTURE_TIMEOUT_MILLISECONDS = 120000;
+/// Extent of the saved World baselines' authored targets.
+constexpr int32 SAVED_WORLD_WIDTH = 96;
+constexpr int32 SAVED_WORLD_HEIGHT = 64;
 constexpr uint64 TEST_SERVICE_BUDGET_NANOSECONDS = 50'000'000;
 constexpr uint32 POLL_MICROSECONDS = 200;
 
@@ -521,19 +524,34 @@ TEST_CASE("Display comparison uses supplied sRGB values and masks missing graph 
     CHECK(difference.pixelColor(0, 0).red() == 64);
 }
 
-TEST_CASE("Saved World raster export from the authored camera", "[.sdk-raster-baseline]")
+namespace
+{
+/// One authored Export and the PNG that receives its raw RGBA8 bytes.
+struct SavedWorldExport final
+{
+    QString Export;
+    QString Image;
+};
+
+/// Capture Exports of a cooked package from a saved World's camera through the viewport raster capture.
+/// The World, its authoring files and the package come from the working directory, where each PNG is
+/// written. A PNG holds the exported texture's bytes unchanged, so a label export keeps its alpha identity.
+void CaptureSavedWorldExports(const QString& worldName,
+                              const QString& packageName,
+                              qsizetype objectCount,
+                              const QVector<SavedWorldExport>& exports)
 {
     const QString root = QDir::currentPath();
-    const QString package = QDir(root).filePath(QStringLiteral("graph.lurgrt"));
+    const QString package = QDir(root).filePath(packageName);
     WorldDocument world;
     QString error;
     REQUIRE(world.LoadSchema(tests::ReadTestFile(root + QStringLiteral("/authoring/world.schema.json")), error) ==
             true);
-    REQUIRE(world.Load(tests::ReadTestFile(root + QStringLiteral("/cube.world.json")), error) == true);
+    REQUIRE(world.Load(tests::ReadTestFile(QDir(root).filePath(worldName)), error) == true);
     RenderScene scene;
     REQUIRE(RenderScene::Load(root, world, scene, error) == true);
     REQUIRE(scene.Cameras.size() == 1);
-    REQUIRE(scene.Objects.size() == 1);
+    REQUIRE(scene.Objects.size() == objectCount);
 
     DeviceFixture device;
     INFO("The saved World milestone requires an available portable Vulkan raster device.");
@@ -541,41 +559,76 @@ TEST_CASE("Saved World raster export from the authored camera", "[.sdk-raster-ba
     rhi::DeviceInfo information;
     REQUIRE(rhi::GetDeviceInfo(device.Device, information) == rhi::DeviceStatus::Ready);
     REQUIRE(information.Startup.SelectedBackend == rhi::Backend::Vulkan);
-    ViewportRasterSource source;
-    source.PackagePath = package;
-    REQUIRE(ViewportGraphCapture::FindExportResource(package,
-                                                     QStringLiteral("Main/output"),
-                                                     source.OutputResource,
-                                                     error,
-                                                     &source.OutputTarget) == true);
-    ViewportRasterCapture capture;
-    const QSize requested(96, 64);
-    QSize extent;
-    REQUIRE(capture.Load(device.Device, device.Surface, source, requested, extent, error) == true);
-    REQUIRE(extent == requested);
-    renderer::ViewDescription view;
-    REQUIRE(scene.View(
-                {
-                    .Camera = 0,
-                    .Width = static_cast<uint32>(extent.width()),
-                    .Height = static_cast<uint32>(extent.height()),
-                    .ShouldUseConventionalDepth = true,
-                },
-                view,
-                error) == true);
-    REQUIRE(capture.Begin(scene, view, error) == true);
-    QElapsedTimer timer;
-    timer.start();
-    while (capture.Service() == ViewportRasterPhase::Rendering && timer.elapsed() < CAPTURE_TIMEOUT_MILLISECONDS)
+    for (const SavedWorldExport& request : exports)
     {
-        QThread::msleep(1);
+        INFO(request.Export.toStdString());
+        ViewportRasterSource source;
+        source.PackagePath = package;
+        REQUIRE(ViewportGraphCapture::FindExportResource(package,
+                                                         request.Export,
+                                                         source.OutputResource,
+                                                         error,
+                                                         &source.OutputTarget) == true);
+        ViewportRasterCapture capture;
+        const QSize requested(SAVED_WORLD_WIDTH, SAVED_WORLD_HEIGHT);
+        QSize extent;
+        REQUIRE(capture.Load(device.Device, device.Surface, source, requested, extent, error) == true);
+        REQUIRE(extent == requested);
+        renderer::ViewDescription view;
+        REQUIRE(scene.View(
+                    {
+                        .Camera = 0,
+                        .Width = static_cast<uint32>(extent.width()),
+                        .Height = static_cast<uint32>(extent.height()),
+                        .ShouldUseConventionalDepth = true,
+                    },
+                    view,
+                    error) == true);
+        REQUIRE(capture.Begin(scene, view, error) == true);
+        QElapsedTimer timer;
+        timer.start();
+        while (capture.Service() == ViewportRasterPhase::Rendering && timer.elapsed() < CAPTURE_TIMEOUT_MILLISECONDS)
+        {
+            QThread::msleep(1);
+        }
+        INFO(capture.GetError().toStdString());
+        REQUIRE(capture.GetPhase() == ViewportRasterPhase::Complete);
+        REQUIRE(capture.GetRenderedPackagePath() == package);
+        const InspectedTexture& texture = capture.GetTexture();
+        REQUIRE(texture.Encoding == TexelEncoding::Rgba8Unorm);
+        REQUIRE(texture.IsValid() == true);
+        REQUIRE(texture.Width == static_cast<uint32>(extent.width()));
+        REQUIRE(texture.Height == static_cast<uint32>(extent.height()));
+        // The QImage borrows the texel bytes; saving encodes them before the capture is released.
+        const QImage image(reinterpret_cast<const uchar*>(texture.Bytes.constData()),
+                           extent.width(),
+                           extent.height(),
+                           extent.width() * static_cast<int32>(RGBA_CHANNELS),
+                           QImage::Format_RGBA8888);
+        REQUIRE(image.save(request.Image) == true);
+        qInfo() << "Editor Vulkan raster" << request.Export << "resource" << source.OutputResource << "adapter"
+                << information.Adapter.Name.GetData();
     }
-    INFO(capture.GetError().toStdString());
-    REQUIRE(capture.GetPhase() == ViewportRasterPhase::Complete);
-    REQUIRE(capture.GetRenderedPackagePath() == package);
-    REQUIRE(capture.GetTexture().Encoding == TexelEncoding::Rgba8Unorm);
-    REQUIRE(capture.GetImage().size() == extent);
-    REQUIRE(capture.GetImage().save(QStringLiteral("capture.png")) == true);
-    qInfo() << "Editor Vulkan raster Main/output resource" << source.OutputResource << "adapter"
-            << information.Adapter.Name.GetData();
+}
+} // namespace
+
+TEST_CASE("Saved World raster export from the authored camera", "[.sdk-raster-baseline]")
+{
+    CaptureSavedWorldExports(QStringLiteral("cube.world.json"),
+                             QStringLiteral("graph.lurgrt"),
+                             1,
+                             {{QStringLiteral("Main/output"), QStringLiteral("capture.png")}});
+}
+
+TEST_CASE("Saved World label and colour exports from the authored camera", "[.sdk-label-baseline]")
+{
+    // A foreground and a rear cube: the label export stores each extraction instance plus one in alpha.
+    constexpr qsizetype LABELLED_OBJECTS = 2;
+    CaptureSavedWorldExports(QStringLiteral("labels.world.json"),
+                             QStringLiteral("labels.lurgrt"),
+                             LABELLED_OBJECTS,
+                             {
+                                 {QStringLiteral("Main/labels"), QStringLiteral("labels.png")},
+                                 {QStringLiteral("Main/color"), QStringLiteral("color.png")},
+                             });
 }

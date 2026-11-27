@@ -1,0 +1,296 @@
+{
+  "version": 2,
+  "id": "Main",
+  "default": "Default",
+  "configurations": [
+    {
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "label.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "label.view"
+        },
+        {
+          "from": "labelTarget.texture",
+          "to": "label.color"
+        },
+        {
+          "from": "labelDepth.texture",
+          "to": "label.depth"
+        },
+        {
+          "from": "scene.scene",
+          "to": "appearance.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "appearance.view"
+        },
+        {
+          "from": "colorTarget.texture",
+          "to": "appearance.color"
+        },
+        {
+          "from": "colorDepth.texture",
+          "to": "appearance.depth"
+        },
+        {
+          "from": "label.color",
+          "to": "labels.texture"
+        },
+        {
+          "from": "appearance.color",
+          "to": "color.texture"
+        },
+        {
+          "from": "labelTarget.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "labelTarget.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "labelDepth.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "colorTarget.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "colorDepth.size"
+        }
+      ],
+      "id": "Default",
+      "inputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": {
+            "reference": "View",
+            "scale": [
+              1,
+              1
+            ]
+          },
+          "id": "renderSize",
+          "kind": "RenderSize"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "labelTarget",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "Depth32Float",
+          "id": "labelDepth",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "DepthTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "colorTarget",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "Depth32Float",
+          "id": "colorDepth",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "DepthTexture"
+        },
+        {
+          "id": "label",
+          "kind": "GraphicsPipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "target": "depth",
+              "format": "Depth32Float",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "vertex",
+              "stage": "vertex",
+              "program": "Geometry"
+            },
+            {
+              "id": "fragment",
+              "stage": "fragment",
+              "program": "Label"
+            }
+          ],
+          "state": {
+            "topology": "TriangleList",
+            "cull": "None",
+            "front": "CounterClockwise",
+            "depth_compare": "Less",
+            "depth_write": true,
+            "blend": "Opaque",
+            "samples": 1
+          },
+          "invocation": {
+            "mode": "ColorAndDepth",
+            "vertex_layout": "RendererStatic",
+            "material": "DefaultOpaque",
+            "scene": "scene",
+            "view": "view"
+          }
+        },
+        {
+          "id": "appearance",
+          "kind": "GraphicsPipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "target": "depth",
+              "format": "Depth32Float",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "vertex",
+              "stage": "vertex",
+              "program": "Geometry"
+            },
+            {
+              "id": "fragment",
+              "stage": "fragment",
+              "program": "Appearance"
+            }
+          ],
+          "state": {
+            "topology": "TriangleList",
+            "cull": "None",
+            "front": "CounterClockwise",
+            "depth_compare": "Less",
+            "depth_write": true,
+            "blend": "Opaque",
+            "samples": 1
+          },
+          "invocation": {
+            "mode": "ColorAndDepth",
+            "vertex_layout": "RendererStatic",
+            "material": "DefaultOpaque",
+            "scene": "scene",
+            "view": "view"
+          }
+        },
+        {
+          "id": "labels",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "color",
+          "kind": "Export",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": []
+    }
+  ]
+}

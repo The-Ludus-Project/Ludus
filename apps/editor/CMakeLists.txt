@@ -1630,6 +1630,14 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_SOFTWARE_RAY_GRAPH_FIXTURE=\"${editor_software_ray_RUNTIME_PACKAGE}\""
             "LUDUS_EDITOR_SOFTWARE_RAY_CAPTURE_FIXTURE=\"${editor_software_ray_capture_RAY_PATH_CAPTURE_PACKAGE}\"")
+        # The saved World label baseline's package: an exact visibility label export and the matching
+        # flat colour export. The Linux CI raster baseline copies it beside the relocated SDK app, so the
+        # Editor and the app capture the same bytes.
+        set(editor_label_baseline_staged "${CMAKE_CURRENT_BINARY_DIR}/label-baseline-inputs")
+        ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/raster_baseline/labels"
+            "${editor_label_baseline_staged}")
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_label_baseline
+            MANIFEST "${editor_label_baseline_staged}/main.lushader.json" RUNTIME_PACKAGE)
         target_sources(ludus_editor_tests PRIVATE tests/ray_path_inspection_tests.cpp)
         ludus_stage_render_graph_fixture("${progressive_source}" "${progressive_staged}")
         configure_file("${progressive_source}/main_shaders/progressive_closest.slang"

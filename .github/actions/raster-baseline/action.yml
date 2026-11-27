@@ -1,5 +1,5 @@
 name: Linux Vulkan raster baseline
-description: Compare an installed SDK app and the Editor with the analytical image.
+description: Compare an installed SDK app and the Editor with the analytical colour and label images.
 inputs:
   editor:
     description: Built Linux Editor test executable.
@@ -33,6 +33,7 @@ runs:
         test -r "$driver"
         "$tools/python" "$fixture/verify.py" --editor "$EDITOR_TESTS" \
           --graph "$build/apps/editor/ludus-graphs/ludus_editor_application/editor_renderer_static/editor_renderer_static.lurgrt" \
+          --label-graph "$build/apps/editor/ludus-graphs/ludus_editor_tests/editor_label_baseline/editor_label_baseline.lurgrt" \
           --executable "$scratch/package/raster_capture" --driver "$driver" --evidence out/raster-baseline
     - name: Retain raster baseline images, comparisons and capture logs
       if: always()
