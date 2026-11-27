@@ -6,6 +6,7 @@
 
 #include "scatter_golden.h"
 
+#include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/containers/stable_sort.hpp>
 #include <ludus/foundation/threading/jobs.hpp>
 
@@ -678,4 +679,104 @@ TEST_CASE("Scatter explanations agree with generation and name the excluding inp
     REQUIRE(TryExplainScatterCandidate(fixture.Recipe, fixture.Keys, 2, extraCandidate, decision) ==
             ScatterStatus::InvalidRecipe);
     REQUIRE(decision.KeepOut == 41);
+}
+
+TEST_CASE("Scatter locks enter thinning and their explanations agree with generation", "[procedural][scatter][lock]")
+{
+    Fixture fixture;
+    const ScatterCellRange cells = GetCells(fixture.Recipe, 0);
+    static Result base;
+    REQUIRE(Generate(fixture.Recipe, fixture.Keys, 0, cells, base) == ScatterStatus::Success);
+    REQUIRE(base.Count >= 3);
+    const ScatterLayer& layer = fixture.Layers[0];
+    constexpr usize LOCK_COUNT = 4;
+    constexpr uint16 ROTATION_EDIT = 0x100;
+    ScatterPlacement locks[LOCK_COUNT] = {};
+    // An accepted placement with an authored rotation and scale is honoured with exactly those values.
+    locks[0] = base.Placements[0];
+    locks[0].Rotation = static_cast<uint16>(locks[0].Rotation + ROTATION_EDIT);
+    locks[0].Scale = layer.MaximumScale;
+    // A lock moved out of its cell, and one with a variant the layer lacks, are not honourable.
+    locks[1] = base.Placements[1];
+    locks[1].LatticeX = (static_cast<int32>(locks[1].Identity.CellX) + 1) * layer.CellSize;
+    locks[2] = base.Placements[2];
+    locks[2].Variant = static_cast<uint32>(layer.Variants.GetSize());
+    // A lock naming a candidate index the layer does not have.
+    locks[3] = base.Placements[2];
+    locks[3].Identity.Candidate = static_cast<uint8>(layer.CandidatesPerCell);
+    ludus::foundation::Sort(locks, LOCK_COUNT, IsCanonicallyBefore);
+    fixture.Layers[0].Locks = BorrowedView<const ScatterPlacement>(locks);
+    REQUIRE(ValidateScatterRecipe(fixture.Recipe).Status == ScatterStatus::Success);
+
+    static Result locked;
+    REQUIRE(Generate(fixture.Recipe, fixture.Keys, 0, cells, locked) == ScatterStatus::Success);
+    usize next = 0;
+    usize honoured = 0;
+    usize outsideRecipe = 0;
+    for (int32 y = cells.MinimumY; y < cells.MaximumY; ++y)
+    {
+        for (int32 x = cells.MinimumX; x < cells.MaximumX; ++x)
+        {
+            for (uint16 k = 0; k < layer.CandidatesPerCell; ++k)
+            {
+                const ScatterIdentity identity{fixture.Recipe.Room,
+                                               layer.Id,
+                                               static_cast<uint8>(k),
+                                               static_cast<int16>(x),
+                                               static_cast<int16>(y)};
+                const ScatterPlacement* lockOrNull = nullptr;
+                for (const ScatterPlacement& lock : locks)
+                {
+                    lockOrNull = lock.Identity == identity ? &lock : lockOrNull;
+                }
+                ScatterDecision decision;
+                REQUIRE(TryExplainScatterCandidate(fixture.Recipe, fixture.Keys, 0, identity, decision) ==
+                        ScatterStatus::Success);
+                REQUIRE(decision.IsLocked == (lockOrNull != nullptr));
+                const bool isGenerated = next < locked.Count && locked.Placements[next].Identity == identity;
+                REQUIRE(decision.IsAccepted() == isGenerated);
+                if (isGenerated == true && lockOrNull != nullptr)
+                {
+                    REQUIRE(AreEqual(locked.Placements[next], *lockOrNull) == true);
+                    ++honoured;
+                }
+                if (decision.Rule == ScatterDecisionRule::LockOutsideRecipe)
+                {
+                    REQUIRE(decision.Stage == ScatterDecisionStage::Recipe);
+                    REQUIRE(lockOrNull != nullptr);
+                    ++outsideRecipe;
+                }
+                next += isGenerated == true ? 1 : 0;
+            }
+        }
+    }
+    REQUIRE(next == locked.Count);
+    REQUIRE(honoured == 1);
+    REQUIRE(outsideRecipe == 2);
+
+    ScatterDecision decision;
+    const ScatterPlacement& extra = locks[0].Identity.Candidate == layer.CandidatesPerCell ? locks[0] : locks[3];
+    REQUIRE(extra.Identity.Candidate == layer.CandidatesPerCell);
+    REQUIRE(TryExplainScatterCandidate(fixture.Recipe, fixture.Keys, 0, extra.Identity, decision) ==
+            ScatterStatus::Success);
+    REQUIRE(decision.Rule == ScatterDecisionRule::CandidateIndex);
+    REQUIRE(decision.IsLocked == true);
+
+    SECTION("locks out of canonical order")
+    {
+        const ScatterPlacement reversed[] = {locks[1], locks[0]};
+        fixture.Layers[0].Locks = BorrowedView<const ScatterPlacement>(reversed);
+        const ScatterValidation validation = ValidateScatterRecipe(fixture.Recipe);
+        REQUIRE(validation.Issue == ScatterRecipeIssue::Locks);
+        REQUIRE(validation.Index == 0);
+    }
+    SECTION("a lock of another layer")
+    {
+        ScatterPlacement other = locks[0];
+        other.Identity.Layer = fixture.Layers[1].Id;
+        fixture.Layers[0].Locks = {&other, 1};
+        const ScatterValidation validation = ValidateScatterRecipe(fixture.Recipe);
+        REQUIRE(validation.Issue == ScatterRecipeIssue::Locks);
+        REQUIRE(validation.Index == 0);
+    }
 }

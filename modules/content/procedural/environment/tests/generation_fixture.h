@@ -38,10 +38,12 @@ struct TwoScopeFixture final
 {
     TwoScopeFixture()
     {
-        RoomALayers[0] = {TREE_LAYER, 40, 3, foundation::BorrowedView<const ScatterVariant>(TREE_VARIANTS), 900, 1100};
+        RoomALayers[0] =
+            {TREE_LAYER, 40, 3, foundation::BorrowedView<const ScatterVariant>(TREE_VARIANTS), 900, 1100, {}};
         RoomALayers[1] =
-            {STONE_LAYER, 25, 2, foundation::BorrowedView<const ScatterVariant>(STONE_VARIANTS), 1000, 1000};
-        RoomBLayers[0] = {TREE_LAYER, 30, 2, foundation::BorrowedView<const ScatterVariant>(TREE_VARIANTS), 800, 1200};
+            {STONE_LAYER, 25, 2, foundation::BorrowedView<const ScatterVariant>(STONE_VARIANTS), 1000, 1000, {}};
+        RoomBLayers[0] =
+            {TREE_LAYER, 30, 2, foundation::BorrowedView<const ScatterVariant>(TREE_VARIANTS), 800, 1200, {}};
         Scopes[0].Recipe = {ROOM_A, {0, 0, 400, 300}, {}, foundation::BorrowedView<const ScatterLayer>(RoomALayers)};
         Scopes[1].Recipe = {ROOM_B,
                             {-200, -100, 200, 200},
