@@ -2181,6 +2181,23 @@ The raster viewport approximates the surface using base color and roughness.
 The reference paths and Wave Tracing evaluate the authored terms. Metropolis
 also requires the program's fixed-dimension reflection declaration.
 
+The **Project BRDF** list also offers imported
+[closure programs](../architecture/scene-source-format.md#closure-program), so
+a project can provide its own reflection model as material data. For example,
+import `tests/scenes/materials/oren-nayar-provider.luscene.json`, then assign
+`project/oren-nayar`, a rough Oren–Nayar lobe, to a slot of
+`tests/scenes/materials/oren-nayar-two-light-boards.luscene.json`. The other
+board keeps the built-in Diffuse material for comparison. **Project BRDF
+roughness** applies only to version-1 project BRDFs; a program's roughness
+comes from its own parameters. See the
+[provider boundary](../architecture/renderer-systems.md#project-oren-nayar-lobe-under-renderer-owned-lights).
+
+If an assigned project material is no longer in the project catalog, the
+World status names it by its project name and resource ID, along with the
+slot. Import its provider scene again to restore it under the same resource
+ID, or select the slot and choose **Use Inherited Material**. Until a World
+prepares, the viewport keeps the last drawable view.
+
 ### Make a slot a hair card
 
 Import a hair card mesh. The engine's

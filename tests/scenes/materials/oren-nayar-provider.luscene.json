@@ -1,0 +1,39 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Oren-Nayar provider",
+  "description": "A project-owned material provider. Its material project/oren-nayar is a closure program with one qualitative Oren-Nayar lobe: the albedo is the base colour input and the roughness operand is sigma, 0.5 radians. Import it into a World to register the material, then assign it to a slot with Assign Project BRDF. The swatch faces down, far outside the boards' camera view, so it never lights, shadows or appears in the two-light World.",
+  "camera": {
+    "eye": [0, 6.928203230275509, 4],
+    "target": [0, 0, 0],
+    "up": [0, 0, -1],
+    "vertical_fov_degrees": 20
+  },
+  "materials": [
+    {
+      "name": "project/oren-nayar",
+      "model": "program",
+      "base_color": [0.9, 0.6, 0.3],
+      "metallic": 0,
+      "roughness": 1,
+      "program": {
+        "version": 1,
+        "parameters": [
+          {"name": "albedo", "input": "base_color"},
+          {"name": "sigma", "constant": 0.5}
+        ],
+        "lobes": [
+          {"operation": "oren_nayar", "weight": "albedo", "roughness": "sigma"}
+        ]
+      }
+    }
+  ],
+  "objects": [
+    {
+      "name": "Provider swatch",
+      "material": "project/oren-nayar",
+      "positions": [[20, -5, -0.5], [21, -5, -0.5], [21, -5, 0.5], [20, -5, 0.5]],
+      "polygons": [[0, 1, 2, 3]]
+    }
+  ]
+}

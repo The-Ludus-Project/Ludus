@@ -1070,6 +1070,14 @@ ReadMaterialDefinition(const JsonTree& tree, JsonIndex node, MaterialDefinition&
     return true;
 }
 
+/// Report whether a slot's project_brdf binding may name a material of this model: a version-1 project BRDF
+/// program, or a project-authored closure program such as the Oren-Nayar lobe. Both are project-owned material
+/// data that the shared BSDF interpreters evaluate, so a graph renders them with unchanged source.
+[[nodiscard]] bool IsProjectMaterialModel(format::MaterialModel model) noexcept
+{
+    return model == format::MaterialModel::ProjectBrdf || model == format::MaterialModel::Program;
+}
+
 [[nodiscard]] bool ReadProjectBrdfBinding(const JsonTree& tree, JsonIndex binding, float32& outRoughness) noexcept
 {
     outRoughness = 0;
@@ -1658,6 +1666,31 @@ private:
     ClosureBuilder builder(root, catalog->Tree, resources, inoutFailure);
     const JsonIndex mappings = levelTree.GetMember(level, "material_mappings");
     const JsonIndex objects = levelTree.GetMember(level, "objects");
+    // A slot's project material comes from a provider scene that the project imported. Check every binding before
+    // visiting dependencies, so a provider whose catalog record is gone is named with its slot and repair rather than
+    // reported as a bare missing resource of another object that still uses it.
+    for (usize i = 0; i < levelTree.GetCount(objects); ++i)
+    {
+        const JsonIndex item = levelTree.GetItem(objects, i);
+        const JsonIndex binding = levelTree.GetMember(item, "project_brdf");
+        if (binding == NO_JSON_NODE)
+        {
+            continue;
+        }
+        const std::string_view provider = levelTree.GetText(levelTree.GetMember(binding, "material"));
+        const std::string_view slot = levelTree.GetText(levelTree.GetMember(item, "name"));
+        if (catalog->Tree.GetMember(resources, provider) == NO_JSON_NODE)
+        {
+            return inoutFailure.Fail(AssetErrorCode::InvalidScene,
+                                     {"The project material ",
+                                      provider,
+                                      " on '",
+                                      slot,
+                                      "' is not in the project catalog. ",
+                                      "Import its provider scene and Assign Project BRDF again, ",
+                                      "or choose Use Inherited Material."});
+        }
+    }
     for (usize i = 0; i < levelTree.GetCount(objects); ++i)
     {
         const JsonIndex item = levelTree.GetItem(objects, i);
@@ -3333,11 +3366,22 @@ struct MaterialVariant final
             CoatingOverride coating;
             const JsonIndex binding = tree.GetMember(object, "project_brdf");
             float32 roughness = 0;
-            if (ReadProjectBrdfBinding(tree, binding, roughness) == false ||
-                (binding != NO_JSON_NODE && source.Scattering.Model != format::MaterialModel::ProjectBrdf))
+            if (ReadProjectBrdfBinding(tree, binding, roughness) == false)
             {
-                return inoutFailure.FailInvalid("The assigned project BRDF is unavailable. Restore the inherited "
-                                                "material or assign a valid project BRDF.");
+                return inoutFailure.FailInvalid(
+                    "Invalid project BRDF binding. Assign a project BRDF and check its roughness.");
+            }
+            if (binding != NO_JSON_NODE && IsProjectMaterialModel(source.Scattering.Model) == false)
+            {
+                const std::string_view slot = tree.GetText(tree.GetMember(object, "name"));
+                return inoutFailure.Fail(AssetErrorCode::InvalidScene,
+                                         {"The project material '",
+                                          source.Name,
+                                          "' assigned to '",
+                                          slot,
+                                          "' is no longer a project BRDF or closure program. ",
+                                          "Choose Assign Project BRDF with a project material, ",
+                                          "or choose Use Inherited Material on the slot."});
             }
             if (roughness == defaultRoughness)
             {
