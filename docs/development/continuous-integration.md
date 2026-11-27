@@ -694,6 +694,14 @@ directly: a stalled mirror otherwise holds a job until GitHub's six-hour default
 timeout. `test_ci.py` rejects direct `apt-get install` and `apt-get update` in
 workflows.
 
+APT fails an index update when any configured source fails, including sources
+that no Ludus job installs from. On GitHub-hosted runners both paths therefore
+first run `.github/actions/apt-install/use-required-sources.sh`. It moves every
+source file that names a host other than the Ubuntu archives or `apt.llvm.org`
+out of `sources.list.d`. Batch 45920191091 lost every job when the hosted image's
+`packages.microsoft.com` source answered 403. Self-hosted runners, the prepared
+Linux image and developer machines keep their APT configuration.
+
 ### Linux pull-request image
 
 The Editor job and both Clang analysis shards on integration PRs look up the

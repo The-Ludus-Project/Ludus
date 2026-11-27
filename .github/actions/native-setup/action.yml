@@ -55,6 +55,8 @@ runs:
           bash /opt/ludus-ci/use-tools.sh
           echo 'Using preinstalled native prerequisites and pinned host tools.'
         else
+          # An unused hosted source failing its index update would fail the job.
+          bash .github/actions/apt-install/use-required-sources.sh
           bash .github/actions/native-setup/install-packages.sh
         fi
     - name: Select Lavapipe for Linux sanitizer tests
