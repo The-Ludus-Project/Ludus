@@ -475,10 +475,10 @@ provides the helper in three parts:
   latest producer token per slot and publication of a slot only after a fully
   successful frame.
 
-`RasterViewport` is the reference adoption. The remaining entry points adopt
-the helper one per change: `RenderGraph`, the GPU preview job, the editor
-render preview's retry, the editor shadow producer and the editor graph display
-frames. The header documents ownership, lifetime, thread affinity and failure
+`RasterViewport` is the reference adoption of `FrameProducer`, and
+`RenderGraph::Render` adopts `FrameRecording`. The remaining entry points adopt
+the helper one per change: the GPU preview job, the editor render preview's
+retry, the editor shadow producer and the editor graph display frames. The header documents ownership, lifetime, thread affinity and failure
 behaviour.
 
 **Decision: offscreen-only frames on Vulkan and Metal (2026-11-19).** Vulkan
