@@ -210,13 +210,20 @@ struct GpuGraphResources final
         }
     }
 };
-// Record the raster producer once; every ray pass of the graph samples the version it writes.
+// Record the raster producers once; every ray pass of the graph samples the version they write.
+// A base producer clears the pair, and the producer then loads that version to add its own items.
 Status AppendVisibilityProducer(rhi::DeviceHandle device,
                                 const GpuPreviewRecord& job,
                                 rhi::OrderedGraph graph,
                                 const VisibilityRasterPass& visibility,
                                 rhi::GraphVersion& outWritten) noexcept
 {
+    const bool hasBase = visibility.BaseProducerOrNull != nullptr;
+    const rhi::RasterLoad expected = hasBase == true ? rhi::RasterLoad::Load : rhi::RasterLoad::Clear;
+    if (visibility.Attachment.ColorLoad != expected || visibility.Attachment.DepthLoad != expected)
+    {
+        return Status::InvalidDescription;
+    }
     rhi::RasterTextureState visibilityState;
     rhi::GraphVersion previous;
     Status status = rhi::GetTextureState(device, job.VisibilityTexture, visibilityState);
@@ -228,6 +235,16 @@ Status AppendVisibilityProducer(rhi::DeviceHandle device,
                                          visibilityState,
                                          rhi::RasterTextureUse::SampledCompute,
                                          previous);
+    }
+    if (status == Status::Ready && hasBase == true)
+    {
+        rhi::RasterPassDescription base = visibility.Attachment;
+        base.ColorLoad = rhi::RasterLoad::Clear;
+        base.DepthLoad = rhi::RasterLoad::Clear;
+        rhi::GraphVersion cleared;
+        status =
+            visibility.BaseProducerOrNull->AppendVisibilityView(visibility.BaseView, graph, base, previous, cleared);
+        previous = cleared;
     }
     if (status == Status::Ready)
     {

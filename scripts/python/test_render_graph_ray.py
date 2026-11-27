@@ -342,6 +342,50 @@ class RayPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ToolingError, 'separate configurations'):
             ray.group_profiles([mixed], technique, build)
 
+    def test_masked_visibility_producer_follows_an_opaque_one(self):
+        plan = graph.compile_graph(ROOT / 'tests/sdk_consumer/rg2/masked_visibility/main.lurender.json')
+        operations = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
+        self.assertEqual([('Raster', 'DefaultOpaque'), ('Raster', 'DefaultMasked'), ('RayTracing', 'DefaultOpaque')],
+                         [(p['kind'], p['material']) for p in operations])
+        state = {'color': 'RGBA8Unorm', 'depth': 'Depth32Float', 'samples': 1, 'topology': 'TriangleList',
+                 'cull': 'None', 'front': 'CounterClockwise', 'depth_compare': 'Less', 'depth_write': True,
+                 'blend': 'Opaque'}
+        package = {'plans': [plan], 'recipes': [{'technique': p['technique'], 'state': state}
+                                                for p in operations if p['kind'] == 'Raster']}
+        records = execution.lower_plan(package, 'Default')[2]
+        self.assertEqual([('ColorAndDepth', 'Clear'), ('MaskedColorAndDepth', 'Load'), ('RayTracing', 'Clear')],
+                         [(r['Program'], r['ColorLoad']) for r in records])
+        # Opaque items are covered by the opaque producer and the resolve, masked items once.
+        self.assertEqual([1, 1, 1], [r['AllowsRepeatedCoverage'] for r in records])
+        self.assertEqual(records[0]['Color'], records[2]['Visibility'])
+
+        def reject(mutate, message):
+            changed = deepcopy(plan)
+            mutate([p for p in changed['passes'] if p['kind'] in ('Raster', 'RayTracing')])
+            with self.assertRaisesRegex(ToolingError, message):
+                execution.lower_plan(dict(package, plans=[changed]), 'Default')
+
+        def load_first(operations):
+            for aspect in ('color', 'depth'):
+                operations[0]['attachments'][aspect]['load'] = 'Load'
+
+        def same_family(operations):
+            operations[0].update(material='DefaultMasked', technique=operations[1]['technique'])
+
+        def other_view(operations):
+            operations[0]['view'] = 'Main/other'
+
+        reject(load_first, 'Main/opaque must clear and store the visibility/depth pair that Main/masked loads')
+        reject(same_family, 'producers Main/opaque and Main/masked both draw DefaultMasked items')
+        reject(other_view, 'Main/opaque must clear and store')
+        masked_only = deepcopy(plan)
+        masked = [p for p in masked_only['passes'] if p['kind'] == 'Raster'][1]
+        for aspect in ('color', 'depth'):
+            masked['attachments'][aspect]['load'] = 'Clear'
+        # A single masked Clear/Store producer is admitted as an opaque one is.
+        lowered = execution.lower_plan(dict(package, plans=[masked_only]), 'Default')[2]
+        self.assertEqual(1, lowered[1]['AllowsRepeatedCoverage'])
+
     def test_visibility_shading_dispatches_each_pass_callbacks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

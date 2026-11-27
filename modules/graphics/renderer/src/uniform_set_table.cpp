@@ -278,6 +278,10 @@ rhi::BindingSetHandle UniformSetTable::GetBindings(usize slot) const noexcept
 {
     return mRecords[slot].Bindings;
 }
+rhi::BufferHandle UniformSetTable::GetBuffer(usize slot) const noexcept
+{
+    return mRecords[slot].Buffer;
+}
 void UniformSetTable::Clear(rhi::DeviceHandle device) noexcept
 {
     for (usize slot = 0; slot < mRecords.GetSize(); ++slot)

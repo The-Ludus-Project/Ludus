@@ -1815,13 +1815,17 @@ Status Renderer::AppendVisibilityView(PreparedView handle,
     }
     State& state = *mState;
     const State::ViewRecord& view = state.ViewRecords[Access::Slot(handle)];
-    if (state.HasVisibilityInputs == false || state.FlatUniforms.Count != 0 || view.Grid.Get() != nullptr ||
-        view.Depth != DepthConvention::Conventional || attachment.ColorLoad != rhi::RasterLoad::Clear ||
-        attachment.DepthLoad != rhi::RasterLoad::Clear || attachment.ColorStore != rhi::RasterStore::Store ||
+    // Both aspects clear a new pair, or both load the pair an earlier producer wrote.
+    const bool isLoaded = attachment.ColorLoad == rhi::RasterLoad::Load;
+    if (state.HasVisibilityInputs == false || view.Grid.Get() != nullptr ||
+        view.Depth != DepthConvention::Conventional ||
+        (attachment.ColorLoad != rhi::RasterLoad::Clear && isLoaded == false) ||
+        attachment.DepthLoad != attachment.ColorLoad || attachment.ColorStore != rhi::RasterStore::Store ||
         attachment.DepthStore != rhi::RasterStore::Store)
     {
         return Status::Unsupported;
     }
+    const bool hasUniforms = state.FlatUniforms.Count != 0;
     Array<internal::VisibilityDraw> draws;
     if (draws.TryResize(view.DrawCount) == false)
     {
@@ -1830,7 +1834,8 @@ Status Renderer::AppendVisibilityView(PreparedView handle,
     for (usize index = 0; index < view.DrawCount; ++index)
     {
         const State::Packet& packet = view.Packets[index];
-        if (packet.Pass != Layer::Opaque || packet.MaterialSlot != NO_MATERIAL || packet.UniformSlot != NO_UNIFORM)
+        if (packet.Pass != Layer::Opaque || packet.MaterialSlot != NO_MATERIAL ||
+            (hasUniforms == false && packet.UniformSlot != NO_UNIFORM))
         {
             return Status::Unsupported;
         }
@@ -1842,14 +1847,24 @@ Status Renderer::AppendVisibilityView(PreparedView handle,
                         packet.First,
                         packet.Count,
                         packet.MeshSlot};
+        if (hasUniforms == true)
+        {
+            // A bound program reads each draw's uniform set, or the zero-filled defaults without one.
+            const bool hasSet = packet.UniformSlot != NO_UNIFORM;
+            draws[index].Bindings = hasSet == true ? state.UniformSets.GetBindings(packet.UniformSlot) : state.Bindings;
+            draws[index].Uniforms =
+                hasSet == true ? state.UniformSets.GetBuffer(packet.UniformSlot) : state.DefaultUniforms;
+            draws[index].HasUniforms = true;
+        }
     }
-    const internal::VisibilityCommands commands{{draws.GetData(), draws.GetSize()},
-                                                view.Instances,
-                                                view.Visible,
-                                                sizeof(Instance),
-                                                state.TargetOpaque,
-                                                state.Bindings,
-                                                attachment};
+    internal::VisibilityCommands commands{{draws.GetData(), draws.GetSize()},
+                                          view.Instances,
+                                          view.Visible,
+                                          sizeof(Instance),
+                                          state.TargetOpaque,
+                                          state.Bindings,
+                                          attachment};
+    commands.UniformLayoutOrNull = hasUniforms == true ? &state.FlatUniforms : nullptr;
     return internal::AppendVisibilityCommands(state.Device, inoutGraph, commands, previous, outWritten);
 }
 Status Renderer::measureOpaqueView(PreparedView handle, OpaqueViewCost& outCost) const noexcept

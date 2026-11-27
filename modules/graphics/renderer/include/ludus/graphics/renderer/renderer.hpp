@@ -140,14 +140,23 @@ private:
     friend struct internal::Access;
 };
 class Renderer;
-/// Borrowed ready visibility raster producer; consumed synchronously during graph preparation.
-/// Producer/view/attachment must match the ray job's scene/camera generation. Only opaque
-/// visibility-ABI views without uniforms, materials, overlays or grid are admitted.
+/// Borrowed ready visibility raster producers; consumed synchronously during graph preparation.
+/// Producers/views/attachment must match the ray job's scene/camera generation. Only visibility-ABI views
+/// without materials, overlays or grid are admitted. A view of opaque items binds no uniforms; a view of
+/// masked items may bind each draw's uniform set for its coverage function.
+/// One producer clears and stores the pair. A scene with opaque and masked items records two: the base
+/// producer clears and stores the pair, then the producer loads and stores it with the other coverage family.
 struct VisibilityRasterPass final
 {
-    Renderer* ProducerOrNull = nullptr;      ///< Valid producer; borrowed through graph preparation.
-    PreparedView View{};                     ///< Ready immutable view; its resources are copied into the ordered graph.
-    rhi::RasterPassDescription Attachment{}; ///< Paired color/depth attachment, Clear/Store in both aspects.
+    Renderer* ProducerOrNull = nullptr; ///< Valid producer; borrowed through graph preparation.
+    PreparedView View{};                ///< Ready immutable view; its resources are copied into the ordered graph.
+    /// Paired color/depth attachment, stored in both aspects; Load in both aspects exactly when
+    /// BaseProducerOrNull is set, else Clear.
+    rhi::RasterPassDescription Attachment{};
+    /// Optional earlier producer of the other coverage family that clears the pair before Producer loads it;
+    /// borrowed through graph preparation. Null records Producer alone.
+    Renderer* BaseProducerOrNull = nullptr;
+    PreparedView BaseView{}; ///< Ready view of BaseProducerOrNull; ignored when it is null.
 };
 /// Immutable copied per-draw uniform blocks and binding snapshot of a bound flat program.
 /// Copies do not transfer ownership; Release detaches it and snapshots retain the exact version.
@@ -656,10 +665,12 @@ public:
                            const VisibilityRasterPass* visibilityOrNull = nullptr) noexcept;
     /// Append one visibility-ABI view to an uncompiled graph between frames. No allocation survives
     /// outside the graph; partial failure leaves the caller responsible for discarding the graph.
-    /// @param handle Ready opaque visibility view; no authored uniforms, materials or world grid.
+    /// @param handle Ready visibility view without materials or world grid. A program with authored uniforms
+    /// binds each draw's uniform set, or its zero-filled defaults, and declares those buffer reads in the graph.
     /// @param inoutGraph Caller-owned uncompiled ordered graph on this renderer's device.
-    /// @param attachment RGBA8/private-depth attachment, Clear/Store in both aspects.
-    /// @param previous Imported version of attachment.Color.
+    /// @param attachment RGBA8/private-depth attachment, stored in both aspects. Clear in both writes a new pair;
+    /// Load in both adds this view's draws to the pair previous holds, as a masked producer after an opaque one.
+    /// @param previous Imported or earlier written version of attachment.Color.
     /// @param outWritten Receives the next written version on success; preserved on failure.
     [[nodiscard]] rhi::RasterStatus AppendVisibilityView(PreparedView handle,
                                                          rhi::OrderedGraph& inoutGraph,

@@ -1057,6 +1057,15 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_visibility_RUNTIME_PACKAGE PARENT_PATH visibility_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_VISIBILITY_DIRECTORY="${visibility_package_directory}")
+    # An opaque Clear producer and a masked Load producer write one visibility pair for a software resolve.
+    set(masked_visibility_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/masked_visibility")
+    ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/masked_visibility"
+        "${masked_visibility_staged}")
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_masked_visibility
+        MANIFEST "${masked_visibility_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_masked_visibility_RUNTIME_PACKAGE PARENT_PATH masked_visibility_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_MASKED_VISIBILITY_DIRECTORY="${masked_visibility_package_directory}")
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_visibility_ordinary
         MANIFEST "${visibility_staged}/main.lushader.json" CONFIGURATION Ordinary RUNTIME_PACKAGE)
     cmake_path(GET rg2_visibility_ordinary_RUNTIME_PACKAGE PARENT_PATH visibility_ordinary_package_directory)
