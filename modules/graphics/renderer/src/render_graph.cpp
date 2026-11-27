@@ -1570,7 +1570,8 @@ struct RenderGraph::State final
     /// Step at which the latest Poll or Update failed (GetLastFailureStage).
     RenderGraphFailureStage LastFailureStage = RenderGraphFailureStage::None;
     bool IsReady = false;
-    bool HasOpenFrame = false;
+    /// Ownership of the frame that Render opens, including the retry of a close that EndFrame left open.
+    rhi::FrameRecording Recording;
     bool HasExternalRecording = false;
     bool HasRecordedShadowAtlas = false;
     bool HasValidOutput = false;
@@ -1578,7 +1579,6 @@ struct RenderGraph::State final
     uint64 RecordingRevision = 0;
     uint64 OutputRevision = 0;
     Status RecordingStatus = Status::Ready;
-    rhi::SurfaceHandle RecordingSurface{};
     rhi::SubmissionToken Producer{};
     /// Whether the opaque color context can draw the editor's magenta marker: it reads instance color
     /// and binds no uniforms. Bound or masked-only color techniques never pretend to provide markers.
@@ -1947,7 +1947,6 @@ struct RenderGraph::State final
     }
     Status EncodePasses(rhi::SurfaceHandle surface) noexcept
     {
-        RecordingSurface = surface;
         RecordingRevision = Current->Revision;
         RecordingStatus = Status::Ready;
         HasAttemptedDraw = false;
@@ -2233,20 +2232,19 @@ struct RenderGraph::State final
     }
     Status FinishFrame(rhi::SubmissionToken& outCompletion) noexcept
     {
-        const Status submitted = rhi::EndFrame(Device, outCompletion);
-        if (outCompletion.IsNull() == false)
+        const Status ended = Recording.End(outCompletion);
+        if (Recording.HasAcceptedSubmission() == true)
         {
             Producer = outCompletion;
         }
-        rhi::FrameInfo information;
-        HasOpenFrame = rhi::GetFrameInfo(Device, RecordingSurface, information) == rhi::DeviceStatus::Ready;
-        if (HasOpenFrame == true)
+        if (Recording.IsOpen() == true)
         {
-            return submitted;
+            return ended;
         }
         if (HasAttemptedDraw == true)
         {
-            HasValidOutput = submitted == Status::Ready && RecordingStatus == Status::Ready;
+            // End reports Ready only when every recorded pass succeeded and the frame was submitted.
+            HasValidOutput = ended == Status::Ready;
             OutputRevision = HasValidOutput == true ? RecordingRevision : 0;
             if (HasValidOutput == true)
             {
@@ -2254,7 +2252,7 @@ struct RenderGraph::State final
                 CountRayFrame();
             }
         }
-        return RecordingStatus == Status::Ready ? submitted : RecordingStatus;
+        return ended;
     }
     ~State() noexcept
     {
@@ -2308,7 +2306,7 @@ Status RenderGraph::SetAccumulationLimitOverride(uint32 samples) noexcept
     {
         return Status::InvalidDescription;
     }
-    if (state.IsReady == false || state.HasOpenFrame == true || state.HasExternalRecording == true ||
+    if (state.IsReady == false || state.Recording.IsOpen() == true || state.HasExternalRecording == true ||
         state.Current.Get() != nullptr || state.Pending.Get() != nullptr)
     {
         return Status::InvalidState;
@@ -2327,7 +2325,7 @@ Status RenderGraph::SetRayTileCount(uint32 tileCount) noexcept
     {
         return Status::InvalidDescription;
     }
-    if (state.IsReady == false || state.HasOpenFrame == true || state.HasExternalRecording == true ||
+    if (state.IsReady == false || state.Recording.IsOpen() == true || state.HasExternalRecording == true ||
         (state.Current.Get() != nullptr && state.Current->NextRayTile != 0))
     {
         return Status::InvalidState;
@@ -2363,7 +2361,7 @@ Status RenderGraph::SetExecution(RenderGraphExecution execution) noexcept
         return Status::InvalidState;
     }
     State& state = *mState;
-    if (state.IsReady == false || state.HasOpenFrame == true || state.HasExternalRecording == true)
+    if (state.IsReady == false || state.Recording.IsOpen() == true || state.HasExternalRecording == true)
     {
         return Status::InvalidState;
     }
@@ -2530,7 +2528,7 @@ Status RenderGraph::RequestRayPathCapture(const RayPathCaptureDescription& descr
     {
         return admitted;
     }
-    if (state.IsReady == false || state.HasOpenFrame == true || state.HasExternalRecording == true ||
+    if (state.IsReady == false || state.Recording.IsOpen() == true || state.HasExternalRecording == true ||
         state.Current.Get() != nullptr || state.Pending.Get() != nullptr)
     {
         return Status::InvalidState;
@@ -2563,7 +2561,8 @@ Status RenderGraph::PollRayPathCapture(RayPathCaptureReport& outReport) noexcept
         return Status::InvalidState;
     }
     State& state = *mState;
-    if (state.RayPathCapture.IsRequested() == false || state.HasOpenFrame == true || state.HasExternalRecording == true)
+    if (state.RayPathCapture.IsRequested() == false || state.Recording.IsOpen() == true ||
+        state.HasExternalRecording == true)
     {
         return Status::InvalidState;
     }
@@ -3027,6 +3026,7 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         return Status::OutOfMemory;
     }
     candidate->Device = device;
+    candidate->Recording = rhi::FrameRecording{device};
     candidate->Header = plan.Description;
     candidate->Target = target;
     if (programs.HasLightTransformer != (modelOrNull != nullptr))
@@ -3289,7 +3289,7 @@ Status RenderGraph::Resize(uint32 referenceWidth, uint32 referenceHeight) noexce
         return Status::InvalidState;
     }
     State& state = *mState;
-    if (state.HasOpenFrame == true || state.HasExternalRecording == true || HasUnconfirmedEncoding() == true)
+    if (state.Recording.IsOpen() == true || state.HasExternalRecording == true || HasUnconfirmedEncoding() == true)
     {
         return Status::InvalidState;
     }
@@ -3419,7 +3419,7 @@ Status RenderGraph::GetPersistentBuffer(uint32 resource, rhi::BufferHandle& outB
     {
         return Status::Unsupported;
     }
-    if (state.IsReady == false || state.HasOpenFrame == true || state.HasExternalRecording == true ||
+    if (state.IsReady == false || state.Recording.IsOpen() == true || state.HasExternalRecording == true ||
         state.Pending.Get() != nullptr || state.PendingCamera.Get() != nullptr || state.Resizing.Get() != nullptr ||
         (state.Producer.IsNull() == false && rhi::GetStatus(state.Device, state.Producer) != Status::Ready))
     {
@@ -3481,7 +3481,7 @@ Status RenderGraph::pollPreparation() noexcept
         return Status::InvalidState;
     }
     const Status admitted = CheckDevice(state.Device);
-    if (admitted != Status::Ready || state.HasOpenFrame == true)
+    if (admitted != Status::Ready || state.Recording.IsOpen() == true)
     {
         return admitted == Status::Ready ? Status::InvalidState : admitted;
     }
@@ -3778,7 +3778,7 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
         return Status::InvalidState;
     }
     const Status admitted = CheckDevice(state.Device);
-    if (admitted != Status::Ready || state.HasOpenFrame == true || state.IsReady == false)
+    if (admitted != Status::Ready || state.Recording.IsOpen() == true || state.IsReady == false)
     {
         return admitted != Status::Ready ? admitted : Status::NotReady;
     }
@@ -4790,7 +4790,7 @@ Status RenderGraph::Render(rhi::SurfaceHandle surface,
     {
         return Status::InvalidState;
     }
-    if (state.HasOpenFrame == true)
+    if (state.Recording.IsOpen() == true)
     {
         return state.FinishFrame(outCompletion);
     }
@@ -4825,18 +4825,17 @@ Status RenderGraph::Render(rhi::SurfaceHandle surface,
     {
         return prepared;
     }
-    const rhi::DeviceStatus started = rhi::BeginFrame(state.Device, surface);
-    if (started != rhi::DeviceStatus::Ready)
+    const Status started = state.Recording.Begin(surface);
+    if (started != Status::Ready)
     {
-        return rhi::ToRasterStatus(started);
+        return started;
     }
-    state.HasOpenFrame = true;
-    static_cast<void>(state.EncodePasses(surface));
+    state.Recording.Record(state.EncodePasses(surface));
     return state.FinishFrame(outCompletion);
 }
 Status RenderGraph::Encode(rhi::SurfaceHandle surface) noexcept
 {
-    if (mState.Get() == nullptr || mState->HasOpenFrame == true || mState->HasExternalRecording == true)
+    if (mState.Get() == nullptr || mState->Recording.IsOpen() == true || mState->HasExternalRecording == true)
     {
         return Status::InvalidState;
     }
