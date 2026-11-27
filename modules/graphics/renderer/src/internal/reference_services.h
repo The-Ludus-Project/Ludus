@@ -129,6 +129,8 @@ constexpr uint32 HDR_UTD_CONNECTION_FLAG = 2048;
 constexpr uint32 HDR_FRAUNHOFER_CONNECTION_FLAG = 4096;
 /// LUHDR01 flags bit identifying ReferenceOpticalSpectrum::Visible; always set with HDR_OPTICAL_FLAG.
 constexpr uint32 HDR_VISIBLE_SPECTRUM_FLAG = 8192;
+/// LUHDR01 flags bit identifying ReferenceOpticalPathSampling::Bidirectional; always set with HDR_OPTICAL_FLAG.
+constexpr uint32 HDR_BIDIRECTIONAL_FLAG = 16384;
 constexpr usize HDR_SCENE_FINGERPRINT_OFFSET = 64;
 constexpr usize HDR_OPTICAL_WAVELENGTH_OFFSET = 92;
 
@@ -171,6 +173,10 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
     if (inoutJob.Description.OpticalSpectrum == ReferenceOpticalSpectrum::Visible)
     {
         uniform.Sampling[2] |= LUDUS_REFERENCE_VISIBLE_SPECTRUM_FLAG;
+    }
+    if (inoutJob.Description.OpticalPathSampling == ReferenceOpticalPathSampling::Bidirectional)
+    {
+        uniform.Sampling[2] |= LUDUS_REFERENCE_BIDIRECTIONAL_FLAG;
     }
     uniform.Options.Y = inoutJob.Description.OpticalWavelengthWorld;
     uniform.Tile[0] = inoutJob.DirectionalLightCount;
@@ -268,7 +274,7 @@ bool SameReferenceIntegral(const ReferenceJob& a,
         d.Seed != b.Seed || d.CenterRays != b.CenterRays || d.LightSampling != b.LightSampling ||
         d.MaterialProfile != b.MaterialProfile || d.OpticalWavelengthWorld != b.OpticalWavelengthWorld ||
         d.OpticalConnection != b.OpticalConnection || d.OpticalSpectrum != b.OpticalSpectrum ||
-        a.Sky.Words != sky.Words || d.LightCount != lights.Count ||
+        d.OpticalPathSampling != b.OpticalPathSampling || a.Sky.Words != sky.Words || d.LightCount != lights.Count ||
         internal::IsSameReferenceMedium(a.Medium, b.MediumOrNull) == false)
     {
         return false;
@@ -320,6 +326,12 @@ Status ValidateReferenceDescription(const ReferenceCaptureDescription& d, LightS
     if ((d.OpticalSpectrum != ReferenceOpticalSpectrum::Monochromatic &&
          d.OpticalSpectrum != ReferenceOpticalSpectrum::Visible) ||
         (d.OpticalSpectrum == ReferenceOpticalSpectrum::Visible && d.OpticalWavelengthWorld == 0))
+    {
+        return Status::InvalidDescription;
+    }
+    if ((d.OpticalPathSampling != ReferenceOpticalPathSampling::CameraSubpaths &&
+         d.OpticalPathSampling != ReferenceOpticalPathSampling::Bidirectional) ||
+        (d.OpticalPathSampling == ReferenceOpticalPathSampling::Bidirectional && d.OpticalWavelengthWorld == 0))
     {
         return Status::InvalidDescription;
     }
@@ -2130,7 +2142,9 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
         (job.Description.OpticalConnection == ReferenceOpticalConnection::FraunhoferEdgeDiffraction
              ? HDR_FRAUNHOFER_CONNECTION_FLAG
              : 0U) |
-        (job.Description.OpticalSpectrum == ReferenceOpticalSpectrum::Visible ? HDR_VISIBLE_SPECTRUM_FLAG : 0U);
+        (job.Description.OpticalSpectrum == ReferenceOpticalSpectrum::Visible ? HDR_VISIBLE_SPECTRUM_FLAG : 0U) |
+        (job.Description.OpticalPathSampling == ReferenceOpticalPathSampling::Bidirectional ? HDR_BIDIRECTIONAL_FLAG
+                                                                                            : 0U);
     Put32(output + 44, flags);
     Put64(output + 48, job.Description.Seed);
     Put64(output + 56, job.Info.Revision);

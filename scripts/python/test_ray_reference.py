@@ -129,6 +129,19 @@ class ReferenceExportTests(unittest.TestCase):
                 struct.pack_into('<f', data, 92, wavelength)
                 with self.assertRaises(ValueError): hdr.decode(data)
 
+    def test_bidirectional_optical_capture_is_identified(self):
+        data = self.capture()
+        struct.pack_into('<f', data, 92, 550e-9)
+        struct.pack_into('<I', data, 44, 32 | 64 | 256)
+        self.assertEqual(hdr.decode(data)[0]['optical_path_sampling'], 'camera_subpaths')
+        struct.pack_into('<I', data, 44, 32 | 64 | 256 | 16384)
+        self.assertEqual(hdr.decode(data)[0]['optical_path_sampling'], 'bidirectional')
+        self.assertIsNone(hdr.decode(self.capture())[0]['optical_path_sampling'])
+        # Only an optical capture traces light subpaths.
+        struct.pack_into('<f', data, 92, 0)
+        struct.pack_into('<I', data, 44, 32 | 64 | 16384)
+        with self.assertRaises(ValueError): hdr.decode(data)
+
     def test_medium_capture_reports_its_absorption_and_boundary(self):
         data = self.capture()
         struct.pack_into('<I', data, 44, 32 | 64 | 512)
