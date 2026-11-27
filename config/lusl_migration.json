@@ -55,6 +55,14 @@
       "reason": "Differential oracle of the LUSL recipe renderer_composite.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
     },
     {
+      "path": "modules/graphics/renderer/shaders/renderer_deferred_depth.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_deferred_depth.lusl (L5d wave 2), which the render-graph forward profile now lowers and wraps as its DeferredDepthCopy fragment"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_flat.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_flat.lusl (L5d wave 2): the renderer GPU suites draw the viewport and L4 scenes with both programs on one device and require identical pixels"
+    },
+    {
       "path": "modules/graphics/renderer/shaders/renderer_grid.slang",
       "reason": "Differential oracle of the LUSL recipe renderer_grid.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
     },
@@ -77,6 +85,10 @@
     {
       "path": "modules/graphics/renderer/shaders/renderer_material.slang",
       "reason": "Differential oracle of the LUSL recipe renderer_material.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_output.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_output.lusl (L5d wave 2): the renderer GPU suites draw every display mode with both programs on one device and require identical pixels; scripts/python/test_formatting.py formats it as a Slang sample"
     },
     {
       "path": "modules/graphics/renderer/shaders/renderer_overlay.slang",
@@ -121,6 +133,10 @@
     {
       "path": "modules/graphics/renderer/shaders/renderer_selection_outline.slang",
       "reason": "Differential oracle of the LUSL recipe renderer_selection_outline.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_shadow.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_shadow.lusl (L5d wave 2): the renderer GPU suites draw the L4 shadow atlases with both programs on one device and require identical pixels"
     },
     {
       "path": "modules/graphics/renderer/shaders/renderer_skin_blur.slang",

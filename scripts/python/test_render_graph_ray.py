@@ -31,6 +31,32 @@ HELPER_ROOTS = ('cmake/shaders', 'modules/graphics/renderer/shaders',
                 'modules/graphics/renderer/include/ludus/graphics/renderer/detail', 'config')
 
 
+# A stand-in luslc for builds whose forward-profile recipes are LUSL: it writes a placeholder module and reports one
+# configuration read per --define, as luslc does for the target macros those recipes test.
+STAND_IN_LUSLC = (
+    '#!{python}\n'
+    'import sys\n'
+    'arguments = sys.argv[1:]\n'
+    'value = lambda key: arguments[arguments.index(key) + 1]\n'
+    'defines = arguments.count("--define")\n'
+    'open(value("--output"), "w").write("// lowered " + arguments[-1] + "\\n")\n'
+    'open(value("--report"), "w").write(("configuration-read-mask\\t" + "1" * defines + "\\n") if defines else "")\n')
+
+
+def stand_in_luslc(directory):
+    """Environment for a build without compilers: $LUDUS_LUSLC when set, else a POSIX stand-in in directory.
+    Returns None when neither exists (Windows without LUDUS_LUSLC)."""
+    if os.environ.get('LUDUS_LUSLC'):
+        return {'LUDUS_LUSLC': os.environ['LUDUS_LUSLC']}
+    if os.name == 'nt':
+        return None
+    import sys
+    path = Path(directory) / 'luslc'
+    path.write_text(STAND_IN_LUSLC.format(python=sys.executable))
+    path.chmod(0o755)
+    return {'LUDUS_LUSLC': str(path)}
+
+
 def stage_helper(destination):
     """Stage the installed helper layout without CMake; each name keeps its first owner."""
     destination.mkdir()
@@ -153,8 +179,14 @@ class RayHelperStagingTests(unittest.TestCase):
             source = graph.new_workspace(root / 'sources', output='offscreen', profiles=('metal',),
                                          renderer_static=True, template='forward-lit')
             helper = stage_helper(root / 'helpers')
-            snapshot, *_ = build.prepare_sources(source.with_suffix('').with_suffix('.lushader.json'), helper)
+            # The forward profile lowers its LUSL recipes, so the build needs a luslc.
+            environment = stand_in_luslc(root)
+            if environment is None:
+                self.skipTest('set LUDUS_LUSLC to lower the LUSL forward recipes')
+            with patch.dict(os.environ, environment):
+                snapshot, *_ = build.prepare_sources(source.with_suffix('').with_suffix('.lushader.json'), helper)
             self.assertIn('_ludus_forward/recipes.json', snapshot.files)
+            self.assertIn('_ludus_forward/renderer_output.lusl.slang', snapshot.files)
             self.assertEqual(sum(map(len, snapshot.files.values())), snapshot.total)
 
     def test_staged_helpers_carry_every_helper_file_they_include(self):

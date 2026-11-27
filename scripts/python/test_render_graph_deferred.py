@@ -1,5 +1,6 @@
 """Deferred callback selection and stable cooked-role ABI regressions."""
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,7 +30,7 @@ class DeferredTests(unittest.TestCase):
             class ReachedExpansion(Exception):
                 pass
 
-            def inspect(programs, techniques, *_):
+            def inspect(programs, techniques, *_, **__):
                 self.assertIn('DeferredLighting', programs)
                 self.assertNotIn('UnusedDraft', programs)
                 self.assertTrue(forward.is_deferred(techniques['DefaultStaticOpaque.ColorAndDepth']))
@@ -73,12 +74,17 @@ class DeferredTests(unittest.TestCase):
             expanded = {}
             original = forward.expand
 
-            def record(programs, techniques, snapshot, helper, build_module, has_surface_charts=False):
+            def record(programs, techniques, snapshot, helper, build_module, has_surface_charts=False, **options):
                 expanded['charts'] = has_surface_charts
-                expanded['result'] = original(programs, techniques, snapshot, helper, build_module, has_surface_charts)
+                expanded['result'] = original(programs, techniques, snapshot, helper, build_module, has_surface_charts,
+                                              **options)
                 return expanded['result']
 
-            with patch.object(forward, 'expand', side_effect=record):
+            # The forward profile lowers its LUSL recipes, so the build needs a luslc.
+            environment = ray_tests.stand_in_luslc(root)
+            if environment is None:
+                self.skipTest('set LUDUS_LUSLC to lower the LUSL forward recipes')
+            with patch.object(forward, 'expand', side_effect=record), patch.dict(os.environ, environment):
                 build.prepare_sources(source.with_suffix('').with_suffix('.lushader.json'), helper)
             # The Raster starter connects Baked Lighting, so both baked G-buffer wrappers are generated; the
             # forward chart fragment is not, because the deferred G-buffer consumes the chart.

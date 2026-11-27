@@ -69,7 +69,7 @@ RenderFrame ExtractExample()
 }
 // Independent restatement of the Renderer's display transform for a Linear8 RasterViewport at
 // exposure one: the linear colour is stored in an 8-bit target, then per-channel Reinhard, then
-// the sRGB transfer function, then an 8-bit display image (renderer_output.slang).
+// the sRGB transfer function, then an 8-bit display image (renderer_output.lusl).
 uint8 GetDisplayCode(float32 linear, bool isAlpha)
 {
     if (isAlpha == true)

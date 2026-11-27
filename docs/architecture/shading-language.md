@@ -1103,8 +1103,9 @@ listed in the retained list with its reason:
 
 **Wave 2 status.** The self-contained raster recipes are LUSL:
 `renderer_composite`, `renderer_overlay`, `renderer_grid`,
-`renderer_selection_mask`, `renderer_selection_outline` and the unlit material
-program, `renderer_material`. So are the skin
+`renderer_selection_mask`, `renderer_selection_outline`, the unlit material
+program, `renderer_material`, and the forward-profile support recipes `renderer_flat`,
+`renderer_shadow`, `renderer_output` and `renderer_deferred_depth`. So are the skin
 diffusion passes of the clustered deferred profile, `renderer_skin_blur` and
 `renderer_skin_composite`, the atmosphere table and display passes,
 `renderer_atmosphere_transmittance`, `renderer_atmosphere_multiple`,
@@ -1203,17 +1204,31 @@ sampler, binds by the generated slots, and checks every pixel against the image 
 the fixture inputs. The original must produce the same bytes. A linear sampler, standing in
 for a wrong sampler binding, must change the pixels next to each texel edge. The macOS batch
 plan builds and runs the same fixture from a relocated copy of the installed SDK. That run
-prints the reflected binding kinds, and both runs print the image's hash. `renderer_flat`,
-`renderer_shadow` and `renderer_deferred_depth` stay Slang for now. The render-graph forward profile
-(`scripts/python/ludus_tools/render_graph_forward.py`) includes their sources in generated Slang
-wrappers and calls their entry points by name (`ForwardFlatShadow`, `DeferredDepthCopy`), and
-`cmake/LudusRenderGraph.cmake` stages their sources as render-graph helpers. They migrate with
-that profile. The GPU preview kernel and its image pass stay Slang for the same reason as the forward
-profile: `render_graph_ray.py` includes both sources in every generated ray wrapper, and
+prints the reflected binding kinds, and both runs print the image's hash. 
+
+The render-graph forward profile (`scripts/python/ludus_tools/render_graph_forward.py`) includes renderer
+recipes in generated Slang wrappers and calls their entry points by name (`ForwardFlatShadow`,
+`DeferredDepthCopy`), and `cmake/LudusRenderGraph.cmake` stages their sources as render-graph helpers. For a
+recipe whose source is LUSL, the profile lowers the captured recipe with `luslc` and includes the generated module,
+whose `_lusl` helpers it suffixes per recipe. The flat, shadow, output and deferred depth recipes are ported this
+way. Their structs and entry names stay those the wrappers name (`Input`, `Varying`, `DeferredVarying`,
+`DeferredDepthOutput`), and the manifest renames the flat entries `VertexMain` and `FragmentMain`.
+`DeferredDepthMain` stays a plain function, as in the original, because the shader worker's Slang never finished
+that entry point's parameter transform. `renderer_output.lusl` replaces its search-offset table with a switch,
+because LUSL has no constant array initializer. It spells its display helpers' `[noinline]` through a macro,
+as the original's `LUDUS_SHADER_NOINLINE_WHEN_SUPPORTED` does. The macro is empty under the `LUDUS_DXIL` target
+macro, which `lower_lusl.py` and the render-graph lowering now treat like `LUDUS_GLSL_ES`. SPIR-V keeps the
+attribute as `DontInline`. The Metal build restores `[noinline]` only where a source line spells it
+(`restore_metal_noinline`), so Metal inlines these helpers for both programs. A first port that spelled
+`[noinline]` directly kept them out of line on Metal and made the 1080p Balanced pass 0.74–0.90 ms slower; the
+in-process A/B timing found it. The viewport's display pass draws all 24 combinations of antialiasing mode, tone curve,
+colour mode and backdrop with both programs. The L4 shadow scene draws its cascade and spot atlases with both,
+before and after its caster moves. Every byte matches. The default-graph pixel suites cook the default graph
+through the lowered recipes. The GPU preview kernel and its image pass stay Slang for now: `render_graph_ray.py` includes both sources in every generated ray wrapper, and
 `scene_shader.luslh.in` includes the kernel as the render-graph ray prelude. They migrate with the
-render-graph scene interface. The lit, output, deferred lighting and material and skin resolve
-programs are staged render-graph helpers or include one, and migrate with the render-graph
-tooling. The renderer shader directory joins the migrated scope with the last of them.
+render-graph scene interface. The lit, deferred lighting and material and skin resolve
+programs take configuration macros from their wrappers and migrate in later changes, which lower a
+shared body header once per configuration. The renderer shader directory joins the migrated scope with the last of them.
 
 ### Acceptance
 

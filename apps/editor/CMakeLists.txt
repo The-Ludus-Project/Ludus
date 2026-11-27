@@ -1249,6 +1249,11 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         # Hosted Windows took 50.5 s on 2026-11-24.
         set(code_editor_timeout 120)
     endif()
+    # Render-graph builds lower the forward profile's LUSL recipes. The substitute SDKs of these tests copy the
+    # shader helpers without bin/luslc, so name this tree's luslc (render_graph_language.find_luslc).
+    if(TARGET luslc)
+        list(APPEND editor_test_environment "LUDUS_LUSLC=$<TARGET_FILE:luslc>")
+    endif()
     if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
         # Hosted Windows MSVC ASan took 67.7 s on 2026-11-24, 75% of the former
         # 90 s limit; instrumented macOS runs grow with the same suite.

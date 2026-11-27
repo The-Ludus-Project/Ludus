@@ -508,7 +508,10 @@ TEST_CASE("The LUSL overlay recipe renders its Slang original's pixels", "[rende
     CHECK(lusl[red] == 255);
     CHECK(lusl[red + 1] == 0);
 }
+#include "baseline_renderer_flat.h"
 #include "baseline_renderer_material.h"
+#include "baseline_renderer_output.h"
+#include "baseline_renderer_shadow.h"
 #include "l3_color.h"
 #include "l3_scene.h"
 #include "renderer_material.h"
@@ -1351,6 +1354,110 @@ TEST_CASE("L4 baked direct diffuse and immutable cascade/spot atlases survive ca
             REQUIRE(rhi::Destroy(device, scene.Display) == rhi::RasterStatus::Ready);
         }
         CHECK(std::memcmp(images[0], images[1], sizeof(images[0])) == 0);
+    }
+}
+
+TEST_CASE("The LUSL recipes of the L4 shadow scene render their Slang originals' pixels", "[renderer][l4][gpu][lusl]")
+{
+    // LUSL L5d wave 2: the L4 baked, cascade and spot shadow scene, before and after its caster moves, drawn with
+    // renderer_flat, renderer_output and renderer_shadow and with their Slang originals (shaders/renderer_flat.slang,
+    // renderer_output.slang, renderer_shadow.slang) on one device; every byte must match.
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::StartupInfo failure;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    const auto started = rhi::CreateDevice({}, { .Width = 96, .Height = 64 }, description, device, surface, &failure);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rhi::RasterCapabilities caps;
+    REQUIRE(rhi::GetRasterCapabilities(device, caps) == rhi::RasterStatus::Ready);
+    constexpr usize PROGRAM_SETS = 2;
+    constexpr usize CASTER_STATES = 2;
+    constexpr usize IMAGE_BYTES = usize{96} * 64 * 4;
+    for (usize hdr = 0; hdr < (caps.HdrColor ? 2U : 1U); ++hdr)
+    {
+        static uint8 images[PROGRAM_SETS][CASTER_STATES][IMAGE_BYTES];
+        for (usize set = 0; set < PROGRAM_SETS; ++set)
+        {
+            const bool isLusl = set == 0;
+            rr::Renderer renderer;
+            ludus::qa::L4Scene scene;
+            scene.Hdr = hdr != 0;
+            REQUIRE(renderer.Initialize(device,
+                                        isLusl == true ? ludus::shaders::renderer_flat::Vertex()
+                                                       : ludus::shaders::baseline_renderer_flat::Vertex(),
+                                        isLusl == true ? ludus::shaders::renderer_flat::Fragment()
+                                                       : ludus::shaders::baseline_renderer_flat::Fragment()) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(renderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
+                                             ludus::shaders::renderer_composite::Fragment()) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(renderer.InitializeLighting(isLusl == true ? ludus::shaders::renderer_output::Vertex()
+                                                               : ludus::shaders::baseline_renderer_output::Vertex(),
+                                                isLusl == true ? ludus::shaders::renderer_output::Fragment()
+                                                               : ludus::shaders::baseline_renderer_output::Fragment(),
+                                                isLusl == true
+                                                    ? ludus::shaders::renderer_shadow::Fragment()
+                                                    : ludus::shaders::baseline_renderer_shadow::Fragment()) ==
+                    rhi::RasterStatus::Ready);
+            auto status = renderer.PrewarmLitProgram(ludus::shaders::renderer_lit::Vertex(),
+                                                     ludus::shaders::renderer_lit::Fragment(),
+                                                     ludus::shaders::renderer_lit_shadow::Fragment(),
+                                                     scene.Program);
+            REQUIRE(ludus::qa::L4Scene::Accepted(status));
+            for (usize i = 0; i < 100000; ++i)
+            {
+                status = scene.Advance(renderer, device, surface);
+                if (status != rhi::RasterStatus::Pending && status != rhi::RasterStatus::NotReady)
+                {
+                    break;
+                }
+            }
+            REQUIRE(status == rhi::RasterStatus::Ready);
+            for (usize moved = 0; moved < CASTER_STATES; ++moved)
+            {
+                if (moved != 0)
+                {
+                    status = scene.MoveCaster(renderer);
+                    for (usize i = 0; i < 100000 && status == rhi::RasterStatus::Pending; ++i)
+                    {
+                        status = scene.MoveCaster(renderer);
+                    }
+                    REQUIRE(status == rhi::RasterStatus::Ready);
+                }
+                REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+                REQUIRE(scene.Draw(renderer) == rhi::RasterStatus::Ready);
+                rhi::SubmissionToken completion;
+                REQUIRE(rhi::EndFrame(device, completion) == rhi::RasterStatus::Ready);
+                REQUIRE(rhi::backend::ReadHeadlessPixels(images[set][moved]));
+            }
+            renderer.Reset();
+            REQUIRE(rhi::Destroy(device, scene.Target) == rhi::RasterStatus::Ready);
+            REQUIRE(rhi::Destroy(device, scene.Display) == rhi::RasterStatus::Ready);
+        }
+        for (usize moved = 0; moved < CASTER_STATES; ++moved)
+        {
+            CAPTURE(hdr, moved);
+            CHECK(std::memcmp(images[0][moved], images[1][moved], IMAGE_BYTES) == 0);
+        }
+        // Equality is not vacuous: the caster shadows its receiver until it moves (the L4 shadow test's pixel).
+        const usize shadowed = (usize{32} * 96 + 48) * 4;
+        CHECK(images[0][0][shadowed] == 0);
+        CHECK(images[0][1][shadowed] > 0);
     }
 }
 

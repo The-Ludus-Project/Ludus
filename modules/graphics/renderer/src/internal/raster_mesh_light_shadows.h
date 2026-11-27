@@ -229,7 +229,7 @@ AppendRasterMeshLightShadowTable(foundation::Array<foundation::math::Vector4>& i
                                                     foundation::math::Vector2& outTexel,
                                                     foundation::float32& outDepth) noexcept;
 /// The 16-bit fixed-point code stored for a depth in [0, 1] (clamped), in the red and green channels of the RGBA8
-/// atlas as renderer_shadow.slang writes it.
+/// atlas as renderer_shadow.lusl writes it.
 [[nodiscard]] foundation::uint32 EncodeRasterMeshLightShadowDepth(foundation::float32 depth) noexcept;
 /// The depth an encoded code reads back as.
 [[nodiscard]] foundation::float32 DecodeRasterMeshLightShadowDepth(foundation::uint32 code) noexcept;

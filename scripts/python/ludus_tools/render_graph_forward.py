@@ -1,5 +1,11 @@
-"""The opt-in forward material ABI reuses renderer-owned recipes and preparation."""
+"""The opt-in forward material ABI reuses renderer-owned recipes and preparation.
+
+A recipe whose source is LUSL (`.lusl`) is lowered once per build (render_graph_language.lower_engine_recipe), and
+its wrappers include the generated module in place of the source.
+"""
 import re
+
+from . import render_graph_language as language
 
 PROFILE = {'version': 1, 'profile': 'ForwardLit'}
 DEFERRED_PROFILE = {'version': 1, 'profile': 'ClusteredDeferred'}
@@ -88,7 +94,7 @@ def material_layout(snapshot, build, is_clustered_profile=False):
     return {'offsets': offsets, 'shapes': shapes, 'size': surface_offset + (2 + coefficients + hair_words + skin_words) * word}
 
 
-def expand(programs, techniques, snapshot, helper, build, has_surface_charts=False):
+def expand(programs, techniques, snapshot, helper, build, has_surface_charts=False, *, luslc=None, lusl_style='strict'):
     selected = [technique for technique in techniques.values() if is_forward(technique)]
     if not selected:
         return programs
@@ -109,8 +115,21 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
         captured.add(relative)
         data = build.read(helper / filename)
         snapshot.capture(relative, data, external=helper / filename)
-        for child in re.findall(r'^\s*#\s*include\s+"([^"\n]+)"', data.decode(), re.M):
+        # LUSL names Slang libraries with `extern slang "path"` as well as headers with `#include`.
+        pattern = language.NAMED_PATH if filename.endswith(language.LANGUAGE_FILES) else re.compile(
+            r'^\s*#\s*include\s+"([^"\n]+)"', re.M)
+        for child in pattern.findall(data.decode()):
             capture(child)
+
+    def include(recipe_name, recipe):
+        """Capture a recipe and return the snapshot path its wrappers include: the source, or a LUSL source's
+        generated module."""
+        capture(recipe['source'])
+        relative = '_ludus_forward/' + recipe['source']
+        if language.is_language_source(recipe['source']) is False:
+            return relative
+        return language.lower_engine_recipe(snapshot, helper, build, relative, luslc=luslc, style=lusl_style,
+                                            suffix='Forward' + ''.join(part.title() for part in recipe_name.split('_')))
     technique = selected[0]
     depth = techniques.get('DefaultStaticOpaque.DepthOnly')
     build.require(depth is None or (is_clustered_profile and depth['vertex'] == technique['vertex']), 'Capability', 'ClusteredForward',
@@ -131,7 +150,7 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
         if is_clustered_profile and group in ('ForwardLit', 'ForwardShadow'):
             recipe_name = 'renderer_clustered_authored' + ('_shadow' if group == 'ForwardShadow' else '')
         recipe = recipes[recipe_name]
-        capture(recipe['source'])
+        recipe_path = include(recipe_name, recipe)
         for stage in stages:
             identity = support_program(techniques, group, stage)
             if group in BAKED_LIGHTING_GROUPS:
@@ -145,7 +164,7 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
                 source = '#define LUDUS_GRAPH_PROBE_GI 1\n'
             elif group == 'ForwardLit' and stage == 'fragment' and not is_clustered_profile:
                 source = '#define LUDUS_GRAPH_REALTIME 1\n'
-            source += '#include "_ludus_forward/' + recipe['source'] + '"\n'
+            source += '#include "' + recipe_path + '"\n'
             if original is not None:
                 source += '#include "' + original['source'] + '"\n'
             function = original['function'] if original is not None else recipe[stage]
@@ -162,20 +181,20 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
                 expression = 'PackDeferredMaterial(' + expression + ')'
             semantic = ' : SV_Target0' if stage == 'fragment' and output == 'float4' else ''
             source += '[shader("' + stage + '")]\n' + output + ' rgEntry(' + argument + ' value)' + semantic + '\n{\n    ' + ('' if group == 'ForwardDepth' else 'return ') + expression + ';\n}\n'
-            result[identity] = {'id': identity, 'stage': stage, 'source': original['source'] if original else '_ludus_forward/' + recipe['source'],
+            result[identity] = {'id': identity, 'stage': stage, 'source': original['source'] if original else recipe_path,
                                 'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [],
                                 'forward_wrapper': source, 'forward_group': group,
                                 'fragment_storage': group == 'DeferredLighting' and stage == 'fragment',
                                 'forward_layout': material_layout(snapshot, build, is_clustered_profile) if group in ('ForwardLit', 'ForwardSurfaceChart', 'ForwardShadow', *GBUFFER_GROUPS, 'DeferredLighting') else None}
     # The existing flat pair initializes the renderer's shared mesh/view services.
     recipe = recipes['renderer_flat']
-    capture(recipe['source'])
+    recipe_path = include('renderer_flat', recipe)
     for stage in ('vertex', 'fragment'):
         identity = 'ForwardSetup' + stage.title()
         output, argument = ('Varying', 'Input') if stage == 'vertex' else ('float4', 'Varying')
-        code = '#include "_ludus_forward/' + recipe['source'] + '"\n'
+        code = '#include "' + recipe_path + '"\n'
         code += '[shader("' + stage + '")]\n' + output + ' rgEntry(' + argument + ' value)' + (' : SV_Target0' if stage == 'fragment' else '') + '\n{\n    return ' + recipe[stage] + '(value);\n}\n'
-        result[identity] = {'id': identity, 'stage': stage, 'source': '_ludus_forward/' + recipe['source'],
+        result[identity] = {'id': identity, 'stage': stage, 'source': recipe_path,
                             'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'forward_wrapper': code,
                             'forward_group': 'ForwardSetup'}
     # A regular raster technique needs its own authored entries. The forward profile wraps its

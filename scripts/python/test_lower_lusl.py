@@ -103,7 +103,7 @@ class LowerLuslTests(unittest.TestCase):
                          ['DIAGNOSTIC_SCALE=0.5', 'FAST=1', 'EMPTY='])
 
     def test_defines_reject_the_driver_macro_and_malformed_names(self):
-        for define in ('LUDUS_GLSL_ES=1', 'LUDUS_GLSL_ES', '2FAST=1', '=1', 'A-B=1'):
+        for define in ('LUDUS_GLSL_ES=1', 'LUDUS_GLSL_ES', 'LUDUS_DXIL=1', 'LUDUS_DXIL', '2FAST=1', '=1', 'A-B=1'):
             with self.subTest(define=define), contextlib.redirect_stderr(io.StringIO()) as errors:
                 with self.assertRaises(SystemExit):
                     lower_lusl.parse_defines([define])
@@ -139,6 +139,40 @@ class LowerLuslTests(unittest.TestCase):
             for call, glsl_es in zip(calls, ('0', '1')):
                 self.assertIn('--define DIAGNOSTIC_SCALE=0.5 --define FAST=1 --define LUDUS_GLSL_ES=' + glsl_es, call)
             self.assertIn('SETTINGS = 0;', (output / 'sample_slots.h').read_text())
+
+    @unittest.skipIf(os.name == 'nt', 'the stand-in luslc is a POSIX script')
+    def test_each_target_macro_doubles_the_lowerings(self):
+        """A source testing LUDUS_GLSL_ES and LUDUS_DXIL is lowered for all four combinations and selects one."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / 'arguments.txt'
+            luslc = root / 'luslc'
+            luslc.write_text(f'#!{sys.executable}\n'
+                             'import sys\n'
+                             'arguments = sys.argv[1:]\n'
+                             f'open({str(log)!r}, "a").write(" ".join(arguments) + "\\n")\n'
+                             'value = lambda key: arguments[arguments.index(key) + 1]\n'
+                             'defines = [arguments[i + 1] for i, a in enumerate(arguments) if a == "--define"]\n'
+                             'open(value("--output"), "w").write("// lowered " + " ".join(defines) + "\\n")\n'
+                             'open(value("--report"), "w").write("binding\\tmain.lusl:1\\timage\\tTexture2D\\t0\\n")\n')
+            luslc.chmod(0o755)
+            shaders = root / 'shaders'
+            shaders.mkdir()
+            (shaders / 'main.lusl').write_text('#if LUDUS_GLSL_ES == 0 && LUDUS_DXIL == 0\n#endif\n')
+            output = root / 'out'
+            arguments = ['lower_lusl.py', '--luslc', str(luslc), '--root', str(shaders), '--source', 'main.lusl',
+                         '--name', 'sample', '--output', str(output / 'sample.lusl.slang'),
+                         '--slots', str(output / 'sample_slots.h'), '--depfile', str(output / 'lusl.d')]
+            with mock.patch.object(sys, 'argv', arguments):
+                self.assertEqual(lower_lusl.main(), 0)
+            calls = log.read_text().splitlines()
+            self.assertEqual(len(calls), 4)
+            module = (output / 'sample.lusl.slang').read_text()
+            for glsl_es in ('0', '1'):
+                for dxil in ('0', '1'):
+                    self.assertIn(f'// lowered LUDUS_GLSL_ES={glsl_es} LUDUS_DXIL={dxil}', module)
+            self.assertIn('#if _LUSL_SELECT_LUDUS_GLSL_ES', module)
+            self.assertIn('#if _LUSL_SELECT_LUDUS_DXIL', module)
 
     def test_depfile_names_the_requested_target(self):
         """ludus_generate_shader_slots builds only the slot header, so its depfile must name it."""

@@ -712,7 +712,7 @@ bool LocateRasterMeshLightShadowTexel(const MeshLightShadowCaster& caster,
 uint32 EncodeRasterMeshLightShadowDepth(float32 depth) noexcept
 {
     const float32 clamped = math::Clamp(math::IsFinite(depth) == true ? depth : 1.0F, 0.0F, 1.0F);
-    // Round to nearest as renderer_shadow.slang does: floor(depth * 65535 + 0.5).
+    // Round to nearest as renderer_shadow.lusl does: floor(depth * 65535 + 0.5).
     return static_cast<uint32>(
         math::Floor(static_cast<float64>(clamped) * static_cast<float64>(DEPTH_CODE_MAXIMUM) + 0.5));
 }

@@ -20,9 +20,9 @@
     "compute": "ComputeMain"
   },
   "renderer_flat": {
-    "source": "renderer_flat.slang",
-    "vertex": "vertexMain",
-    "fragment": "fragmentMain"
+    "source": "renderer_flat.lusl",
+    "vertex": "VertexMain",
+    "fragment": "FragmentMain"
   },
   "renderer_composite": {
     "source": "renderer_composite.lusl",
@@ -55,12 +55,12 @@
     "fragment": "FragmentMain"
   },
   "renderer_shadow": {
-    "source": "renderer_shadow.slang",
+    "source": "renderer_shadow.lusl",
     "vertex": "VertexMain",
     "fragment": "FragmentMain"
   },
   "renderer_output": {
-    "source": "renderer_output.slang",
+    "source": "renderer_output.lusl",
     "vertex": "VertexMain",
     "fragment": "FragmentMain"
   },
@@ -278,7 +278,7 @@
     "fragment": "DeferredLightingMain"
   },
   "renderer_deferred_depth": {
-    "source": "renderer_deferred_depth.slang",
+    "source": "renderer_deferred_depth.lusl",
     "vertex": "DeferredVertexMain",
     "fragment": "DeferredDepthMain"
   }
