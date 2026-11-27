@@ -260,7 +260,14 @@ def expand(template, tool):
         elif stripped.startswith('@'):
             raise TemplateError(f'{where}: unknown directive {stripped.split()[0]}')
         elif declarations is not None:
-            lines.append(INDENT + stripped if stripped else '')
+            # A hand-written line keeps the template's indentation, such as a struct body's; an unindented one
+            # takes the block's.
+            if stripped == '':
+                lines.append('')
+            elif line[0] in ' \t':
+                lines.append(line.rstrip())
+            else:
+                lines.append(INDENT + stripped)
         else:
             lines.append(line.rstrip())
     if declarations is not None:

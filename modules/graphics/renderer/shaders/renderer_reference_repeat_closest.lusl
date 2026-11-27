@@ -1,0 +1,7 @@
+// Diagnostic kernel of the wavefront hit-shading qualification: every closest-hit query is traced twice.
+// Transport, pixel and sample addresses are unchanged; see renderer_reference_transport.luslh.
+#define LUDUS_REFERENCE_REPEATED_CLOSEST_TRAVERSALS 1
+#define LUDUS_REFERENCE_REPEATED_VISIBILITY_TRAVERSALS 0
+#define LUDUS_REFERENCE_PERMUTED_PIXELS 0
+#define LUDUS_REFERENCE_OPTICAL_CONNECTIONS 0
+#include "renderer_reference_transport.luslh"

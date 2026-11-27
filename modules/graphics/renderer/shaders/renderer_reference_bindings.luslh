@@ -1,0 +1,263 @@
+// Generated from renderer_reference_bindings.luslh.in by cmake/shaders/generate_luslh.py from Slang reflection;
+// edit the template, not this file.
+// LUSL declarations of the reference kernels' bindings and Slang libraries (renderer_reference_bindings.slang), for
+// renderer_reference_transport.luslh (LUSL L5d wave 2). The block names the bindings file, so lowering includes it
+// once; it includes every library below, which the kernels reach without further includes.
+#pragma once
+
+/// Columns of LinearlyTransformedCosine's 3x3 transforms.
+static const uint32 TRANSFORM_COLUMNS = 3;
+
+extern slang "renderer_reference_bindings.slang"
+{
+    /// The Parameters fields (renderer_reference_layout.h documents their words).
+    float32x4x4 ClipToEye;
+    float32x4 CameraPositionWorld;
+    uint32x4 Dimensions;
+    uint32x4 Offsets;
+    uint32x4 Counts;
+    uint32x4 Sampling;
+    float32x4 Environment;
+    float32x4 Options;
+    float32x4 BoundsMinimumWorld;
+    float32x4 BoundsMaximumWorld;
+    uint32x4 SurfaceLayout;
+    uint32x4 Tile;
+    /// The scene, accumulation, status and texel buffers.
+    StructuredBuffer<uint32x4> sceneWords;
+    RWStructuredBuffer<float32x4> accumulation;
+    RWStructuredBuffer<uint32x4> status;
+    StructuredBuffer<uint32x4> textureWords;
+    /// Polygon distributions of ReferenceTriangleLight, which the kernels pass to the samplers unopened; their array
+    /// fields have no named LUSL size. No kernel zeroes a value that holds one.
+    struct ProjectedSolidAnglePolygon;
+    struct LinearlyTransformedCosinePolygon;
+    /// ReferenceReceiverFrame's specular distribution, declared in full so that zeroing a frame zeroes it.
+    struct LinearlyTransformedCosine
+    {
+        float32x3 InverseTransform[TRANSFORM_COLUMNS];
+        float32x3 Transform[TRANSFORM_COLUMNS];
+        float32 InverseDeterminant;
+    };
+    struct BvhHit
+    {
+        uint32 Triangle;
+        float32 DistanceWorld;
+        float32x2 Barycentric;
+        bool HasExceededStack;
+    };
+    struct BvhRay
+    {
+        float32x3 OriginWorld;
+        float32x3 DirectionWorld;
+        float32 MinimumDistanceWorld;
+        float32 MaximumDistanceWorld;
+    };
+    struct CoatingEvaluation
+    {
+        float32x3 Value;
+        float32 Pdf;
+    };
+    struct CoatingMaterial
+    {
+        float32x3 BaseColor;
+        float32 Alpha;
+        float32 Eta;
+        float32 Thickness;
+    };
+    struct CoatingRandomContext
+    {
+        uint32x2 Key;
+        RandomAddress Address;
+    };
+    struct CoatingSample
+    {
+        float32x3 DirectionWorld;
+        float32x3 Weight;
+        float32 MisPdf;
+        bool Accepted;
+    };
+    struct DielectricSample
+    {
+        float32x3 DirectionWorld;
+        float32x3 Weight;
+        bool HasSample;
+    };
+    enum class MaterialModel : uint32
+    {
+        MetallicRoughness = 0,
+        Diffuse = 1,
+        Conductor = 2,
+        CoatedDiffuse = 3,
+        Dielectric = 4,
+        ThinDielectric = 5,
+        DiffuseConductorMix = 6,
+        ProjectBrdf = 8,
+        Program = 9,
+        HairCard = 11,
+        Skin = 12,
+    };
+    struct MaterialProgramInputs
+    {
+        float32x3 BaseColor;
+        float32 Roughness;
+        float32 Metallic;
+    };
+    struct ReferenceReceiverFrame
+    {
+        float32x3 PositionWorld;
+        float32x3 TangentWorld;
+        float32x3 BitangentWorld;
+        float32x3 NormalWorld;
+        LinearlyTransformedCosine Specular;
+        bool HasSpecular;
+        float32 DiffuseAlbedoLuminance;
+        float32 SpecularAlbedoLuminance;
+    };
+    struct ReferenceTriangleLight
+    {
+        ProjectedSolidAnglePolygon Diffuse;
+        LinearlyTransformedCosinePolygon Specular;
+        float32 DiffuseIntegral;
+        float32 SpecularIntegral;
+    };
+    struct SurfaceParameters
+    {
+        float32x3 NormalTangent;
+        float32 Metallic;
+        float32 Roughness;
+    };
+    struct WeightedReservoir
+    {
+        float32 WeightSum;
+        uint32 CandidateCount;
+        uint32 SelectedIndex;
+    };
+    static const uint32 ATMOSPHERE_PLANET_CAPACITY;
+    static const uint32 REFERENCE_DIFFUSE_TECHNIQUE;
+    static const float32 REFERENCE_LIGHT_TECHNIQUE_VISIBILITY;
+    static const uint32 REFERENCE_SPECULAR_TECHNIQUE;
+    bool AttenuateMediumSegment(in float32x3 originWorld,
+                                in float32x3 directionWorld,
+                                in float32 lengthWorld,
+                                in bool shouldDeriveStart,
+                                inout uint32 inoutInside,
+                                out float32x3 outTransmittance);
+    float32x3 ComputeConductorFresnelRgb(in float32 cosine, in float32x3 eta, in float32x3 extinction);
+    float32 ComputeDielectricIndex(in float32 indexD, in float32 abbeNumber, in float32 wavelengthNanometers);
+    float32 ComputeGgxNormalDistribution(in float32x3 normalWorld, in float32x3 halfWorld, in float32 alphaSquared);
+    float32 ComputeMaterialAlpha(in MaterialModel model, in float32 roughness, in float32 conductorAlpha);
+    float32 ComputeMaterialSpecularProbability(in MaterialModel model, in float32 metallic);
+    float32 ComputePlanetPointWeight(in float32x3 directionWorld,
+                                     in float32x3 planetWorld,
+                                     in float32 angularFootprint);
+    float32x2 ComputeReferenceLightTechniqueWeights(in float32x2 coefficients,
+                                                    in float32x2 densities,
+                                                    in float32 visibility);
+    float32 ComputeReferenceLuminance(in float32x3 value);
+    float32x3 ConvertSpectralRadiance(in float32 spectralRadiance, in float32 wavelengthNanometers);
+    SurfaceParameters DecodeSurfaceParameters(in float32x4 texel,
+                                              in float32 metallic,
+                                              in float32 roughness,
+                                              in float32 normalScale);
+    float32x3 EvaluateCelestialStars(in float32x3 directionCelestial,
+                                     in float32 angularFootprint,
+                                     in float32 peakRadiance);
+    CoatingEvaluation EvaluateCoatedDiffuse(in CoatingMaterial bsdf,
+                                            in float32x3 normalWorld,
+                                            in float32x3 viewWorld,
+                                            in float32x3 lightWorld,
+                                            in CoatingRandomContext random);
+    float32 EvaluateLunarPhase(in float32x3 directionWorld,
+                               in float32x3 moonWorld,
+                               in float32x3 sunWorld,
+                               in float32 sineRadius);
+    float32x4 EvaluateMaterialProgram(in uint32 offset,
+                                      in MaterialProgramInputs inputs,
+                                      in float32x3 normalWorld,
+                                      in float32x3 viewWorld,
+                                      in float32x3 lightWorld);
+    float32x4 EvaluateProjectBrdf(in float32x3 color,
+                                  in float32 roughness,
+                                  in float32x3 weights,
+                                  in float32x3 powers,
+                                  in float32 viewCosine,
+                                  in float32 lightCosine);
+    float32x2 EvaluateReferenceLightTechniqueDensities(in ReferenceReceiverFrame frame,
+                                                       in ReferenceTriangleLight light,
+                                                       in float32x3 directionWorld);
+    float32 EvaluateReferenceSurrogateProbability(in float32 emissiveCategoryProbability,
+                                                  in float32 target,
+                                                  in float32 sourcePmf,
+                                                  in float32 targetTotal,
+                                                  in uint32 candidateCount);
+    float32x3 EvaluateSolarLimb(in float32 chord, in float32 chordRadius);
+    float32 EvaluateUpliftedSpectrum(in float32x3 linearRgb, in float32 wavelengthNanometers);
+    bool HasReservoirSelection(in WeightedReservoir reservoir);
+    bool HasRoughConductorLobe(in MaterialModel model);
+    bool IsDielectricModel(in MaterialModel model);
+    float32 LookupGgxAverageDeficit(in float32 alpha);
+    float32 LookupGgxDirectionalAlbedo(in float32 alpha, in float32 cosine);
+    ReferenceTriangleLight MakeEmptyReferenceTriangleLight(in ReferenceReceiverFrame frame);
+    ReferenceReceiverFrame MakeReferenceReceiverFrame(in float32x3 positionWorld,
+                                                      in float32x3 normalWorld,
+                                                      in float32x3 viewWorld,
+                                                      in float32x3 baseColor,
+                                                      in float32 metallic,
+                                                      in float32 roughness);
+    WeightedReservoir MakeWeightedReservoir();
+    CoatingSample SampleCoatedDiffuse(in CoatingMaterial bsdf,
+                                      in float32x3 normalWorld,
+                                      in float32x3 viewWorld,
+                                      in float32x3 samples,
+                                      in CoatingRandomContext random);
+    DielectricSample SampleDielectric(in MaterialModel model,
+                                      in float32 eta,
+                                      in bool isViewerInside,
+                                      in float32x3 normalWorld,
+                                      in float32x3 viewWorld,
+                                      in float32 lobeSample);
+    float32x3 SampleMaterialProgramDirection(in uint32 offset,
+                                             in MaterialProgramInputs inputs,
+                                             in float32x3 normalWorld,
+                                             in float32x3 viewWorld,
+                                             in float32x3 samples);
+    float32x3 SampleProjectBrdfDirection(in float32 roughness,
+                                         in float32x3 weights,
+                                         in float32x3 powers,
+                                         in float32x3 normalWorld,
+                                         in float32x3 viewWorld,
+                                         in float32x3 samples);
+    BvhHit TraceBvh(in BvhRay ray, in bool isVisibility, in uint32x2 excludedTriangles);
+    float32x3 TransformReferenceTangentToWorld(in ReferenceReceiverFrame frame, in float32x3 vectorTangent);
+    bool TryAddReservoirCandidate(inout WeightedReservoir inoutReservoir,
+                                  in float32 weight,
+                                  in float32 ticket,
+                                  out bool outIsSelected);
+    bool TryApproximateReferenceTriangleIntegrals(in ReferenceReceiverFrame frame,
+                                                  in float32x3 position0World,
+                                                  in float32x3 position1World,
+                                                  in float32x3 position2World,
+                                                  out float32x2 outIntegrals);
+    bool TryComputeReservoirContributionWeight(in WeightedReservoir reservoir,
+                                               in float32 selectedTarget,
+                                               out float32 outWeight);
+    bool TryIntersectReferenceTrianglePlane(in float32x3 originWorld,
+                                            in float32x3 directionWorld,
+                                            in float32x3 position0World,
+                                            in float32x3 position1World,
+                                            in float32x3 position2World,
+                                            out float32 outDistanceWorld,
+                                            out float32x2 outBarycentric);
+    bool TryPrepareReferenceTriangleLight(in ReferenceReceiverFrame frame,
+                                          in float32x3 position0World,
+                                          in float32x3 position1World,
+                                          in float32x3 position2World,
+                                          out ReferenceTriangleLight outLight);
+    bool TrySampleLinearlyTransformedCosinePolygon(in LinearlyTransformedCosinePolygon polygon,
+                                                   in float32x2 randomNumbers,
+                                                   out float32x3 outDirectionTangent);
+    bool TrySampleProjectedSolidAnglePolygon(in ProjectedSolidAnglePolygon polygon,
+                                             in float32x2 randomNumbers,
+                                             out float32x3 outDirectionTangent);
+};

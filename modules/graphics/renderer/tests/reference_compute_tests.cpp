@@ -1,5 +1,11 @@
 #include "../shaders/wave_connection_layout.h"
 #include "../src/internal/spectral_sensor.h"
+#include "baseline_renderer_reference.h"
+#include "baseline_renderer_reference_optical.h"
+#include "baseline_renderer_reference_permuted.h"
+#include "baseline_renderer_reference_reduce.h"
+#include "baseline_renderer_reference_repeat_closest.h"
+#include "baseline_renderer_reference_repeat_visibility.h"
 #include "dispersive_prism_fixture.h"
 #include "l6_scene.h"
 #include "material_program_fixtures.h"
@@ -11,7 +17,10 @@
 #include "renderer_output.h"
 #include "renderer_reference.h"
 #include "renderer_reference_optical.h"
+#include "renderer_reference_permuted.h"
 #include "renderer_reference_reduce.h"
+#include "renderer_reference_repeat_closest.h"
+#include "renderer_reference_repeat_visibility.h"
 #include "renderer_shadow.h"
 #include <catch2/generators/catch_generators.hpp>
 
@@ -31,6 +40,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <bit>
 #include <cmath>
 
 // CPU oracle / GPU-compute parity for the RT1 reference integral. Both paths read
@@ -59,6 +69,60 @@ struct Session final
     rr::MaterialProgram Program;
     rr::Snapshot Snapshot;
 };
+/// The program a GPU-compute Prepare traces with: the LUSL recipes or their Slang original (renderer_reference.slang),
+/// which LUSL L5d wave 2 keeps as their differential oracle.
+enum class KernelSource : uint8
+{
+    Lusl,
+    SlangOriginal,
+};
+/// The trace kernel of a raw-AOV case: the production kernel or a wavefront hit-shading diagnostic
+/// (renderer-systems.md, "Qualify wavefront hit shading"), whose transport and committed samples are unchanged.
+enum class ReferenceDiagnostic : uint8
+{
+    None,
+    RepeatedClosestTraversals,
+    RepeatedVisibilityTraversals,
+    PermutedPixels,
+};
+/// Trace, optical trace and reduce kernels of one program.
+struct ReferenceKernels final
+{
+    rhi::RasterShaderDescription Trace{};
+    rhi::RasterShaderDescription OpticalTrace{};
+    rhi::RasterShaderDescription Reduce{};
+};
+ReferenceKernels GetReferenceKernels(KernelSource source, ReferenceDiagnostic diagnostic) noexcept
+{
+    const bool isLusl = source == KernelSource::Lusl;
+    ReferenceKernels kernels
+    {
+        .Trace =
+            isLusl == true ? shaders::renderer_reference::Compute() : shaders::baseline_renderer_reference::Compute(),
+        .OpticalTrace = isLusl == true ? shaders::renderer_reference_optical::Compute()
+                                       : shaders::baseline_renderer_reference_optical::Compute(),
+        .Reduce = isLusl == true ? shaders::renderer_reference_reduce::Compute()
+                                 : shaders::baseline_renderer_reference_reduce::Compute(),
+    };
+    switch (diagnostic)
+    {
+        case ReferenceDiagnostic::None:
+            break;
+        case ReferenceDiagnostic::RepeatedClosestTraversals:
+            kernels.Trace = isLusl == true ? shaders::renderer_reference_repeat_closest::Compute()
+                                           : shaders::baseline_renderer_reference_repeat_closest::Compute();
+            break;
+        case ReferenceDiagnostic::RepeatedVisibilityTraversals:
+            kernels.Trace = isLusl == true ? shaders::renderer_reference_repeat_visibility::Compute()
+                                           : shaders::baseline_renderer_reference_repeat_visibility::Compute();
+            break;
+        case ReferenceDiagnostic::PermutedPixels:
+            kernels.Trace = isLusl == true ? shaders::renderer_reference_permuted::Compute()
+                                           : shaders::baseline_renderer_reference_permuted::Compute();
+            break;
+    }
+    return kernels;
+}
 /// Trace kernels a GPU-compute Prepare enables.
 enum class TraceKernels : uint8
 {
@@ -71,7 +135,8 @@ S Prepare(rhi::DeviceHandle device,
           rr::ReferenceTraversal traversal,
           Session& outSession,
           bool shouldIncludeDegenerateTriangles = false,
-          TraceKernels kernels = TraceKernels::Geometric)
+          TraceKernels kernels = TraceKernels::Geometric,
+          const ReferenceKernels& program = GetReferenceKernels(KernelSource::Lusl, ReferenceDiagnostic::None))
 {
     rr::Renderer& renderer = outSession.Renderer;
     REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
@@ -84,16 +149,11 @@ S Prepare(rhi::DeviceHandle device,
     }
     else if (kernels == TraceKernels::WithOptical)
     {
-        enabled = renderer.EnableReferenceRendering(shaders::renderer_reference::Compute(),
-                                                    shaders::renderer_reference_optical::Compute(),
-                                                    shaders::renderer_reference_reduce::Compute(),
-                                                    options);
+        enabled = renderer.EnableReferenceRendering(program.Trace, program.OpticalTrace, program.Reduce, options);
     }
     else
     {
-        enabled = renderer.EnableReferenceRendering(shaders::renderer_reference::Compute(),
-                                                    shaders::renderer_reference_reduce::Compute(),
-                                                    options);
+        enabled = renderer.EnableReferenceRendering(program.Trace, program.Reduce, options);
     }
     if (enabled != S::Ready)
     {
@@ -517,7 +577,31 @@ struct ReferenceRawAovCase final
     /// Replace the environment map with a World Atmosphere's sky and attenuate the first light as its Sun,
     /// as the editor's reference capture does.
     bool HasAtmosphereSky = false;
+    /// Trace with a wavefront hit-shading diagnostic kernel instead of the production one.
+    ReferenceDiagnostic Diagnostic = ReferenceDiagnostic::None;
 };
+
+bool AreBitsEqual(math::Vector3 left, math::Vector3 right) noexcept
+{
+    return std::bit_cast<uint32>(left.X) == std::bit_cast<uint32>(right.X) &&
+           std::bit_cast<uint32>(left.Y) == std::bit_cast<uint32>(right.Y) &&
+           std::bit_cast<uint32>(left.Z) == std::bit_cast<uint32>(right.Z);
+}
+
+/// Pixels whose committed samples or AOV bits differ between two captures of one size.
+usize CountDifferingPixels(const Array<rr::ReferencePixel>& left, const Array<rr::ReferencePixel>& right) noexcept
+{
+    usize differing = 0;
+    for (usize i = 0; i < left.GetSize(); ++i)
+    {
+        const bool isEqual = left[i].Samples == right[i].Samples && AreBitsEqual(left[i].Radiance, right[i].Radiance) &&
+                             AreBitsEqual(left[i].Emission, right[i].Emission) &&
+                             AreBitsEqual(left[i].Direct, right[i].Direct) &&
+                             AreBitsEqual(left[i].Indirect, right[i].Indirect);
+        differing += isEqual == true ? 0 : 1;
+    }
+    return differing;
+}
 
 void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
 {
@@ -578,11 +662,14 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
                                                 shaders::renderer_reference_reduce::Compute(),
                                                 unbudgeted) == S::InvalidDescription);
     }
+    const TraceKernels traceKernels =
+        test.OpticalWavelengthWorld > 0 ? TraceKernels::WithOptical : TraceKernels::Geometric;
     const S enabled = Prepare(device,
                               rr::ReferenceTraversal::GpuCompute,
                               gpu,
                               true,
-                              test.OpticalWavelengthWorld > 0 ? TraceKernels::WithOptical : TraceKernels::Geometric);
+                              traceKernels,
+                              GetReferenceKernels(KernelSource::Lusl, test.Diagnostic));
     if (enabled == S::Unsupported)
     {
         SKIP("Compute storage is unavailable on this device");
@@ -771,6 +858,27 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
                                             ? computeInfo.VisibilityQueries - oracleInfo.VisibilityQueries
                                             : oracleInfo.VisibilityQueries - computeInfo.VisibilityQueries;
     CHECK(visibilityDifference <= oracleInfo.VisibilityQueries / VISIBILITY_COUNT_DIVISOR + 1);
+
+    // LUSL L5d wave 2: the kernels' Slang original (shaders/renderer_reference.slang) commits the same bytes and
+    // counts the same path events on this device.
+    Session slang;
+    REQUIRE(Prepare(device,
+                    rr::ReferenceTraversal::GpuCompute,
+                    slang,
+                    true,
+                    traceKernels,
+                    GetReferenceKernels(KernelSource::SlangOriginal, test.Diagnostic)) == S::Ready);
+    Array<rr::ReferencePixel> original;
+    rr::ReferenceCaptureInfo originalInfo;
+    Capture(slang, capture, surface, original, originalInfo);
+    REQUIRE(original.GetSize() == compute.GetSize());
+    CHECK(CountDifferingPixels(compute, original) == 0);
+    CHECK(originalInfo.CommittedSamples == computeInfo.CommittedSamples);
+    CHECK(originalInfo.ClosestQueries == computeInfo.ClosestQueries);
+    CHECK(originalInfo.VisibilityQueries == computeInfo.VisibilityQueries);
+    CHECK(originalInfo.NullBsdfSamples == computeInfo.NullBsdfSamples);
+    CHECK(originalInfo.RouletteTerminations == computeInfo.RouletteTerminations);
+    CHECK(originalInfo.InvalidContributions == computeInfo.InvalidContributions);
 }
 } // namespace
 
@@ -805,6 +913,63 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: perspective analytic light
         .HasEnvironmentMap = false,
         .OpticalWavelengthWorld = 0,
         .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: repeated closest traversals diagnostic",
+          "[renderer][gpu][reference-compute][lusl]")
+{
+    // The wavefront hit-shading diagnostic keeps the production transport, so it matches the oracle and its original.
+    CheckReferenceRawAovs(
+    {
+        .Name = "perspective analytic lights and roulette, repeated closest traversals",
+        .IsPerspective = true,
+        .MaxDepth = 8,
+        .RouletteDepth = 2,
+        .Seed = 1729,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0,
+        .IsFarConventional = false,
+        .Diagnostic = ReferenceDiagnostic::RepeatedClosestTraversals,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: repeated visibility traversals diagnostic",
+          "[renderer][gpu][reference-compute][lusl]")
+{
+    // The wavefront hit-shading diagnostic keeps the production transport, so it matches the oracle and its original.
+    CheckReferenceRawAovs(
+    {
+        .Name = "perspective analytic lights and roulette, repeated visibility traversals",
+        .IsPerspective = true,
+        .MaxDepth = 8,
+        .RouletteDepth = 2,
+        .Seed = 1729,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0,
+        .IsFarConventional = false,
+        .Diagnostic = ReferenceDiagnostic::RepeatedVisibilityTraversals,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: permuted pixels diagnostic",
+          "[renderer][gpu][reference-compute][lusl]")
+{
+    // The wavefront hit-shading diagnostic keeps the production transport, so it matches the oracle and its original.
+    CheckReferenceRawAovs(
+    {
+        .Name = "perspective analytic lights and roulette, permuted pixels",
+        .IsPerspective = true,
+        .MaxDepth = 8,
+        .RouletteDepth = 2,
+        .Seed = 1729,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0,
+        .IsFarConventional = false,
+        .Diagnostic = ReferenceDiagnostic::PermutedPixels,
     });
 }
 

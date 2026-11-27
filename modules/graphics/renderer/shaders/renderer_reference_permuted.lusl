@@ -1,0 +1,8 @@
+// Diagnostic kernel of the wavefront hit-shading qualification: threads take pixels in a fixed pseudorandom
+// order instead of row order. Every pixel traces and commits the same addressed samples; see
+// renderer_reference_transport.luslh.
+#define LUDUS_REFERENCE_REPEATED_CLOSEST_TRAVERSALS 0
+#define LUDUS_REFERENCE_REPEATED_VISIBILITY_TRAVERSALS 0
+#define LUDUS_REFERENCE_PERMUTED_PIXELS 1
+#define LUDUS_REFERENCE_OPTICAL_CONNECTIONS 0
+#include "renderer_reference_transport.luslh"

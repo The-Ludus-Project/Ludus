@@ -3339,8 +3339,8 @@ connections of a positive `OpticalWavelengthWorld`, so geometric captures do not
 carry their interaction regions, field lattices or relay chains in private
 memory. Optical captures also need the `renderer_reference_optical` recipe,
 passed to the four-argument `EnableReferenceRendering` (trace, optical trace,
-reduce, options). Its transport is `renderer_reference.slang` compiled with
-`LUDUS_REFERENCE_OPTICAL_CONNECTIONS`, and it is dispatched only for optical
+reduce, options). Its transport is `renderer_reference_transport.luslh` compiled with
+`LUDUS_REFERENCE_OPTICAL_CONNECTIONS` set to one, and it is dispatched only for optical
 captures. Without it an optical GPU-compute capture reports `Unsupported`; the
 renderer never runs one with the geometric kernel, which marks such a dispatch
 invalid. Pipeline preparation compiles every kernel it receives.
@@ -3450,9 +3450,11 @@ Cornell tile room of the
 arrangements are `single`, `striped`, `interleaved`, `shuffled` and `only-0` to
 `only-4`, and TILES is 5 or 10. `LUDUS_REFERENCE_BENCHMARK_KERNELS` names GPU
 transport kernels to compare in one process: `reference`, `repeat-closest`,
-`repeat-visibility`, `permuted` and `optical`, separated by commas. `optical`
+`repeat-visibility`, `permuted`, `optical` and `slang`, separated by commas. `optical`
 traces geometric captures with `renderer_reference_optical`, so
-`reference,optical` measures what the optical connection state costs them. Runs
+`reference,optical` measures what the optical connection state costs them. `slang`
+traces with the retained Slang original of the LUSL kernels (`renderer_reference.slang`,
+and its optical kernel for a positive wavelength), so `reference,slang` times the port. Runs
 alternate their order. The benchmark fails when a kernel's checksum or query counts differ from
 the first kernel's, and prints each kernel's median per-dispatch transport time
 and its paired difference:
@@ -3588,7 +3590,7 @@ binary, and `shaders/ggx_albedo_table_layout.h` describes its layout.
 
 **Evidence.** The CPU oracle and GPU compute evaluate and sample the same
 lobe, densities and MIS weights (`reference_bsdf.cpp`,
-`renderer_reference.slang` and `ggx_albedo_table.slang`). The independent
+`renderer_reference_transport.luslh` and `ggx_albedo_table.slang`). The independent
 higher-order Smith reference is a float64 random walk on the GGX microsurface.
 It follows Eric Heitz, Johannes Hanika, Eugene d'Eon and Carsten Dachsbacher,
 [*Multiple-Scattering Microfacet BSDFs with the Smith Model*, SIGGRAPH 2016, sections 4–6](https://doi.org/10.1145/2897824.2925943).
