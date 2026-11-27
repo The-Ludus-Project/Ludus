@@ -302,6 +302,8 @@ private:
     [[nodiscard]] bool canEditTerrain(const QString& key) const;
     [[nodiscard]] bool tryPlaceTerrainDraft(const QString& id, const QJsonObject& placement);
     void applyTerrainInteraction();
+    /// Cook the ready terrain view for Show cooked pages, update the panel summary and the page-border overlay.
+    void updateTerrainCookedPages();
     WorldTerrainPanel* mTerrainPanelOrNull = nullptr;
     /// Refresh the light list from the World and the presented scene.
     void renderLights();

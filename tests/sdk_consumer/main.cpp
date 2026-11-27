@@ -36,6 +36,7 @@ bool ExerciseInstalledStrings() noexcept;
 bool ExerciseInstalledStringDictionary() noexcept;
 bool ExerciseInstalledFoliagePages() noexcept;
 bool ExerciseInstalledWeather() noexcept;
+bool ExerciseInstalledTerrainReadback() noexcept;
 bool ExerciseInstalledParsing() noexcept;
 bool ExerciseInstalledConfiguration() noexcept;
 bool ExerciseInstalledReflection() noexcept;
@@ -210,6 +211,8 @@ int PolicyWithoutNdebug();
 
 /// Exit code when the installed weather targets do not reproduce the golden corpus.
 constexpr int WEATHER_FAILURE = 111;
+/// Exit code when the installed terrain targets do not cook or read back the Editor's pinned terrain revision.
+constexpr int TERRAIN_READBACK_FAILURE = 112;
 
 constexpr bool PrimitiveContract(ludus::foundation::usize increment = 1) noexcept
 {
@@ -321,6 +324,10 @@ int main()
     if (ExerciseInstalledWeather() == false)
     {
         return WEATHER_FAILURE;
+    }
+    if (ExerciseInstalledTerrainReadback() == false)
+    {
+        return TERRAIN_READBACK_FAILURE;
     }
     if (PrimitiveContract() == false)
     {

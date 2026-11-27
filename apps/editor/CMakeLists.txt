@@ -902,6 +902,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_terrain_editing.cpp
     src/internal/world_terrain_surface.h
     src/world_terrain_surface.cpp
+    src/internal/world_terrain_cook.h
+    src/world_terrain_cook.cpp
     src/world_aperture.cpp
     src/world_demo_adapter.cpp
     src/internal/material_inspection.h
@@ -1394,6 +1396,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/playable_world_tests.cpp
         tests/world_workspace_tests.cpp
         tests/world_terrain_tests.cpp
+        tests/world_terrain_cook_tests.cpp
         tests/world_aperture_tests.cpp
         tests/material_inspection_tests.cpp
         tests/inspector_fields_tests.cpp
@@ -1521,6 +1524,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Ludus::FoundationParsingJson
             # World climates must cook to the golden weather corpus climate.
             ludus_weather_golden_corpus
+            # Show cooked pages must cook the terrain readback corpus revision.
+            ludus_terrain_readback_corpus
             Ludus::GameplayWeather
             Catch2::Catch2)
     ludus_apply_project_defaults(ludus_editor_tests)

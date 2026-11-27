@@ -6,6 +6,7 @@
 #include "internal/render_preview.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_terrain.h"
+#include "internal/world_terrain_cook.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -86,8 +87,9 @@ public:
           PickHeight(new QPushButton(QStringLiteral("Pick from surface"), this)), BrushRadius(new QDoubleSpinBox(this)),
           BrushHeight(new QDoubleSpinBox(this)), BrushDelta(new QDoubleSpinBox(this)),
           BrushStrength(new QDoubleSpinBox(this)),
-          ShowSlope(new QCheckBox(QStringLiteral("Show slope at cursor"), this)), mForm(new QFormLayout),
-          mPresetRow(new QWidget(this))
+          ShowSlope(new QCheckBox(QStringLiteral("Show slope at cursor"), this)),
+          CookedPages(new QCheckBox(QStringLiteral("Show cooked pages"), this)), CookedInfo(new QLabel(this)),
+          mForm(new QFormLayout), mPresetRow(new QWidget(this))
     {
         setObjectName(QStringLiteral("worldTerrainPanel"));
         QVBoxLayout* layout = new QVBoxLayout(this);
@@ -187,6 +189,16 @@ public:
         Cancel->setObjectName(QStringLiteral("worldTerrainCancel"));
         Commit->setObjectName(QStringLiteral("worldTerrainCommit"));
         layout->addWidget(Compare);
+        CookedPages->setObjectName(QStringLiteral("worldTerrainCookedPages"));
+        CookedPages->setToolTip(QStringLiteral("Cook this terrain into versioned height pages, read each page back "
+                                               "and draw the page borders at the decoded heights."));
+        CookedInfo->setObjectName(QStringLiteral("worldTerrainCookedInfo"));
+        CookedInfo->setWordWrap(true);
+        CookedInfo->setTextFormat(Qt::PlainText);
+        CookedInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        CookedInfo->hide();
+        layout->addWidget(CookedPages);
+        layout->addWidget(CookedInfo);
         layout->addWidget(Frame);
         layout->addWidget(Refresh);
         QHBoxLayout* footer = new QHBoxLayout;
@@ -201,6 +213,7 @@ public:
         hide();
     }
 
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the component schema, then the recipe it describes.
     void Begin(const QJsonObject& definition, const QJsonObject& recipe, const QString& name)
     {
         mDefinitions = {};
@@ -544,6 +557,8 @@ public:
     QDoubleSpinBox* BrushDelta;
     QDoubleSpinBox* BrushStrength;
     QCheckBox* ShowSlope;
+    QCheckBox* CookedPages;
+    QLabel* CookedInfo;
     QMap<QString, QLineEdit*> Fields;
     QTimer Timer;
     QTimer LiveTimer;
@@ -553,6 +568,10 @@ public:
     QJsonObject Transform;
     WorldDocument ReadyWorld;
     QJsonObject ReadyRecipe;
+    /// The recipe Cooked was cooked from; empty when no inspection is held.
+    QJsonObject CookedRecipe;
+    /// The ready view's cooked revision while Show cooked pages is on.
+    TerrainCookedInspection Cooked;
     QJsonObject StrokeRecipe;
     /// The ready committed view a live stroke started from; failure and cancellation show it again.
     RenderScene StrokeBaseScene;
@@ -586,6 +605,7 @@ public:
     bool IsRequestLive = false;
 
 private:
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the recipe key, then its visible label.
     void addField(const QString& key, const QString& label)
     {
         QLineEdit* field = new QLineEdit(this);
@@ -736,6 +756,7 @@ void WorldWorkspace::initializeTerrainAuthoring()
     {
         connect(field, &QLineEdit::textChanged, this, changeSource);
     }
+    connect(panel->CookedPages, &QCheckBox::toggled, this, [this]() { updateTerrainCookedPages(); });
     connect(panel->Compare, &QCheckBox::toggled, this, [this, panel](bool isChecked) {
         panel->IsComparing = isChecked;
         queueTerrainPreview();
@@ -1149,6 +1170,7 @@ void WorldWorkspace::finishTerrainPreview(bool isAccepted, const QString& error)
                               ? QStringLiteral("Recipe validated. This session cannot display the GPU viewport.")
                           : panel.IsComparing == true ? QStringLiteral("Showing committed terrain.")
                                                       : QStringLiteral("Terrain preview ready."));
+    updateTerrainCookedPages();
     updateViewportInteraction();
     if (panel.ShouldFrame == true)
     {
@@ -1201,6 +1223,8 @@ void WorldWorkspace::closeTerrainAuthoring(bool shouldRestoreWorld)
     panel.ClearStroke();
     panel.ReadyWorld = {};
     panel.ReadyRecipe = {};
+    panel.CookedRecipe = {};
+    panel.Cooked = {};
     panel.Candidate = {};
     panel.PreviousScene = {};
     if (panel.Stage == WorldTerrainPanel::Request::Idle)
@@ -1532,6 +1556,13 @@ void WorldWorkspace::applyTerrainInteraction()
     PreviewViewport& otherViewport =
         &viewport == &Render_->GetViewport() ? Scene_->GetViewport() : Render_->GetViewport();
     otherViewport.GetObjectInteraction().SetTerrainBrush({}, 0, false, false, false);
+    otherViewport.GetObjectInteraction().SetTerrainCookedPages({}, {});
+    // Page borders follow the ready view; a dragged stroke's partial preview has not been cooked.
+    const bool shouldShowCookedPages = panel.IsOpen == true && panel.HasConflict == false &&
+                                       panel.IsStrokeLive == false && panel.CookedPages->isChecked() == true &&
+                                       panel.CookedRecipe.isEmpty() == false && panel.CookedRecipe == panel.ReadyRecipe;
+    interaction.SetTerrainCookedPages(shouldShowCookedPages == true ? panel.ReadyKey : QString{},
+                                      panel.Cooked.BorderLinesMesh);
     // The chosen brush stays the viewport tool while a stroke's preview is pending, so clicks in that window
     // are refused instead of selecting the terrain and showing its transform handles.
     const bool hasBrush = panel.IsOpen == true && panel.GetBrush() != TerrainBrush::Off &&
@@ -1552,6 +1583,42 @@ void WorldWorkspace::applyTerrainInteraction()
         return;
     }
     interaction.SetTerrainFootprint({});
+}
+
+void WorldWorkspace::updateTerrainCookedPages()
+{
+    if (mTerrainPanelOrNull == nullptr)
+    {
+        return;
+    }
+    WorldTerrainPanel& panel = *mTerrainPanelOrNull;
+    const bool isChecked = panel.CookedPages->isChecked();
+    panel.CookedInfo->setVisible(isChecked);
+    if (isChecked == false || panel.IsOpen == false || panel.ReadyRecipe.isEmpty() == true)
+    {
+        panel.CookedRecipe = {};
+        panel.Cooked = {};
+        panel.CookedInfo->setText(QStringLiteral("Cooked pages appear when the terrain preview is ready."));
+        applyTerrainInteraction();
+        return;
+    }
+    if (panel.CookedRecipe != panel.ReadyRecipe)
+    {
+        TerrainCookedInspection inspection;
+        QString error;
+        panel.CookedRecipe = panel.ReadyRecipe;
+        if (CookTerrainForInspection(panel.ReadyRecipe, inspection, error) == true)
+        {
+            panel.CookedInfo->setText(DescribeTerrainCookedInspection(inspection));
+            panel.Cooked = Move(inspection);
+        }
+        else
+        {
+            panel.CookedInfo->setText(error);
+            panel.Cooked = {};
+        }
+    }
+    applyTerrainInteraction();
 }
 
 bool WorldWorkspace::tryPlaceTerrainDraft(const QString& id, const QJsonObject& placement)

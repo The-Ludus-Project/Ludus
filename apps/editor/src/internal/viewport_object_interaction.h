@@ -97,6 +97,17 @@ public:
     {
         return static_cast<foundation::usize>(mClimateOutlines.size());
     }
+    /// Draw the page borders of a terrain's cooked revision over the preview object with this key.
+    /// @param key Preview object of the terrain; empty removes the overlay.
+    /// @param linesMesh Polylines in the terrain's local space, through the decoded heights on each page edge.
+    void SetTerrainCookedPages(const QString& key, const QList<QList<foundation::math::Vector3>>& linesMesh);
+    /// Number of page-border polylines the overlay draws, for tests.
+    [[nodiscard]] LUDUS_INLINE foundation::usize GetTerrainCookedPageLineCount() const noexcept
+    {
+        return mTerrainCookedPagesKey.isEmpty() == true
+                   ? 0
+                   : static_cast<foundation::usize>(mTerrainCookedPageLinesMesh.size());
+    }
     /// An empty key restores normal picking. The brush radius is measured in terrain-local metres.
     /// While a key is set, left presses belong to the brush: they never select or show transform handles.
     /// When canSculpt is false (for example while the previous stroke's preview is pending), presses are
@@ -283,6 +294,7 @@ private:
     void appendTerrainFootprint(ViewportObjectOverlay& inoutOverlay) const;
     void appendClimateOutlines(ViewportObjectOverlay& inoutOverlay) const;
     void appendTerrainBrush(ViewportObjectOverlay& inoutOverlay) const;
+    void appendTerrainCookedPages(ViewportObjectOverlay& inoutOverlay) const;
     [[nodiscard]] QString pick(QPointF positionPixel,
                                const QRectF& framePixel,
                                foundation::math::Vector3& outHitMesh,
@@ -316,6 +328,8 @@ private:
         bool operator==(const ClimateOutline&) const = default;
     };
     QList<ClimateOutline> mClimateOutlines;
+    QString mTerrainCookedPagesKey;
+    QList<QList<foundation::math::Vector3>> mTerrainCookedPageLinesMesh;
     foundation::math::Vector2 mTerrainExtent;
     foundation::float32 mTerrainBaseElevation = 0;
     foundation::float32 mTerrainDragExtent = 0;

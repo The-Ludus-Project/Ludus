@@ -746,6 +746,7 @@ bool BuildTerrainParts(const QJsonObject& recipe,
         BuildTerrainWaterMesh(grid, mesh.Positions, mesh.Uvs, water, build.Water);
     }
     build.Mesh = Move(mesh);
+    build.Grid = grid;
     outBuild = Move(build);
     return true;
 }
@@ -775,6 +776,22 @@ bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& 
     }
     build.Mesh.Id = outMesh.Id;
     outMesh = Move(build.Mesh);
+    return true;
+}
+
+bool BuildTerrainMesh(const QJsonObject& recipe,
+                      PreviewMesh& outMesh,
+                      content::terrain::TerrainFieldGrid& outGrid,
+                      QString& outError)
+{
+    TerrainBuild build;
+    if (BuildTerrainParts(recipe, false, build, outError) == false)
+    {
+        return false;
+    }
+    build.Mesh.Id = outMesh.Id;
+    outMesh = Move(build.Mesh);
+    outGrid = build.Grid;
     return true;
 }
 
