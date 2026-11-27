@@ -375,6 +375,9 @@ private:
     foundation::float64 mRotationDirection = 1;
     /// Half extent of the selected entity's luminaire panel, outlined in the overlay; zero when it has none.
     foundation::float32 mLuminaireHalfExtentWorld = 0;
+    /// Width, height and depth of the selected entity's absorbing medium box before its Transform, outlined in the
+    /// overlay because raster draws nothing for it; zero when it has none.
+    foundation::math::Vector3 mMediumSizeBox{};
     foundation::math::Vector3d mPlayerEyeWorld{};
     bool mHasPlayerSpawn = false;
     bool mShouldPreviewPlayerMove = false;

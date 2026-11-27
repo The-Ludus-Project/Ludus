@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -154,6 +155,26 @@ struct PreviewViewOptions final
     const foundation::math::Aabb3* BoundsWorldOrNull = nullptr;
 };
 /// Authored photometry and Earth preset inputs retained for transient editor sampling.
+/// The World's one bounded homogeneous absorbing medium (an `absorbingMedium` entity,
+/// internal/world_absorbing_medium.h). Only RT1 reference captures with the CPU oracle or GPU compute transport
+/// it; raster, GPU preview and render graph views ignore it.
+struct PreviewMedium final
+{
+    /// Entity key of the medium, or empty when the World has none.
+    QString Id;
+    /// Entity name, for messages.
+    QString Name;
+    /// Closed outward-wound boundary in world metres, three corners per triangle, as
+    /// graphics::renderer::ReferenceMediumDescription::BoundaryCornersWorld expects.
+    QVector<foundation::math::Vector3> BoundaryCornersWorld;
+    /// Linear RGB absorption coefficient per world metre, each channel in [0, MAX_MEDIUM_ABSORPTION_PER_WORLD].
+    foundation::math::Vector3 AbsorptionPerWorld{};
+    /// Whether the World has a medium.
+    [[nodiscard]] LUDUS_INLINE bool IsPresent() const noexcept
+    {
+        return BoundaryCornersWorld.isEmpty() == false;
+    }
+};
 struct PreviewEarthLight final
 {
     QJsonObject Properties;
@@ -191,6 +212,9 @@ struct RenderScene final
     graphics::renderer::PanelLuminaireSelection Luminaires{};
     /// Project-owned luminaire property binding; empty when the preview descriptor declares none.
     QJsonObject LuminaireBinding;
+    /// The World's absorbing medium; absent unless an authored entity declares one. Merge keeps the authored
+    /// snapshot's, and its edits change Identity like any World edit.
+    PreviewMedium Medium;
     // Worker decode; no source importer, engine code execution or device access.
     [[nodiscard]] static bool LoadCooked(const QByteArray& bytes,
                                          const QJsonObject& level,

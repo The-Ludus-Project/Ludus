@@ -28,7 +28,7 @@ namespace
 {
 constexpr usize TRIANGLE_CORNERS = REFERENCE_MEDIUM_TRIANGLE_CORNERS;
 constexpr usize AXES = 3;
-constexpr float32 MAXIMUM_WORLD_COORDINATE = 1000000;
+constexpr float32 MAXIMUM_WORLD_COORDINATE = MAX_REFERENCE_MEDIUM_COORDINATE_WORLD;
 /// One directed boundary edge keyed by the bit patterns of its two corners.
 struct MediumEdge final
 {

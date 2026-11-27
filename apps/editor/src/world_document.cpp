@@ -3,6 +3,7 @@
 #include "internal/builtin_world.h"
 #include "internal/editor_identity.h"
 #include "internal/material_inspection.h"
+#include "internal/world_absorbing_medium.h"
 #include "internal/world_aperture.h"
 #include "internal/world_celestial_light.h"
 #include "internal/world_climate.h"
@@ -661,6 +662,15 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                 return false;
             }
             components.append(apertureComponent);
+            QByteArray mediumBytes;
+            QJsonObject mediumComponent;
+            if (ReadBuiltInWorldAsset(QStringLiteral("absorbing_medium.component.json"), mediumBytes, error) == false ||
+                Decode(mediumBytes, MAX_SCHEMA_BYTES, mediumComponent, error) == false)
+            {
+                return false;
+            }
+            ApplyAbsorbingMediumLimits(mediumComponent);
+            components.append(mediumComponent);
             components.append(atmosphereComponent);
             AppendGiProbeComponents(components);
             components.append(QJsonObject{
@@ -1041,6 +1051,8 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
     }
     const QString terrainComponent = GetTerrainComponentId();
     const QString apertureComponent = GetApertureComponentId();
+    const QString mediumComponent = GetAbsorbingMediumComponentId();
+    QString mediumName;
     bool hasAuthoredTerrainPayload = false;
     bool hasProbeVolume = false;
     for (const auto value : entities)
@@ -1075,6 +1087,36 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                                    "Aperture Slit, or remove those components first."));
             }
             if (ValidateApertureParameters(components.value(apertureComponent).toObject(), error) == false)
+            {
+                return false;
+            }
+        }
+        if (HasBuiltInSchema() == true && components.contains(mediumComponent) == true)
+        {
+            const QString name = e.value(QStringLiteral("name")).toString();
+            if (components.contains(QStringLiteral("transform")) == false ||
+                e.contains(QStringLiteral("scene")) == true ||
+                components.contains(QStringLiteral("renderable")) == true ||
+                components.contains(terrainComponent) == true || components.contains(apertureComponent) == true)
+            {
+                return Fail(
+                    error,
+                    QStringLiteral("An Absorbing Medium is an invisible box of its own: it needs a Transform on "
+                                   "an entity without Renderable, Terrain, Aperture or imported geometry. Use "
+                                   "Add World Preset → Absorbing Medium, or remove those components first."));
+            }
+            if (mediumName.isNull() == false)
+            {
+                // RT1 transports one bounded medium per capture; overlapping and nested media are unsupported.
+                return Fail(error,
+                            QStringLiteral("'%1' would be a second Absorbing Medium; '%2' already is one. A World "
+                                           "supports one medium: remove one of them, or resize the existing box.")
+                                .arg(name, mediumName));
+            }
+            mediumName = name;
+            if (ValidateAbsorbingMedium(components.value(mediumComponent).toObject(),
+                                        components.value(QStringLiteral("transform")).toObject(),
+                                        error) == false)
             {
                 return false;
             }

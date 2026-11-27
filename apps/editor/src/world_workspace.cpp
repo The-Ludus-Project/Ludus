@@ -24,6 +24,7 @@
 #include "internal/material_inspection.h"
 #include "internal/render_panel.h"
 #include "internal/state_view.h"
+#include "internal/world_absorbing_medium.h"
 #include "internal/world_climate.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_environment_panel.h"
@@ -219,7 +220,7 @@ EditorIcon GetComponentIcon(const QString& component)
         return EditorIcon::Material;
     }
     if (name.contains(QStringLiteral("transform")) == true || name.contains(QStringLiteral("collider")) == true ||
-        name.contains(QStringLiteral("terrain")) == true)
+        name.contains(QStringLiteral("terrain")) == true || name.contains(QStringLiteral("medium")) == true)
     {
         return EditorIcon::Geometry;
     }
@@ -1074,7 +1075,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
                                   QStringLiteral("Atmosphere"),
                                   QStringLiteral("GI Probe Volume"),
                                   QStringLiteral("First Person Player"),
-                                  QStringLiteral("Aperture Slit")})
+                                  QStringLiteral("Aperture Slit"),
+                                  QStringLiteral("Absorbing Medium")})
     {
         QAction* action = objectMenu->addAction(preset);
         action->setObjectName(QStringLiteral("worldCreate") + QString(preset).remove(QLatin1Char(' ')));
@@ -4437,6 +4439,10 @@ void WorldWorkspace::RenderInspector()
             }
             configureProbeVolumeFields(*group, *rows, cid, attached);
         }
+        if (Document_.HasBuiltInSchema() == true && cid == GetAbsorbingMediumComponentId())
+        {
+            configureAbsorbingMediumFields(*group, *rows, cid);
+        }
         addComponentActions(*section, component);
         if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light"))
         {
@@ -4940,6 +4946,92 @@ void WorldWorkspace::configureProbeVolumeFields(QWidget& inoutGroup,
                                     isCountsLayout == false && isAuthoredLayout == true && isCoverageLimited == true);
         };
     connect(layoutOrNull, &QComboBox::currentIndexChanged, summary, refresh);
+    refresh();
+}
+
+void WorldWorkspace::configureAbsorbingMediumFields(QWidget& inoutGroup, QFormLayout& inoutRows, const QString& cid)
+{
+    // One typed number of the box: its text field and the schema definition that parses it.
+    struct MediumField final
+    {
+        QLineEdit* FieldOrNull = nullptr;
+        QJsonObject Property;
+    };
+    const auto findField = [this](const QString& componentId, const QString& propertyId) {
+        MediumField field;
+        field.FieldOrNull = qobject_cast<QLineEdit*>(Fields_.value(FieldKey(componentId, propertyId)));
+        for (const QJsonValue candidate :
+             Document_.Component(componentId).value(QStringLiteral("properties")).toArray())
+        {
+            if (candidate.toObject().value(QStringLiteral("id")).toString() == propertyId)
+            {
+                field.Property = candidate.toObject();
+            }
+        }
+        return field;
+    };
+    const QString transform = QStringLiteral("transform");
+    // Absorption R, G and B, then each box extent with the Transform scale along its axis.
+    const QVector<MediumField> absorption{findField(cid, QStringLiteral("absorptionR")),
+                                          findField(cid, QStringLiteral("absorptionG")),
+                                          findField(cid, QStringLiteral("absorptionB"))};
+    const QVector<MediumField> extents{findField(cid, QStringLiteral("width")),
+                                       findField(transform, QStringLiteral("sx")),
+                                       findField(cid, QStringLiteral("height")),
+                                       findField(transform, QStringLiteral("sy")),
+                                       findField(cid, QStringLiteral("depth")),
+                                       findField(transform, QStringLiteral("sz"))};
+    QLabel* readout = new QLabel(&inoutGroup);
+    readout->setObjectName(QStringLiteral("worldMediumReadout"));
+    readout->setTextFormat(Qt::PlainText);
+    readout->setWordWrap(true);
+    QLabel* note = new QLabel(QStringLiteral("Raster and render graph views do not draw the medium; select it to see "
+                                             "its outline. Reference… captures it with the CPU oracle or GPU "
+                                             "compute traversal."),
+                              &inoutGroup);
+    note->setObjectName(QStringLiteral("worldMediumNote"));
+    note->setTextFormat(Qt::PlainText);
+    note->setWordWrap(true);
+    inoutRows.addRow(readout);
+    inoutRows.addRow(note);
+    const auto read = [](const MediumField& field, foundation::float64& outValue) {
+        QJsonValue value;
+        QString error;
+        if (field.FieldOrNull == nullptr ||
+            WorldDocument::ParseValue(field.Property, field.FieldOrNull->text(), value, error) == false)
+        {
+            return false;
+        }
+        outValue = value.toDouble();
+        return true;
+    };
+    const auto refresh = [absorption, extents, readout, read]() {
+        foundation::math::Vector3d coefficients{};
+        foundation::float64 smallestExtent = 0;
+        bool isValid = read(absorption[0], coefficients.X) == true && read(absorption[1], coefficients.Y) == true &&
+                       read(absorption[2], coefficients.Z) == true;
+        for (qsizetype axis = 0; isValid == true && axis + 1 < extents.size(); axis += 2)
+        {
+            foundation::float64 size = 0;
+            foundation::float64 scale = 0;
+            isValid = read(extents[axis], size) == true && read(extents[axis + 1], scale) == true;
+            const foundation::float64 extent = size * scale;
+            smallestExtent = axis == 0 ? extent : foundation::math::Min(smallestExtent, extent);
+        }
+        readout->setText(isValid == true ? DescribeAbsorbingMedium(coefficients, smallestExtent)
+                                         : QStringLiteral("Enter the absorption and box sizes within their ranges to "
+                                                          "see the attenuation distance."));
+    };
+    for (const QVector<MediumField>* fields : {&absorption, &extents})
+    {
+        for (const MediumField& field : *fields)
+        {
+            if (field.FieldOrNull != nullptr)
+            {
+                connect(field.FieldOrNull, &QLineEdit::textChanged, readout, refresh);
+            }
+        }
+    }
     refresh();
 }
 

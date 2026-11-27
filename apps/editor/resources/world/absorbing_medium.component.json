@@ -1,0 +1,68 @@
+{
+  "id": "absorbingMedium",
+  "label": "Absorbing Medium",
+  "help": "A box of homogeneous absorbing medium, such as tinted water or ink, centred on the entity and turned by its Transform. Light crossing a length d inside keeps exp(-absorption × d) of each channel. It is invisible in raster and render graph views; RT1 reference captures with CPU oracle or GPU compute transport it.",
+  "required": false,
+  "properties": [
+    {
+      "id": "width",
+      "label": "Width",
+      "type": "number",
+      "default": 1,
+      "help": "Extent of the box along local X, before the Transform scale.",
+      "unit": "m",
+      "min": 0.0001,
+      "max": 10000
+    },
+    {
+      "id": "height",
+      "label": "Height",
+      "type": "number",
+      "default": 1,
+      "help": "Extent of the box along local Y, before the Transform scale.",
+      "unit": "m",
+      "min": 0.0001,
+      "max": 10000
+    },
+    {
+      "id": "depth",
+      "label": "Depth",
+      "type": "number",
+      "default": 1,
+      "help": "Extent of the box along local Z, before the Transform scale.",
+      "unit": "m",
+      "min": 0.0001,
+      "max": 10000
+    },
+    {
+      "id": "absorptionR",
+      "label": "Absorption R",
+      "type": "number",
+      "default": 0.5,
+      "help": "Linear Rec. 709 red absorption coefficient sigma_a per metre. Zero is vacuum; 1/sigma_a is the distance over which red light falls to 1/e (37%).",
+      "unit": "1/m",
+      "min": 0,
+      "max": 10000
+    },
+    {
+      "id": "absorptionG",
+      "label": "Absorption G",
+      "type": "number",
+      "default": 1,
+      "help": "Linear Rec. 709 green absorption coefficient sigma_a per metre. Zero is vacuum; 1/sigma_a is the distance over which green light falls to 1/e (37%).",
+      "unit": "1/m",
+      "min": 0,
+      "max": 10000
+    },
+    {
+      "id": "absorptionB",
+      "label": "Absorption B",
+      "type": "number",
+      "default": 2,
+      "help": "Linear Rec. 709 blue absorption coefficient sigma_a per metre. Zero is vacuum; 1/sigma_a is the distance over which blue light falls to 1/e (37%).",
+      "unit": "1/m",
+      "min": 0,
+      "max": 10000
+    }
+  ]
+}
