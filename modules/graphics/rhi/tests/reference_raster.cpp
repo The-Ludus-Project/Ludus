@@ -362,9 +362,18 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     reference::Pipelines[slot] = info;
     return Created(internal::RasterKind::Pipeline, request);
 }
-void RasterSetDebugName(internal::RasterKind kind, usize slot, const char* name) noexcept
+void RasterSetDebugName(internal::RasterKind kind, usize slot, const internal::RasterDebugNames& names) noexcept
 {
-    reference::RecordAnnotation(reference::AnnotationEvent::NameObject, name, kind, slot);
+    reference::RecordAnnotation(reference::AnnotationEvent::NameObject, names.Name, kind, slot);
+    if (reference::AnnotationCount == 0)
+    {
+        return;
+    }
+    reference::Annotation& entry = reference::Annotations[reference::AnnotationCount - 1];
+    for (usize index = 0; index + 1 < entry.DepthName.GetSize() && names.DepthName[index] != '\0'; ++index)
+    {
+        entry.DepthName[index] = names.DepthName[index];
+    }
 }
 void RasterDestroy(internal::RasterKind kind, usize) noexcept
 {

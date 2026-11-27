@@ -41,6 +41,10 @@ struct GpuScopeMetalState final
     StaticArray<NSString*, MAX_GPU_SCOPE_DEPTH> ScopeLabels;
     /// Untimed logical-pass groups pushed on the frame encoder; closed before the encoder ends.
     uint32 PassLabelDepth = 0;
+    /// Open scopes, outermost first, that are also debug groups on the frame encoder. A
+    /// compatibility draw records into the encoder BeginFrame opened before any scope, which a
+    /// command-buffer group cannot contain; closed before the encoder ends.
+    uint32 ScopeEncoderDepth = 0;
     ClockSample PassSubmitClock;
     bool HasPassSubmitClock = false;
 };
@@ -113,6 +117,7 @@ void ResetPassTimings() noexcept
     GetGpuScopeMetal().PassLabelOrNull = nil;
     ClearScopeLabels();
     GetGpuScopeMetal().PassLabelDepth = 0;
+    GetGpuScopeMetal().ScopeEncoderDepth = 0;
     GetGpuScopeMetal().HasPassSubmitClock = false;
     GetGpuScopeMetal().PassTimings.Reset();
 }
@@ -275,6 +280,11 @@ RasterStatus EndScope() noexcept
     const uint32 depth = GetGpuScopeMetal().PassTimings.GetDepth();
     GetGpuScopeMetal().ScopeLabels[depth] = nil;
     GetGpuScopeMetal().PassLabelOrNull = depth == 0 ? nil : GetGpuScopeMetal().ScopeLabels[depth - 1];
+    if (GetGpuScopeMetal().ScopeEncoderDepth > depth)
+    {
+        --GetGpuScopeMetal().ScopeEncoderDepth;
+        [GetMetal().Encoder popDebugGroup];
+    }
     [GetMetal().Command popDebugGroup];
     return RasterStatus::Ready;
 }
@@ -320,6 +330,28 @@ void ClosePassLabels() noexcept
     while (GetGpuScopeMetal().PassLabelDepth != 0)
     {
         EndPassLabel();
+    }
+    while (GetGpuScopeMetal().ScopeEncoderDepth != 0)
+    {
+        --GetGpuScopeMetal().ScopeEncoderDepth;
+        [GetMetal().Encoder popDebugGroup];
+    }
+}
+// Thanks to Apple, "pushDebugGroup(_:)", MTLCommandEncoder documentation:
+// https://developer.apple.com/documentation/metal/mtlcommandencoder/pushdebuggroup(_:)
+// Mirror the open scopes on the frame encoder before a compatibility draw, so Xcode groups the
+// draw under them. Scopes opened after the last draw get no encoder group, which keeps the
+// encoder free of empty groups when a raster pass replaces it.
+void OpenScopeEncoderGroups() noexcept
+{
+    if (GetMetal().Encoder == nil || GetGpuScopeMetal().PassLabelDepth != 0)
+    {
+        return;
+    }
+    while (GetGpuScopeMetal().ScopeEncoderDepth < GetGpuScopeMetal().PassTimings.GetDepth())
+    {
+        [GetMetal().Encoder pushDebugGroup:GetGpuScopeMetal().ScopeLabels[GetGpuScopeMetal().ScopeEncoderDepth]];
+        ++GetGpuScopeMetal().ScopeEncoderDepth;
     }
 }
 void BeginPassTimingFrame() noexcept

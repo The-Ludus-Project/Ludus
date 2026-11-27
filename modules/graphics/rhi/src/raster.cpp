@@ -25,9 +25,11 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/strings/static_string.hpp>
 #include <ludus/foundation/time/time.hpp>
 
 #include <new>
+#include <string_view>
 
 #include <cstring>
 
@@ -133,6 +135,11 @@ namespace
 using namespace foundation;
 using namespace internal;
 constexpr usize KINDS = static_cast<usize>(RasterKind::Count);
+/// Appended to a texture's debug name to label its private depth backing, so a graphics
+/// debugger tells the two attachments apart.
+constexpr std::string_view DEPTH_DEBUG_NAME_SUFFIX = "/Depth";
+/// A texture's debug name followed by DEPTH_DEBUG_NAME_SUFFIX.
+using DepthDebugName = StaticString<GPU_SCOPE_NAME_BYTES - 1 + DEPTH_DEBUG_NAME_SUFFIX.size()>;
 /// Uniform members start on a 32-bit word.
 constexpr usize UNIFORM_MEMBER_ALIGNMENT_BYTES = 4;
 constexpr usize MAX_UNIFORM_MEMBERS = 64;
@@ -3034,8 +3041,20 @@ SetResourceDebugName(DeviceHandle device, T handle, RasterKind kind, BorrowedVie
     {
         return RasterStatus::InvalidHandle;
     }
+    // Capacity covers the longest valid name plus the suffix; buffers and empty names get none.
+    DepthDebugName depthName;
+    if (kind == RasterKind::Texture && validated.Text[0] != '\0')
+    {
+        static_cast<void>(depthName.TryAssign(validated.Text.GetData()));
+        static_cast<void>(depthName.TryAppend(DEPTH_DEBUG_NAME_SUFFIX));
+    }
     recordOrNull->DebugName = validated;
-    backend::RasterSetDebugName(kind, RasterAccess::Slot(handle), validated.Text.GetData());
+    const RasterDebugNames names
+    {
+        .Name = validated.Text.GetData(),
+        .DepthName = depthName.GetData(),
+    };
+    backend::RasterSetDebugName(kind, RasterAccess::Slot(handle), names);
     return RasterStatus::Ready;
 }
 template <typename T>

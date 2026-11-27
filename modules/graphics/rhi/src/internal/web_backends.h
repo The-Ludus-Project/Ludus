@@ -115,7 +115,7 @@ RasterStatus RasterCreateSet(foundation::usize,
                              foundation::uint32) noexcept;
 RasterStatus RasterCreatePipeline(foundation::usize, const internal::RasterPipelineInfo&, foundation::uint32) noexcept;
 void RasterDestroy(internal::RasterKind, foundation::usize) noexcept;
-void RasterSetDebugName(internal::RasterKind, foundation::usize, const char*) noexcept;
+void RasterSetDebugName(internal::RasterKind, foundation::usize, const internal::RasterDebugNames&) noexcept;
 RasterStatus RasterDraw(const internal::RasterPacket&) noexcept;
 RasterStatus RasterPreparePass(const internal::RasterPassInfo&) noexcept;
 RasterStatus RasterBeginPass(const internal::RasterPassInfo&) noexcept;
@@ -190,7 +190,7 @@ RasterStatus RasterCreateSet(foundation::usize,
                              foundation::uint32) noexcept;
 RasterStatus RasterCreatePipeline(foundation::usize, const internal::RasterPipelineInfo&, foundation::uint32) noexcept;
 void RasterDestroy(internal::RasterKind, foundation::usize) noexcept;
-void RasterSetDebugName(internal::RasterKind, foundation::usize, const char*) noexcept;
+void RasterSetDebugName(internal::RasterKind, foundation::usize, const internal::RasterDebugNames&) noexcept;
 RasterStatus RasterDraw(const internal::RasterPacket&) noexcept;
 RasterStatus RasterPreparePass(const internal::RasterPassInfo&) noexcept;
 RasterStatus RasterBeginPass(const internal::RasterPassInfo&) noexcept;

@@ -149,7 +149,8 @@ struct GpuDebugName final
 /// handle; InvalidState inside an open frame; device admission statuses otherwise.
 [[nodiscard]] RasterStatus
 SetDebugName(DeviceHandle device, BufferHandle buffer, foundation::BorrowedView<const char> name) noexcept;
-/// Name a live texture, including its private depth backing; otherwise as for buffers.
+/// Name a live texture; its private depth backing is labelled with the name plus "/Depth" so a
+/// graphics debugger tells the two attachments apart. Otherwise as for buffers.
 [[nodiscard]] RasterStatus
 SetDebugName(DeviceHandle device, TextureHandle texture, foundation::BorrowedView<const char> name) noexcept;
 /// Copy the recorded name of a live buffer, empty when unnamed. Nonblocking and admitted inside

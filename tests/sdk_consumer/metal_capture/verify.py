@@ -20,12 +20,13 @@ CAPTURE_COUNT = 2
 RUN_TIMEOUT_SECONDS = 200
 MANIFEST_SUFFIX = ".manifest.json"
 # Text each trace must record, by request order: the first capture draws the LUSL diagnostic
-# (its generated MSL entry point), the second clears the named texture in the named pass.
-# Apple's trace stores labels and runtime-compiled source as UTF-8 text.
+# (its generated MSL entry point and the #line directive naming the authored file), the second
+# clears the named texture and its depth backing in the named pass. Apple's trace stores labels
+# and runtime-compiled source as UTF-8 text.
 FRAME_TEXT = (b"Ludus/Frame", b"Fixture/View")
 TRACE_TEXT = (
-    FRAME_TEXT + (b"FragmentMain",),
-    FRAME_TEXT + (b"Fixture/OffscreenPass", b"Fixture/OffscreenColor"),
+    FRAME_TEXT + (b"FragmentMain", b'"diagnostic.lusl"'),
+    FRAME_TEXT + (b"Fixture/OffscreenPass", b"Fixture/OffscreenColor", b"Fixture/OffscreenColor/Depth"),
 )
 
 

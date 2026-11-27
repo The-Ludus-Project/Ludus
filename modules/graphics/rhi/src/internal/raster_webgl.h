@@ -800,7 +800,7 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     return RasterGlResult();
 }
 /// WebGL 2 has no object labels; names stay in the RHI record.
-void RasterSetDebugName(internal::RasterKind, usize, const char*) noexcept {}
+void RasterSetDebugName(internal::RasterKind, usize, const internal::RasterDebugNames&) noexcept {}
 void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
 {
     switch (kind)
