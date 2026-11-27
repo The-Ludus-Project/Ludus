@@ -13,6 +13,7 @@ TEST_MODULES = (
     "test_quality",
     "test_windows_qualification",
     "test_ray_reference",
+    "test_render_power",
     "test_runtime_profile",
     "test_pull_request_tests",
     "test_ctest_headroom",

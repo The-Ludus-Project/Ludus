@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Check transmitted power on a planar Lambertian receiver against an unobstructed render."""
+import argparse
+from itertools import islice
+import json
+import math
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'python'))
+from capture_hdr import GRAPH_MAGIC, HEADER_BYTES, PIXEL, REFERENCE_MAGIC, decode
+
+
+# Thanks to Steinberg et al., A Free-Space Diffraction BSDF, supplemental Eq. S1.4,
+# for the aperture/receiver power balance. Here the Lambertian conversion cancels
+# when normalizing a measured receiver integral by the matched unobstructed capture.
+# https://research.nvidia.com/labs/rtr/publication/steinberg2024diffraction/steinberg2024_fsd_supplemental.pdf
+CHANNELS = ('red', 'green', 'blue')
+BORDER_FRACTION = 0.05
+
+
+def read_capture(path):
+    data = path.read_bytes()
+    try:
+        if data[:8] not in (REFERENCE_MAGIC, GRAPH_MAGIC):
+            raise ValueError('Unsupported input. Export a raw .luhdr or .lurgcap radiance capture.')
+        metadata, _ = decode(data, keep_pixels=False)
+        if metadata.get('failed') or metadata['partial']:
+            raise ValueError('Capture is incomplete. Export a completed raw capture.')
+    except ValueError as error:
+        raise ValueError(f'{path}: {error}') from error
+    return metadata, PIXEL.iter_unpack(memoryview(data)[HEADER_BYTES:])
+
+
+def plane_projection(matrix, receiver_z):
+    """Return the inverse of the image projection restricted to the world XY plane at receiver_z."""
+    if not all(math.isfinite(value) for value in matrix):
+        raise ValueError('Camera projection is nonfinite. Recapture both images with a valid camera.')
+    # Captures store columns. Restrict each clip component to a function of world x and y.
+    x_clip, y_clip, z_clip, w_clip = (
+        (matrix[row], matrix[row + 4], matrix[row + 8] * receiver_z + matrix[row + 12])
+        for row in range(4)
+    )
+    error = 'Receiver plane does not cover the camera frustum. Check --receiver-z and the camera framing.'
+
+    def unproject(x, y):
+        ax, bx, cx = (component - x * weight for component, weight in zip(x_clip, w_clip))
+        ay, by, cy = (component - y * weight for component, weight in zip(y_clip, w_clip))
+        determinant = ax * by - ay * bx
+        if determinant == 0 or not math.isfinite(determinant):
+            raise ValueError(error)
+        world_x = (bx * cy - by * cx) / determinant
+        world_y = (ay * cx - ax * cy) / determinant
+        depth = z_clip[0] * world_x + z_clip[1] * world_y + z_clip[2]
+        weight = w_clip[0] * world_x + w_clip[1] * world_y + w_clip[2]
+        if not (math.isfinite(world_x) and math.isfinite(world_y) and 0 < weight < math.inf
+                and 0 <= depth <= weight):
+            raise ValueError(error)
+        return world_x, world_y
+
+    return unproject
+
+
+def quad_area(top_left, top_right, bottom_right, bottom_left):
+    # Cross the quad's diagonals to avoid cancellation from a large world-space offset.
+    return 0.5 * abs((bottom_right[0] - top_left[0]) * (bottom_left[1] - top_right[1])
+                     - (bottom_right[1] - top_left[1]) * (bottom_left[0] - top_right[0]))
+
+
+def integrate(reference_pixels, candidate_pixels, width, height, unproject, channel):
+    def corner_row(row):
+        return [unproject(2 * column / width - 1, 1 - 2 * row / height)
+                for column in range(width + 1)]
+
+    reference_rows, candidate_rows, border_rows = [], [], []
+    border_width = math.ceil(width * BORDER_FRACTION)
+    border_height = math.ceil(height * BORDER_FRACTION)
+    top = corner_row(0)
+    for row in range(height):
+        bottom = corner_row(row + 1)
+        areas = [quad_area(top[x], top[x + 1], bottom[x + 1], bottom[x]) for x in range(width)]
+        if not all(0 < area < math.inf for area in areas):
+            raise ValueError('Invalid receiver pixel area. Check the camera and receiver geometry.')
+        reference_rows.append(math.fsum(area * pixel[channel]
+                                        for area, pixel in zip(areas, islice(reference_pixels, width))))
+        candidate = [area * pixel[channel] for area, pixel in zip(areas, islice(candidate_pixels, width))]
+        candidate_rows.append(math.fsum(candidate))
+        if row < border_height or row >= height - border_height or 2 * border_width >= width:
+            border_rows.append(candidate_rows[-1])
+        else:
+            border_rows.append(math.fsum(candidate[:border_width] + candidate[-border_width:]))
+        top = bottom
+    return math.fsum(reference_rows), math.fsum(candidate_rows), math.fsum(border_rows)
+
+
+def report_power(args):
+    reference, reference_pixels = read_capture(args.reference)
+    candidate, candidate_pixels = read_capture(args.candidate)
+    fields = ('width', 'height', 'world_to_clip', 'camera_position')
+    if any(reference[field] != candidate[field] for field in fields):
+        raise ValueError('The captures use different cameras or dimensions. Recapture both from the same view.')
+    if not all(math.isfinite(value) for value in reference['camera_position']):
+        raise ValueError('Camera position is nonfinite. Recapture both images with a valid camera.')
+
+    unproject = plane_projection(reference['world_to_clip'], args.receiver_z)
+    open_integral, measured_integral, border_integral = integrate(
+        reference_pixels, candidate_pixels, reference['width'], reference['height'],
+        unproject, CHANNELS.index(args.channel))
+    if not all(math.isfinite(integral) for integral in (open_integral, measured_integral, border_integral)):
+        raise ValueError('Integrated power is nonfinite. Check the source strength and receiver geometry.')
+    if open_integral <= 0:
+        raise ValueError('The unobstructed capture is dark in this channel. Check the source or choose a lit channel.')
+    measured_fraction = measured_integral / open_integral
+    if not math.isfinite(measured_fraction):
+        raise ValueError('The power ratio is nonfinite. Check the source strength and receiver geometry.')
+    residual = measured_fraction - args.expected_fraction
+    return dict(passed=abs(residual) <= args.tolerance, channel=args.channel,
+                receiver_z_metres=args.receiver_z,
+                open_radiance_area_integral=open_integral,
+                measured_radiance_area_integral=measured_integral,
+                expected_radiance_area_integral=open_integral * args.expected_fraction,
+                expected_fraction=args.expected_fraction, measured_fraction=measured_fraction,
+                residual_fraction_of_open_power=residual, tolerance_fraction_of_open_power=args.tolerance,
+                candidate_border_fraction_of_measured_power=(border_integral / measured_integral
+                                                             if measured_integral > 0 else None),
+                minimum_samples=dict(reference=reference['minimum_samples'], candidate=candidate['minimum_samples']))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('candidate', type=Path, help='raw .luhdr or .lurgcap render with the mask')
+    parser.add_argument('reference', type=Path, help='raw unobstructed capture from the same camera')
+    parser.add_argument('--receiver-z', type=float, required=True, help='world Z of the XY receiver plane in metres')
+    parser.add_argument('--channel', choices=CHANNELS, required=True, help='scene-linear channel to integrate')
+    parser.add_argument('--expected-fraction', type=float, required=True,
+                        help='independent estimate of the incident power fraction passing through the openings')
+    parser.add_argument('--tolerance', type=float, required=True, help='allowed residual as a fraction of open power')
+    args = parser.parse_args()
+    if not math.isfinite(args.receiver_z):
+        parser.error('--receiver-z must be finite')
+    if not (0 <= args.expected_fraction <= 1 and 0 <= args.tolerance <= 1):
+        parser.error('--expected-fraction and --tolerance must be in [0, 1]')
+    try:
+        report = report_power(args)
+    except (OSError, ValueError, OverflowError) as error:
+        parser.error(str(error))
+    print(json.dumps(report, indent=2, allow_nan=False))
+    return 0 if report['passed'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
