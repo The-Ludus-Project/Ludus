@@ -213,6 +213,7 @@ public:
         hide();
     }
 
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the component schema, then the recipe it describes.
     void Begin(const QJsonObject& definition, const QJsonObject& recipe, const QString& name)
     {
         mDefinitions = {};
@@ -604,6 +605,7 @@ public:
     bool IsRequestLive = false;
 
 private:
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the recipe key, then its visible label.
     void addField(const QString& key, const QString& label)
     {
         QLineEdit* field = new QLineEdit(this);

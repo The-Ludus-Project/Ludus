@@ -140,10 +140,15 @@ TerrainRevisionLayout MakeReadbackLayout(TerrainNoiseLayout layout, Fingerprint1
     return revision;
 }
 
-bool TryReadTerrainReadback(BorrowedView<const uint8> manifestBytes,
-                            BorrowedView<const uint8> pagePackBytes,
-                            TerrainReadback& outReadback) noexcept
+TerrainRevisionBytes GetRevisionBytes(const TerrainCookedRevision& revision) noexcept
 {
+    return { .Manifest = revision.GetManifestBytes(), .PagePack = revision.GetPagePackBytes() };
+}
+
+bool TryReadTerrainReadback(const TerrainRevisionBytes& bytes, TerrainReadback& outReadback) noexcept
+{
+    const BorrowedView<const uint8> manifestBytes = bytes.Manifest;
+    const BorrowedView<const uint8> pagePackBytes = bytes.PagePack;
     TerrainManifest manifest;
     if (TryReadTerrainManifest(manifestBytes, manifest) != TerrainCookStatus::Success)
     {
@@ -268,7 +273,7 @@ bool RunTerrainReadbackCorpus() noexcept
         if (TryBuildReadbackField(layout, field) == false ||
             TryCookReadbackRevision(layout, revision, digest) == false ||
             digest != GetExpectedReadbackManifestDigest(layout) ||
-            TryReadTerrainReadback(revision.GetManifestBytes(), revision.GetPagePackBytes(), readback) == false ||
+            TryReadTerrainReadback(GetRevisionBytes(revision), readback) == false ||
             readback.RecipeVersion != static_cast<uint32>(layout) ||
             readback.PagesRead != static_cast<usize>(READBACK_PAGES_PER_AXIS) * READBACK_PAGES_PER_AXIS)
         {

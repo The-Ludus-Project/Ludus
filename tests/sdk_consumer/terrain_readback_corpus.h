@@ -101,12 +101,22 @@ struct TerrainReadback final
     foundation::Array<foundation::math::Vector3d> Normals;
 };
 
+/// The two byte sequences a consumer receives for one revision.
+struct TerrainRevisionBytes final
+{
+    /// The manifest bytes.
+    foundation::BorrowedView<const uint8> Manifest;
+    /// The page pack the manifest indexes.
+    foundation::BorrowedView<const uint8> PagePack;
+};
+
+/// Borrow both byte sequences of a cooked revision for as long as it stays alive and unchanged.
+[[nodiscard]] TerrainRevisionBytes GetRevisionBytes(const TerrainCookedRevision& revision) noexcept;
+
 /// Read a revision as a consumer does: validate the manifest, decode every page from exactly its record's byte
 /// range of the page pack and nothing else, then assemble the page cores into the domain field. A sample that
 /// several pages share must decode to the same height in each. Failure preserves outReadback.
-[[nodiscard]] bool TryReadTerrainReadback(foundation::BorrowedView<const uint8> manifestBytes,
-                                          foundation::BorrowedView<const uint8> pagePackBytes,
-                                          TerrainReadback& outReadback) noexcept;
+[[nodiscard]] bool TryReadTerrainReadback(const TerrainRevisionBytes& bytes, TerrainReadback& outReadback) noexcept;
 
 /// Largest angle in radians between a normal derived from source heights and one derived from heights decoded
 /// within half a quantum of them. Each slope component then differs by at most quantum / spacing (a one-sided

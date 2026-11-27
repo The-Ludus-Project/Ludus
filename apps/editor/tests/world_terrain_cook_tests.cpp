@@ -128,9 +128,7 @@ TEST_CASE("World terrain cooks to the SDK readback corpus and the preview agrees
         CHECK(DescribeTerrainCookedInspection(inspection).contains(QStringLiteral("3 × 3 pages of 21 cells")) == true);
 
         corpus::TerrainReadback readback;
-        REQUIRE(corpus::TryReadTerrainReadback(inspection.Revision.GetManifestBytes(),
-                                               inspection.Revision.GetPagePackBytes(),
-                                               readback) == true);
+        REQUIRE(corpus::TryReadTerrainReadback(corpus::GetRevisionBytes(inspection.Revision), readback) == true);
         REQUIRE(static_cast<usize>(inspection.HeightsMetres.size()) == readback.HeightsMetres.GetSize());
         for (usize i = 0; i < readback.HeightsMetres.GetSize(); ++i)
         {
@@ -168,7 +166,7 @@ TEST_CASE("World terrain cooks to the SDK readback corpus and the preview agrees
         CHECK(largestAngle <= tolerance);
 
         // Page borders run through the decoded heights at the mesh's horizontal positions.
-        REQUIRE(inspection.BorderLinesMesh.size() == 2 * (corpus::READBACK_PAGES_PER_AXIS + 1));
+        REQUIRE(inspection.BorderLinesMesh.size() == 2 * (static_cast<qsizetype>(corpus::READBACK_PAGES_PER_AXIS) + 1));
         const QList<foundation::math::Vector3>& interiorColumn = inspection.BorderLinesMesh[1];
         REQUIRE(interiorColumn.size() == corpus::READBACK_SAMPLES_PER_SIDE);
         for (uint32 row = 0; row < corpus::READBACK_SAMPLES_PER_SIDE; ++row)

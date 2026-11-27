@@ -77,7 +77,7 @@ TEST_CASE("The terrain readback corpus pins one revision per noise layout", "[co
     CHECK(cubicDigest != quinticDigest);
 
     corpus::TerrainReadback readback;
-    REQUIRE(corpus::TryReadTerrainReadback(cubic.GetManifestBytes(), cubic.GetPagePackBytes(), readback));
+    REQUIRE(corpus::TryReadTerrainReadback(corpus::GetRevisionBytes(cubic), readback));
     CHECK(readback.RecipeVersion == static_cast<ludus::foundation::uint32>(terrain::TerrainNoiseLayout::CubicFade));
     CHECK(readback.PagesRead == static_cast<usize>(corpus::READBACK_PAGES_PER_AXIS) * corpus::READBACK_PAGES_PER_AXIS);
     CHECK(readback.Grid.Columns == corpus::READBACK_SAMPLES_PER_SIDE);
@@ -99,7 +99,8 @@ TEST_CASE("Terrain readback rejects a corrupted page and preserves its output", 
     corrupted[corrupted.GetSize() - 1] = static_cast<uint8>(corrupted[corrupted.GetSize() - 1] ^ 1U);
     corpus::TerrainReadback readback;
     readback.PagesRead = 1;
-    CHECK(corpus::TryReadTerrainReadback(revision.GetManifestBytes(), corrupted.AsView(), readback) == false);
+    CHECK(corpus::TryReadTerrainReadback({ .Manifest = revision.GetManifestBytes(), .PagePack = corrupted.AsView() },
+                                         readback) == false);
     CHECK(readback.PagesRead == 1);
     CHECK(readback.HeightsMetres.IsEmpty());
 }
