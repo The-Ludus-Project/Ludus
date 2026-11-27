@@ -2133,7 +2133,10 @@ TEST_CASE("G0 debug names are validated, applied natively and discarded with the
     CHECK(reference::Annotations[0].Event == AnnotationEvent::NameObject);
     CHECK(reference::Annotations[0].Kind == internal::RasterKind::Texture);
     CHECK(std::strcmp(reference::Annotations[0].Name.GetData(), TEXTURE_NAME) == 0);
+    // The depth backing gets its own label, so a debugger tells the two attachments apart.
+    CHECK(std::strcmp(reference::Annotations[0].DepthName.GetData(), "World/MainView/Opaque/Depth") == 0);
     CHECK(reference::Annotations[1].Kind == internal::RasterKind::Buffer);
+    CHECK(reference::Annotations[1].DepthName[0] == '\0');
     REQUIRE(GetDebugName(session.Device, texture, name) == RasterStatus::Ready);
     CHECK(std::strcmp(name.Text.GetData(), TEXTURE_NAME) == 0);
     REQUIRE(GetDebugName(session.Device, buffer, name) == RasterStatus::Ready);

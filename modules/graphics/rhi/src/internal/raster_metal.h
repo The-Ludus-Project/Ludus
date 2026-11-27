@@ -1098,11 +1098,12 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
 // Thanks to Apple, "label", MTLResource documentation:
 // https://developer.apple.com/documentation/metal/mtlresource/label
 // Labels are copied strings; they never extend or alter the labelled object's lifetime.
-void RasterSetDebugName(internal::RasterKind kind, usize slot, const char* name) noexcept
+void RasterSetDebugName(internal::RasterKind kind, usize slot, const internal::RasterDebugNames& names) noexcept
 {
     @autoreleasepool
     {
-        NSString* labelOrNull = name[0] == '\0' ? nil : [NSString stringWithUTF8String:name];
+        NSString* labelOrNull = names.Name[0] == '\0' ? nil : [NSString stringWithUTF8String:names.Name];
+        NSString* depthLabelOrNull = names.DepthName[0] == '\0' ? nil : [NSString stringWithUTF8String:names.DepthName];
         if (kind == internal::RasterKind::Buffer)
         {
             GetRasterMetal().Buffers[slot].label = labelOrNull;
@@ -1110,7 +1111,7 @@ void RasterSetDebugName(internal::RasterKind kind, usize slot, const char* name)
         else if (kind == internal::RasterKind::Texture)
         {
             GetRasterMetal().Textures[slot].label = labelOrNull;
-            GetRasterMetal().Depths[slot].label = labelOrNull;
+            GetRasterMetal().Depths[slot].label = depthLabelOrNull;
         }
     }
 }

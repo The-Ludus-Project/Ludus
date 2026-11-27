@@ -903,10 +903,16 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_terrain_editing.cpp
     src/internal/world_terrain_surface.h
     src/world_terrain_surface.cpp
+    src/internal/world_terrain_cook.h
+    src/world_terrain_cook.cpp
     src/world_aperture.cpp
     src/internal/world_absorbing_medium.h
     src/world_absorbing_medium.cpp
     src/world_demo_adapter.cpp
+    src/internal/scatter_generation_session.h
+    src/scatter_generation_session.cpp
+    src/internal/world_scatter_panel.h
+    src/world_scatter_panel.cpp
     src/internal/material_inspection.h
     src/material_inspection.cpp
     src/internal/inspector_fields.h
@@ -977,6 +983,9 @@ target_link_libraries(ludus_editor_application
         ludus_editor_code
         ludus_world_demo_model
         ludus_world_render_items
+        # The Scatter tab stages room scatter on the generation executor (Generation P1).
+        Ludus::ProceduralCore
+        Ludus::ProceduralEnvironment
         Qt6::Core
         Qt6::Gui
         Qt6::Widgets
@@ -1397,6 +1406,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/playable_world_tests.cpp
         tests/world_workspace_tests.cpp
         tests/world_terrain_tests.cpp
+        tests/world_terrain_cook_tests.cpp
         tests/world_aperture_tests.cpp
         tests/world_absorbing_medium_tests.cpp
         tests/material_inspection_tests.cpp
@@ -1437,6 +1447,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/viewport_screenshot_tests.cpp
         tests/world_demo_workspace_tests.cpp
         tests/world_identity_tests.cpp
+        tests/world_scatter_panel_tests.cpp
         tests/browser_import_tests.cpp
         tests/configuration_workspace_tests.cpp
         tests/audio_content_tests.cpp
@@ -1525,6 +1536,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Ludus::FoundationParsingJson
             # World climates must cook to the golden weather corpus climate.
             ludus_weather_golden_corpus
+            # Show cooked pages must cook the terrain readback corpus revision.
+            ludus_terrain_readback_corpus
             Ludus::GameplayWeather
             Catch2::Catch2)
     ludus_apply_project_defaults(ludus_editor_tests)
@@ -1621,6 +1634,14 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_SOFTWARE_RAY_GRAPH_FIXTURE=\"${editor_software_ray_RUNTIME_PACKAGE}\""
             "LUDUS_EDITOR_SOFTWARE_RAY_CAPTURE_FIXTURE=\"${editor_software_ray_capture_RAY_PATH_CAPTURE_PACKAGE}\"")
+        # The saved World label baseline's package: an exact visibility label export and the matching
+        # flat colour export. The Linux CI raster baseline copies it beside the relocated SDK app, so the
+        # Editor and the app capture the same bytes.
+        set(editor_label_baseline_staged "${CMAKE_CURRENT_BINARY_DIR}/label-baseline-inputs")
+        ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/raster_baseline/labels"
+            "${editor_label_baseline_staged}")
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_label_baseline
+            MANIFEST "${editor_label_baseline_staged}/main.lushader.json" RUNTIME_PACKAGE)
         target_sources(ludus_editor_tests PRIVATE tests/ray_path_inspection_tests.cpp)
         ludus_stage_render_graph_fixture("${progressive_source}" "${progressive_staged}")
         configure_file("${progressive_source}/main_shaders/progressive_closest.slang"

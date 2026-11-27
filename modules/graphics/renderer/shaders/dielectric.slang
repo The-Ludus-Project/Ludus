@@ -7,7 +7,7 @@
 // b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f, src/pbrt/bxdfs.{h,cpp} (DielectricBxDF, ThinDielectricBxDF) and
 // util/scattering.h (FrDielectric, Refract), Copyright 1998-2020 the authors, licensed under Apache-2.0 (see
 // third_party/pbrt/LICENSE.txt). GPU twin of reference_dielectric.cpp: smooth interfaces only, one real index for
-// all RGB channels and radiance transport.
+// all RGB channels and radiance transport. A spectral path refracts at its wavelength's index (ComputeDielectricIndex).
 
 /// One specular dielectric proposal: Weight is the complete throughput multiplier.
 struct DielectricSample
@@ -19,6 +19,20 @@ struct DielectricSample
 bool IsDielectricModel(MaterialModel model)
 {
     return model == MaterialModel::Dielectric || model == MaterialModel::ThinDielectric;
+}
+/// Index of refraction of a declared dielectric index (n_d in Eta, Abbe number V_d in K.x) at a vacuum wavelength in
+/// nanometres: the two-term Cauchy equation through n_d with n_F - n_C = (n_d - 1) / V_d. A zero Abbe number or a zero
+/// wavelength (RGB transport) returns n_d. GPU twin of content::scene_format::ComputeDielectricIndex (material.h), with
+/// the same operation order.
+float ComputeDielectricIndex(float indexD, float abbeNumber, float wavelengthNanometers)
+{
+    if (abbeNumber == 0 || wavelengthNanometers <= 0)
+        return indexD;
+    float relativeF = LUDUS_DIELECTRIC_D_LINE_NANOMETERS / LUDUS_DIELECTRIC_F_LINE_NANOMETERS;
+    float relativeC = LUDUS_DIELECTRIC_D_LINE_NANOMETERS / LUDUS_DIELECTRIC_C_LINE_NANOMETERS;
+    float relative = LUDUS_DIELECTRIC_D_LINE_NANOMETERS / wavelengthNanometers;
+    float spread = relativeF * relativeF - relativeC * relativeC;
+    return indexD + (indexD - 1) / abbeNumber * ((relative * relative - 1) / spread);
 }
 /// Unpolarized Fresnel reflectance of a dielectric interface with relative index eta; cosine is signed.
 float ComputeDielectricFresnel(float cosine, float eta)

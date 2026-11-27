@@ -1,0 +1,22 @@
+// LUSL declarations of the optical connections of renderer_reference_optical.lusl (renderer_reference_optical_bindings
+// .slang), for renderer_reference_transport.luslh (LUSL L5d wave 2). The block names the optical bindings file, which
+// includes renderer_reference_bindings.slang and wave_reference_scene.slang.
+#pragma once
+#include "renderer_reference_bindings.luslh"
+@search "../../../foundation/math/shaders"
+@search "../../rhi/shaders"
+@search "../include/ludus/graphics/renderer"
+@search "../include/ludus/graphics/renderer/detail"
+@search "../../../content/scene_format/include/ludus/content/scene_format"
+@search "../../../content/render_graph_format/include/ludus/content/render_graph_format"
+@search "../../../content/render_graph_format/include/ludus/content/render_graph_format/detail"
+@prelude float4 SceneValue(uint index);
+@prelude static const uint NO_TRIANGLE = 0xffffffff;
+
+@extern "renderer_reference_optical_bindings.slang"
+    /// A relay chain, which the kernel passes to the wave queries unopened; its array fields have no named LUSL size.
+    struct WaveRelay;
+@declare WaveQuery WaveConnectionOperator SceneContext
+@declare SampleWavelengthNanometers BeginWaveRelay AppendWaveRelayEvent EvaluateWaveRelay
+@declare EvaluateUtdConnectionToReceiver EvaluateFraunhoferConnectionToReceiver EvaluateWaveConnectionToReceiver
+@end

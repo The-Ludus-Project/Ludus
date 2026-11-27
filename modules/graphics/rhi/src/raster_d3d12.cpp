@@ -1008,16 +1008,16 @@ void SetD3d12Name(ID3D12Object* objectOrNull, const char* name) noexcept
     }
     static_cast<void>(objectOrNull->SetName(wide.GetData()));
 }
-void RasterSetDebugName(RasterKind kind, usize slot, const char* name) noexcept
+void RasterSetDebugName(RasterKind kind, usize slot, const RasterDebugNames& names) noexcept
 {
     if (kind == RasterKind::Buffer)
     {
-        SetD3d12Name(GetRasterD3D12().Buffers[slot].Resource.Get(), name);
+        SetD3d12Name(GetRasterD3D12().Buffers[slot].Resource.Get(), names.Name);
     }
     else if (kind == RasterKind::Texture)
     {
-        SetD3d12Name(GetRasterD3D12().Textures[slot].Resource.Get(), name);
-        SetD3d12Name(GetRasterD3D12().Textures[slot].Depth.Get(), name);
+        SetD3d12Name(GetRasterD3D12().Textures[slot].Resource.Get(), names.Name);
+        SetD3d12Name(GetRasterD3D12().Textures[slot].Depth.Get(), names.DepthName);
     }
 }
 void RasterDestroy(RasterKind kind, usize slot) noexcept

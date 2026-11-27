@@ -1,11 +1,14 @@
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
+#include <ludus/content/foliage_pages/foliage_page_publication.h>
 #include <ludus/content/foliage_pages/foliage_pages.h>
 
 // Encode a one-page LUFOL page set with the installed encoder, then validate and
-// decode it with the installed reader against the same terrain binding.
+// decode it with the installed reader against the same terrain binding. Publish
+// it, and check that a corrupt replacement keeps the published generation.
 bool ExerciseInstalledFoliagePages() noexcept
 {
     using namespace ludus::content::foliage_pages;
@@ -47,11 +50,36 @@ bool ExerciseInstalledFoliagePages() noexcept
     FoliagePageSetView view;
     FoliagePlacement decoded;
     ludus::foundation::usize page = 1;
-    return ReadFoliagePageSet(BorrowedView<const uint8>(bytes, written),
-                              { .DomainId = 1, .TerrainRevision = 0 },
-                              {},
-                              view,
-                              diagnostic) == FoliagePageStatus::Ok &&
-           view.TryFindPage(-1, 0, page) == FoliagePageStatus::Ok && page == 0 &&
-           view.TryGetPlacement(0, decoded) == FoliagePageStatus::Ok && decoded == placements[0];
+    const FoliagePageBinding binding = { .DomainId = 1, .TerrainRevision = 0 };
+    if (ReadFoliagePageSet(BorrowedView<const uint8>(bytes, written), binding, {}, view, diagnostic) !=
+            FoliagePageStatus::Ok ||
+        view.TryFindPage(-1, 0, page) != FoliagePageStatus::Ok || page != 0 ||
+        view.TryGetPlacement(0, decoded) != FoliagePageStatus::Ok || (decoded == placements[0]) == false)
+    {
+        return false;
+    }
+
+    ludus::foundation::Array<uint8> owned;
+    ludus::foundation::Array<uint8> corrupt;
+    if (owned.TryResize(written) == false || corrupt.TryResize(written) == false)
+    {
+        return false;
+    }
+    for (ludus::foundation::usize i = 0; i < written; ++i)
+    {
+        owned[i] = bytes[i];
+        corrupt[i] = bytes[i];
+    }
+    corrupt[0] = 0;
+    FoliagePageSetPublication publication;
+    FoliagePageSetCandidate candidate;
+    if (publication.TryStage(owned, binding, candidate, diagnostic) != FoliagePageStatus::Ok ||
+        publication.TryPublish(candidate) != FoliagePublicationStatus::Ok)
+    {
+        return false;
+    }
+    return publication.TryStage(corrupt, binding, candidate, diagnostic) == FoliagePageStatus::Malformed &&
+           publication.TryPublish(candidate) == FoliagePublicationStatus::NotReady &&
+           publication.GetAcceptedRevision() == 1 && publication.GetAcceptedBytes().GetSize() == written &&
+           publication.GetAccepted().TryGetPlacement(0, decoded) == FoliagePageStatus::Ok && decoded == placements[0];
 }

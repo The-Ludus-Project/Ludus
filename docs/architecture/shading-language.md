@@ -1103,9 +1103,14 @@ listed in the retained list with its reason:
 
 **Wave 2 status.** The self-contained raster recipes are LUSL:
 `renderer_composite`, `renderer_overlay`, `renderer_grid`,
-`renderer_selection_mask` and `renderer_selection_outline`. So are the skin
+`renderer_selection_mask`, `renderer_selection_outline` and the unlit material
+program, `renderer_material`. So are the skin
 diffusion passes of the clustered deferred profile, `renderer_skin_blur` and
-`renderer_skin_composite`, the point-neighbor kernel,
+`renderer_skin_composite`, the atmosphere table and display passes,
+`renderer_atmosphere_transmittance`, `renderer_atmosphere_multiple`,
+`renderer_atmosphere_sky` and `renderer_atmosphere_display`, the GPU reference path tracer,
+`renderer_reference`, `renderer_reference_reduce`, `renderer_reference_optical` and its
+wavefront hit-shading diagnostics, the point-neighbor kernel,
 `renderer_point_neighbors`, and the Light Transformer compute kernels,
 `renderer_light_transformer_encoder`, `renderer_light_transformer_decoder` and
 `renderer_light_transformer_encoded_queries`. The renderer binds them by their generated
@@ -1118,6 +1123,9 @@ and its original on one device and require identical bytes. The composite and sk
 the render-graph pixel suite, which also runs on Direct3D 12 (WARP). The others run in the
 Vulkan and Metal renderer suites. The grid, skin and Light Transformer cases have an in-process
 A/B timing mode (`LUDUS_RENDERER_BENCHMARK`), which alternates GPU-timed blocks of the two programs.
+The Light Transformer timing is a separate hidden case, because it has nothing to check without the
+variable and the Linux Vulkan validation step rejects a default run with skipped cases. Select it with
+`LUDUS_RENDERER_BENCHMARK=1 ludus_light_transformer_render_tests "[benchmark][light-transformer]"`.
 
 The skin recipes share `renderer_skin_diffusion.luslh`, the port of the originals'
 `renderer_skin_diffusion.slang`, and the fullscreen vertex stage
@@ -1156,6 +1164,39 @@ It is not a recipe: `render_graph_ray.py` splices it into the Slang wrapper of p
 request `scene_interface.light_transformer`, where it reads the graph's `GraphBuffer0`. It
 migrates with the render-graph scene interface.
 
+The four atmosphere recipes share `renderer_atmosphere.lusl`, the port of `renderer_atmosphere.slang`, whose
+declaration order is the originals' manual layout: the view uniform, then the transmittance, sky and
+multiple-scattering tables. They reach the transport, celestial, cloud and aurora libraries and
+`display_tone_mapping.slang` through `extern slang`, because the deferred lighting recipes and the render-graph
+helpers still include them. Those libraries declare the cloud and aurora row counts as Slang constants, which
+cannot size the view uniform's arrays, so the port names them from `renderer_atmosphere_layout.luslh`.
+`generate_lusl_layouts.py` also writes that header and `lighting_layout.luslh`, which supplies the planet capacity.
+The deferred atmosphere resolve, `renderer_atmosphere_deferred`, stays Slang with the deferred lighting recipe. In
+the default-graph pixel suite, eight sky scenes (single and multiple scattering, a night sky with stars, a planet
+and the Moon, a cloud slab, auroral curtains and an orbital limb, with their controls) draw identical bytes with
+both programs. A test-only override (`SetAtmosphereTableShadersForTesting`) draws the original. The renderer binds
+the shared slot table of `renderer_atmosphere_display_slots.h`. `renderer_material` keeps the slots 0, 1 and 2 and
+the `Tint`, `UvTransform` and `Options` members that the renderer's L3 schema checks. Its parity test draws the L3
+material scene, which covers implicit and explicit LOD and masked and painter alpha.
+
+The five reference recipe files define the four configuration macros (repeated closest and visibility traversals,
+permuted pixels, optical connections) and include `renderer_reference_transport.luslh`, the port of
+`renderer_reference.slang`'s transport, sampling and accumulation. Its bindings stay manual: the shared libraries it
+calls read the `Parameters` fields as Slang globals (`ray_bvh_traversal.slang` reads `Counts` and `Offsets`,
+`reference_medium.slang` reads `Tile`), and `ltc_table.slang` and `ggx_albedo_table.slang` declare their table at a
+slot defined before their inclusion. LUSL bindings express neither, so `renderer_reference_bindings.slang` keeps the
+original's layout and includes every library once. The kernel reaches it through `extern slang`, and the libraries
+call the kernel's `SceneValue` and `IsBvhCandidateAccepted`, which Slang resolves in any order. The generated
+`renderer_reference_bindings.luslh` declares the fields as `extern slang` variables and the libraries' declarations.
+`renderer_reference_optical_bindings.slang` adds `wave_reference_scene.slang` for the optical kernel. Their manual
+slots become generated ones when wave 5 ports these libraries. The port tests finiteness with `IsFiniteBits`, which
+LUSL requires in place of `isfinite`, and passes `TraceBvh`'s default exclusion explicitly. Every GPU raw-AOV case
+of the CPU-oracle suite also draws its scene with the Slang original on the same device and requires identical
+bytes and path-event counts. The cases cover uniform and resampled light sampling, environment and atmosphere
+skies, the four optical connections and the three diagnostics. `ludus_reference_benchmark`'s `slang` kernel times
+the two programs in one process. The port found a lowering defect: zeroing an enum field wrote a bare `0`, which
+Slang rejects. Lowering now writes `Mode(0u)`.
+
 The composite verification fixture (`tests/sdk_consumer/composite_recipe_fixture.h`) feeds
 an asymmetric 4×2 texture through the composite stages. It uses a cropped quad and a nearest
 sampler, binds by the generated slots, and checks every pixel against the image derived from
@@ -1167,10 +1208,12 @@ prints the reflected binding kinds, and both runs print the image's hash. `rende
 (`scripts/python/ludus_tools/render_graph_forward.py`) includes their sources in generated Slang
 wrappers and calls their entry points by name (`ForwardFlatShadow`, `DeferredDepthCopy`), and
 `cmake/LudusRenderGraph.cmake` stages their sources as render-graph helpers. They migrate with
-that profile. The remaining recipes, the lit, material, output, deferred lighting and material,
-atmosphere, skin resolve, GPU preview and reference programs, need their
-renderer-local helper libraries ported first and migrate in later wave 2 changes. The renderer shader directory joins the
-migrated scope with the last of them.
+that profile. The GPU preview kernel and its image pass stay Slang for the same reason as the forward
+profile: `render_graph_ray.py` includes both sources in every generated ray wrapper, and
+`scene_shader.luslh.in` includes the kernel as the render-graph ray prelude. They migrate with the
+render-graph scene interface. The lit, output, deferred lighting and material and skin resolve
+programs are staged render-graph helpers or include one, and migrate with the render-graph
+tooling. The renderer shader directory joins the migrated scope with the last of them.
 
 ### Acceptance
 

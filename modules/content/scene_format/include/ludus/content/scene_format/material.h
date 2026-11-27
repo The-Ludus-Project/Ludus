@@ -55,6 +55,13 @@ static const MaterialModelTag LUDUS_COATING_SAMPLES = 1;
 static const MaterialScalar LUDUS_SMOOTH_INTERFACE_ALPHA = 0.001F;
 /// Smallest rough coating alpha; smaller values require a delta dielectric interface.
 static const MaterialScalar LUDUS_COATING_MIN_ALPHA = LUDUS_SMOOTH_INTERFACE_ALPHA;
+/// Vacuum wavelength of the Fraunhofer d (helium) line in nanometres. A dielectric's stored index n_d is its index
+/// here, as in optical glass catalogues.
+static const MaterialScalar LUDUS_DIELECTRIC_D_LINE_NANOMETERS = 587.5618F;
+/// Vacuum wavelength of the Fraunhofer F (hydrogen) line in nanometres; the Abbe number divides by n_F - n_C.
+static const MaterialScalar LUDUS_DIELECTRIC_F_LINE_NANOMETERS = 486.1327F;
+/// Vacuum wavelength of the Fraunhofer C (hydrogen) line in nanometres.
+static const MaterialScalar LUDUS_DIELECTRIC_C_LINE_NANOMETERS = 656.2725F;
 /// Capability: evaluates reflection with a continuous solid-angle density.
 static const MaterialCapabilityBits LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION = 1U;
 /// Capability: every scattering proposal consumes exactly three uniform values from the caller's path event.
@@ -79,10 +86,12 @@ enum class MaterialModel : foundation::uint32
                                                          ///< non-scattering reference profile.
     /// Interface of a nonabsorbing dielectric with real index Eta: Fresnel-weighted
     /// specular reflection and refraction. A closed mesh bounds the medium; its
-    /// oriented front side faces the outside (index one).
+    /// oriented front side faces the outside (index one). K[0] may declare dispersion
+    /// (DielectricDispersion).
     Dielectric = LUDUS_MATERIAL_MODEL_DIELECTRIC,
     /// Infinitesimally thin nonabsorbing dielectric slab with real index Eta:
     /// Fresnel reflection including internal interreflection, and undeviated transmission.
+    /// K[0] may declare dispersion (DielectricDispersion).
     ThinDielectric = LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC,
     /// Weighted Lambertian and isotropic rough conductor. The material metallic field is the conductor weight.
     DiffuseConductorMix = LUDUS_MATERIAL_MODEL_DIFFUSE_CONDUCTOR_MIX,
@@ -229,7 +238,8 @@ inline constexpr foundation::float32 DEFAULT_HAIR_CARD_SECONDARY_WEIGHT = 0.05F;
 /// Reference conductors and coatings currently admit isotropic alpha only. The
 /// coating reference profile models absorption without medium scattering; omitted
 /// source coating controls resolve to the shared PBRT default policy constants.
-/// Dielectrics store their real index in every Eta channel with zero K; reference
+/// Dielectrics store their real index n_d in every Eta channel, their Abbe number in K[0]
+/// (zero for a nondispersive index) and zero K[1..2] (DielectricDispersion); reference
 /// evaluators admit equal channels and smooth interfaces (alpha below
 /// LUDUS_SMOOTH_INTERFACE_ALPHA). Evaluators without transmission shade a dielectric
 /// through the record's legacy metallic/roughness fields instead.
@@ -334,6 +344,93 @@ struct HairCardParameters final
            scattering.AlphaU == defaults.AlphaU && scattering.AlphaV == defaults.AlphaV &&
            scattering.CoatingEta == defaults.CoatingEta && scattering.CoatingThickness == defaults.CoatingThickness;
 }
+/// Smallest admitted dispersive Abbe number. Optical glasses span about 17 to 95 and strongly dispersive
+/// crystals such as rutile reach about 10; smaller values describe no transparent dielectric.
+inline constexpr foundation::float32 MIN_DIELECTRIC_ABBE_NUMBER = 5;
+/// Largest admitted dispersive Abbe number. Its index varies by less than 0.3% of n_d - 1 over the visible
+/// spectrum; store zero to declare a nondispersive index instead.
+inline constexpr foundation::float32 MAX_DIELECTRIC_ABBE_NUMBER = 1000;
+/// Declared index of refraction of a Dielectric or ThinDielectric, as optical glass catalogues give it: the index
+/// n_d at the Fraunhofer d line (LUDUS_DIELECTRIC_D_LINE_NANOMETERS) and the Abbe number V_d = (n_d - 1) /
+/// (n_F - n_C). The index at a vacuum wavelength is the two-term Cauchy equation n = A + B / lambda^2 through n_d
+/// with that n_F - n_C (ComputeDielectricIndex). A MaterialScattering stores n_d in every Eta channel and V_d in
+/// K[0], with zero K[1..2].
+///
+/// Spectral evaluators (one sampled wavelength per path) refract at the index of their wavelength. RGB evaluators,
+/// which carry no wavelength, explicitly use n_d for every channel: a zero wavelength selects it.
+///
+/// Thanks to Augustin-Louis Cauchy, "Memoire sur la dispersion de la lumiere" (1836), for the equation. Ludus
+/// declares the catalogue pair instead of pbrt-v4's tabulated index spectra; its pbrt importers convert such a
+/// spectrum, named or tabulated, through its F, d and C lines.
+struct DielectricDispersion final
+{
+    /// Index of refraction n_d at the d line, in (0, MAX_MATERIAL_OPTICAL_CONSTANT]; above one when dispersive.
+    foundation::float32 IndexD = DEFAULT_DIELECTRIC_ETA;
+    /// Abbe number V_d in [MIN_DIELECTRIC_ABBE_NUMBER, MAX_DIELECTRIC_ABBE_NUMBER], or zero for a
+    /// nondispersive index.
+    foundation::float32 AbbeNumber = 0;
+};
+/// Report whether a declared dielectric index is finite and inside its documented ranges.
+[[nodiscard]] constexpr bool IsDielectricDispersionValid(const DielectricDispersion& dispersion) noexcept
+{
+    const bool isIndexValid = dispersion.IndexD > 0 && dispersion.IndexD <= MAX_MATERIAL_OPTICAL_CONSTANT;
+    const bool isAbbeValid =
+        dispersion.AbbeNumber == 0 || (dispersion.IndexD > 1 && dispersion.AbbeNumber >= MIN_DIELECTRIC_ABBE_NUMBER &&
+                                       dispersion.AbbeNumber <= MAX_DIELECTRIC_ABBE_NUMBER);
+    return isIndexValid == true && isAbbeValid == true;
+}
+/// Report whether the model is a dielectric interface, solid or thin, whose K[0] holds its Abbe number.
+[[nodiscard]] constexpr bool IsDielectricModel(MaterialModel model) noexcept
+{
+    return model == MaterialModel::Dielectric || model == MaterialModel::ThinDielectric;
+}
+/// Read the declared index of a dielectric scattering: n_d from Eta[0] and V_d from K[0]. Other models return
+/// the default nondispersive index.
+[[nodiscard]] constexpr DielectricDispersion GetDielectricDispersion(const MaterialScattering& scattering) noexcept
+{
+    if (IsDielectricModel(scattering.Model) == false)
+    {
+        return {};
+    }
+    return
+    {
+        .IndexD = scattering.Eta[0],
+        .AbbeNumber = scattering.K[0],
+    };
+}
+/// Store a smooth dielectric: n_d in every Eta channel, V_d in K[0], zero K[1..2] and the smallest alpha.
+/// @param model Dielectric or ThinDielectric; validate the result with IsMaterialScatteringValid.
+/// @param dispersion The declared index n_d and Abbe number (IsDielectricDispersionValid).
+[[nodiscard]] constexpr MaterialScattering MakeDielectricScattering(MaterialModel model,
+                                                                    const DielectricDispersion& dispersion) noexcept
+{
+    MaterialScattering scattering;
+    scattering.Model = model;
+    scattering.Eta = {{dispersion.IndexD, dispersion.IndexD, dispersion.IndexD}};
+    scattering.K = {{dispersion.AbbeNumber, 0, 0}};
+    scattering.AlphaU = MIN_MATERIAL_ALPHA;
+    scattering.AlphaV = MIN_MATERIAL_ALPHA;
+    return scattering;
+}
+/// Index of refraction at a vacuum wavelength: n_d + (n_d - 1) / V_d * ((lambda_d / lambda)^2 - 1) /
+/// ((lambda_d / lambda_F)^2 - (lambda_d / lambda_C)^2), the two-term Cauchy equation through n_d with
+/// n_F - n_C = (n_d - 1) / V_d. The GPU twin is ComputeDielectricIndex in the renderer's dielectric.slang.
+/// @param dispersion The declared index n_d and Abbe number, valid by IsDielectricDispersionValid.
+/// @param wavelengthNanometers Vacuum wavelength of a spectral path in nanometres; zero (RGB transport) selects n_d.
+/// @return n_d for a nondispersive index or a zero wavelength; otherwise the index at the wavelength.
+[[nodiscard]] constexpr foundation::float32 ComputeDielectricIndex(const DielectricDispersion& dispersion,
+                                                                   foundation::float32 wavelengthNanometers) noexcept
+{
+    if (dispersion.AbbeNumber == 0 || wavelengthNanometers <= 0)
+    {
+        return dispersion.IndexD;
+    }
+    const foundation::float32 relativeF = LUDUS_DIELECTRIC_D_LINE_NANOMETERS / LUDUS_DIELECTRIC_F_LINE_NANOMETERS;
+    const foundation::float32 relativeC = LUDUS_DIELECTRIC_D_LINE_NANOMETERS / LUDUS_DIELECTRIC_C_LINE_NANOMETERS;
+    const foundation::float32 relative = LUDUS_DIELECTRIC_D_LINE_NANOMETERS / wavelengthNanometers;
+    const foundation::float32 spread = relativeF * relativeF - relativeC * relativeC;
+    return dispersion.IndexD + (dispersion.IndexD - 1) / dispersion.AbbeNumber * ((relative * relative - 1) / spread);
+}
 /// Report whether the model is a dielectric whose material record must store zero metallic: hair cards
 /// and skin. Decoders and renderers reject such a record with a nonzero metallic fraction.
 [[nodiscard]] constexpr bool RequiresZeroMetallic(MaterialModel model) noexcept
@@ -354,7 +451,8 @@ inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHA
 /// marker, reject. A closure program keeps every field at its default, so equal programs cook to
 /// equal bytes; its program is validated by IsMaterialProgramValid. A hair card is validated by
 /// IsHairCardValid. Skin admits only its scattering distances in K, each in
-/// [0, MAX_SKIN_SCATTERING_DISTANCE], with every other field at its default.
+/// [0, MAX_SKIN_SCATTERING_DISTANCE], with every other field at its default. A dielectric's
+/// K holds its declared dispersion (IsDielectricDispersionValid) and zero K[1..2].
 /// An evaluator separately admits the supported anisotropy.
 [[nodiscard]] constexpr bool IsMaterialScatteringValid(const MaterialScattering& scattering) noexcept
 {
@@ -411,6 +509,12 @@ inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHA
         (scattering.AlphaV >= MIN_MATERIAL_ALPHA && scattering.AlphaV <= 1) == false ||
         (scattering.CoatingEta > 0 && scattering.CoatingEta <= MAX_MATERIAL_OPTICAL_CONSTANT) == false ||
         (scattering.CoatingThickness >= 0 && scattering.CoatingThickness <= MAX_MATERIAL_OPTICAL_CONSTANT) == false)
+    {
+        return false;
+    }
+    if (IsDielectricModel(scattering.Model) == true &&
+        (scattering.K[1] != 0 || scattering.K[2] != 0 ||
+         IsDielectricDispersionValid(GetDielectricDispersion(scattering)) == false))
     {
         return false;
     }

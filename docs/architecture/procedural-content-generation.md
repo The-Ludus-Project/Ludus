@@ -922,10 +922,12 @@ occupancy and checkpoint persistence of tombstones and ordinals.
 P1 began with room scatter as the first consumer of a staged, cached and
 explained generation request. Modular assembly is the second consumer, and the
 executor they share now serves requests for a single scope's output over a
-persistent cache store. Override conflict repair in the Editor, locks entering
-thinning before constraints are solved, and World Demo consumption of the
-accepted manifest follow as separate changes under the same acceptance gate.
-The comparison of serial and bounded-worker preparation also follows.
+persistent cache store. Author locks enter thinning before its conflicts are
+decided, and a candidate whose authored input changed while it was pending is
+stale; its override conflicts are named by placement and property, and the
+Editor's Scatter tab repairs them. World Demo consumption of the accepted
+manifest follows as a separate change under the same acceptance gate. The
+comparison of serial and bounded-worker preparation also follows.
 
 **Modules.** `Ludus::ProceduralCore` (`modules/content/procedural/core`) holds
 the parts no domain owns: canonical little-endian byte encoding
@@ -961,11 +963,11 @@ seed, the scatter domains and one or more scopes in ascending room order. Each
 scope is a room's recipe plus its author locks. `TryAddScatterStages` appends one
 pure stage per layer, with the room as its scope and the layer ID as its stage.
 Its parameters encode the scatter layout version, seed, domain IDs, room, the
-layer's own fields and variants, the region and the keep-outs.
-`ScatterLayerKernel` decodes them and generates the layer from them alone.
-Other layers and locks are not parameters. A scale edit therefore reruns only
-its layer, a lock changes no product, and an edit in one room leaves every
-other room's products cached. A layer product is a placement count followed by
+layer's own fields and variants, the layer's author locks in canonical order,
+the region and the keep-outs. `ScatterLayerKernel` decodes them and generates
+the layer from them alone. Other layers and their locks are not parameters. A
+scale edit or a lock edit therefore reruns only its layer, and an edit in one
+room leaves every other room's products cached. A layer product is a placement count followed by
 fixed 24-byte placement records, written field by field in little-endian order.
 
 **Modular assembly.** A module catalog stage (`TryAddModuleCatalogStage`) turns
@@ -1035,17 +1037,65 @@ stage is `NotReady`, and one begun against an older revision is
 `StaleCandidate`. The accepted `GenerationManifest` holds every product and a
 digest over the scopes, stage IDs, keys and output digests. The scatter
 coordinator's `TryStage` requests every scatter stage, decodes the products
-into a typed manifest with that digest and checks locks. Its `TryPublish`
-additionally refuses a candidate with an unsatisfied lock (`ConstraintFailed`)
-as `NotReady`. `Reject` discards a candidate. Staging, requesting and rejecting
-never change the accepted manifest, and every failure leaves it and the
-revision unchanged.
+into a typed manifest with that digest and checks locks. It records the
+candidate's staged locks and `TryComputeScatterInputDigest`, a digest of the
+request's canonical encoding: seed, domains, every scope's room, region,
+keep-outs and layers, and every lock in room, layer and canonical identity
+order. Its `TryPublish` takes the current authored request. It refuses a
+candidate with an unsatisfied lock (`ConstraintFailed`) as `NotReady`, and one
+staged from any other input as `StaleCandidate`. `Reject` discards a candidate.
+Staging, requesting and rejecting never change the accepted manifest, and every
+failure leaves it and the revision unchanged.
 
-**Locks.** In this slice, a lock is an accepted placement the author protects.
-The candidate must contain the same identity with exactly the same values. Locks
-do not yet alter thinning. An unsatisfied lock becomes a `ScatterLockConflict`
-that names the lock. A missing placement also carries the reason for its
-removal; a changed one carries the generated values.
+**Locks.** A lock is an author override of one placement's position, variant,
+rotation and scale, such as an accepted placement the author protects or turns.
+Each layer's locks enter its thinning as `ScatterLayer::Locks` in place of the
+candidates' sampled values, before the conflicts around them are decided. A
+lock is honourable when its identity names a candidate of the layer, its
+position lies in that identity's cell, in the region and outside every keep-out,
+and its variant and scale are in the layer's range. The cell bound keeps every
+conflict a lock can cause within the kernel's neighbour search. An honourable
+lock outranks every unlocked candidate, so thinning removes the unlocked
+candidates it conflicts with, and the locked placement is generated with exactly
+the lock's values. Two conflicting locks are ranked by the ordinary priority.
+Locking an accepted placement at its own values removes nothing, since it
+already outranks every candidate it conflicts with. A lock that is not
+honourable, or that another lock outranks, removes its candidate and becomes a
+`ScatterLockConflict` that names the lock and the reason for its removal:
+`LockOutsideRecipe`, a keep-out, the region, the outranking lock or a removed
+layer. The final check still compares each lock with the candidate, so the
+overrides are validated again after generation.
+
+**Override conflicts.** An author can edit a lock while a candidate is pending.
+The candidate then no longer matches the authored input, so it is stale and the
+accepted World is unchanged. `TryFindScatterOverrideConflicts` names the edits
+by placement and property. For every current lock, the candidate's placement
+must exist (`Presence`) and match the lock's position, variant, rotation and
+scale; each differing property is one conflict that carries both the authored
+and the candidate values. A lock the candidate was staged with and the author
+has since removed is a `Lock` conflict. Keeping the authored values is a retry:
+staging the current input again reruns only the edited lock's layer and reuses
+every other cached product.
+
+**Editor repair.** The World workspace's Scatter tab
+([task guide](../development/editor-workspace.md#repair-a-stale-scatter-candidate))
+holds one `ScatterGenerationCoordinator` over an in-process cache for the
+World-demo rooms: the open World's draft and the rooms saved beside it. Both the
+tab and the World demo build each room's recipe with `TryBuildRoomScatterRecipe`
+(`apps/world_demo/internal/room_scatter.h`), so they generate from the same stage
+bytes. The author locks a placement's position, variant, rotation and scale,
+stages a candidate and publishes it. A refused publication shows each
+`ScatterOverrideConflict` by placement and property with both values, in the tab
+where the author acted. **Keep Authored Values and Retry** stages the current
+input and publishes it; **Reject Proposal** calls `Reject`. Either way the
+accepted manifest changes only on a valid publication. Holter et al.'s
+[agency distribution and attribution framework](https://www.steffenholter.com/papers/towards-agency.pdf)
+and Amershi et al.'s
+[Guidelines for Human-AI Interaction](https://www.microsoft.com/en-us/research/wp-content/uploads/2019/01/Guidelines-for-Human-AI-Interaction-camera-ready.pdf)
+(Table 1, G8 efficient dismissal and G9 efficient correction) motivate offering
+both decisions at the refusal rather than resolving the conflict silently. The
+overrides and accepted manifest are session state until the World Demo
+consumption change saves them.
 
 **Explanations.** `TryCompareScatterManifests` compares an accepted manifest with
 a candidate by persistent placement identity. It reports Removed, Changed and
@@ -1073,10 +1123,34 @@ edited keep-out. The protected placement and the unaffected room keep their
 identities and values, the unaffected room is a cache hit, and the candidate
 equals a clean cook of the same inputs with an empty cache. Rejecting the
 candidate preserves the accepted manifest. Further tests cover precise
-invalidation per layer, seed and lock edits; lock conflicts by keep-out, value
-and removed layer; stale candidates; corrupt and mis-shaped cache entries
-rebuilt to the same manifest; a store that refuses every write; and invalid
-requests that stage and publish nothing.
+invalidation per layer, seed and lock edits; lock conflicts by keep-out, by a
+lock moved out of its cell or past the layer's scale range, and by a removed
+layer; stale candidates; corrupt and mis-shaped cache entries rebuilt to the
+same manifest; a store that refuses every write; and invalid requests,
+including duplicate locks, that stage and publish nothing.
+
+The lock tests check every candidate of a locked golden layer: its explanation
+agrees with generation, an honourable lock is generated with exactly its values,
+and unhonourable locks are explained by `LockOutsideRecipe` or the candidate
+index. In the fixture, locking a thinned tree beside the accepted tree that
+outranked it generates the lock and removes that tree, explained by thinning
+against the lock. Only the locked layer runs again, and the result equals a
+clean cook. The override fixture stages a candidate with a rotation override of
+a room-B placement, then edits the override while the candidate is pending.
+Publication is refused as stale and the accepted manifest and revision are
+unchanged. The conflict report names that placement's rotation with the authored
+and candidate values. Retrying runs only room B's layer, with room A all cache
+hits, and publishes the authored value. Further sections cover two edited
+properties, a removed override, a new override of a placement the candidate
+lacks, and rejecting the stale candidate. The Editor cases repeat the
+override fixture on the two World-demo rooms through the Scatter tab's controls,
+offscreen: the stale refusal leaves the accepted manifest and revision unchanged,
+the conflict row names the second room's placement and its rotation with both
+values, and retrying publishes the authored value with the first room all cache
+hits and only the overridden layer of the second room executed. Rejecting keeps
+the accepted manifest and the override, and the next publication carries it. An
+override inside a keep-out is listed with its reason and cannot publish until
+removed.
 
 The demand fixture extends the two rooms into one plan. A shared module catalog
 stage feeds a span assembly in each room, beside the rooms' scatter layers, and

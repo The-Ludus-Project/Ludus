@@ -59,6 +59,22 @@ enum class ReferenceOpticalConnection : ludus::foundation::uint8
     /// each edge diffracts once, and only where the source and receiver see its stationary point.
     FraunhoferEdgeDiffraction,
 };
+/// Spectrum of an optical reference capture (positive OpticalWavelengthWorld). Both choices estimate the integral that
+/// render-graph-authoring.md declares for them, in "Spectral optical connections"; the CPU oracle and GPU compute
+/// traversals implement both.
+enum class ReferenceOpticalSpectrum : ludus::foundation::uint8
+{
+    /// The default: every connection evaluates at OpticalWavelengthWorld, and its scalar power scales the authored RGB
+    /// transport.
+    Monochromatic,
+    /// Spectral rendering over 380-780 nm: each path draws one uniform wavelength. The authored linear RGB emission,
+    /// reflection and transmission factors are uplifted to spectra and evaluated at that wavelength, the optical
+    /// connections and glass relays evaluate at it, and the camera's CIE 1931 sensor converts the spectral radiance to
+    /// linear RGB. OpticalWavelengthWorld is the optical wavelength of 550 nm light: each path's connections use it
+    /// scaled by the sampled wavelength over 550 nm, so 5.5e-7 is physical light and a larger value renders the same
+    /// colours as the scene shrunk by the ratio.
+    Visible,
+};
 /// RT1 RGB reflection input. Scattering selects legacy metallic/roughness,
 /// Lambertian diffuse or isotropic rough conductor with complex-IOR Fresnel.
 /// CoatedDiffuse is a rough dielectric layer over Lambertian reflection with
@@ -66,10 +82,12 @@ enum class ReferenceOpticalConnection : ludus::foundation::uint8
 /// alpha directly. Coatings require isotropy, alpha >= LUDUS_COATING_MIN_ALPHA,
 /// and IOR >= 1. Their internal depth is LUDUS_COATING_MAX_DEPTH; it does not consume
 /// scene bounces. Dielectric and ThinDielectric are smooth nonabsorbing interfaces
-/// with one real index (equal Eta channels, zero K, alpha below
-/// LUDUS_SMOOTH_INTERFACE_ALPHA): their reflection and transmission are directional
-/// deltas, sampled only. Rough transmission, scattering media, absorption inside
-/// dielectrics and spectral dispersion are absent.
+/// with one declared real index (equal Eta channels, an Abbe number in K[0] or zero,
+/// zero K[1..2], alpha below LUDUS_SMOOTH_INTERFACE_ALPHA): their reflection and
+/// transmission are directional deltas, sampled only. They refract at the index of
+/// WavelengthNanometers (content::scene_format::ComputeDielectricIndex), which is n_d for
+/// RGB transport. Rough transmission, scattering media and absorption inside dielectrics
+/// are absent.
 struct ReferenceBsdf final
 {
     /// Linear RGB reflectance, each channel in [0,1]; conductor evaluation uses Eta/K instead.
@@ -88,6 +106,9 @@ struct ReferenceBsdf final
     /// Dielectric only: the view direction lies inside the medium, behind the surface's
     /// oriented front side, so refraction uses the inverse relative index. Thin slabs ignore it.
     bool IsViewerInside = false;
+    /// Dielectric only: vacuum wavelength in nanometres of a spectral path, at which a dispersive index is
+    /// evaluated; zero for RGB transport, which explicitly uses the index n_d. Other models ignore it.
+    ludus::foundation::float32 WavelengthNanometers = 0;
     /// Declared reflection integral of the GGX lobes; values outside the enumeration are invalid input.
     ReferenceMaterialProfile Profile = ReferenceMaterialProfile::SingleScattering;
 };
@@ -330,16 +351,23 @@ struct ReferenceCaptureDescription final
     /// FraunhoferEdgeDiffraction with a zero wavelength, and values outside the enumeration, are rejected as
     /// InvalidDescription.
     ReferenceOpticalConnection OpticalConnection = ReferenceOpticalConnection::AngularSpectrum;
+    /// Spectrum of the optical connections that a positive OpticalWavelengthWorld enables. Recorded in the integral
+    /// key: changing it replaces the job and resets accumulation. Visible with a zero wavelength, and values outside
+    /// the enumeration, are rejected as InvalidDescription.
+    ReferenceOpticalSpectrum OpticalSpectrum = ReferenceOpticalSpectrum::Monochromatic;
     /// Zero retains geometric reference transport. Positive metres enable scalar paraxial Gaussian-mode
     /// coupling on finite light connections, including coherent diffraction by successive scene regions.
     /// The positive range starts at one nanometre; smaller values reject before capture preparation.
-    /// Rough surface scattering stays RGB and unpolarized. Uses next-event estimation alone for light endpoints
+    /// Rough surface scattering stays classical and unpolarized, in RGB or, with OpticalSpectrum Visible, in uplifted
+    /// spectra at each path's wavelength. Uses next-event estimation alone for light endpoints
     /// reached from rough vertices: continuation emission/environment after them is omitted, avoiding double counting
     /// with optical visibility. Emission reached through glass (smooth dielectric reflection and transmission, which
     /// no light sample reaches) keeps full weight; its connection is relayed coherently back through the glass events
     /// to the last rough vertex or the camera. Requires UniformArea and CpuOracle/GpuCompute; NativeQueries rejects
-    /// this profile. Lattice, projection and range limits are documented in render-graph-authoring.md, "Wave tracing".
-    /// Changing wavelength resets accumulation. Nonfinite/negative values are rejected. No silent fallback.
+    /// this profile, and GpuCompute reports Unsupported unless EnableReferenceRendering received the
+    /// `renderer_reference_optical` kernel. Lattice, projection and range limits are documented in
+    /// render-graph-authoring.md, "Wave tracing". Changing wavelength resets accumulation. Nonfinite/negative values
+    /// are rejected. No silent fallback.
     foundation::float32 OpticalWavelengthWorld = 0;
     /// Optional borrowed bounded absorbing medium, validated and copied during Begin/Update; null is
     /// vacuum and keeps every existing capture bit for bit. The medium joins the integral key:

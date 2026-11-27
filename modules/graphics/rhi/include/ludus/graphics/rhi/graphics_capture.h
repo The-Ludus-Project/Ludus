@@ -28,7 +28,8 @@ enum class GraphicsCaptureTool : foundation::uint8
 {
     /// No capture adapter is registered for this session.
     None,
-    /// Apple's Metal capture manager (planned G2 adapter).
+    /// Apple's Metal capture manager, writing a `.gputrace` document (G2). The process needs
+    /// `MTL_CAPTURE_ENABLED=1` (or the app's `MetalCaptureEnabled` property) before Metal starts.
     Metal,
     /// RenderDoc's in-application API on Vulkan (planned G3 adapter).
     RenderDoc,
@@ -101,7 +102,8 @@ struct GraphicsCaptureCapabilities final
     bool HasAdapter = false;
     /// True when the adapter's tool runtime is attached to this process.
     bool IsToolAttached = false;
-    /// True when the tool must be enabled before device creation.
+    /// True when the tool must be enabled before device creation. For Metal, relaunch the
+    /// process with `MTL_CAPTURE_ENABLED=1` in its environment.
     bool IsRestartRequired = false;
     /// True when an external user or tool session is capturing; Ludus never stops it.
     bool IsExternalCaptureActive = false;
@@ -165,6 +167,10 @@ struct GraphicsCaptureReport final
     foundation::StaticArray<char, GRAPHICS_CAPTURE_DIAGNOSTIC_BYTES> ToolVersion{};
     /// Bounded native detail of the failure, if any.
     foundation::StaticArray<char, GRAPHICS_CAPTURE_DIAGNOSTIC_BYTES> Diagnostic{};
+    /// Shader source the artifact lets a viewer show, as reported by the adapter. For Metal,
+    /// the generated MSL compiled at runtime; its `#line` directives, where the shader build
+    /// kept them, name authored LUSL or Slang files and lines whose text is not embedded.
+    foundation::StaticArray<char, GRAPHICS_CAPTURE_DIAGNOSTIC_BYTES> ShaderSource{};
 };
 
 /// Query capture facilities of a ready session without starting a capture or discovering
@@ -178,6 +184,8 @@ GetGraphicsCaptureCapabilities(DeviceHandle device, GraphicsCaptureCapabilities&
 /// the adapter at a time; frames that are skipped (zero-size, hidden or unacquired) do
 /// not consume it. Checks that the destination is a directory and that the request's
 /// manifest name is free, and copies the destination; nothing is written yet.
+/// @note On Metal the native stop is synchronous: EndFrame of the captured frame waits for
+/// that frame's GPU work and the trace write, which takes seconds for a process's first trace.
 /// @param device Ready device session whose frames are captured.
 /// @param request Copied request; its destination storage is not retained.
 /// @param outIdentity Receives the new identity on None; preserved otherwise.

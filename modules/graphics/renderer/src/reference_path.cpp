@@ -1,5 +1,6 @@
 #include "internal/reference_data.h"
 #include "internal/reference_dielectric.h"
+#include "internal/spectral_sensor.h"
 #include "internal/wave_connection.h"
 #include "internal/wave_edge_diffraction.h"
 #include "internal/wave_fraunhofer_diffraction.h"
@@ -13,7 +14,8 @@
 // emitter/environment hits and next-event estimation, and compensated roulette.
 // This RGB, fixed-mip, finite-range reference uses CPU transport with explicit
 // asynchronous native query batches; it has no denoising, wavefront scheduler,
-// path regularization, spectral or rough-transmission model or hidden frame readback.
+// path regularization, rough-transmission model or hidden frame readback. Only the optical profile's
+// ReferenceOpticalSpectrum::Visible renders spectrally (spectral_sensor.cpp).
 // Smooth dielectrics follow pbrt-v4's specular bounces (section 13.4): they skip light
 // sampling, and emission found through them takes full weight. Shadow rays stay opaque
 // to them, as in pbrt-v4, so light reaches a surface through glass only by BSDF sampling.
@@ -41,19 +43,51 @@ FailReferencePath(ReferenceCaptureInfo& inoutInfo, const ReferencePath& path, Re
     inoutInfo.FailureSample = path.Sample;
     return rhi::RasterStatus::Failed;
 }
-void AddTransport(ReferencePath& path, math::Vector3 contribution, uint32 depth, bool emission) noexcept
+// Thanks to Shlomi Steinberg and Matt Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics", CGF 45(2),
+// e70322 (2026), Section 3, https://doi.org/10.1111/cgf.70322 : wave optics is wavelength dependent, so a
+// ReferenceOpticalSpectrum::Visible path carries one sampled wavelength. Its emission, reflection and transmission
+// factors are spectra at that wavelength, its connections diffract at it, and the camera's colour-matching sensor
+// integrates the result. Every factor is an authored linear RGB colour uplifted to a spectrum (spectral_sensor.cpp).
+// Spectral value of an authored linear RGB factor at the path's wavelength, in every channel; RGB paths keep it.
+math::Vector3 ProjectReferenceSpectrum(const ReferencePath& path, math::Vector3 linearRgb) noexcept
 {
-    if (emission && depth == 0)
+    if (path.WavelengthNanometers > 0)
     {
-        path.Emission = path.Emission + contribution;
+        const float32 value = EvaluateUpliftedSpectrum(linearRgb, path.WavelengthNanometers);
+        return {value, value, value};
     }
-    else if ((emission && depth == 1) || (emission == false && depth == 0))
+    return linearRgb;
+}
+// Linear RGB estimate of a contribution: a spectral path's spectral radiance, which every channel holds, is read by
+// the camera's sensor at its uniformly sampled wavelength.
+math::Vector3 ResolveReferenceSpectrum(const ReferencePath& path, math::Vector3 contribution) noexcept
+{
+    return path.WavelengthNanometers > 0 ? ConvertSpectralRadiance(contribution.X, path.WavelengthNanometers)
+                                         : contribution;
+}
+// Vacuum wavelength of the path's optical connections, in metres: the declared one, scaled by a spectral path's
+// sampled wavelength relative to the light that the declared wavelength belongs to.
+float64 GetOpticalWavelengthWorld(const ReferenceJob& job, const ReferencePath& path) noexcept
+{
+    const float64 declared = static_cast<float64>(job.Description.OpticalWavelengthWorld);
+    return path.WavelengthNanometers > 0 ? declared * static_cast<float64>(path.WavelengthNanometers) /
+                                               LUDUS_WAVE_SPECTRAL_REFERENCE_WAVELENGTH_NANOMETERS
+                                         : declared;
+}
+void AddTransport(ReferencePath& inoutPath, math::Vector3 spectralContribution, uint32 depth, bool isEmission) noexcept
+{
+    const math::Vector3 contribution = ResolveReferenceSpectrum(inoutPath, spectralContribution);
+    if (isEmission == true && depth == 0)
     {
-        path.Direct = path.Direct + contribution;
+        inoutPath.Emission = inoutPath.Emission + contribution;
+    }
+    else if ((isEmission == true && depth == 1) || (isEmission == false && depth == 0))
+    {
+        inoutPath.Direct = inoutPath.Direct + contribution;
     }
     else
     {
-        path.Indirect = path.Indirect + contribution;
+        inoutPath.Indirect = inoutPath.Indirect + contribution;
     }
 }
 usize GetReferenceLightCount(const ReferenceJob& job) noexcept
@@ -456,7 +490,7 @@ rhi::RasterStatus QueueShadow(const ReferenceJob& job,
                                                    -static_cast<float64>(direction.Y),
                                                    -static_cast<float64>(direction.Z)};
         const ReferenceOpticalConnection connection = job.Description.OpticalConnection;
-        const float64 opticalWavelengthWorld = static_cast<float64>(job.Description.OpticalWavelengthWorld);
+        const float64 opticalWavelengthWorld = GetOpticalWavelengthWorld(job, path);
         rhi::RasterStatus opticalStatus = rhi::RasterStatus::Ready;
         if (connection == ReferenceOpticalConnection::UtdEdgeDiffraction)
         {
@@ -524,7 +558,7 @@ rhi::RasterStatus QueueShadow(const ReferenceJob& job,
     rhi::RayInput& shadow = path.Shadows[path.ShadowCount];
     shadow = ReferenceRay(start, direction, distance);
     shadow.VisibilityOnly = 1;
-    path.PendingDirects[path.ShadowCount] = transmitted;
+    path.PendingDirects[path.ShadowCount] = ResolveReferenceSpectrum(path, transmitted);
     ++path.ShadowCount;
     path.DirectDepth = path.Depth;
     return rhi::RasterStatus::Ready;
@@ -565,7 +599,9 @@ rhi::RasterStatus QueueDirectContribution(const ReferenceJob& job,
                                ? 1
                                : ReferencePowerWeight(lightProbability, evaluation.Pdf);
     const math::Vector3 contribution =
-        math::Hadamard(inoutPath.Throughput, math::Hadamard(evaluation.Value, proposal.Radiance)) *
+        math::Hadamard(inoutPath.Throughput,
+                       math::Hadamard(ProjectReferenceSpectrum(inoutPath, evaluation.Value),
+                                      ProjectReferenceSpectrum(inoutPath, proposal.Radiance))) *
         (cosine * weight / lightProbability);
     if (ValidContribution(contribution) == false)
     {
@@ -684,6 +720,7 @@ rhi::RasterStatus SampleResampledEmitter(const ReferenceJob& job,
 // Field of the light's connection from sourceWorld, relayed through the chain's glass events to its receiver, divided
 // by the unobstructed field of the same chain. Ready with outIsAdmitted false rejects the chain's media.
 rhi::RasterStatus EvaluateOpticalRelay(const ReferenceJob& job,
+                                       const ReferencePath& path,
                                        const ReferenceOpticalRelay& relay,
                                        math::Vector3 sourceWorld,
                                        bool& outIsAdmitted,
@@ -700,7 +737,7 @@ rhi::RasterStatus EvaluateOpticalRelay(const ReferenceJob& job,
         return rhi::RasterStatus::InvalidDescription;
     }
     outIsAdmitted = true;
-    const float64 wavelengthWorld = static_cast<float64>(job.Description.OpticalWavelengthWorld);
+    const float64 wavelengthWorld = GetOpticalWavelengthWorld(job, path);
     switch (job.Description.OpticalConnection)
     {
         case ReferenceOpticalConnection::UtdEdgeDiffraction:
@@ -747,6 +784,10 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     if (path.Depth == 0 && job.Description.OpticalWavelengthWorld > 0)
     {
         BeginWaveRelay(path.OpticalRelay, ReferenceOrigin(path.Ray));
+        path.WavelengthNanometers =
+            job.Description.OpticalSpectrum == ReferenceOpticalSpectrum::Visible
+                ? SampleWavelengthNanometers(ReferenceRandom(job, path, LUDUS_REFERENCE_WAVELENGTH_DIMENSION))
+                : 0;
     }
     const usize lights = GetReferenceLightCount(job);
     if (hit.Hit == 0)
@@ -776,7 +817,10 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         {
             radiance = radiance + EvaluateReferenceSky(job.Sky, directionWorld);
         }
-        AddTransport(path, math::Hadamard(path.Throughput, radiance) * weight, path.Depth, true);
+        AddTransport(path,
+                     math::Hadamard(path.Throughput, ProjectReferenceSpectrum(path, radiance)) * weight,
+                     path.Depth,
+                     true);
         return ValidContribution(path.Emission) && ValidContribution(path.Direct) && ValidContribution(path.Indirect)
                    ? rhi::RasterStatus::Ready
                    : FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidRadiance);
@@ -848,7 +892,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
             bool isAdmitted = false;
             WaveField field;
             const rhi::RasterStatus status =
-                EvaluateOpticalRelay(job, path.OpticalRelay, Offset(point, triangle, view), isAdmitted, field);
+                EvaluateOpticalRelay(job, path, path.OpticalRelay, Offset(point, triangle, view), isAdmitted, field);
             if (status != rhi::RasterStatus::Ready)
             {
                 return FailReferencePath(inoutInfo,
@@ -871,11 +915,14 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
             }
             weight *= transmission;
         }
-        AddTransport(path,
-                     math::Hadamard(path.Throughput, SampleReferenceEmission(instance, Uv(triangle, hit.U, hit.V))) *
-                         weight,
-                     path.Depth,
-                     true);
+        AddTransport(
+            path,
+            math::Hadamard(
+                path.Throughput,
+                ProjectReferenceSpectrum(path, SampleReferenceEmission(instance, Uv(triangle, hit.U, hit.V)))) *
+                weight,
+            path.Depth,
+            true);
     }
     // Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, "Physically Based Rendering", 4th edition (2023),
     // sections 9.2 (Diffuse Reflection) and 14.3 (Scattering from Layered Materials): pbrt-v4's reflection models
@@ -924,6 +971,8 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     }
     // A dielectric's medium lies behind its oriented front side; viewed from the back, the ray is inside.
     bsdf.IsViewerInside = isBackFace;
+    // A spectral path refracts at its own wavelength's index; RGB transport (zero) uses n_d.
+    bsdf.WavelengthNanometers = path.WavelengthNanometers;
     bsdf.Profile = job.Description.MaterialProfile;
     const bool isSpecular = IsReferenceDielectric(bsdf.Scattering.Model);
     // ResampledProjectedSolidAngle keeps the receiver for this vertex's light sample and its continuation's BSDF-hit
@@ -1019,11 +1068,11 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     }
     if (sample.IsSpecular == true || bsdf.Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse)
     {
-        path.Throughput = math::Hadamard(path.Throughput, sample.Weight);
+        path.Throughput = math::Hadamard(path.Throughput, ProjectReferenceSpectrum(path, sample.Weight));
     }
     else
     {
-        path.Throughput = math::Hadamard(path.Throughput, sample.Evaluation.Value) *
+        path.Throughput = math::Hadamard(path.Throughput, ProjectReferenceSpectrum(path, sample.Evaluation.Value)) *
                           (math::Dot(normal, sample.Direction) / sample.Evaluation.Pdf);
     }
     if (ValidContribution(path.Throughput) == false)
@@ -1062,7 +1111,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         {
             AppendWaveRelayEvent(path.OpticalRelay,
                                  bsdf.Scattering.Model == content::scene_format::MaterialModel::Dielectric,
-                                 bsdf.Scattering.Eta[0],
+                                 GetReferenceDielectricIndex(bsdf),
                                  bsdf.IsViewerInside,
                                  isTransmitted == false,
                                  point);

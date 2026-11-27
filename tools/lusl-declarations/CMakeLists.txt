@@ -16,7 +16,9 @@ set(lusl_declaration_templates
     "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/math.luslh.in"
     "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/ray_shader.luslh.in"
     "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/scene_shader.luslh.in"
-    "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/scene_payload.luslh.in")
+    "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/scene_payload.luslh.in"
+    "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/renderer_reference_bindings.luslh.in"
+    "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/renderer_reference_optical_bindings.luslh.in")
 find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
 # Rewrites the checked-in headers after a change to the Slang they reflect; never part of ALL.
 add_custom_target(ludus_generate_luslh

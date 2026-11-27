@@ -205,6 +205,9 @@ struct ReferencePath final
     ReferenceOpticalRelay OpticalRelay{};
     /// Medium inside count (0 or 1) at the current ray's origin; derived from the primary ray's crossings.
     uint32 MediumInside = 0;
+    /// ReferenceOpticalSpectrum::Visible: the path's sampled vacuum wavelength in nanometres, drawn with its primary
+    /// vertex. Zero for every other capture, whose transport stays RGB.
+    float32 WavelengthNanometers = 0;
     /// Resampled modes: the previous vertex's receiver and its Z-hat cache, read bit-identically by the
     /// BSDF-hit MIS density of the emitter that the continuation reaches.
     ReferenceReceiverFrame PreviousReceiver{};
@@ -246,11 +249,17 @@ rhi::RasterStatus ApplyReferenceComputeStatus(const StaticArray<uint8, REFERENCE
 /// Shared GPU-compute kernels and layout, created by EnableReferenceRendering.
 struct ReferenceComputePipelines final
 {
+    /// Geometric kernel (renderer_reference), dispatched for captures without a positive optical wavelength.
     rhi::RasterShaderHandle TraceShader{};
+    /// Optional optical kernel (renderer_reference_optical), dispatched for a positive OpticalWavelengthWorld.
+    rhi::RasterShaderHandle OpticalTraceShader{};
     rhi::RasterShaderHandle ReduceShader{};
     rhi::BindingLayoutHandle Layout{};
     rhi::ComputePipelineHandle TracePipeline{};
+    rhi::ComputePipelineHandle OpticalTracePipeline{};
     rhi::ComputePipelineHandle ReducePipeline{};
+    /// True when EnableReferenceRendering received the optical kernel; optical captures are Unsupported otherwise.
+    bool HasOpticalTrace = false;
     /// The renderer's LTC table (ltc_table_data.h), uploaded once and bound by every capture's trace kernel.
     rhi::BufferHandle LtcTable{};
     /// RT1's GGX albedo table (ggx_albedo_table.h), uploaded once and bound by every capture's trace kernel.
@@ -438,6 +447,7 @@ static_assert(LUDUS_REFERENCE_DIRECTIONAL_FIRST_DIMENSION + LUDUS_REFERENCE_MAX_
 static_assert(LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION +
                   LUDUS_REFERENCE_DIRECTIONAL_DISK_DIMENSIONS * LUDUS_REFERENCE_MAX_DEPTH - 1 <=
               math::RandomMaxDimension);
+static_assert(LUDUS_REFERENCE_WAVELENGTH_DIMENSION <= math::RandomMaxDimension);
 /// Dimensions per scattering event of `sampling`'s sampler version.
 [[nodiscard]] inline constexpr uint32 GetReferenceDimensionsPerBounce(ReferenceLightSampling sampling) noexcept
 {
@@ -608,12 +618,14 @@ struct ReferenceProbeAddress final
                                                       math::Vector3& outRadiance) noexcept;
 [[nodiscard]] rhi::RasterStatus PrepareReferenceCamera(ReferenceJob&) noexcept;
 /// Private GPU-compute implementations in reference_compute.cpp.
-/// Validate both reflected kernels against the frozen ABI and create their shaders.
+/// Validate the reflected kernels against the frozen ABI and create their shaders. A null opticalTraceOrNull
+/// leaves optical captures unsupported.
 [[nodiscard]] rhi::RasterStatus CreateReferenceComputePipelines(rhi::DeviceHandle device,
                                                                 const rhi::RasterShaderDescription& trace,
+                                                                const rhi::RasterShaderDescription* opticalTraceOrNull,
                                                                 const rhi::RasterShaderDescription& reduce,
                                                                 ReferenceComputePipelines& outPipelines) noexcept;
-/// Advance layout/pipeline creation without waiting; Ready once both pipelines are.
+/// Advance layout/pipeline creation without waiting; Ready once every created pipeline is.
 [[nodiscard]] rhi::RasterStatus PollReferenceComputePipelines(rhi::DeviceHandle device,
                                                               ReferenceComputePipelines& inoutPipelines) noexcept;
 void DestroyReferenceComputePipelines(rhi::DeviceHandle device, ReferenceComputePipelines& inoutPipelines) noexcept;

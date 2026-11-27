@@ -351,9 +351,7 @@ positions and optional finite top-left UVs into a 20-byte vertex in L3 (40 bytes
 ignore UVs. Existing flat/error materials keep their behavior.
 
 ```cmake
-ludus_compile_shader(TARGET my_app NAME renderer_material RASTER
-    SOURCE "${Ludus_DIR}/shaders/renderer_material.slang"
-    VERTEX vertexMain FRAGMENT fragmentMain)
+ludus_compile_renderer_shaders(TARGET my_app SHADERS renderer_material)
 ludus_cook_texture(TARGET my_app NAME albedo SOURCE assets/albedo.texture.json)
 ```
 
@@ -1608,7 +1606,8 @@ composition of supported lobes as data. It needs no new model tag, scene kernel
 ABI or graph edit. The program is owned by the [scene format](../../modules/content/scene_format/include/ludus/content/scene_format/material_program.h)
 and has two parts. A straight-line parameter program runs over eight float4
 registers. A flattened mixture of up to eight leaf lobes follows it. The lobes
-are diffuse, isotropic GGX conductor and cosine power. With RGB lobe weights
+are diffuse, isotropic GGX conductor, cosine power and
+[Oren–Nayar](#project-oren-nayar-lobe-under-renderer-owned-lights). With RGB lobe weights
 $w_i$ and selection weights $s_i$, the mean of each $w_i$, the surface value is
 $\sum_i w_i f_i$. One uniform selects a lobe with probability $s_i / \sum_j s_j$,
 and two more sample its direction. Evaluation and continuation return the full
@@ -1733,6 +1732,85 @@ are 64×64 at 16 spp.
 The board has six triangles, so material evaluation takes a larger share of
 the time than in the Cornell box. The program's median device time was about
 1.5 times the Mix's, within this GPU's run-to-run variance.
+
+#### Project Oren-Nayar lobe under renderer-owned lights
+
+A project can author a rough diffuse lobe as data with the `oren_nayar`
+[closure-program operation](scene-source-format.md#closure-program). It is the
+qualitative model of Michael Oren and Shree K. Nayar,
+[*Generalization of Lambert's Reflectance Model*](https://people.computing.clemson.edu/~ekp/courses/dpa8090/assets/papers/OrenNayar1994.pdf)
+(SIGGRAPH ’94, pp. 239–246). Its angular response gives the project
+BRDF fixture a measurable difference from the Lambertian control. For albedo
+$\rho$,
+
+$$f = \frac{\rho}{\pi}\left(A + B \max(0, \cos(\phi_i - \phi_o)) \sin\alpha \tan\beta\right),$$
+
+with $\alpha$ and $\beta$ the larger and smaller polar angle,
+$A = 1 - 0.5\sigma^2/(\sigma^2 + 0.33)$ and $B = 0.45\sigma^2/(\sigma^2 + 0.09)$.
+
+- **Roughness units.** The lobe's roughness register holds $\sigma$, the
+  standard deviation of the facet slope angle, in radians. It is not perceptual
+  roughness. Evaluators clamp it to $[0, 1]$ radians, about 57°. $\sigma = 0$
+  is exactly Lambertian.
+- **Evaluation.** Both interpreters use the vector form
+  $\max(0, l \cdot v - (n \cdot l)(n \cdot v)) / \max(n \cdot l, n \cdot v)$
+  for the azimuthal term, in the same arithmetic order. The model is reciprocal.
+- **Proposal density.** The lobe samples the cosine-weighted hemisphere, with
+  density $\cos\theta_i / \pi$ in solid angle. Its sampler consumes the
+  mixture's three uniform values, so the lobe offers continuous reflection and
+  the fixed three-value sampler. A program of it satisfies the fixed-dimension
+  reflection requirement.
+- **Reflectance.** At normal view the hemispherical reflectance is $\rho A$.
+  It stays at most $\rho$ for views up to 60° from the normal. The published
+  model is not energy conserving near grazing view for small $\sigma$: it
+  returns up to about 1.5% more than $\rho$ at $\sigma \approx 0.2$ radians.
+  Ludus keeps the published values and reports this limit rather than
+  renormalizing the lobe.
+
+Scene kernel ABI 19 adds the operation. Rebuild ray graph shader packages; a
+stale package fails with the interface-version reason instead of reading the new
+lobe as another operation.
+
+Pat Hanrahan and Jim Lawson,
+[*A Language for Shading and Lighting Calculations*](https://people.csail.mit.edu/ericchan/bib/pdf/p289-hanrahan.pdf)
+(SIGGRAPH ’90, pp. 289–298), give surface and light shaders distinct roles. The
+surface integrates whatever incident light the renderer supplies. The fixture
+uses that separation: it cooks one program once and changes only the
+renderer-owned lights and the occluders between captures.
+
+The tests check these properties:
+- **CPU oracle.** The lobe matches an independent float64 evaluation of the
+  published angular form at $\sigma$ of 0, 0.2, 0.5 and 1 radian. At zero
+  roughness it equals the typed Diffuse model. Values of $\sigma$ outside the
+  admitted range clamp. An angular sweep fixes a 60° incident direction and
+  compares two 45° outgoing directions. In the light's plane the response
+  includes the $B$ term; across it only $A$ remains. A quadrature over
+  $\sigma \in [0, 1]$ checks reciprocity, the reflectance bounds and the
+  normal-view value $A$. Every proposal is accepted, and its density equals
+  the evaluated density $\cos\theta_i / \pi$. The sampled reflectance agrees
+  with the integrated reflectance.
+- **Two directional lights.** A board with the lobe is lit by two
+  independently switchable directional lights with distinct colours and
+  directions. An orthographic camera sees it with one direct-light bounce. The
+  CPU oracle and the GPU reference capture each light alone and both together.
+  With one light, every pixel equals the analytic response at the renderer's
+  world-space directions, within a relative 1e-4. With both, the region means
+  equal the linear sum. A strip beyond the camera's view then shadows the first
+  light only. Its shadowed pixels are black under the first light, keep the
+  second light's response, and the two-light mean drops to the second light
+  alone. A depth-4 capture with a sky follows the declared density through
+  continuation. Every capture meets the matched raw-radiance bounds of the
+  typed-material parity case.
+- **General graph.** The Wave Tracing graph renders the lobe through the
+  transport interface with unchanged source. At normal incidence its
+  geometric-optics export equals $A$ times the Lambertian control's.
+- **Restricted estimator.** The Rao-Blackwellized Metropolis graph admits the
+  program under the fixed-dimension requirement and completes its capture.
+
+The project-owned provider path is not yet covered. Registration through the
+installed SDK, capture from a saved World in the Editor and in a packaged
+standalone app, and the unavailable-provider diagnostic remain for
+[#1310](https://github.com/The-Ludus-Project/Ludus/issues/1310).
 
 ### Preparation and publication
 
@@ -1876,7 +1954,12 @@ dielectric coating over a conductor substrate.
    authored on the shared closure evaluator as an ordered dielectric varnish
    over a diffuse wood substrate (`materials/varnished-wood-panel.luscene.json`,
    the varnished-wood cook check), with a black companion patch for the coat
-   response on its own. World also authors the layered material directly from a
+   response on its own. A project
+   [Oren–Nayar lobe](#project-oren-nayar-lobe-under-renderer-owned-lights)
+   has paired CPU and GPU reference implementations. It is qualified under
+   two renderer-owned directional lights and a shadowing blocker, and the
+   general and restricted graphs accept it with unchanged source. Its
+   project-owned provider path through the installed SDK remains open. World also authors the layered material directly from a
    slot with **Make Coated Diffuse…**: a created coated-diffuse material (its
    base colour the substrate, typed coat alpha, IOR and thickness the coat),
    edited through the Material document's shared instance, per-slot override,
@@ -3078,9 +3161,18 @@ capture each check the direct and total radiance against this expectation using
 The mean tolerance is 0.02 per channel, and matched CPU and GPU pixels must
 agree within an RGB distance of 0.001.
 Increasing scene path depth cannot recover scattering between microfacets.
+
 Thanks to Sébastien Lagarde for the lossless furnace setup and rough-surface
 comparisons. [*Physically-Based Materials: Where Are We?*, SIGGRAPH 2017,
 slides 36–37 and 76–77](https://openproblems.realtimerendering.com/s2017/02-PhysicallyBasedMaterialWhereAreWe.pdf#page=36)
+
+The same paired regression checks the probability of a null BSDF proposal.
+With unit GGX alpha and a normal view, the masking-only reflection density is
+uniform over the sphere. Half of the proposals go below the plane and remain
+null. Each traversal checks that fraction against 0.5 within 0.02 per seed and
+depth. This is the below-surface part of the weak white furnace, which checks
+first-bounce normalization over both hemispheres before microfacet shadowing.
+[Eric Heitz, *Understanding the Masking-Shadowing Function in Microfacet-Based BRDFs*, §3.4, Eq. 36](https://jcgt.org/published/0003/02/03/paper.pdf#page=18)
 
 The opt-in [multiple-scattering GGX profile](#multiple-scattering-ggx-profile)
 declares a compensated integral with its own furnace target of one. Before
@@ -3242,6 +3334,29 @@ instances, lights, pixels or samples.
 mesh or material version exists. It needs negotiated compute storage but no
 native ray queries. Devices without compute reject with `Unsupported`.
 
+`renderer_reference` is the geometric kernel: it compiles none of the optical
+connections of a positive `OpticalWavelengthWorld`, so geometric captures do not
+carry their interaction regions, field lattices or relay chains in private
+memory. Optical captures also need the `renderer_reference_optical` recipe,
+passed to the four-argument `EnableReferenceRendering` (trace, optical trace,
+reduce, options). Its transport is `renderer_reference_transport.luslh` compiled with
+`LUDUS_REFERENCE_OPTICAL_CONNECTIONS` set to one, and it is dispatched only for optical
+captures. Without it an optical GPU-compute capture reports `Unsupported`; the
+renderer never runs one with the geometric kernel, which marks such a dispatch
+invalid. Pipeline preparation compiles every kernel it receives.
+
+Removing the optical state from the geometric kernel changed it as follows. The
+kernels were compiled with the pinned slangc 2026.1.2 (`-target spirv -profile
+spirv_1_3 -entry TraceMain`). Private memory is the sum of Function-storage
+variables after inlining every call, as Mesa does:
+
+| `TraceMain` kernel | SPIR-V assembly lines | Private memory | In arrays |
+| --- | ---: | ---: | ---: |
+| `79ae887c7`, before the UTD, Fraunhofer and glass-relay connections | 144,709 | 138 KiB | 53 KiB |
+| One kernel for both profiles (`e5b0ba580`, spectral) | 215,690 | 368 KiB | 125 KiB |
+| Geometric `renderer_reference` | 120,111 | 71 KiB | 26 KiB |
+| Optical `renderer_reference_optical` | 215,979 | 368 KiB | 125 KiB |
+
 Setup is the CPU oracle's: the same admitted geometry, materials, retained
 texture mip and binned-SAH BVH, packed once in the GPU preview's scene layout. Each
 `AdvanceReferenceCapture(capture, surface)` step polls setup or a readback, or
@@ -3335,8 +3450,12 @@ Cornell tile room of the
 arrangements are `single`, `striped`, `interleaved`, `shuffled` and `only-0` to
 `only-4`, and TILES is 5 or 10. `LUDUS_REFERENCE_BENCHMARK_KERNELS` names GPU
 transport kernels to compare in one process: `reference`, `repeat-closest`,
-`repeat-visibility` and `permuted`, separated by commas. Runs alternate their
-order. The benchmark fails when a kernel's checksum or query counts differ from
+`repeat-visibility`, `permuted`, `optical` and `slang`, separated by commas. `optical`
+traces geometric captures with `renderer_reference_optical`, so
+`reference,optical` measures what the optical connection state costs them. `slang`
+traces with the retained Slang original of the LUSL kernels (`renderer_reference.slang`,
+and its optical kernel for a positive wavelength), so `reference,slang` times the port. Runs
+alternate their order. The benchmark fails when a kernel's checksum or query counts differ from
 the first kernel's, and prints each kernel's median per-dispatch transport time
 and its paired difference:
 
@@ -3471,7 +3590,7 @@ binary, and `shaders/ggx_albedo_table_layout.h` describes its layout.
 
 **Evidence.** The CPU oracle and GPU compute evaluate and sample the same
 lobe, densities and MIS weights (`reference_bsdf.cpp`,
-`renderer_reference.slang` and `ggx_albedo_table.slang`). The independent
+`renderer_reference_transport.luslh` and `ggx_albedo_table.slang`). The independent
 higher-order Smith reference is a float64 random walk on the GGX microsurface.
 It follows Eric Heitz, Johannes Hanika, Eugene d'Eon and Carsten Dachsbacher,
 [*Multiple-Scattering Microfacet BSDFs with the Smith Model*, SIGGRAPH 2016, sections 4–6](https://doi.org/10.1145/2897824.2925943).
@@ -5468,12 +5587,15 @@ means; numerical/statistical acceptance never uses tone mapping or denoising.
 
 Reference profile 8 renders pbrt-v4's smooth `dielectric` and `thindielectric`
 materials, such as the glass balustrade beside the staircase. `Dielectric` is the
-interface of a nonabsorbing medium with one real index in every `Eta` channel and
-zero `K`. A closed mesh bounds the medium, and its oriented front side faces the
-outside. `ThinDielectric` is an infinitesimally thin slab of that index. Reference
-admission accepts equal RGB indices, zero extinction and GGX alpha below
+interface of a nonabsorbing medium with one declared real index: `n_d` in every
+`Eta` channel and its Abbe number in `K[0]` (see
+[dispersive dielectrics](#dispersive-dielectrics)), with zero `K[1..2]`. A closed mesh
+bounds the medium, and its oriented front side faces the outside. `ThinDielectric`
+is an infinitesimally thin slab of that index. Reference admission accepts equal RGB
+indices, an admitted Abbe number or zero, zero extinction and GGX alpha below
 `LUDUS_SMOOTH_INTERFACE_ALPHA` (pbrt-v4's `EffectivelySmooth` threshold, 0.001).
-Dispersion, absorption inside the medium and rough transmission are rejected.
+Channel-wise indices, absorption inside the medium and rough transmission are
+rejected.
 
 Both lobes are directional deltas. Sampling reflects with probability equal to the
 unpolarized Fresnel reflectance and otherwise refracts by Snell's law; total
@@ -5508,6 +5630,61 @@ cooker admits scalar `eta` and smooth roughness, and rejects rough dielectrics. 
 best-effort importer stores the typed model and imports a rough dielectric as a
 smooth one with `ROUGH_TRANSMISSION_APPROXIMATED`. `LIGHTING_PROFILE_VERSION` 8
 separates these captures from the opaque approximation.
+
+#### Dispersive dielectrics
+
+A dielectric declares a wavelength-dependent index the way optical glass catalogues
+do: the index `n_d` at the Fraunhofer d line (587.5618 nm) and the Abbe number
+`V_d = (n_d - 1) / (n_F - n_C)`, between the F (486.1327 nm) and C (656.2725 nm)
+lines (`content::scene_format::DielectricDispersion`). `V_d` is zero for a
+nondispersive index, otherwise in `[MIN_DIELECTRIC_ABBE_NUMBER, MAX_DIELECTRIC_ABBE_NUMBER]`
+(5 to 1000) with `n_d > 1`. The index at a vacuum wavelength `lambda` is the two-term
+Cauchy equation through `n_d` with that `n_F - n_C`:
+
+```text
+n(lambda) = n_d + (n_d - 1) / V_d * ((lambda_d / lambda)^2 - 1) / ((lambda_d / lambda_F)^2 - (lambda_d / lambda_C)^2)
+```
+
+`ComputeDielectricIndex` in `material.h` is the CPU definition and
+`shaders/dielectric.slang` its GPU twin. The catalogue pair was chosen over pbrt-v4's
+tabulated spectra and over Sellmeier coefficients: it is two numbers in the existing
+record (LUSCN keeps its layout, `K` was zero for every dielectric), every glass
+catalogue lists it, and an author can type it. Against Schott's published Sellmeier fits over
+380–780 nm, the two Cauchy terms through the catalogue pair stay within `3e-4` in
+index for the crown N-BK7. For the dense flint SF11 they stay within `2e-3` above 450 nm,
+but fall `0.012` short at 380 nm. Anomalous dispersion and absorption bands are out
+of scope.
+
+Spectral paths (`ReferenceOpticalSpectrum::Visible` and the wave-tracing template's
+`WT_SPECTRUM` `1`) refract, reflect and [relay](../development/render-graph-authoring.md#spectral-optical-connections)
+at `n(lambda)` of their sampled wavelength (`ReferenceBsdf::WavelengthNanometers` on
+the CPU oracle). RGB transport carries no wavelength and explicitly uses `n_d` for
+every channel: a zero wavelength selects it. RGB captures of a dispersive glass are
+therefore identical to those of the nondispersive glass with the same `n_d`, and the
+prism test checks that bit for bit.
+
+The pbrt importers convert a dielectric's `"spectrum eta"`: one of pbrt-v4's named
+glasses (`glass-BK7`, `glass-BAF10`, `glass-FK51A`, `glass-LASF9`, `glass-F5`,
+`glass-F10`, `glass-F11`) uses `n_d` and `V_d` read from pbrt-v4's tabulated spectra,
+and `(wavelength nm, index)` pairs are interpolated linearly at the F, d and C
+lines. The typed cooker rejects an unknown name, a table not spanning 486–656 nm, an
+index rising with wavelength or an Abbe number outside the admitted range. The
+best-effort importer keeps the nondispersive default 1.5 with `SPECTRUM_APPROXIMATED`
+instead.
+LUSCN readers before this change accept the record, and their reference
+evaluators reject the nonzero `K[0]` rather than ignoring it.
+
+Evidence, on an Apple M5 with Metal: `reference_material_tests.cpp`
+(`[dispersion]`) checks each wavelength's refraction against Snell's law at the
+Cauchy index solved independently in float64. `reference_compute_tests.cpp`
+(`[dispersion]`) renders a white strip through a flint prism (pbrt-v4's
+`glass-F11`, `n_d` 1.784743 and `V_d` 25.7) with a 25° apex under orthographic rays.
+It compares each column with the analytic sensor-weighted spectral integral of the
+two interfaces' Fresnel transmittance over the wavelengths that land on the strip,
+within four standard errors plus 0.01. The columns sweep from violet to red, red and
+blue differing by more than 0.1. A nondispersive control shows no tint, and CPU and
+GPU agree within one sample's contribution. `wave_scene_graph_tests.cpp`
+(`[dispersion]`) renders the same prism with the template.
 
 `shaders/dielectric.slang` is the GPU twin of `src/reference_dielectric.cpp`.
 The CPU sampler is checked against an independent float64 Fresnel/Snell oracle,

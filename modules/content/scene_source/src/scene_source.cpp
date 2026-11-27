@@ -735,20 +735,27 @@ struct ProgramNames final
     {
         outLobe.Operation = MaterialLobeOperation::CosinePower;
     }
+    else if (operation == "oren_nayar")
+    {
+        outLobe.Operation = MaterialLobeOperation::OrenNayar;
+    }
     else
     {
         return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
-                                 "must be diffuse, conductor or cosine_power",
+                                 "must be diffuse, conductor, cosine_power or oren_nayar",
                                  JsonPath(path, "operation"));
     }
     const bool isConductor = outLobe.Operation == MaterialLobeOperation::Conductor;
     const bool isCosinePower = outLobe.Operation == MaterialLobeOperation::CosinePower;
+    // Oren-Nayar reads its roughness operand as the facet-slope deviation sigma in radians.
+    const bool hasRoughness =
+        isConductor == true || isCosinePower == true || outLobe.Operation == MaterialLobeOperation::OrenNayar;
     struct Member final
     {
         std::string_view Name;
         bool IsRequired = false;
     };
-    for (const Member member : {Member{"roughness", isConductor == true || isCosinePower == true},
+    for (const Member member : {Member{"roughness", hasRoughness},
                                 Member{"eta", isConductor},
                                 Member{"k", isConductor},
                                 Member{"power", isCosinePower}})
@@ -768,7 +775,7 @@ struct ProgramNames final
                                   inoutFailure,
                                   inoutDraft,
                                   outLobe.WeightValue);
-    if (status == SceneSourceStatus::Success && (isConductor == true || isCosinePower == true))
+    if (status == SceneSourceStatus::Success && hasRoughness == true)
     {
         status = ReadProgramReference(value.Get("roughness"),
                                       JsonPath(path, "roughness"),

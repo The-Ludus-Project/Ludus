@@ -25,6 +25,8 @@ struct Annotation final
     internal::RasterKind Kind = internal::RasterKind::Buffer;
     foundation::usize Slot = 0;
     foundation::StaticArray<char, GPU_SCOPE_NAME_BYTES> Name{};
+    /// NameObject only: the label of a texture's depth backing, truncated to this capacity.
+    foundation::StaticArray<char, GPU_SCOPE_NAME_BYTES> DepthName{};
 };
 inline constexpr foundation::usize ANNOTATION_JOURNAL_CAPACITY = 128;
 inline foundation::StaticArray<Annotation, ANNOTATION_JOURNAL_CAPACITY> Annotations{};

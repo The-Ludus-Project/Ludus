@@ -1,3 +1,12 @@
+#include "../shaders/wave_connection_layout.h"
+#include "../src/internal/spectral_sensor.h"
+#include "baseline_renderer_reference.h"
+#include "baseline_renderer_reference_optical.h"
+#include "baseline_renderer_reference_permuted.h"
+#include "baseline_renderer_reference_reduce.h"
+#include "baseline_renderer_reference_repeat_closest.h"
+#include "baseline_renderer_reference_repeat_visibility.h"
+#include "dispersive_prism_fixture.h"
 #include "l6_scene.h"
 #include "material_program_fixtures.h"
 #include "microfacet_random_walk.h"
@@ -7,13 +16,18 @@
 #include "renderer_lit_shadow.h"
 #include "renderer_output.h"
 #include "renderer_reference.h"
+#include "renderer_reference_optical.h"
+#include "renderer_reference_permuted.h"
 #include "renderer_reference_reduce.h"
+#include "renderer_reference_repeat_closest.h"
+#include "renderer_reference_repeat_visibility.h"
 #include "renderer_shadow.h"
 #include <catch2/generators/catch_generators.hpp>
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -26,6 +40,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <bit>
 #include <cmath>
 
 // CPU oracle / GPU-compute parity for the RT1 reference integral. Both paths read
@@ -54,20 +69,92 @@ struct Session final
     rr::MaterialProgram Program;
     rr::Snapshot Snapshot;
 };
+/// The program a GPU-compute Prepare traces with: the LUSL recipes or their Slang original (renderer_reference.slang),
+/// which LUSL L5d wave 2 keeps as their differential oracle.
+enum class KernelSource : uint8
+{
+    Lusl,
+    SlangOriginal,
+};
+/// The trace kernel of a raw-AOV case: the production kernel or a wavefront hit-shading diagnostic
+/// (renderer-systems.md, "Qualify wavefront hit shading"), whose transport and committed samples are unchanged.
+enum class ReferenceDiagnostic : uint8
+{
+    None,
+    RepeatedClosestTraversals,
+    RepeatedVisibilityTraversals,
+    PermutedPixels,
+};
+/// Trace, optical trace and reduce kernels of one program.
+struct ReferenceKernels final
+{
+    rhi::RasterShaderDescription Trace{};
+    rhi::RasterShaderDescription OpticalTrace{};
+    rhi::RasterShaderDescription Reduce{};
+};
+ReferenceKernels GetReferenceKernels(KernelSource source, ReferenceDiagnostic diagnostic) noexcept
+{
+    const bool isLusl = source == KernelSource::Lusl;
+    ReferenceKernels kernels
+    {
+        .Trace =
+            isLusl == true ? shaders::renderer_reference::Compute() : shaders::baseline_renderer_reference::Compute(),
+        .OpticalTrace = isLusl == true ? shaders::renderer_reference_optical::Compute()
+                                       : shaders::baseline_renderer_reference_optical::Compute(),
+        .Reduce = isLusl == true ? shaders::renderer_reference_reduce::Compute()
+                                 : shaders::baseline_renderer_reference_reduce::Compute(),
+    };
+    switch (diagnostic)
+    {
+        case ReferenceDiagnostic::None:
+            break;
+        case ReferenceDiagnostic::RepeatedClosestTraversals:
+            kernels.Trace = isLusl == true ? shaders::renderer_reference_repeat_closest::Compute()
+                                           : shaders::baseline_renderer_reference_repeat_closest::Compute();
+            break;
+        case ReferenceDiagnostic::RepeatedVisibilityTraversals:
+            kernels.Trace = isLusl == true ? shaders::renderer_reference_repeat_visibility::Compute()
+                                           : shaders::baseline_renderer_reference_repeat_visibility::Compute();
+            break;
+        case ReferenceDiagnostic::PermutedPixels:
+            kernels.Trace = isLusl == true ? shaders::renderer_reference_permuted::Compute()
+                                           : shaders::baseline_renderer_reference_permuted::Compute();
+            break;
+    }
+    return kernels;
+}
+/// Trace kernels a GPU-compute Prepare enables.
+enum class TraceKernels : uint8
+{
+    /// renderer_reference alone: optical captures report Unsupported.
+    Geometric,
+    /// renderer_reference and renderer_reference_optical, for captures with a positive optical wavelength.
+    WithOptical,
+};
 S Prepare(rhi::DeviceHandle device,
           rr::ReferenceTraversal traversal,
           Session& outSession,
-          bool shouldIncludeDegenerateTriangles = false)
+          bool shouldIncludeDegenerateTriangles = false,
+          TraceKernels kernels = TraceKernels::Geometric,
+          const ReferenceKernels& program = GetReferenceKernels(KernelSource::Lusl, ReferenceDiagnostic::None))
 {
     rr::Renderer& renderer = outSession.Renderer;
     REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
             S::Ready);
     const rr::ReferenceRenderingOptions options{traversal, CPU_BUDGET, 0, CPU_TILE_PIXELS, GPU_BUDGET};
-    const S enabled = traversal == rr::ReferenceTraversal::GpuCompute
-                          ? renderer.EnableReferenceRendering(shaders::renderer_reference::Compute(),
-                                                              shaders::renderer_reference_reduce::Compute(),
-                                                              options)
-                          : renderer.EnableReferenceRendering({}, options);
+    S enabled = S::Ready;
+    if (traversal != rr::ReferenceTraversal::GpuCompute)
+    {
+        enabled = renderer.EnableReferenceRendering({}, options);
+    }
+    else if (kernels == TraceKernels::WithOptical)
+    {
+        enabled = renderer.EnableReferenceRendering(program.Trace, program.OpticalTrace, program.Reduce, options);
+    }
+    else
+    {
+        enabled = renderer.EnableReferenceRendering(program.Trace, program.Reduce, options);
+    }
     if (enabled != S::Ready)
     {
         return enabled;
@@ -384,9 +471,17 @@ S Run(rr::Renderer& inoutRenderer, rr::ReferenceCapture capture, rhi::SurfaceHan
     uint64 timeoutNanoseconds = COLD_CAPTURE_TIMEOUT_NANOSECONDS;
     bool hasCompletedColdWork = false;
     rr::ReferenceCaptureInfo progress;
+    REQUIRE(inoutRenderer.GetReferenceCaptureInfo(capture, progress) == S::Ready);
+    // The CPU oracle traces inside each advance and never waits for the device, so only device traversals pause between
+    // polls. SleepFor may sleep well past its interval: on hosted macOS runners a CPU capture paid about 10 ms for each
+    // of a sample's stages, and batch 45934093190's 1024-sample CPU slit and prism captures missed TIMEOUT.
+    const bool shouldPause = progress.Traversal != rr::ReferenceTraversal::CpuOracle;
     while (status == S::Pending && time::NowTicks() - windowStartedTicks < timeoutNanoseconds)
     {
-        threading::SleepFor(COMPLETION_POLL_INTERVAL);
+        if (shouldPause == true)
+        {
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
+        }
         status = inoutRenderer.AdvanceReferenceCapture(capture, surface);
         REQUIRE(inoutRenderer.GetReferenceCaptureInfo(capture, progress) == S::Ready);
         if (hasCompletedColdWork == false && progress.CommittedSamples > 0)
@@ -475,13 +570,38 @@ struct ReferenceRawAovCase final
     bool HasEnvironmentMap = false;
     float32 OpticalWavelengthWorld = 0;
     rr::ReferenceOpticalConnection OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
+    rr::ReferenceOpticalSpectrum OpticalSpectrum = rr::ReferenceOpticalSpectrum::Monochromatic;
     bool IsFarConventional = false;
     rr::ReferenceLightSampling LightSampling = rr::ReferenceLightSampling::UniformArea;
     bool HasSecondDirectionalLight = false;
     /// Replace the environment map with a World Atmosphere's sky and attenuate the first light as its Sun,
     /// as the editor's reference capture does.
     bool HasAtmosphereSky = false;
+    /// Trace with a wavefront hit-shading diagnostic kernel instead of the production one.
+    ReferenceDiagnostic Diagnostic = ReferenceDiagnostic::None;
 };
+
+bool AreBitsEqual(math::Vector3 left, math::Vector3 right) noexcept
+{
+    return std::bit_cast<uint32>(left.X) == std::bit_cast<uint32>(right.X) &&
+           std::bit_cast<uint32>(left.Y) == std::bit_cast<uint32>(right.Y) &&
+           std::bit_cast<uint32>(left.Z) == std::bit_cast<uint32>(right.Z);
+}
+
+/// Pixels whose committed samples or AOV bits differ between two captures of one size.
+usize CountDifferingPixels(const Array<rr::ReferencePixel>& left, const Array<rr::ReferencePixel>& right) noexcept
+{
+    usize differing = 0;
+    for (usize i = 0; i < left.GetSize(); ++i)
+    {
+        const bool isEqual = left[i].Samples == right[i].Samples && AreBitsEqual(left[i].Radiance, right[i].Radiance) &&
+                             AreBitsEqual(left[i].Emission, right[i].Emission) &&
+                             AreBitsEqual(left[i].Direct, right[i].Direct) &&
+                             AreBitsEqual(left[i].Indirect, right[i].Indirect);
+        differing += isEqual == true ? 0 : 1;
+    }
+    return differing;
+}
 
 void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
 {
@@ -526,6 +646,11 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
                                                 shaders::renderer_reference_reduce::Compute(),
                                                 options) == S::InvalidDescription);
         CHECK(rejected.EnableReferenceRendering({}, options) == S::InvalidDescription);
+        // The optical kernel binds the same whole ABI.
+        CHECK(rejected.EnableReferenceRendering(shaders::renderer_reference::Compute(),
+                                                shaders::renderer_reference_reduce::Compute(),
+                                                shaders::renderer_reference_reduce::Compute(),
+                                                options) == S::InvalidDescription);
         rr::ReferenceRenderingOptions oracle = options;
         oracle.Traversal = rr::ReferenceTraversal::CpuOracle;
         CHECK(rejected.EnableReferenceRendering(shaders::renderer_reference::Compute(),
@@ -537,7 +662,14 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
                                                 shaders::renderer_reference_reduce::Compute(),
                                                 unbudgeted) == S::InvalidDescription);
     }
-    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu, true);
+    const TraceKernels traceKernels =
+        test.OpticalWavelengthWorld > 0 ? TraceKernels::WithOptical : TraceKernels::Geometric;
+    const S enabled = Prepare(device,
+                              rr::ReferenceTraversal::GpuCompute,
+                              gpu,
+                              true,
+                              traceKernels,
+                              GetReferenceKernels(KernelSource::Lusl, test.Diagnostic));
     if (enabled == S::Unsupported)
     {
         SKIP("Compute storage is unavailable on this device");
@@ -641,6 +773,7 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
     capture.MaxDepth = test.MaxDepth;
     capture.OpticalWavelengthWorld = test.OpticalWavelengthWorld;
     capture.OpticalConnection = test.OpticalConnection;
+    capture.OpticalSpectrum = test.OpticalSpectrum;
     capture.RouletteDepth = test.RouletteDepth;
     capture.Seed = test.Seed;
     capture.LightSampling = test.LightSampling;
@@ -725,6 +858,27 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
                                             ? computeInfo.VisibilityQueries - oracleInfo.VisibilityQueries
                                             : oracleInfo.VisibilityQueries - computeInfo.VisibilityQueries;
     CHECK(visibilityDifference <= oracleInfo.VisibilityQueries / VISIBILITY_COUNT_DIVISOR + 1);
+
+    // LUSL L5d wave 2: the kernels' Slang original (shaders/renderer_reference.slang) commits the same bytes and
+    // counts the same path events on this device.
+    Session slang;
+    REQUIRE(Prepare(device,
+                    rr::ReferenceTraversal::GpuCompute,
+                    slang,
+                    true,
+                    traceKernels,
+                    GetReferenceKernels(KernelSource::SlangOriginal, test.Diagnostic)) == S::Ready);
+    Array<rr::ReferencePixel> original;
+    rr::ReferenceCaptureInfo originalInfo;
+    Capture(slang, capture, surface, original, originalInfo);
+    REQUIRE(original.GetSize() == compute.GetSize());
+    CHECK(CountDifferingPixels(compute, original) == 0);
+    CHECK(originalInfo.CommittedSamples == computeInfo.CommittedSamples);
+    CHECK(originalInfo.ClosestQueries == computeInfo.ClosestQueries);
+    CHECK(originalInfo.VisibilityQueries == computeInfo.VisibilityQueries);
+    CHECK(originalInfo.NullBsdfSamples == computeInfo.NullBsdfSamples);
+    CHECK(originalInfo.RouletteTerminations == computeInfo.RouletteTerminations);
+    CHECK(originalInfo.InvalidContributions == computeInfo.InvalidContributions);
 }
 } // namespace
 
@@ -759,6 +913,63 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: perspective analytic light
         .HasEnvironmentMap = false,
         .OpticalWavelengthWorld = 0,
         .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: repeated closest traversals diagnostic",
+          "[renderer][gpu][reference-compute][lusl]")
+{
+    // The wavefront hit-shading diagnostic keeps the production transport, so it matches the oracle and its original.
+    CheckReferenceRawAovs(
+    {
+        .Name = "perspective analytic lights and roulette, repeated closest traversals",
+        .IsPerspective = true,
+        .MaxDepth = 8,
+        .RouletteDepth = 2,
+        .Seed = 1729,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0,
+        .IsFarConventional = false,
+        .Diagnostic = ReferenceDiagnostic::RepeatedClosestTraversals,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: repeated visibility traversals diagnostic",
+          "[renderer][gpu][reference-compute][lusl]")
+{
+    // The wavefront hit-shading diagnostic keeps the production transport, so it matches the oracle and its original.
+    CheckReferenceRawAovs(
+    {
+        .Name = "perspective analytic lights and roulette, repeated visibility traversals",
+        .IsPerspective = true,
+        .MaxDepth = 8,
+        .RouletteDepth = 2,
+        .Seed = 1729,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0,
+        .IsFarConventional = false,
+        .Diagnostic = ReferenceDiagnostic::RepeatedVisibilityTraversals,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: permuted pixels diagnostic",
+          "[renderer][gpu][reference-compute][lusl]")
+{
+    // The wavefront hit-shading diagnostic keeps the production transport, so it matches the oracle and its original.
+    CheckReferenceRawAovs(
+    {
+        .Name = "perspective analytic lights and roulette, permuted pixels",
+        .IsPerspective = true,
+        .MaxDepth = 8,
+        .RouletteDepth = 2,
+        .Seed = 1729,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0,
+        .IsFarConventional = false,
+        .Diagnostic = ReferenceDiagnostic::PermutedPixels,
     });
 }
 
@@ -863,6 +1074,51 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: Fraunhofer edge diffractio
         .OpticalConnection = rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction,
         .IsFarConventional = false,
     });
+}
+
+namespace
+{
+/// The spectral raw-AOV case for one connection. Each connection is its own test case, so CTest gives each its own
+/// deadline: one starts a device and compiles both reference kernels, which under ASan on lavapipe took 140-330 s.
+void CheckSpectralRawAovs(rr::ReferenceOpticalConnection connection, const char* name)
+{
+    // Every path samples its own wavelength; matching addresses give both traversals the same one.
+    CheckReferenceRawAovs(
+    {
+        .Name = name,
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 883,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0.001F,
+        .OpticalConnection = connection,
+        .OpticalSpectrum = rr::ReferenceOpticalSpectrum::Visible,
+        .IsFarConventional = false,
+    });
+}
+} // namespace
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: spectral angular-spectrum scene connections",
+          "[renderer][gpu][reference-compute][wave-spectral]")
+{
+    CheckSpectralRawAovs(rr::ReferenceOpticalConnection::AngularSpectrum,
+                         "spectral angular-spectrum scene connections");
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: spectral UTD edge diffraction scene connections",
+          "[renderer][gpu][reference-compute][wave-spectral]")
+{
+    CheckSpectralRawAovs(rr::ReferenceOpticalConnection::UtdEdgeDiffraction,
+                         "spectral UTD edge diffraction scene connections");
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: spectral Fraunhofer edge diffraction scene connections",
+          "[renderer][gpu][reference-compute][wave-spectral]")
+{
+    CheckSpectralRawAovs(rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction,
+                         "spectral Fraunhofer edge diffraction scene connections");
 }
 
 TEST_CASE("GPU-compute raw AOVs match the CPU oracle: perspective textured environment",
@@ -1045,6 +1301,10 @@ TEST_CASE("GPU-compute reference continues targets and exports its traversal", "
     capture.Seed = 3;
     capture.Environment = {.3F, .4F, .5F};
     rr::ReferenceCapture handle;
+    // The geometric kernel compiles no optical connections: an optical capture needs renderer_reference_optical.
+    rr::ReferenceCaptureDescription optical = capture;
+    optical.OpticalWavelengthWorld = 5e-7F;
+    CHECK(gpu.Renderer.BeginReferenceCapture(gpu.Snapshot, optical, handle) == S::Unsupported);
     const S begun = gpu.Renderer.BeginReferenceCapture(gpu.Snapshot, capture, handle);
     REQUIRE((begun == S::Ready || begun == S::Pending));
     // Setup polls without a surface; a dispatch needs one and the capture stays retryable.
@@ -1585,8 +1845,10 @@ struct QuadItem final
     ludus::content::scene_format::MaterialModel Model = ludus::content::scene_format::MaterialModel::MetallicRoughness;
     float32 Metallic = 0;
     float32 Roughness = 1;
-    /// Real index of a smooth Dielectric or ThinDielectric model.
+    /// Real index n_d of a smooth Dielectric or ThinDielectric model.
     float32 Eta = ludus::content::scene_format::DEFAULT_DIELECTRIC_ETA;
+    /// Abbe number of a dispersive Dielectric or ThinDielectric model; zero for a nondispersive index.
+    float32 AbbeNumber = 0;
     /// Conductor model only: RGB complex index and isotropic GGX alpha.
     StaticArray<float32, 3> ConductorEta{{1, 1, 1}};
     StaticArray<float32, 3> ConductorK{};
@@ -1640,9 +1902,9 @@ S BuildQuadSnapshot(rr::Renderer& inoutRenderer,
         if (quad.Model == ludus::content::scene_format::MaterialModel::Dielectric ||
             quad.Model == ludus::content::scene_format::MaterialModel::ThinDielectric)
         {
-            material.Scattering.Eta = {{quad.Eta, quad.Eta, quad.Eta}};
-            material.Scattering.AlphaU = ludus::content::scene_format::MIN_MATERIAL_ALPHA;
-            material.Scattering.AlphaV = ludus::content::scene_format::MIN_MATERIAL_ALPHA;
+            material.Scattering = ludus::content::scene_format::MakeDielectricScattering(
+                quad.Model,
+                { .IndexD = quad.Eta, .AbbeNumber = quad.AbbeNumber });
         }
         if (quad.Model == ludus::content::scene_format::MaterialModel::Conductor)
         {
@@ -2377,16 +2639,16 @@ TEST_CASE("Typed reflection and transmission match between CPU and GPU reference
     CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
 }
 
-TEST_CASE("Optical connections relayed through glass match between CPU and GPU reference transport",
-          "[renderer][gpu][reference-compute][wave-relay]")
+namespace
+{
+/// Relays one operator's connection through glass at one spectrum. Each operator is its own test case, so CTest gives
+/// each its own deadline: one spectrum starts a device and compiles both reference kernels, which under ASan on
+/// lavapipe took 140-190 s.
+void CheckGlassRelayedConnection(rr::ReferenceOpticalConnection connection, rr::ReferenceOpticalSpectrum spectrum)
 {
     // The glass spheres (a solid dielectric and a thin one) relay the emissive sphere's connection: camera paths and
     // rough vertices reach it through reflections and refractions, and every operator evaluates the relayed chain.
-    const rr::ReferenceOpticalConnection connection =
-        GENERATE(rr::ReferenceOpticalConnection::AngularSpectrum,
-                 rr::ReferenceOpticalConnection::UtdEdgeDiffraction,
-                 rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction);
-    CAPTURE(connection);
+    CAPTURE(connection, spectrum);
     rhi::Shutdown();
     struct Guard final
     {
@@ -2402,7 +2664,7 @@ TEST_CASE("Optical connections relayed through glass match between CPU and GPU r
         SKIP("No Metal adapter");
     }
     Session gpu;
-    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu, false, TraceKernels::WithOptical);
     if (enabled == S::Unsupported)
     {
         SKIP("Compute storage is unavailable on this device");
@@ -2431,6 +2693,7 @@ TEST_CASE("Optical connections relayed through glass match between CPU and GPU r
     constexpr float32 OPTICAL_WAVELENGTH_WORLD = 550e-9F;
     capture.OpticalWavelengthWorld = OPTICAL_WAVELENGTH_WORLD;
     capture.OpticalConnection = connection;
+    capture.OpticalSpectrum = spectrum;
     math::Matrix4 view;
     math::Matrix4 projection;
     capture.CameraPosition = {.3F, .2F, -2};
@@ -2464,10 +2727,589 @@ TEST_CASE("Optical connections relayed through glass match between CPU and GPU r
     rr::ReferenceCaptureDescription geometric = capture;
     geometric.OpticalWavelengthWorld = 0;
     geometric.OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
+    geometric.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Monochromatic;
     Array<rr::ReferencePixel> classical;
     rr::ReferenceCaptureInfo classicalInfo;
     Capture(cpu, geometric, surface, classical, classicalInfo);
     CHECK(oracleInfo.VisibilityQueries > classicalInfo.VisibilityQueries);
+}
+} // namespace
+
+TEST_CASE("Angular-spectrum connections relayed through glass match between CPU and GPU reference transport",
+          "[renderer][gpu][reference-compute][wave-relay]")
+{
+    // A spectral capture relays each path at its own wavelength, through glass whose index is evaluated there.
+    const rr::ReferenceOpticalSpectrum spectrum =
+        GENERATE(rr::ReferenceOpticalSpectrum::Monochromatic, rr::ReferenceOpticalSpectrum::Visible);
+    CheckGlassRelayedConnection(rr::ReferenceOpticalConnection::AngularSpectrum, spectrum);
+}
+
+TEST_CASE("UTD edge diffraction connections relayed through glass match between CPU and GPU reference transport",
+          "[renderer][gpu][reference-compute][wave-relay]")
+{
+    const rr::ReferenceOpticalSpectrum spectrum =
+        GENERATE(rr::ReferenceOpticalSpectrum::Monochromatic, rr::ReferenceOpticalSpectrum::Visible);
+    CheckGlassRelayedConnection(rr::ReferenceOpticalConnection::UtdEdgeDiffraction, spectrum);
+}
+
+TEST_CASE("Fraunhofer edge diffraction connections relayed through glass match between CPU and GPU reference "
+          "transport",
+          "[renderer][gpu][reference-compute][wave-relay]")
+{
+    const rr::ReferenceOpticalSpectrum spectrum =
+        GENERATE(rr::ReferenceOpticalSpectrum::Monochromatic, rr::ReferenceOpticalSpectrum::Visible);
+    CheckGlassRelayedConnection(rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction, spectrum);
+}
+
+namespace
+{
+/// A complex Fresnel integral.
+struct FresnelIntegral final
+{
+    float64 Real = 0;
+    float64 Imaginary = 0;
+};
+/// Integral of exp(-i pi t^2 / 2) from 0 to v, by composite Simpson quadrature; it shares no code with the operators.
+FresnelIntegral IntegrateFresnelFromZero(float64 v)
+{
+    constexpr usize INTERVALS = 2000;
+    const float64 step = v / static_cast<float64>(INTERVALS);
+    float64 real = 0;
+    float64 imaginary = 0;
+    for (usize index = 0; index <= INTERVALS; ++index)
+    {
+        const float64 t = static_cast<float64>(index) * step;
+        const float64 weight = index == 0 || index == INTERVALS ? 1 : (index % 2 == 1 ? 4 : 2);
+        const float64 phase = math::kPi * t * t / 2;
+        real += weight * math::Cos(phase);
+        imaginary -= weight * math::Sin(phase);
+    }
+    return {real * step / 3, imaginary * step / 3};
+}
+/// A point source (z < 0), a receiver (z > 0) and the x positions of a slit's edges, which run along y at z = 0, at one
+/// wavelength.
+struct SlitConnection final
+{
+    math::Vector3d SourceWorld{};
+    math::Vector3d ReceiverWorld{};
+    float64 LowerEdgeWorld = 0;
+    float64 UpperEdgeWorld = 0;
+    float64 WavelengthWorld = 1;
+};
+/// Fresnel-Kirchhoff power, relative to the unobstructed field, behind an absorbing screen with the connection's
+/// straight slit. Each edge's signed Fresnel number is 2 sqrt(excess / lambda), from the excess length of the shortest
+/// path that touches it (Keller's law), and the slit field is (1 + i)/2 times the integral of exp(-i pi t^2 / 2)
+/// between them.
+float64 EvaluateFresnelKirchhoffSlitPower(const SlitConnection& connection)
+{
+    const math::Vector3d sourceWorld = connection.SourceWorld;
+    const math::Vector3d receiverWorld = connection.ReceiverWorld;
+    const float64 wavelengthWorld = connection.WavelengthWorld;
+    const math::Vector3d deltaWorld = receiverWorld - sourceWorld;
+    const float64 distanceWorld = math::Sqrt(math::Dot(deltaWorld, deltaWorld));
+    // The straight path crosses the screen at x = crossingWorld.
+    const float64 crossingWorld = sourceWorld.X - sourceWorld.Z * deltaWorld.X / deltaWorld.Z;
+    const auto computeFresnelNumber = [&](float64 edgeWorld) {
+        const float64 sourceEdgeWorld =
+            math::Sqrt((edgeWorld - sourceWorld.X) * (edgeWorld - sourceWorld.X) + sourceWorld.Z * sourceWorld.Z);
+        const float64 edgeReceiverWorld = math::Sqrt((receiverWorld.X - edgeWorld) * (receiverWorld.X - edgeWorld) +
+                                                     receiverWorld.Z * receiverWorld.Z);
+        const float64 unfoldedWorld = sourceEdgeWorld + edgeReceiverWorld;
+        const float64 heightWorld = receiverWorld.Y - sourceWorld.Y;
+        const float64 excessWorld =
+            math::Max(math::Sqrt(unfoldedWorld * unfoldedWorld + heightWorld * heightWorld) - distanceWorld, 0.0);
+        const float64 magnitude = 2 * math::Sqrt(excessWorld / wavelengthWorld);
+        return edgeWorld < crossingWorld ? -magnitude : magnitude;
+    };
+    const FresnelIntegral lower = IntegrateFresnelFromZero(computeFresnelNumber(connection.LowerEdgeWorld));
+    const FresnelIntegral upper = IntegrateFresnelFromZero(computeFresnelNumber(connection.UpperEdgeWorld));
+    const float64 real = upper.Real - lower.Real;
+    const float64 imaginary = upper.Imaginary - lower.Imaginary;
+    // |(1 + i)/2|^2 = 1/2.
+    return (real * real + imaginary * imaginary) / 2;
+}
+} // namespace
+
+TEST_CASE("A white-light slit's colour fringes match the analytic spectral integral",
+          "[renderer][gpu][reference-compute][wave-spectral][wave-utd]")
+{
+    // Thanks to Shlomi Steinberg and Matt Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics", CGF
+    // 45(2), e70322 (2026), Section 3: diffraction is wavelength dependent, so a slit under white light separates
+    // colours. A point light shines through a 10 cm slit onto a white diffuse wall; an orthographic camera between the
+    // screen and the wall sees the fringes. The spectral UTD capture, divided by an unobstructed geometric capture,
+    // estimates each pixel's sensor-weighted spectral integral of the Fresnel-Kirchhoff slit power.
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu, false, TraceKernels::WithOptical);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    namespace format = ludus::content::scene_format;
+    constexpr float32 HALF_EXTENT_WORLD = 2;
+    constexpr float32 SLIT_HALF_WIDTH_WORLD = 0.05F;
+    constexpr float32 WALL_DEPTH_WORLD = 1;
+    const math::Vector3 sourceWorld{0, 0, -0.5F};
+    // Design-scale light: 5 mm at 550 nm keeps the fringes' phases exact in binary32 (render-graph-authoring.md, "UTD
+    // edge diffraction connections"); the spectrum scales it from 3.45 mm to 7.09 mm.
+    constexpr float32 OPTICAL_WAVELENGTH_WORLD = 0.005F;
+    constexpr usize SLIT_QUAD_COUNT = 3;
+    StaticArray<QuadItem, SLIT_QUAD_COUNT> quads{};
+    quads[0].CornersWorld = {{{-HALF_EXTENT_WORLD, -HALF_EXTENT_WORLD, WALL_DEPTH_WORLD},
+                              {-HALF_EXTENT_WORLD, HALF_EXTENT_WORLD, WALL_DEPTH_WORLD},
+                              {HALF_EXTENT_WORLD, HALF_EXTENT_WORLD, WALL_DEPTH_WORLD},
+                              {HALF_EXTENT_WORLD, -HALF_EXTENT_WORLD, WALL_DEPTH_WORLD}}};
+    quads[0].Model = format::MaterialModel::Diffuse;
+    quads[0].BaseColor = {0.8F, 0.8F, 0.8F};
+    for (usize side = 1; side < SLIT_QUAD_COUNT; ++side)
+    {
+        const float32 innerWorld = side == 1 ? -SLIT_HALF_WIDTH_WORLD : SLIT_HALF_WIDTH_WORLD;
+        const float32 outerWorld = side == 1 ? -HALF_EXTENT_WORLD : HALF_EXTENT_WORLD;
+        const float32 leftWorld = math::Min(innerWorld, outerWorld);
+        const float32 rightWorld = math::Max(innerWorld, outerWorld);
+        quads[side].CornersWorld = {{{leftWorld, -HALF_EXTENT_WORLD, 0},
+                                     {leftWorld, HALF_EXTENT_WORLD, 0},
+                                     {rightWorld, HALF_EXTENT_WORLD, 0},
+                                     {rightWorld, -HALF_EXTENT_WORLD, 0}}};
+        quads[side].Model = format::MaterialModel::Diffuse;
+        quads[side].BaseColor = {};
+    }
+    REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
+    REQUIRE(gpu.Renderer.Release(gpu.Snapshot) == S::Ready);
+    REQUIRE(BuildQuadSnapshot(cpu.Renderer, cpu.Program, quads.GetData(), SLIT_QUAD_COUNT, cpu.Snapshot) == S::Ready);
+    REQUIRE(BuildQuadSnapshot(gpu.Renderer, gpu.Program, quads.GetData(), SLIT_QUAD_COUNT, gpu.Snapshot) == S::Ready);
+    rr::DirectLight light;
+    light.SourceId = 1;
+    light.Kind = rr::LightKind::Point;
+    light.Position = sourceWorld;
+    light.Range = 20;
+    light.Intensity = 9;
+    rr::ReferenceCaptureDescription capture;
+    constexpr uint32 COLUMNS = 16;
+    // Captures progress one sample of every pixel at a time, so rows add samples to a column cheaply on the GPU. The
+    // CPU oracle and the GPU match sample for sample on the short capture; the tall GPU capture tightens the analytic
+    // comparison.
+    constexpr uint32 PARITY_ROWS = 4;
+    constexpr uint32 ANALYTIC_ROWS = 64;
+    constexpr uint32 SAMPLES = 1024;
+    capture.Width = COLUMNS;
+    capture.Height = PARITY_ROWS;
+    capture.TargetSamples = SAMPLES;
+    // One wall vertex: light reaches it only through the slit, and its continuation finds black screens and sky.
+    capture.MaxDepth = 1;
+    capture.RouletteDepth = 1;
+    capture.Seed = 2281;
+    capture.CenterRays = true;
+    capture.Environment = {};
+    capture.Lights = &light;
+    capture.LightCount = 1;
+    // Clip x and y span +-0.18 m and +-0.0625 m of the wall; rays start at z = 0.3, past the screen, and run along +z.
+    // The columns cross the slit's image into the geometric shadow beyond x = 0.15 m. Their connections cross the
+    // screen within 0.056 m of the axis, so at 380 nm both edges lie inside the 0.121 m Gaussian envelope that admits
+    // UTD diffraction points.
+    constexpr float32 CAMERA_DEPTH_WORLD = 0.3F;
+    constexpr float32 HALF_WIDTH_WORLD = 0.18F;
+    constexpr float32 HALF_HEIGHT_WORLD = 0.0625F;
+    capture.OrthographicCamera = true;
+    capture.WorldToClip.Columns[0].X = 1 / HALF_WIDTH_WORLD;
+    capture.WorldToClip.Columns[1].Y = 1 / HALF_HEIGHT_WORLD;
+    capture.WorldToClip.Columns[3].Z = -CAMERA_DEPTH_WORLD;
+    capture.CameraPosition = {0, 0, CAMERA_DEPTH_WORLD};
+    capture.OpticalWavelengthWorld = OPTICAL_WAVELENGTH_WORLD;
+    capture.OpticalConnection = rr::ReferenceOpticalConnection::UtdEdgeDiffraction;
+    capture.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Visible;
+    rr::ReferenceCaptureDescription tall = capture;
+    tall.Height = ANALYTIC_ROWS;
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    Array<rr::ReferencePixel> converged;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    rr::ReferenceCaptureInfo convergedInfo;
+    Capture(cpu, capture, surface, oracle, oracleInfo);
+    Capture(gpu, capture, surface, compute, computeInfo);
+    Capture(gpu, tall, surface, converged, convergedInfo);
+    CHECK(oracleInfo.InvalidContributions == 0);
+    CHECK(computeInfo.InvalidContributions == 0);
+    CHECK(convergedInfo.InvalidContributions == 0);
+    // CPU and GPU follow the same wavelengths and paths; binary32 device arithmetic keeps their means close.
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance));
+    CHECK(comparison.MaximumRadiance <= 2e-3F);
+    CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+    // The unobstructed wall under geometric transport: the spectral integral of a white light on a white wall is the
+    // same flat RGB, without wavelength noise.
+    StaticArray<QuadItem, 1> wall{{quads[0]}};
+    REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
+    REQUIRE(BuildQuadSnapshot(cpu.Renderer, cpu.Program, wall.GetData(), 1, cpu.Snapshot) == S::Ready);
+    // Analytic reference per column, averaged over its rows: midpoint quadrature over the spectrum of the sensor
+    // times the Fresnel-Kirchhoff slit power at the scaled wavelength. The same quadrature gives the deviation of the
+    // capture's one-wavelength estimates, so the bound is four standard errors plus the UTD operator's agreement with
+    // Fresnel-Kirchhoff diffraction (render-graph-authoring.md, "UTD edge diffraction connections").
+    constexpr usize SPECTRUM_STEPS = 200;
+    constexpr float64 STANDARD_ERRORS = 4;
+    constexpr float64 OPERATOR_TOLERANCE = 0.02;
+    constexpr float64 MINIMUM_TINT = 0.1;
+    const float64 range = static_cast<float64>(rr::internal::SPECTRUM_WAVELENGTH_RANGE_NANOMETERS);
+    const float64 step = range / static_cast<float64>(SPECTRUM_STEPS);
+    const auto checkAgainstAnalytic = [&](const rr::ReferenceCaptureDescription& description,
+                                          const Array<rr::ReferencePixel>& pixels,
+                                          const char* name) {
+        const uint32 rows = description.Height;
+        CAPTURE(name, rows);
+        rr::ReferenceCaptureDescription open = description;
+        open.TargetSamples = 1;
+        open.OpticalWavelengthWorld = 0;
+        open.OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
+        open.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Monochromatic;
+        Array<rr::ReferencePixel> unobstructed;
+        rr::ReferenceCaptureInfo unobstructedInfo;
+        Capture(cpu, open, surface, unobstructed, unobstructedInfo);
+        float64 largestTint = 0;
+        float64 estimatedTintAtLargest = 0;
+        for (uint32 column = 0; column < COLUMNS; ++column)
+        {
+            math::Vector3d expected{};
+            math::Vector3d actual{};
+            math::Vector3d meanSquares{};
+            for (uint32 row = 0; row < rows; ++row)
+            {
+                const usize pixel = usize{row} * COLUMNS + column;
+                const math::Vector3d receiverWorld{
+                    (2 * (static_cast<float64>(column) + 0.5) / COLUMNS - 1) * static_cast<float64>(HALF_WIDTH_WORLD),
+                    (1 - 2 * (static_cast<float64>(row) + 0.5) / rows) * static_cast<float64>(HALF_HEIGHT_WORLD),
+                    static_cast<float64>(WALL_DEPTH_WORLD)};
+                for (usize index = 0; index < SPECTRUM_STEPS; ++index)
+                {
+                    const float64 nanometers =
+                        static_cast<float64>(rr::internal::SPECTRUM_WAVELENGTH_MINIMUM_NANOMETERS) +
+                        (static_cast<float64>(index) + 0.5) * step;
+                    const float64 power = EvaluateFresnelKirchhoffSlitPower(
+                    {
+                        .SourceWorld = {0, 0, static_cast<float64>(sourceWorld.Z)},
+                        .ReceiverWorld = receiverWorld,
+                        .LowerEdgeWorld = -static_cast<float64>(SLIT_HALF_WIDTH_WORLD),
+                        .UpperEdgeWorld = static_cast<float64>(SLIT_HALF_WIDTH_WORLD),
+                        .WavelengthWorld = static_cast<float64>(OPTICAL_WAVELENGTH_WORLD) * nanometers /
+                                           LUDUS_WAVE_SPECTRAL_REFERENCE_WAVELENGTH_NANOMETERS,
+                    });
+                    const math::Vector3 sensitivity =
+                        rr::internal::EvaluateSensorSensitivity(static_cast<float32>(nanometers));
+                    const math::Vector3d weight{static_cast<float64>(sensitivity.X),
+                                                static_cast<float64>(sensitivity.Y),
+                                                static_cast<float64>(sensitivity.Z)};
+                    expected = expected + weight * (power * step / rows);
+                    // The capture's one-sample estimate is range * sensitivity * power at a uniform wavelength.
+                    meanSquares =
+                        meanSquares + math::Vector3d{weight.X * weight.X, weight.Y * weight.Y, weight.Z * weight.Z} *
+                                          (range * power * power * step / rows);
+                }
+                const math::Vector3 normalization = unobstructed[pixel].Radiance;
+                REQUIRE(normalization.X > 0);
+                REQUIRE(normalization.Y > 0);
+                REQUIRE(normalization.Z > 0);
+                REQUIRE(pixels[pixel].Samples == description.TargetSamples);
+                actual = actual + math::Vector3d{static_cast<float64>(pixels[pixel].Radiance.X / normalization.X),
+                                                 static_cast<float64>(pixels[pixel].Radiance.Y / normalization.Y),
+                                                 static_cast<float64>(pixels[pixel].Radiance.Z / normalization.Z)} *
+                                      (1.0 / rows);
+            }
+            // The rows' spread about the column mean only enlarges this deviation, keeping the bound conservative.
+            const float64 standardErrorScale =
+                STANDARD_ERRORS / math::Sqrt(static_cast<float64>(description.TargetSamples) * rows);
+            const math::Vector3d bound =
+                math::Vector3d{math::Sqrt(math::Max(meanSquares.X - expected.X * expected.X, 0.0)),
+                               math::Sqrt(math::Max(meanSquares.Y - expected.Y * expected.Y, 0.0)),
+                               math::Sqrt(math::Max(meanSquares.Z - expected.Z * expected.Z, 0.0))} *
+                    standardErrorScale +
+                math::Vector3d{OPERATOR_TOLERANCE, OPERATOR_TOLERANCE, OPERATOR_TOLERANCE};
+            INFO("column " << column << " analytic " << expected.X << "," << expected.Y << "," << expected.Z
+                           << " estimated " << actual.X << "," << actual.Y << "," << actual.Z << " bound " << bound.X
+                           << "," << bound.Y << "," << bound.Z);
+            CHECK(math::Abs(actual.X - expected.X) <= bound.X);
+            CHECK(math::Abs(actual.Y - expected.Y) <= bound.Y);
+            CHECK(math::Abs(actual.Z - expected.Z) <= bound.Z);
+            if (math::Abs(expected.X - expected.Z) > math::Abs(largestTint))
+            {
+                largestTint = expected.X - expected.Z;
+                estimatedTintAtLargest = actual.X - actual.Z;
+            }
+        }
+        // The fixture separates colours: red and blue differ by more than a tenth of the unobstructed power at some
+        // column, and the capture reproduces the sign of that fringe's tint.
+        CAPTURE(largestTint, estimatedTintAtLargest);
+        CHECK(math::Abs(largestTint) > MINIMUM_TINT);
+        CHECK(largestTint * estimatedTintAtLargest > 0);
+    };
+    checkAgainstAnalytic(capture, oracle, "CPU oracle");
+    checkAgainstAnalytic(tall, converged, "GPU compute");
+}
+
+TEST_CASE("A dispersive prism separates white light by each wavelength's refraction angle",
+          "[renderer][gpu][reference-compute][wave-spectral][dispersion]")
+{
+    // Thanks to Shlomi Steinberg and Matt Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics", CGF
+    // 45(2), e70322 (2026), Section 3 ("Dispersion and color"): a spectral path refracts at its wavelength's index.
+    // A white strip seen through a flint prism (pbrt-v4's glass-F11, as the importers declare it) appears as a
+    // spectrum across the columns; the nondispersive control at the same n_d shows only white or nothing.
+    namespace format = ludus::content::scene_format;
+    namespace fixtures = ludus::renderer_tests;
+    const bool isDispersive = GENERATE(true, false);
+    CAPTURE(isDispersive);
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    // Spectral captures relay through renderer_reference_optical; the geometric kernel reports them Unsupported.
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu, false, TraceKernels::WithOptical);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    // Three metres past the exit face, the columns' landing points sweep the 7 cm strip from violet to red.
+    fixtures::PrismFixture prism;
+    if (isDispersive == false)
+    {
+        prism.Glass.AbbeNumber = 0;
+    }
+    constexpr float32 FACE_HALF_EXTENT_WORLD = 1;
+    constexpr usize PRISM_QUAD_COUNT = 3;
+    StaticArray<QuadItem, PRISM_QUAD_COUNT> quads{};
+    // The entry face faces the camera (-z); the exit face's outward normal is (-sin(apex), 0, cos(apex)).
+    quads[0].CornersWorld = {{{-FACE_HALF_EXTENT_WORLD, -FACE_HALF_EXTENT_WORLD, 0},
+                              {-FACE_HALF_EXTENT_WORLD, FACE_HALF_EXTENT_WORLD, 0},
+                              {FACE_HALF_EXTENT_WORLD, FACE_HALF_EXTENT_WORLD, 0},
+                              {FACE_HALF_EXTENT_WORLD, -FACE_HALF_EXTENT_WORLD, 0}}};
+    const auto exitDepth = [&](float32 xWorld) {
+        return static_cast<float32>(fixtures::GetPrismExitDepthWorld(prism, static_cast<float64>(xWorld)));
+    };
+    quads[1].CornersWorld = {{{-FACE_HALF_EXTENT_WORLD, -FACE_HALF_EXTENT_WORLD, exitDepth(-FACE_HALF_EXTENT_WORLD)},
+                              {FACE_HALF_EXTENT_WORLD, -FACE_HALF_EXTENT_WORLD, exitDepth(FACE_HALF_EXTENT_WORLD)},
+                              {FACE_HALF_EXTENT_WORLD, FACE_HALF_EXTENT_WORLD, exitDepth(FACE_HALF_EXTENT_WORLD)},
+                              {-FACE_HALF_EXTENT_WORLD, FACE_HALF_EXTENT_WORLD, exitDepth(-FACE_HALF_EXTENT_WORLD)}}};
+    for (usize face = 0; face < 2; ++face)
+    {
+        quads[face].Model = format::MaterialModel::Dielectric;
+        quads[face].Eta = prism.Glass.IndexD;
+        quads[face].AbbeNumber = prism.Glass.AbbeNumber;
+    }
+    // A one-sided white emitter facing the prism, black so its own scattering adds nothing.
+    const float32 stripLower = static_cast<float32>(prism.StripLowerWorld);
+    const float32 stripUpper = static_cast<float32>(prism.StripUpperWorld);
+    const float32 stripDepth = static_cast<float32>(prism.StripDepthWorld);
+    quads[2].CornersWorld = {{{stripLower, -FACE_HALF_EXTENT_WORLD, stripDepth},
+                              {stripLower, FACE_HALF_EXTENT_WORLD, stripDepth},
+                              {stripUpper, FACE_HALF_EXTENT_WORLD, stripDepth},
+                              {stripUpper, -FACE_HALF_EXTENT_WORLD, stripDepth}}};
+    const math::Vector3 emission{1, 1, 1};
+    quads[2].Emission = emission;
+    quads[2].IsEmissionTwoSided = false;
+    quads[2].BaseColor = {};
+    quads[2].Model = format::MaterialModel::Diffuse;
+    for (Session* session : {&cpu, &gpu})
+    {
+        REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+        REQUIRE(BuildQuadSnapshot(session->Renderer,
+                                  session->Program,
+                                  quads.GetData(),
+                                  PRISM_QUAD_COUNT,
+                                  session->Snapshot) == S::Ready);
+    }
+    constexpr uint32 COLUMNS = 16;
+    constexpr uint32 PARITY_ROWS = 4;
+    constexpr uint32 ANALYTIC_ROWS = 64;
+    constexpr uint32 SAMPLES = 1024;
+    constexpr float32 HALF_WIDTH_WORLD = 0.25F;
+    constexpr float32 HALF_HEIGHT_WORLD = 0.05F;
+    constexpr float32 CAMERA_DEPTH_WORLD = -0.5F;
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = COLUMNS;
+    capture.Height = PARITY_ROWS;
+    capture.TargetSamples = SAMPLES;
+    // Entry and exit vertices; an internally reflected path needs more glass events than three vertices allow before
+    // it could reach the strip, so only the twice-refracted path contributes.
+    capture.MaxDepth = 3;
+    capture.RouletteDepth = 64;
+    capture.Seed = 2281;
+    capture.CenterRays = true;
+    capture.Environment = {};
+    // Orthographic rays along +z from z = -0.5; each column is one x and every row repeats it.
+    capture.OrthographicCamera = true;
+    capture.WorldToClip.Columns[0].X = 1 / HALF_WIDTH_WORLD;
+    capture.WorldToClip.Columns[1].Y = 1 / HALF_HEIGHT_WORLD;
+    capture.WorldToClip.Columns[3].Z = -CAMERA_DEPTH_WORLD;
+    capture.CameraPosition = {0, 0, CAMERA_DEPTH_WORLD};
+    // Spectral paths need an optical wavelength; 550 nm light at metre scale leaves the unobstructed relayed chain's
+    // power at one.
+    capture.OpticalWavelengthWorld = 550e-9F;
+    capture.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Visible;
+    rr::ReferenceCaptureDescription tall = capture;
+    tall.Height = ANALYTIC_ROWS;
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    Array<rr::ReferencePixel> converged;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    rr::ReferenceCaptureInfo convergedInfo;
+    Capture(cpu, capture, surface, oracle, oracleInfo);
+    Capture(gpu, capture, surface, compute, computeInfo);
+    Capture(gpu, tall, surface, converged, convergedInfo);
+    CHECK(oracleInfo.InvalidContributions == 0);
+    CHECK(computeInfo.InvalidContributions == 0);
+    CHECK(convergedInfo.InvalidContributions == 0);
+    // CPU and GPU follow the same wavelengths and Fresnel choices; their indices and directions differ by binary32
+    // rounding only. A sample whose landing point meets a strip edge can fall on either side of it, so a pixel may
+    // differ by one sample's range * sensor * emission / SAMPLES (2.4e-3 was seen on an Apple M5).
+    constexpr float32 ONE_SAMPLE_RADIANCE = 4e-3F;
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance));
+    CHECK(comparison.MaximumRadiance <= ONE_SAMPLE_RADIANCE);
+    CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+    // Analytic reference per column: midpoint quadrature over the spectrum of the sensor times the uplifted white
+    // emission and the column's throughput at that wavelength. The bound is four standard errors of the one-wavelength
+    // estimates plus a quadrature and binary32 tolerance for the wavelengths whose landing points meet a strip edge.
+    constexpr usize SPECTRUM_STEPS = 2000;
+    constexpr float64 STANDARD_ERRORS = 4;
+    constexpr float64 EDGE_TOLERANCE = 0.01;
+    constexpr float64 MINIMUM_TINT = 0.1;
+    const auto checkAgainstAnalytic = [&](const rr::ReferenceCaptureDescription& description,
+                                          const Array<rr::ReferencePixel>& pixels,
+                                          const char* name) {
+        const uint32 rows = description.Height;
+        CAPTURE(name, rows);
+        float64 reddest = 0;
+        float64 bluest = 0;
+        float64 estimatedReddest = 0;
+        float64 estimatedBluest = 0;
+        for (uint32 column = 0; column < COLUMNS; ++column)
+        {
+            const float64 columnWorld =
+                (2 * (static_cast<float64>(column) + 0.5) / COLUMNS - 1) * static_cast<float64>(HALF_WIDTH_WORLD);
+            // Centred rays: one position per column.
+            const fixtures::PrismPixelMoments moments =
+                fixtures::IntegratePrismPixel(prism, columnWorld, columnWorld, 1, SPECTRUM_STEPS, emission);
+            const math::Vector3d expected = moments.Mean;
+            const math::Vector3d meanSquares = moments.MeanSquares;
+            math::Vector3d actual{};
+            for (uint32 row = 0; row < rows; ++row)
+            {
+                const rr::ReferencePixel& pixel = pixels[usize{row} * COLUMNS + column];
+                REQUIRE(pixel.Samples == description.TargetSamples);
+                actual = actual + math::Vector3d{static_cast<float64>(pixel.Radiance.X),
+                                                 static_cast<float64>(pixel.Radiance.Y),
+                                                 static_cast<float64>(pixel.Radiance.Z)} *
+                                      (1.0 / rows);
+            }
+            const float64 standardErrorScale =
+                STANDARD_ERRORS / math::Sqrt(static_cast<float64>(description.TargetSamples) * rows);
+            const math::Vector3d bound =
+                math::Vector3d{math::Sqrt(math::Max(meanSquares.X - expected.X * expected.X, 0.0)),
+                               math::Sqrt(math::Max(meanSquares.Y - expected.Y * expected.Y, 0.0)),
+                               math::Sqrt(math::Max(meanSquares.Z - expected.Z * expected.Z, 0.0))} *
+                    standardErrorScale +
+                math::Vector3d{EDGE_TOLERANCE, EDGE_TOLERANCE, EDGE_TOLERANCE};
+            INFO("column " << column << " analytic " << expected.X << "," << expected.Y << "," << expected.Z
+                           << " estimated " << actual.X << "," << actual.Y << "," << actual.Z << " bound " << bound.X
+                           << "," << bound.Y << "," << bound.Z);
+            CHECK(math::Abs(actual.X - expected.X) <= bound.X);
+            CHECK(math::Abs(actual.Y - expected.Y) <= bound.Y);
+            CHECK(math::Abs(actual.Z - expected.Z) <= bound.Z);
+            if (expected.X - expected.Z > reddest)
+            {
+                reddest = expected.X - expected.Z;
+                estimatedReddest = actual.X - actual.Z;
+            }
+            if (expected.Z - expected.X > bluest)
+            {
+                bluest = expected.Z - expected.X;
+                estimatedBluest = actual.Z - actual.X;
+            }
+        }
+        CAPTURE(reddest, bluest, estimatedReddest, estimatedBluest);
+        if (isDispersive == true)
+        {
+            // The prism separates colours: some columns are distinctly red and others blue, and the capture agrees.
+            CHECK(reddest > MINIMUM_TINT);
+            CHECK(bluest > MINIMUM_TINT);
+            CHECK(estimatedReddest > MINIMUM_TINT / 2);
+            CHECK(estimatedBluest > MINIMUM_TINT / 2);
+        }
+        else
+        {
+            // Every wavelength lands together: a column sees white or nothing.
+            CHECK(reddest < MINIMUM_TINT / 10);
+            CHECK(bluest < MINIMUM_TINT / 10);
+        }
+    };
+    checkAgainstAnalytic(capture, oracle, "CPU oracle");
+    checkAgainstAnalytic(tall, converged, "GPU compute");
+    if (isDispersive == false)
+    {
+        return;
+    }
+    // RGB transport carries no wavelength and explicitly refracts at n_d: the dispersive prism's geometric capture
+    // equals the nondispersive prism's on both traversals, bit for bit.
+    rr::ReferenceCaptureDescription rgb = capture;
+    rgb.OpticalWavelengthWorld = 0;
+    rgb.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Monochromatic;
+    for (Session* session : {&cpu, &gpu})
+    {
+        Array<rr::ReferencePixel> dispersive;
+        Array<rr::ReferencePixel> plain;
+        rr::ReferenceCaptureInfo info;
+        Capture(*session, rgb, surface, dispersive, info);
+        CHECK(info.InvalidContributions == 0);
+        StaticArray<QuadItem, PRISM_QUAD_COUNT> nondispersive = quads;
+        nondispersive[0].AbbeNumber = 0;
+        nondispersive[1].AbbeNumber = 0;
+        REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+        REQUIRE(BuildQuadSnapshot(session->Renderer,
+                                  session->Program,
+                                  nondispersive.GetData(),
+                                  PRISM_QUAD_COUNT,
+                                  session->Snapshot) == S::Ready);
+        Capture(*session, rgb, surface, plain, info);
+        REQUIRE(dispersive.GetSize() == plain.GetSize());
+        float32 lit = 0;
+        for (usize pixel = 0; pixel < plain.GetSize(); ++pixel)
+        {
+            CAPTURE(pixel);
+            CHECK(dispersive[pixel].Radiance == plain[pixel].Radiance);
+            lit += plain[pixel].Radiance.Y;
+        }
+        // At n_d the strip is visible through the prism in some columns.
+        CHECK(lit > 0);
+    }
 }
 
 TEST_CASE("A grain-masked closure program matches between CPU and GPU reference transport",
@@ -2594,6 +3436,314 @@ TEST_CASE("A grain-masked closure program matches between CPU and GPU reference 
     CHECK(brightest > darkest);
 }
 
+namespace
+{
+/// Shading geometry of one pixel of the two-light Oren–Nayar fixture.
+struct BoardPixel final
+{
+    math::Vector3 PositionWorld{};
+    bool IsShadowedFromFirstLight = false;
+    bool IsNearShadowEdge = false;
+};
+/// Mean radiance of the pixels whose shadow state matches, and how many there were.
+struct RegionMean final
+{
+    math::Vector3 Radiance{};
+    usize Count = 0;
+};
+RegionMean MeasureRegion(const Array<rr::ReferencePixel>& pixels, const Array<BoardPixel>& board, bool isShadowed)
+{
+    RegionMean result;
+    for (usize index = 0; index < pixels.GetSize(); ++index)
+    {
+        if (board[index].IsNearShadowEdge == false && board[index].IsShadowedFromFirstLight == isShadowed)
+        {
+            result.Radiance = result.Radiance + pixels[index].Radiance;
+            ++result.Count;
+        }
+    }
+    if (result.Count != 0)
+    {
+        result.Radiance = result.Radiance * (1 / static_cast<float32>(result.Count));
+    }
+    return result;
+}
+bool IsNearRelative(math::Vector3 actual, math::Vector3 expected, float32 tolerance)
+{
+    return math::Distance(actual, expected) <= tolerance * math::Length(expected);
+}
+} // namespace
+
+TEST_CASE("A project Oren-Nayar lobe sums two directional lights and one shadow on CPU and GPU reference transport",
+          "[renderer][gpu][reference-compute][program][oren-nayar]")
+{
+    namespace fixtures = ludus::renderer_tests;
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+
+    // Pat Hanrahan and Jim Lawson, "A Language for Shading and Lighting Calculations", SIGGRAPH '90, pp. 289–298, give
+    // surface and light shaders distinct roles: the surface integrates whatever incident light the renderer supplies.
+    // Here the project lobe is cooked once, and only the renderer-owned lights and a blocker change between captures.
+    const ludus::content::scene_format::MaterialProgram program =
+        fixtures::MakeOrenNayarProgram(fixtures::OREN_NAYAR_SIGMA_RADIANS);
+    const math::Vector3 albedo{0.9F, 0.6F, 0.3F};
+    StaticArray<QuadItem, 2> quads{};
+    QuadItem& board = quads[0];
+    // Wound so the board's normal is +Z.
+    board.CornersWorld = {{{-4, -4, 0}, {4, -4, 0}, {4, 4, 0}, {-4, 4, 0}}};
+    board.BaseColor = albedo;
+    board.Model = ludus::content::scene_format::MaterialModel::Program;
+    board.ProgramOrNull = &program;
+    // A strip one metre above the board, beyond the camera's view in +X, shadows the first light from the board's
+    // pixels with x above FIRST_SHADOW_EDGE. The second light arrives from -X, so the strip never masks it.
+    constexpr float32 BLOCKER_HEIGHT = 1;
+    constexpr float32 BLOCKER_NEAR_X = 1.2F;
+    constexpr float32 BLOCKER_FAR_X = 8;
+    constexpr float32 BLOCKER_HALF_Y = 8;
+    QuadItem& blocker = quads[1];
+    // Wound so the strip faces the board.
+    blocker.CornersWorld = {{{BLOCKER_NEAR_X, -BLOCKER_HALF_Y, BLOCKER_HEIGHT},
+                             {BLOCKER_NEAR_X, BLOCKER_HALF_Y, BLOCKER_HEIGHT},
+                             {BLOCKER_FAR_X, BLOCKER_HALF_Y, BLOCKER_HEIGHT},
+                             {BLOCKER_FAR_X, -BLOCKER_HALF_Y, BLOCKER_HEIGHT}}};
+    // Two independently switchable directional lights with distinct colours and directions. Each light's azimuth is
+    // 60 degrees from the camera's, so both responses include the Oren–Nayar retroreflection term.
+    const math::Vector3 firstUnnormalized{0.6F, 0.35F, 0.72F};
+    const math::Vector3 secondUnnormalized{-0.55F, 0.32F, 0.77F};
+    const math::Vector3 firstTowardWorld = firstUnnormalized / math::Length(firstUnnormalized);
+    const math::Vector3 secondTowardWorld = secondUnnormalized / math::Length(secondUnnormalized);
+    StaticArray<rr::DirectLight, 2> lights{};
+    lights[0].SourceId = 1;
+    lights[0].Color = {1, 0.55F, 0.2F};
+    lights[0].Intensity = 2;
+    lights[0].Direction = -firstTowardWorld;
+    lights[1].SourceId = 2;
+    lights[1].Color = {0.25F, 0.5F, 1};
+    lights[1].Intensity = 3;
+    lights[1].Direction = -secondTowardWorld;
+    const float32 firstShadowEdge = BLOCKER_NEAR_X - BLOCKER_HEIGHT * firstTowardWorld.X / firstTowardWorld.Z;
+
+    // An orthographic camera in the Y-Z plane, so every primary ray sees the board from the same direction and the
+    // camera's horizontal axis is world X.
+    const math::Vector3 cameraUnnormalized{0, 0.5F, 0.866F};
+    const math::Vector3 cameraTowardWorld = cameraUnnormalized / math::Length(cameraUnnormalized);
+    constexpr uint32 EXTENT = 16;
+    constexpr float32 CAMERA_DISTANCE = 5;
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = EXTENT;
+    capture.Height = EXTENT;
+    capture.TargetSamples = 64;
+    capture.MaxDepth = 1;
+    capture.Seed = 1310;
+    capture.OrthographicCamera = true;
+    capture.CenterRays = true;
+    capture.ReverseZ = true;
+    math::Matrix4 view;
+    math::Matrix4 projection;
+    REQUIRE(math::TryLookAt(cameraTowardWorld * CAMERA_DISTANCE, {0, 0, 0}, {0, 0, 1}, view) ==
+            math::MathStatus::Success);
+    REQUIRE(math::TryOrthographicReverseZ(-1, 1, -1, 1, .1F, 20, projection) == math::MathStatus::Success);
+    capture.WorldToClip = projection * view;
+    math::Matrix4 clipToWorld;
+    REQUIRE(math::TryInverse(capture.WorldToClip, clipToWorld) == math::MathStatus::Success);
+    // Each pixel's centre ray meets the board where the ray from its near-plane point along -cameraTowardWorld
+    // crosses z = 0. Pixels within EDGE_MARGIN of the first light's shadow edge are left out of region checks.
+    constexpr float32 EDGE_MARGIN = 0.05F;
+    Array<BoardPixel> boardPixels;
+    REQUIRE(boardPixels.TryResize(usize{EXTENT} * EXTENT) == true);
+    usize shadowedCount = 0;
+    usize litCount = 0;
+    for (uint32 row = 0; row < EXTENT; ++row)
+    {
+        for (uint32 column = 0; column < EXTENT; ++column)
+        {
+            const float32 clipX = 2 * (static_cast<float32>(column) + 0.5F) / EXTENT - 1;
+            const float32 clipY = 1 - 2 * (static_cast<float32>(row) + 0.5F) / EXTENT;
+            const math::Vector4 nearWorld = clipToWorld * math::Vector4{clipX, clipY, 1, 1};
+            const math::Vector3 originWorld = math::Vector3{nearWorld.X, nearWorld.Y, nearWorld.Z} * (1 / nearWorld.W);
+            BoardPixel& pixel = boardPixels[usize{row} * EXTENT + column];
+            pixel.PositionWorld = originWorld - cameraTowardWorld * (originWorld.Z / cameraTowardWorld.Z);
+            pixel.IsShadowedFromFirstLight = pixel.PositionWorld.X > firstShadowEdge;
+            pixel.IsNearShadowEdge = math::Abs(pixel.PositionWorld.X - firstShadowEdge) < EDGE_MARGIN;
+            if (pixel.IsNearShadowEdge == false)
+            {
+                (pixel.IsShadowedFromFirstLight == true ? shadowedCount : litCount) += 1;
+            }
+        }
+    }
+    // Both regions hold a substantial share of the image.
+    REQUIRE(shadowedCount >= usize{EXTENT} * EXTENT / 5);
+    REQUIRE(litCount >= usize{EXTENT} * EXTENT / 5);
+
+    // The analytic single-bounce response: albedo times illuminance times the published BRDF times the cosine,
+    // evaluated at the same world-space directions the renderer uses.
+    const auto respond = [&](const rr::DirectLight& light, math::Vector3 towardWorld) {
+        const float64 brdf =
+            fixtures::EvaluatePublishedOrenNayar(static_cast<float64>(fixtures::OREN_NAYAR_SIGMA_RADIANS),
+                                                 cameraTowardWorld,
+                                                 towardWorld);
+        const float32 scale = static_cast<float32>(brdf * static_cast<float64>(towardWorld.Z)) * light.Intensity;
+        return math::Hadamard(albedo, light.Color) * scale;
+    };
+    const math::Vector3 firstExpected = respond(lights[0], firstTowardWorld);
+    const math::Vector3 secondExpected = respond(lights[1], secondTowardWorld);
+    // The two responses are distinct in every channel.
+    CHECK(math::Abs(firstExpected.X - secondExpected.X) > 0.1F * firstExpected.X);
+    CHECK(math::Abs(firstExpected.Z - secondExpected.Z) > 0.1F * secondExpected.Z);
+    // The lobe's directional response differs from the Lambertian control at both lights.
+    for (const math::Vector3& towardWorld : {firstTowardWorld, secondTowardWorld})
+    {
+        const float64 roughBrdf =
+            fixtures::EvaluatePublishedOrenNayar(static_cast<float64>(fixtures::OREN_NAYAR_SIGMA_RADIANS),
+                                                 cameraTowardWorld,
+                                                 towardWorld);
+        const float64 lambertBrdf = fixtures::EvaluatePublishedOrenNayar(0, cameraTowardWorld, towardWorld);
+        CHECK(math::Abs(roughBrdf - lambertBrdf) > 0.05 * lambertBrdf);
+    }
+
+    // A one-light pixel has a single deterministic estimate; float32 transport stays within this relative bound.
+    constexpr float32 EXACT_TOLERANCE = 1e-4F;
+    // Two lights share one uniform light draw per vertex, so each sample is twice one light's response. Each region
+    // holds at least 51 pixels of 64 samples; Hoeffding's bound for a region mean off by more than 5% of the sample
+    // range is about 2e-7.
+    constexpr float32 MEAN_TOLERANCE = 0.05F;
+    const auto checkMean = [](math::Vector3 actual, math::Vector3 expected, math::Vector3 range) {
+        CAPTURE(actual.X, actual.Y, actual.Z, expected.X, expected.Y, expected.Z);
+        CHECK(math::Abs(actual.X - expected.X) <= MEAN_TOLERANCE * range.X);
+        CHECK(math::Abs(actual.Y - expected.Y) <= MEAN_TOLERANCE * range.Y);
+        CHECK(math::Abs(actual.Z - expected.Z) <= MEAN_TOLERANCE * range.Z);
+    };
+    const math::Vector3 twoLightRange{2 * math::Max(firstExpected.X, secondExpected.X),
+                                      2 * math::Max(firstExpected.Y, secondExpected.Y),
+                                      2 * math::Max(firstExpected.Z, secondExpected.Z)};
+    struct LightCase final
+    {
+        const char* Name = "";
+        usize First = 0;
+        usize Count = 0;
+    };
+    constexpr usize LIGHT_CASE_COUNT = 3;
+    constexpr StaticArray<LightCase, LIGHT_CASE_COUNT> LIGHT_CASES{{
+        { .Name = "first light alone", .First = 0, .Count = 1 },
+        { .Name = "second light alone", .First = 1, .Count = 1 },
+        { .Name = "both lights", .First = 0, .Count = 2 },
+    }};
+    for (const bool hasBlocker : {false, true})
+    {
+        for (Session* session : {&cpu, &gpu})
+        {
+            REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+            REQUIRE(BuildQuadSnapshot(session->Renderer,
+                                      session->Program,
+                                      quads.GetData(),
+                                      hasBlocker == true ? 2 : 1,
+                                      session->Snapshot) == S::Ready);
+        }
+        for (const LightCase& lightCase : LIGHT_CASES)
+        {
+            CAPTURE(hasBlocker, lightCase.Name);
+            capture.Lights = &lights[lightCase.First];
+            capture.LightCount = lightCase.Count;
+            Array<rr::ReferencePixel> oracle;
+            Array<rr::ReferencePixel> compute;
+            rr::ReferenceCaptureInfo oracleInfo;
+            rr::ReferenceCaptureInfo computeInfo;
+            Capture(cpu, capture, surface, oracle, oracleInfo);
+            Capture(gpu, capture, surface, compute, computeInfo);
+            CHECK(oracleInfo.InvalidContributions == 0);
+            CHECK(computeInfo.InvalidContributions == 0);
+            CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
+            // Matched raw linear radiance: both traversals read the same addressed random values.
+            const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+            CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance));
+            CHECK(comparison.MaximumRadiance <= EXACT_TOLERANCE * 2 * math::Length(twoLightRange));
+            for (const Array<rr::ReferencePixel>* pixels : {&oracle, &compute})
+            {
+                INFO((pixels == &oracle ? "CPU oracle" : "GPU compute"));
+                const ImageMeans means = MeasureImage(*pixels);
+                CHECK(means.Emission == math::Vector3{});
+                CHECK(means.Indirect == math::Vector3{});
+                if (lightCase.Count == 1)
+                {
+                    const math::Vector3 expected = lightCase.First == 0 ? firstExpected : secondExpected;
+                    for (usize index = 0; index < pixels->GetSize(); ++index)
+                    {
+                        const BoardPixel& pixel = boardPixels[index];
+                        if (pixel.IsNearShadowEdge == true)
+                        {
+                            continue;
+                        }
+                        CAPTURE(index, pixel.PositionWorld.X, (*pixels)[index].Radiance.X, expected.X);
+                        // The blocker masks only the first light, and only where it lies between light and board.
+                        if (hasBlocker == true && lightCase.First == 0 && pixel.IsShadowedFromFirstLight == true)
+                        {
+                            CHECK((*pixels)[index].Radiance == math::Vector3{});
+                        }
+                        else
+                        {
+                            CHECK(IsNearRelative((*pixels)[index].Radiance, expected, EXACT_TOLERANCE) == true);
+                        }
+                    }
+                    continue;
+                }
+                // Both lights: the linear sum where the blocker does not intervene, the second light alone where it
+                // shadows the first.
+                const RegionMean lit = MeasureRegion(*pixels, boardPixels, false);
+                const RegionMean shadowed = MeasureRegion(*pixels, boardPixels, true);
+                checkMean(lit.Radiance, firstExpected + secondExpected, twoLightRange);
+                checkMean(shadowed.Radiance,
+                          hasBlocker == true ? secondExpected : firstExpected + secondExpected,
+                          twoLightRange);
+            }
+        }
+    }
+
+    // Continuation samples the declared cosine density and weighs it against both lights and a sky: deeper paths
+    // bounce between the board and the blocker's underside, and the two traversals still match pixel by pixel.
+    capture.Lights = lights.GetData();
+    capture.LightCount = lights.GetSize();
+    capture.MaxDepth = 4;
+    capture.CenterRays = false;
+    capture.Environment = {.1F, .12F, .15F};
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    Capture(cpu, capture, surface, oracle, oracleInfo);
+    Capture(gpu, capture, surface, compute, computeInfo);
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance));
+    CHECK(oracleInfo.InvalidContributions == 0);
+    CHECK(computeInfo.InvalidContributions == 0);
+    CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
+    // The tolerances of the typed-material parity case: matched raw linear radiance, not a converged mean.
+    CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+    CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
+    const ImageMeans means = MeasureImage(oracle);
+    CHECK(means.Indirect.X > 0);
+}
+
 TEST_CASE("RT1 rough-metal white furnace matches the single-scattering integral on CPU and GPU",
           "[renderer][gpu][reference-compute][materials]")
 {
@@ -2647,6 +3797,13 @@ TEST_CASE("RT1 rough-metal white furnace matches the single-scattering integral 
     // per trial. At 16,384 trials, Hoeffding's two-sided bound for an error above 0.02 is about 4.1e-6.
     constexpr float64 MEAN_RADIANCE_TOLERANCE = 0.02;
     constexpr float32 MATCHED_PIXEL_TOLERANCE = 1e-3F;
+    // Thanks to Eric Heitz, "Understanding the Masking-Shadowing Function in Microfacet-Based BRDFs",
+    // JCGT 3(2), 2014, section 3.4, https://jcgt.org/published/0003/02/03/paper.pdf#page=18.
+    // The weak white furnace includes both hemispheres. With alpha = 1 and a normal view, the masking-only
+    // reflected density is uniform on the sphere. Half its proposals fall below the plane and stay null.
+    constexpr float64 EXPECTED_NULL_FRACTION = 0.5;
+    constexpr float64 NULL_FRACTION_TOLERANCE = 0.02;
+    constexpr float64 PROPOSALS_PER_CAPTURE = static_cast<float64>(IMAGE_EXTENT * IMAGE_EXTENT * SAMPLES_PER_PIXEL);
     rr::ReferenceCaptureDescription capture;
     capture.Width = IMAGE_EXTENT;
     capture.Height = IMAGE_EXTENT;
@@ -2673,6 +3830,11 @@ TEST_CASE("RT1 rough-metal white furnace matches the single-scattering integral 
             CHECK(computeInfo.Traversal == rr::ReferenceTraversal::GpuCompute);
             CHECK(oracleInfo.InvalidContributions == 0);
             CHECK(computeInfo.InvalidContributions == 0);
+            const float64 cpuNullFraction = static_cast<float64>(oracleInfo.NullBsdfSamples) / PROPOSALS_PER_CAPTURE;
+            const float64 gpuNullFraction = static_cast<float64>(computeInfo.NullBsdfSamples) / PROPOSALS_PER_CAPTURE;
+            CAPTURE(cpuNullFraction, gpuNullFraction);
+            CHECK(math::Abs(cpuNullFraction - EXPECTED_NULL_FRACTION) <= NULL_FRACTION_TOLERANCE);
+            CHECK(math::Abs(gpuNullFraction - EXPECTED_NULL_FRACTION) <= NULL_FRACTION_TOLERANCE);
             const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
             CAPTURE(comparison.MaximumRadiance, comparison.MaximumDirect);
             CHECK(comparison.MaximumRadiance <= MATCHED_PIXEL_TOLERANCE);
@@ -4143,6 +5305,10 @@ TEST_CASE("Reference captures admit only closed bounded media on the supported t
     capture.OpticalConnection = rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction;
     CHECK(begin(MakeMedium(box, {1, 1, 1})) == S::InvalidDescription);
     capture.OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
+    // The visible spectrum scales a declared optical wavelength: without one it is rejected, not ignored.
+    capture.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Visible;
+    CHECK(begin(MakeMedium(box, {1, 1, 1})) == S::InvalidDescription);
+    capture.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Monochromatic;
     // Changing the medium replaces the integral.
     const rr::ReferenceMediumDescription first = MakeMedium(box, {1, 1, 1});
     const rr::ReferenceMediumDescription second = MakeMedium(box, {2, 1, 1});

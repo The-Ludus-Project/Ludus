@@ -50,9 +50,9 @@
     "fragment": "EdgeFragmentMain"
   },
   "renderer_material": {
-    "source": "renderer_material.slang",
-    "vertex": "vertexMain",
-    "fragment": "fragmentMain"
+    "source": "renderer_material.lusl",
+    "vertex": "VertexMain",
+    "fragment": "FragmentMain"
   },
   "renderer_shadow": {
     "source": "renderer_shadow.slang",
@@ -121,23 +121,27 @@
     "software_ray_queries": true
   },
   "renderer_reference": {
-    "source": "renderer_reference.slang",
+    "source": "renderer_reference.lusl",
+    "compute": "TraceMain"
+  },
+  "renderer_reference_optical": {
+    "source": "renderer_reference_optical.lusl",
     "compute": "TraceMain"
   },
   "renderer_reference_reduce": {
-    "source": "renderer_reference.slang",
+    "source": "renderer_reference.lusl",
     "compute": "ReduceMain"
   },
   "renderer_reference_repeat_closest": {
-    "source": "renderer_reference_repeat_closest.slang",
+    "source": "renderer_reference_repeat_closest.lusl",
     "compute": "TraceMain"
   },
   "renderer_reference_repeat_visibility": {
-    "source": "renderer_reference_repeat_visibility.slang",
+    "source": "renderer_reference_repeat_visibility.lusl",
     "compute": "TraceMain"
   },
   "renderer_reference_permuted": {
-    "source": "renderer_reference_permuted.slang",
+    "source": "renderer_reference_permuted.lusl",
     "compute": "TraceMain"
   },
   "renderer_authored": {
@@ -221,12 +225,12 @@
     "fragment": "GBufferMain"
   },
   "renderer_atmosphere_transmittance": {
-    "source": "renderer_atmosphere.slang",
+    "source": "renderer_atmosphere.lusl",
     "vertex": "DeferredVertexMain",
     "fragment": "AtmosphereTransmittanceMain"
   },
   "renderer_atmosphere_multiple": {
-    "source": "renderer_atmosphere.slang",
+    "source": "renderer_atmosphere.lusl",
     "vertex": "DeferredVertexMain",
     "fragment": "AtmosphereMultipleMain"
   },
@@ -237,12 +241,12 @@
     "fragment_storage": true
   },
   "renderer_atmosphere_sky": {
-    "source": "renderer_atmosphere.slang",
+    "source": "renderer_atmosphere.lusl",
     "vertex": "DeferredVertexMain",
     "fragment": "AtmosphereSkyMain"
   },
   "renderer_atmosphere_display": {
-    "source": "renderer_atmosphere.slang",
+    "source": "renderer_atmosphere.lusl",
     "vertex": "DeferredVertexMain",
     "fragment": "AtmosphereDisplayMain"
   },

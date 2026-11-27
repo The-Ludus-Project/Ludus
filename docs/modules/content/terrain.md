@@ -3,8 +3,8 @@
 `Ludus::ContentTerrain` (`modules/content/terrain`, headers under
 `ludus/content/terrain/`) holds the canonical tiled surface and the serial reference kernels from the [terrain generation architecture](../../architecture/terrain-generation.md#ordered-pipeline).
 It is Foundation-only (`FoundationBase`, `FoundationContainers`, `FoundationMath`),
-builds for native and browser targets, and is in-tree until an SDK consumer
-needs it. The World editor's default terrain samples its elevation through this
+builds for native and browser targets, and is installed in the SDK with
+`Ludus::TerrainFormat`. The World editor's default terrain samples its elevation through this
 module, so a cooker, a test and the editor agree on every height, and it carves
 rivers and bakes its surface colour with the kernels below.
 
@@ -189,6 +189,55 @@ If a consumer needs the source drainage topology, choose one of these:
   T1 cooks heights only and does not publish this product yet. Until it does,
   compute drainage from the source field where it is available, and treat
   drainage from decoded pages as a preview.
+
+### Inspect and read a cooked revision
+
+In the Editor, open **Edit Terrain…** and turn on **Show cooked pages**
+([World authoring](../../development/editor-workspace.md#s4-scene-authoring)).
+The Editor cooks the terrain mesh's heights as one revision:
+
+- The field is the mesh: one source elevation per vertex, at the mesh's
+  spacing. The cooked format has one spacing, so the cells must be square.
+- Pages use the smallest common divisor of the two cell counts that leaves at
+  most four pages per axis. When no such divisor exists, they use the greatest
+  common divisor.
+- Heights use signed 32-bit codes of 1/1024 m around a zero origin.
+- `RecipeVersion` is the recipe's noise layout. `SourceDigest` is
+  `TryComputeTerrainFieldDigest` of the field: XXH3-128 of the grid and every
+  elevation's binary32 bits, little endian. A consumer that regenerates the
+  field reproduces the manifest bytes.
+
+The Editor reads every page back from its own byte range and draws the page
+borders at the decoded heights. The Terrain panel reports the largest
+quantization error from the page records.
+
+An SDK consumer reads the same revision with the installed targets:
+
+```cmake
+find_package(Ludus CONFIG REQUIRED COMPONENTS ContentTerrain TerrainFormat)
+target_link_libraries(game PRIVATE Ludus::ContentTerrain Ludus::TerrainFormat)
+```
+
+Validate the manifest with `TryReadTerrainManifest`. For each record, pass
+exactly its `ByteOffset`/`ByteSize` range of the page pack to
+`TryReadTerrainPage`, then decode samples with `TryGetTerrainPageHeight`.
+
+`tests/sdk_consumer/terrain_readback_corpus.h` pins this path for both noise
+layouts. Its field is the Editor terrain with 64 samples over 31.5 m, so the
+revision has 3 × 3 pages of 21 cells. The module tests, the Editor tests and
+the installed SDK consumer each cook it and compare one manifest digest. The
+consumer reads the revision page by page, so the Editor and the SDK check the
+same bytes. The Editor tests also compare the World preview with the decoded
+pages:
+
+- Each mesh vertex lies within half a quantum of its decoded height.
+- Each mesh normal comes from central differences, as the decoded normals do.
+  It lies within `sqrt(2) × quantum / spacing` radians of the decoded normal,
+  the largest gradient change that half-quantum height errors allow. That is
+  2.8 mrad for the corpus.
+
+Both layouts meet this bound. The cubic layout's crease at lattice edges is in
+the source heights, so the decoded pages keep it.
 
 ## Elevation recipe (`terrain_noise.h`)
 

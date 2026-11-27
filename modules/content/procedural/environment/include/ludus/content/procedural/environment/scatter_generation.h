@@ -3,10 +3,12 @@
 // Staged scatter generation: the first consumer of the procedural generation
 // executor of slice P1 (Ludus::ProceduralCore's GenerationCoordinator). Each room is
 // an independently keyed scope and each of its layers a pure, cached stage whose
-// kernel reads only its own parameter bytes. A request stages a candidate manifest;
-// the coordinator publishes it only when it succeeded, satisfies every author lock
-// and was staged against the current accepted revision. Comparison explains each
-// removed placement by its first responsible stage and input.
+// kernel reads only its own parameter bytes, its author locks included. A request
+// stages a candidate manifest; the coordinator publishes it only when it succeeded,
+// satisfies every author lock, was staged against the current accepted revision and
+// from the current authored input. Comparison explains each removed placement by its
+// first responsible stage and input, and a pending candidate's override conflicts are
+// reported by placement and property.
 // Contracts: docs/architecture/procedural-content-generation.md#p1-staged-scatter-generation.
 
 #include <ludus/foundation/base/core.h>
@@ -26,23 +28,29 @@ inline constexpr uint32 SCATTER_LAYER_OPERATOR = 1;
 /// Schema of a cached scatter layer product: a count, then fixed-width placement records.
 inline constexpr uint32 SCATTER_LAYER_PRODUCT_SCHEMA = 1;
 /// Version of the scatter layer stage's parameter encoding: the operator version of every scatter layer stage.
-inline constexpr uint32 SCATTER_GENERATION_VERSION = 2;
+inline constexpr uint32 SCATTER_GENERATION_VERSION = 3;
+/// Version of the request encoding that TryComputeScatterInputDigest digests.
+inline constexpr uint32 SCATTER_INPUT_DIGEST_VERSION = 1;
 /// Most scopes in one request.
 inline constexpr usize MAX_SCATTER_GENERATION_SCOPES = 64;
-/// Most author locks in one scope.
-inline constexpr usize MAX_SCATTER_SCOPE_LOCKS = 256;
+/// Most author locks in one scope; equal to the layer bound, so every layer's share of a scope's locks fits it.
+inline constexpr usize MAX_SCATTER_SCOPE_LOCKS = MAX_SCATTER_LAYER_LOCKS;
 /// Most candidates one layer may evaluate; bounds the scratch a layer stage reserves.
 inline constexpr usize MAX_SCATTER_LAYER_CANDIDATES = 1U << 20U;
 
 /// @brief One independently keyed scope: a room's recipe and its author locks.
 struct ScatterScope final
 {
-    /// The room's recipe; its Room identifies the scope. Borrows its arrays from the caller.
+    /// The room's recipe; its Room identifies the scope. Its layers' Locks must be empty: Locks below supplies them.
+    /// Borrows its arrays from the caller.
     ScatterRecipe Recipe;
-    /// @brief Placements the author locked, at most MAX_SCATTER_SCOPE_LOCKS, each in this scope's room.
+    /// @brief Placements the author locked, at most MAX_SCATTER_SCOPE_LOCKS, each in this scope's room with a distinct
+    ///        identity, in any order.
     ///
-    /// A candidate satisfies a lock when it contains a placement with the same identity and exactly these values.
-    /// Locks do not change generation; an unsatisfied lock is a conflict that blocks publication. Borrowed.
+    /// Each layer's locks enter its thinning as ScatterLayer::Locks and are part of its stage parameters, so editing
+    /// a lock reruns only its layer. A candidate satisfies a lock when it contains a placement with the same identity
+    /// and exactly these values; an unsatisfied lock, such as one in a keep-out or naming a removed layer, is a
+    /// conflict that blocks publication. Borrowed.
     foundation::BorrowedView<const ScatterPlacement> Locks;
 };
 
@@ -109,6 +117,10 @@ struct ScatterCandidate final
     GenerationStatus Status = GenerationStatus::NotReady;
     /// The accepted revision the candidate was staged against.
     uint64 BaseRevision = 0;
+    /// TryComputeScatterInputDigest of the request it was staged from; zero unless Manifest is set.
+    GenerationDigest Input;
+    /// The request's author locks, in room, layer and canonical identity order; empty unless Manifest is set.
+    foundation::Array<ScatterPlacement> Locks;
     /// The generated manifest; empty unless Status is Success or ConstraintFailed.
     ScatterManifest Manifest;
     /// Unsatisfied author locks; nonempty exactly when Status is ConstraintFailed.
@@ -139,9 +151,44 @@ struct ScatterChange final
     ScatterDecision Decision;
 };
 
+/// @brief The overridden property of a placement on which a pending candidate and the authored locks disagree.
+enum class ScatterOverrideProperty : uint8
+{
+    /// The author removed the placement's lock after the candidate was staged with it.
+    Lock,
+    /// The candidate has no placement with the locked identity.
+    Presence,
+    /// The lattice position differs.
+    Position,
+    /// The variant differs.
+    Variant,
+    /// The rotation differs.
+    Rotation,
+    /// The scale differs.
+    Scale,
+};
+
+/// @brief A placement property on which a candidate disagrees with the current author locks.
+struct ScatterOverrideConflict final
+{
+    /// The placement's persistent identity.
+    ScatterIdentity Identity;
+    /// The disagreeing property.
+    ScatterOverrideProperty Property = ScatterOverrideProperty::Presence;
+    /// Whether the current input locks the identity; false exactly for ScatterOverrideProperty::Lock.
+    bool HasAuthored = false;
+    /// The current lock, the authored value, when HasAuthored.
+    ScatterPlacement Authored;
+    /// Whether the candidate has a placement with the identity; false exactly for ScatterOverrideProperty::Presence
+    /// and for a removed lock whose placement the candidate lacks.
+    bool HasCandidate = false;
+    /// The candidate's placement, when HasCandidate.
+    ScatterPlacement Candidate;
+};
+
 /// @brief The kernel of every scatter layer stage.
 ///
-/// It decodes the stage's parameters (seed, domains, room, the layer, region and keep-outs written by
+/// It decodes the stage's parameters (seed, domains, room, the layer, its locks, region and keep-outs written by
 /// TryAddScatterStages) and generates or validates the layer from them alone. Holds reusable scratch storage.
 /// Single-owner; not thread-safe.
 class ScatterLayerKernel final : public GenerationStageKernel
@@ -164,6 +211,7 @@ private:
 
     foundation::Array<ScatterVariant> mVariants;
     foundation::Array<ScatterRectangle> mKeepOuts;
+    foundation::Array<ScatterPlacement> mLocks;
     ScatterLayer mLayer;
     ScatterRecipe mRecipe;
     ScatterKeys mKeys;
@@ -174,9 +222,9 @@ private:
 /// @brief Append one stage per layer of every scope of a request to a plan, in scope then recipe layer order.
 ///
 /// Each stage's Scope is its room and its Stage the layer ID. Its parameters encode every input the layer depends
-/// on: SCATTER_LAYOUT_VERSION, the seed, domain IDs, room, the layer's own fields and variants, the region and the
-/// keep-outs. Other layers and locks are excluded, so editing them never invalidates it. Scatter stages have no
-/// upstream inputs.
+/// on: SCATTER_LAYOUT_VERSION, the seed, domain IDs, room, the layer's own fields and variants, its locks in
+/// canonical order, the region and the keep-outs. Other layers and their locks are excluded, so editing them never
+/// invalidates it. Scatter stages have no upstream inputs.
 /// @param input The request; validated by this call.
 /// @param inoutKernel The kernel of the appended stages; borrowed and must outlive every request using the plan.
 /// @param inoutPlan Receives the stages; unchanged on failure.
@@ -222,10 +270,18 @@ public:
     TryStage(const ScatterGenerationInput& input, GenerationTrace& inoutTrace, ScatterCandidate& outCandidate) noexcept;
 
     /// @brief Make a successful candidate the accepted manifest and advance the revision.
+    ///
+    /// The candidate must have been staged from exactly the current authored input: an edit made while it was
+    /// pending, such as a changed author lock, makes it stale. TryFindScatterOverrideConflicts names the lock edits by
+    /// placement and property; staging the current input again keeps the authored values and reuses every unaffected
+    /// cached product.
+    /// @param current The current authored request; validated by this call.
     /// @param inoutCandidate Emptied and marked NotReady on success; unchanged on failure.
-    /// @return Success; NotReady when the candidate did not stage successfully; StaleCandidate when it was staged
-    ///         against an older revision; or OutOfMemory. The accepted manifest is unchanged on failure.
-    [[nodiscard]] GenerationStatus TryPublish(ScatterCandidate& inoutCandidate) noexcept;
+    /// @return Success; NotReady when the candidate did not stage successfully; InvalidInput for an invalid current
+    ///         request; StaleCandidate when it was staged against an older revision or from another input; or
+    ///         OutOfMemory. The accepted manifest is unchanged on failure.
+    [[nodiscard]] GenerationStatus TryPublish(const ScatterGenerationInput& current,
+                                              ScatterCandidate& inoutCandidate) noexcept;
 
     /// Discard a candidate without changing the accepted manifest; it becomes empty and NotReady.
     void Reject(ScatterCandidate& inoutCandidate) noexcept;
@@ -246,6 +302,30 @@ private:
     ScatterLayerKernel mKernel;
     ScatterManifest mAccepted;
 };
+
+/// @brief Digest a request's canonical encoding: seed, domains, and each scope's room, region, keep-outs, layers and
+///        locks in canonical order. Equal digests mean the same authored input.
+/// @param input The request; validated by this call.
+/// @param outDigest Replaced on success; unchanged on failure.
+/// @return Success, InvalidInput or OutOfMemory.
+[[nodiscard]] GenerationStatus TryComputeScatterInputDigest(const ScatterGenerationInput& input,
+                                                            GenerationDigest& outDigest) noexcept;
+
+/// @brief List the placement properties on which a staged candidate disagrees with the current author locks.
+///
+/// For every identity the current input locks, the candidate's placement must exist (Presence) and match the lock's
+/// position, variant, rotation and scale; each differing property is one conflict. A lock the candidate was staged
+/// with and the current input no longer holds is a Lock conflict, since the candidate's values may come from it.
+/// Conflicts follow room, layer and canonical identity order, then the property order of ScatterOverrideProperty.
+/// A candidate staged from the current input has a conflict only for a lock it does not satisfy.
+/// @param candidate A candidate whose Status is Success or ConstraintFailed.
+/// @param current The current authored request; validated by this call.
+/// @param outConflicts Replaced on success; unchanged on failure.
+/// @return Success; NotReady when the candidate has no manifest; InvalidInput; or OutOfMemory.
+[[nodiscard]] GenerationStatus
+TryFindScatterOverrideConflicts(const ScatterCandidate& candidate,
+                                const ScatterGenerationInput& current,
+                                foundation::Array<ScatterOverrideConflict>& outConflicts) noexcept;
 
 /// @brief Compare an accepted manifest with a candidate by persistent placement identity.
 ///

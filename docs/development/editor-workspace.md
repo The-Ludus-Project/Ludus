@@ -828,6 +828,18 @@ collision. Carving depends on the sample grid, so changing **Samples per side**
 moves the channels. The fields, routing and carving are described in
 [terrain fields, drainage, rivers and material rules](../modules/content/terrain.md).
 
+**Show cooked pages** inspects the terrain as a game reads it. The Editor cooks
+the ready view's final heights, after rivers and sculpt strokes, into a
+versioned revision of height pages. It then reads every page back from its own
+bytes and draws the page borders over the terrain at the decoded heights. The
+panel names the revision, the page grid, the height step and the largest
+difference from the source heights. A terrain with up to 64 samples per side
+uses at most four pages per axis. The revision is for inspection only; the World
+keeps its recipe. The cooked format needs square cells. When **Width** and
+**Depth** divide into cells of different sizes, the panel names the **Depth**
+that matches. See
+[inspect and read a cooked revision](../modules/content/terrain.md#inspect-and-read-a-cooked-revision).
+
 The editor extracts a single indexed mesh of at most 64 samples per side,
 including after reopening the World. The terrain uses the current viewport
 shading and authored lights. In an unlit World, the default raster graph
@@ -3742,9 +3754,16 @@ Open the HTML report in a browser for side-by-side, wipe and error heatmap
 views. Use the candidate menu to switch between several inputs against the same
 baseline. The file embeds its images and data for offline use. The command also
 writes JSON to standard output with the full metrics and input metadata. The
-heatmap shows the largest absolute RGB channel error per pixel, from black at
-zero to orange at `--diff-scale` (0.25 by default). Grey marks pixels missing
-a sample on either side. Changing this scale leaves the metrics unchanged.
+heatmap shows the largest absolute RGB channel error per pixel. Black marks an
+exact match. A nonzero error starts at dark red and gets brighter through orange
+to pale yellow at `--diff-scale` (0.25 by default) or more. Its CIELAB lightness
+rises linearly from 20 to 95, so a brighter pixel always has a larger error, in
+greyscale and under common colour-vision deficiencies. Even the smallest
+nonzero error stands clear of black. Diagonal grey stripes mark pixels missing a
+sample on either side, so they cannot be mistaken for any error value. The
+legend labels the scale in the compared encoding: normalized sRGB from 0 to 1,
+or scene-linear RGB. All candidates in one report share the scale. Changing it
+leaves the metrics and exit status unchanged.
 
 Both inputs need the same pixel dimensions and comparison space. HDR captures
 use their raw scene-linear RGB values. Preview images compress each channel with
@@ -3804,6 +3823,40 @@ highlight exactly the 256 cube pixels. Two channels change by one on each,
 giving a normalized RGB RMSE of 1/6. The artifact includes the PNGs, driver
 version, graph digest, export names and per-run adapter logs.
 
+#### Label export baseline
+
+The same job checks a categorical export. The saved `labels.world.json` places a
+red foreground cube and a blue rear cube three metres behind it, offset by one
+metre right and down. The cooked graph in `tests/sdk_consumer/raster_baseline/labels`
+has two static raster passes from the same camera and extent. `Main/labels`
+writes the visibility-buffer identity. Alpha is the object's position among the
+World's renderables plus one, RGB is its mesh-local triangle, and the cleared
+background is zero in every channel. `Main/color` writes the matching flat
+tints. Neither export is tone mapped, blended, filtered or display-converted.
+The Editor saves each export's raw RGBA8 bytes, so the alpha identity survives.
+The installed-SDK app captures both from the same package with
+`raster_capture labels.world.json labels.lurgrt Main/labels labels.png Main/color color.png`.
+
+`labels.py` predicts the label grid without the renderer. It projects the cube
+mesh through the saved orthographic camera at every pixel centre and keeps the
+nearest face. The foreground covers columns 32–47 and rows 16–31. The rear cube
+shows 192 pixels in columns 40–55 and rows 24–39, with the 8 × 8 overlap hidden
+behind the foreground. Silhouettes fall on pixel boundaries, and the prediction
+rejects a pixel centre on any silhouette. A centre on the diagonal shared by a
+face's two triangles may carry either triangle; the check accepts exactly those
+two. Every other pixel must match its label and triangle exactly.
+
+Both hosts run each phase. Two fresh runs must match the prediction. An
+appearance-only edit changes both tints; the label bytes must not change, and
+the colour export must show the new tints. A geometry edit moves the foreground
+half a metre right. Exactly 128 labels change, and the captures must follow the
+new prediction. The negative control reorders the two renderables, which swaps
+their labels. Its captures must match the swapped prediction and fail the saved
+one on all 448 labelled pixels. The `labels/` folder of the
+`raster-baseline-vulkan` artifact holds the raw label PNGs and per-capture
+JSON. It also has label views that draw labels 1 and 2 in orange and cyan,
+plus HTML heatmaps for each phase, with the swap's failing `swap-label.html`.
+
 ## S4 scene authoring
 
 World owns the world-demo adapter as well as 3D scene placement. Its sample
@@ -3861,6 +3914,57 @@ There is no separate authoring window and no keyboard transform gesture. Edit
 transforms in the World inspector, as for every other World. Viewport picking and
 gizmos are later work for all Worlds; see
 [Play in the editor viewport](../architecture/editor-gui-systems.md#play-in-the-editor-viewport).
+
+### Repair a stale scatter candidate
+
+A World-demo World shows a **Scatter** tab beside Lights, Materials and
+Environment. It stages the rooms' scatter through the
+[staged generation executor](../architecture/procedural-content-generation.md#p1-staged-scatter-generation)
+and keeps an accepted set of placements that changes only when you publish.
+The tab generates the open World's room from its applied draft, together with
+every other World-demo room saved beside it (for example `first-room.world.json`
+and `second-room.world.json` in `apps/world_demo/levels`). A sibling World in the
+same catalog room as the open one is left out, because the draft is that room's
+input.
+
+1. Select **Stage Candidate**, then **Publish**. The placement list shows each
+   accepted placement by room, layer, cell and candidate index, with its
+   position in lattice units, variant, rotation (in 1/65536 turns and degrees)
+   and scale.
+2. Select a placement and edit its values under **Override**. The fields stay
+   inside the placement's cell and the layer's variant and scale ranges.
+   **Apply Override** locks the placement at those values; **Remove Override**
+   lets generation choose them again.
+3. **Stage Candidate** generates the override. Only the overridden layer runs
+   again; the evaluation list names each layer **Executed** or **Cache hit**.
+4. If you edit an override while the candidate is pending, **Publish** refuses
+   it, and the accepted placements and revision stay unchanged. The conflict
+   list names each disagreement by placement and property (**Position**,
+   **Variant**, **Rotation**, **Scale**, **Presence** for a placement the
+   candidate lacks, or **Override removed**), with the authored and the
+   candidate value side by side.
+5. **Keep Authored Values and Retry** stages the current overrides and publishes
+   them. Only the edited room's layer runs again, and every other room's layers
+   are cache hits. **Reject Proposal** discards the candidate instead; the
+   accepted placements and your overrides stay, and the next candidate you stage
+   and publish carries the authored values.
+
+An override that generation cannot honour, such as a position inside the
+keep-out around a spawn point, exit or collision box, makes the candidate
+unpublishable. The conflict list then names the placement and the reason. Select
+it, then edit or remove its override and stage again.
+
+The overrides and the accepted placements are Editor session state. Save World
+does not write them yet, and the World viewport and Play still generate the
+room without them. Saving the overrides and having the World demo consume only
+the accepted placements is the next part of
+[Generation P1](https://github.com/The-Ludus-Project/Ludus/issues/1203). The
+offscreen regression cases cover the stale refusal, the conflict list, retry,
+rejection and an unhonourable override:
+
+```bash
+QT_QPA_PLATFORM=offscreen out/build/macos-clang-debug/apps/editor/ludus_editor_tests '[scatter]'
+```
 
 ### Enable the rendered authoring surface
 

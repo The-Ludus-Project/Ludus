@@ -1,3 +1,4 @@
+#include "../src/internal/spectral_sensor.h"
 #include "../src/internal/wave_connection.h"
 #include "../src/internal/wave_edge_diffraction.h"
 #include "../src/internal/wave_fraunhofer_diffraction.h"
@@ -595,6 +596,9 @@ void CheckEdgeConnectionParity(uint32 tag)
     math::Vector3d sourceWorld{0, 0, 0.5};
     float64 receiverFirstX = -0.35;
     float64 receiverStepX = 0.7 / static_cast<float64>(CASE_COUNT - 1);
+    // Spectral sweeps hold the receiver and scale the declared wavelength of 550 nm light across 380-780 nm, as a
+    // spectral path's connections do (ReferenceOpticalSpectrum::Visible).
+    bool isSpectralSweep = false;
     SECTION("Design wavelength double slit")
     {
         addRectangle(-2, -0.12F);
@@ -608,6 +612,14 @@ void CheckEdgeConnectionParity(uint32 tag)
         wavelengthWorld = 550e-9;
         receiverFirstX = -0.002;
         receiverStepX = 0.004 / static_cast<float64>(CASE_COUNT - 1);
+    }
+    SECTION("Design wavelength slit across the visible spectrum")
+    {
+        addRectangle(-2, -0.05F);
+        addRectangle(0.05F, 2);
+        isSpectralSweep = true;
+        receiverFirstX = 0.12;
+        receiverStepX = 0;
     }
     SECTION("Design wavelength wedge")
     {
@@ -638,7 +650,15 @@ void CheckEdgeConnectionParity(uint32 tag)
         WriteFloat(base + 6, words, deltaWorld.Z / distanceWorld);
         WriteFloat(base + 12, words, 1);
         WriteFloat(base + 14, words, distanceWorld);
-        WriteFloat(base + 15, words, wavelengthWorld);
+        const float64 visibleNanometers =
+            LUDUS_SPECTRUM_WAVELENGTH_MINIMUM_NANOMETERS +
+            (LUDUS_SPECTRUM_WAVELENGTH_MAXIMUM_NANOMETERS - LUDUS_SPECTRUM_WAVELENGTH_MINIMUM_NANOMETERS) *
+                static_cast<float64>(index) / static_cast<float64>(CASE_COUNT - 1);
+        WriteFloat(base + 15,
+                   words,
+                   isSpectralSweep == true
+                       ? wavelengthWorld * visibleNanometers / LUDUS_WAVE_SPECTRAL_REFERENCE_WAVELENGTH_NANOMETERS
+                       : wavelengthWorld);
     }
     Array<uint32> results;
     if (RunParityKernel(words, results) == false)
@@ -880,4 +900,124 @@ TEST_CASE("Relayed wave connections match the CPU oracle on GPU",
         CheckChainParity(scene, sweep, ChainOperator::FraunhoferEdgeDiffraction, EDGE_WAVELENGTH_WORLD);
         CheckChainParity(scene, sweep, ChainOperator::AngularSpectrum, LATTICE_WAVELENGTH_WORLD);
     }
+}
+
+TEST_CASE("The spectral camera reads white and uplifted colours back", "[renderer][wave-spectral]")
+{
+    namespace internal = ludus::graphics::renderer::internal;
+    // Midpoint quadrature of the sensor over the range: a unit equal-energy spectrum reads white, and the uplift of
+    // an in-gamut colour reads that colour, within the fit's 0.001 nm normalization and the quadrature's error.
+    constexpr usize QUADRATURE_STEPS = 4000;
+    constexpr float64 ROUND_TRIP_TOLERANCE = 1e-3;
+    constexpr usize COLOUR_COUNT = 3;
+    const StaticArray<math::Vector3, COLOUR_COUNT> colours{{{1, 1, 1}, {0.6F, 0.4F, 0.3F}, {0.2F, 0.5F, 0.7F}}};
+    for (const math::Vector3 colour : colours)
+    {
+        CAPTURE(colour.X, colour.Y, colour.Z);
+        math::Vector3d white{};
+        math::Vector3d uplifted{};
+        const float64 step = static_cast<float64>(internal::SPECTRUM_WAVELENGTH_RANGE_NANOMETERS) /
+                             static_cast<float64>(QUADRATURE_STEPS);
+        for (usize index = 0; index < QUADRATURE_STEPS; ++index)
+        {
+            const float32 wavelength =
+                static_cast<float32>(static_cast<float64>(internal::SPECTRUM_WAVELENGTH_MINIMUM_NANOMETERS) +
+                                     (static_cast<float64>(index) + 0.5) * step);
+            const math::Vector3 sensitivity = internal::EvaluateSensorSensitivity(wavelength);
+            CHECK(sensitivity.X >= 0);
+            CHECK(sensitivity.Y >= 0);
+            CHECK(sensitivity.Z >= 0);
+            const float64 value = static_cast<float64>(internal::EvaluateUpliftedSpectrum(colour, wavelength));
+            white = white + math::Vector3d{static_cast<float64>(sensitivity.X),
+                                           static_cast<float64>(sensitivity.Y),
+                                           static_cast<float64>(sensitivity.Z)} *
+                                step;
+            uplifted = uplifted + math::Vector3d{static_cast<float64>(sensitivity.X),
+                                                 static_cast<float64>(sensitivity.Y),
+                                                 static_cast<float64>(sensitivity.Z)} *
+                                      (value * step);
+        }
+        CHECK(math::Abs(white.X - 1) < ROUND_TRIP_TOLERANCE);
+        CHECK(math::Abs(white.Y - 1) < ROUND_TRIP_TOLERANCE);
+        CHECK(math::Abs(white.Z - 1) < ROUND_TRIP_TOLERANCE);
+        CHECK(math::Abs(uplifted.X - static_cast<float64>(colour.X)) < ROUND_TRIP_TOLERANCE);
+        CHECK(math::Abs(uplifted.Y - static_cast<float64>(colour.Y)) < ROUND_TRIP_TOLERANCE);
+        CHECK(math::Abs(uplifted.Z - static_cast<float64>(colour.Z)) < ROUND_TRIP_TOLERANCE);
+    }
+    // ConvertSpectralRadiance is the one-sample estimate of that integral for a uniformly drawn wavelength.
+    constexpr float32 PROBE_NANOMETERS = 600;
+    constexpr float32 PROBE_RADIANCE = 2;
+    const math::Vector3 converted = internal::ConvertSpectralRadiance(PROBE_RADIANCE, PROBE_NANOMETERS);
+    const math::Vector3 expected = internal::EvaluateSensorSensitivity(PROBE_NANOMETERS) *
+                                   (PROBE_RADIANCE * internal::SPECTRUM_WAVELENGTH_RANGE_NANOMETERS);
+    CHECK(converted.X == expected.X);
+    CHECK(converted.Y == expected.Y);
+    CHECK(converted.Z == expected.Z);
+}
+
+TEST_CASE("The spectral camera matches its CPU twin on GPU",
+          "[renderer][gpu][reference-compute][wave-spectral][parity]")
+{
+    namespace internal = ludus::graphics::renderer::internal;
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    // Wavelengths across the range, including both sides of the uplift's band edges, with colours whose band values
+    // are positive and clamped.
+    const StaticArray<float32, CASE_COUNT> wavelengths{
+        {380, 410, 437, 459, 489.99F, 490, 530.9F, 555, 568.8F, 579.99F, 580, 599.8F, 650, 700, 750, 779.99F}};
+    Array<uint32> words;
+    REQUIRE(words.TryResize(CASE_WORDS, uint32{0}) == true);
+    words[3] = LUDUS_WAVE_PARITY_SPECTRUM_TAG;
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        const usize base = (1 + index) * WORDS_PER_RECORD;
+        WriteFloat(base, words, static_cast<float64>(wavelengths[index]));
+        WriteFloat(base + 1, words, static_cast<float64>(index) / static_cast<float64>(CASE_COUNT));
+        WriteFloat(base + 2, words, index % 2 == 0 ? 0.5 : 0.02);
+        WriteFloat(base + 3, words, index % 3 == 0 ? 0.9 : 0.1);
+    }
+    Array<uint32> results;
+    if (RunParityKernel(words, results) == false)
+    {
+        SKIP("GPU adapter unavailable");
+    }
+    // float32 exp on the GPU against the CPU twin's float64 exp of the same float32 argument.
+    constexpr float64 RELATIVE_TOLERANCE = 1e-5;
+    const auto checkClose = [](float64 gpu, float64 cpu) {
+        CHECK(math::Abs(gpu - cpu) <= RELATIVE_TOLERANCE * (math::Abs(cpu) + RELATIVE_TOLERANCE));
+    };
+    usize clampedCount = 0;
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        const usize base = (1 + index) * WORDS_PER_RECORD;
+        const float32 wavelength = static_cast<float32>(ReadFloat(words, base));
+        const math::Vector3 colour{static_cast<float32>(ReadFloat(words, base + 1)),
+                                   static_cast<float32>(ReadFloat(words, base + 2)),
+                                   static_cast<float32>(ReadFloat(words, base + 3))};
+        INFO("case " << index << " at " << wavelength << " nm");
+        const usize destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS * WORDS_PER_RECORD;
+        const math::Vector3 sensitivity = internal::EvaluateSensorSensitivity(wavelength);
+        const math::Vector3 xyz = internal::EvaluateCieXyz1931(wavelength);
+        const float32 uplifted = internal::EvaluateUpliftedSpectrum(colour, wavelength);
+        checkClose(ReadFloat(results, destination), static_cast<float64>(sensitivity.X));
+        checkClose(ReadFloat(results, destination + 1), static_cast<float64>(sensitivity.Y));
+        checkClose(ReadFloat(results, destination + 2), static_cast<float64>(sensitivity.Z));
+        checkClose(ReadFloat(results, destination + 3), static_cast<float64>(uplifted));
+        checkClose(ReadFloat(results, destination + 4), static_cast<float64>(xyz.X));
+        checkClose(ReadFloat(results, destination + 5), static_cast<float64>(xyz.Y));
+        checkClose(ReadFloat(results, destination + 6), static_cast<float64>(xyz.Z));
+        checkClose(ReadFloat(results, destination + 7),
+                   static_cast<float64>(internal::SampleWavelengthNanometers(colour.X)));
+        if (uplifted == 0)
+        {
+            ++clampedCount;
+        }
+    }
+    CHECK(clampedCount > 0);
 }

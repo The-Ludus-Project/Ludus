@@ -1,6 +1,7 @@
 #include "internal/world.h"
 #include "internal/random_domains.h"
 #include "internal/room_catalog.h"
+#include "internal/room_scatter.h"
 
 #include <ludus/content/procedural/environment/scatter.h>
 #include <ludus/foundation/base/byte_order.hpp>
@@ -50,26 +51,6 @@ constexpr uint64 BYTE_MASK = 0xffu;
 bool Finite(Vec2 value) noexcept
 {
     return std::isfinite(value.X) && std::isfinite(value.Y);
-}
-/// Half-open lattice rectangle around a box, expanded by the keep-out margin; never empty.
-bool TryMakeKeepOut(Vec2 center,
-                    Vec2 half,
-                    float32 margin,
-                    uint32 units,
-                    procedural::ScatterRectangle& outRectangle) noexcept
-{
-    procedural::ScatterRectangle rectangle;
-    if (TryScaleToLattice(center.X - half.X - margin, units, rectangle.MinimumX) == false ||
-        TryScaleToLattice(center.Y - half.Y - margin, units, rectangle.MinimumY) == false ||
-        TryScaleToLattice(center.X + half.X + margin, units, rectangle.MaximumX) == false ||
-        TryScaleToLattice(center.Y + half.Y + margin, units, rectangle.MaximumY) == false)
-    {
-        return false;
-    }
-    rectangle.MaximumX = foundation::math::Max(rectangle.MaximumX, rectangle.MinimumX + 1);
-    rectangle.MaximumY = foundation::math::Max(rectangle.MaximumY, rectangle.MinimumY + 1);
-    outRectangle = rectangle;
-    return true;
 }
 /// Fold the low ByteCount little-endian bytes of `value` into an FNV-1a hash.
 template <usize ByteCount>
@@ -202,21 +183,11 @@ Status GameWorld::prepareScatter(WorldSeed worldSeed, foundation::BorrowedView<c
         return Status::Success;
     }
     const RoomScatter& scatter = mLevel.Scatter;
-    const uint16 room = FindCatalogRoom(mLevel.Document, mLevel.Id.View());
-    if (room == 0)
-    {
-        return Status::InvalidConfiguration;
-    }
     procedural::ScatterKeys keys;
     RandomKey cosmeticKey;
     RandomKey regrowKey;
-    if (procedural::TryMakeScatterKeys(worldSeed.Value,
-                                       {
-                                           .Placement = RANDOM_DOMAIN_SCATTER_PLACEMENT,
-                                           .Variant = RANDOM_DOMAIN_SCATTER_VARIANT,
-                                           .Transform = RANDOM_DOMAIN_SCATTER_TRANSFORM,
-                                       },
-                                       keys) != procedural::ScatterStatus::Success ||
+    if (procedural::TryMakeScatterKeys(worldSeed.Value, WORLD_SCATTER_DOMAINS, keys) !=
+            procedural::ScatterStatus::Success ||
         foundation::math::TryMakeRandomKey(worldSeed.Value, RANDOM_DOMAIN_SCATTER_COSMETIC, cosmeticKey) !=
             foundation::math::MathStatus::Success ||
         foundation::math::TryMakeRandomKey(worldSeed.Value, RANDOM_DOMAIN_SCATTER_REGROW, regrowKey) !=
@@ -224,70 +195,14 @@ Status GameWorld::prepareScatter(WorldSeed worldSeed, foundation::BorrowedView<c
     {
         return Status::InvalidConfiguration;
     }
-    procedural::ScatterRecipe recipe;
-    recipe.Room = room;
-    if (TryScaleToLattice(scatter.Minimum.X, scatter.UnitsPerMetre, recipe.Region.MinimumX) == false ||
-        TryScaleToLattice(scatter.Minimum.Y, scatter.UnitsPerMetre, recipe.Region.MinimumY) == false ||
-        TryScaleToLattice(scatter.Maximum.X, scatter.UnitsPerMetre, recipe.Region.MaximumX) == false ||
-        TryScaleToLattice(scatter.Maximum.Y, scatter.UnitsPerMetre, recipe.Region.MaximumY) == false)
+    // The Editor's staged generation session builds the same recipe (internal/room_scatter.h).
+    RoomScatterRecipe roomRecipe;
+    if (TryBuildRoomScatterRecipe(mLevel, roomRecipe) != Status::Success)
     {
         return Status::InvalidConfiguration;
     }
-    // Keep-outs: every authored spawn point and exit, then every collision box, each with the margin.
-    procedural::ScatterRectangle keepOuts[procedural::MAX_SCATTER_KEEP_OUTS] = {};
-    usize keepOutCount = 0;
-    for (usize index = 0; index < mLevel.EntityCount; ++index)
-    {
-        const Recipe& entity = mLevel.Entities[index];
-        const Vec2 half{entity.HalfExtent.X * entity.Scale.X, entity.HalfExtent.Y * entity.Scale.Y};
-        if (TryMakeKeepOut(entity.Position,
-                           half,
-                           scatter.KeepOutMargin,
-                           scatter.UnitsPerMetre,
-                           keepOuts[keepOutCount]) == false)
-        {
-            return Status::InvalidConfiguration;
-        }
-        ++keepOutCount;
-    }
-    for (usize index = 0; index < mLevel.CollisionCount; ++index)
-    {
-        const Box& box = mLevel.Collision[index];
-        if (TryMakeKeepOut(box.Center,
-                           box.HalfExtent,
-                           scatter.KeepOutMargin,
-                           scatter.UnitsPerMetre,
-                           keepOuts[keepOutCount]) == false)
-        {
-            return Status::InvalidConfiguration;
-        }
-        ++keepOutCount;
-    }
-    recipe.KeepOuts = BorrowedView<const procedural::ScatterRectangle>(keepOuts, keepOutCount);
-    procedural::ScatterVariant variants[MAX_ROOM_SCATTER_LAYERS][MAX_ROOM_SCATTER_VARIANTS] = {};
-    procedural::ScatterLayer layers[MAX_ROOM_SCATTER_LAYERS] = {};
-    for (usize index = 0; index < scatter.LayerCount; ++index)
-    {
-        const ScatterLayerRecipe& authored = scatter.Layers[index];
-        for (usize variant = 0; variant < authored.VariantCount; ++variant)
-        {
-            variants[index][variant].ExclusionRadius = authored.Variants[variant].ExclusionRadius;
-        }
-        layers[index] =
-        {
-            .Id = authored.Layer,
-            .CellSize = authored.CellSize,
-            .CandidatesPerCell = authored.Candidates,
-            .Variants = BorrowedView<const procedural::ScatterVariant>(variants[index], authored.VariantCount),
-            .MinimumScale = authored.MinimumScale,
-            .MaximumScale = authored.MaximumScale,
-        };
-    }
-    recipe.Layers = BorrowedView<const procedural::ScatterLayer>(layers, scatter.LayerCount);
-    if (procedural::ValidateScatterRecipe(recipe).Status != procedural::ScatterStatus::Success)
-    {
-        return Status::InvalidConfiguration;
-    }
+    const procedural::ScatterRecipe& recipe = roomRecipe.Recipe;
+    const uint16 room = recipe.Room;
     procedural::ScatterCellRange cells[MAX_ROOM_SCATTER_LAYERS] = {};
     usize candidateOffsets[MAX_ROOM_SCATTER_LAYERS + 1] = {};
     for (usize index = 0; index < scatter.LayerCount; ++index)

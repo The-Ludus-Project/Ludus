@@ -32,6 +32,8 @@ inline constexpr usize MAX_SCATTER_KEEP_OUTS = 64;
 inline constexpr usize MAX_SCATTER_VARIANTS = 64;
 /// Most candidates in one cell; candidate indices are stored in 8 bits.
 inline constexpr uint16 MAX_SCATTER_CANDIDATES_PER_CELL = 64;
+/// Most author locks in one layer.
+inline constexpr usize MAX_SCATTER_LAYER_LOCKS = 256;
 /// Cells searched in each direction for conflicts; follows from exclusion radius <= cell size.
 inline constexpr int32 SCATTER_NEIGHBOR_CELLS = 2;
 /// Bit position of the room in a packed address scope.
@@ -120,6 +122,23 @@ struct ScatterVariant final
     uint32 ExclusionRadius = 0;
 };
 
+/// @brief One accepted placement.
+struct ScatterPlacement final
+{
+    /// Persistent identity.
+    ScatterIdentity Identity;
+    /// X position in lattice units.
+    int32 LatticeX = 0;
+    /// Y position in lattice units.
+    int32 LatticeY = 0;
+    /// Index into the layer's variants.
+    uint32 Variant = 0;
+    /// Rotation in 1/65536 turns.
+    uint16 Rotation = 0;
+    /// Scale between the layer's minimum and maximum, inclusive.
+    uint16 Scale = 0;
+};
+
 /// @brief One independently thinned set of placements.
 struct ScatterLayer final
 {
@@ -135,6 +154,17 @@ struct ScatterLayer final
     uint16 MinimumScale = DEFAULT_SCATTER_SCALE;
     /// Largest scale, at least MinimumScale.
     uint16 MaximumScale = DEFAULT_SCATTER_SCALE;
+    /// @brief Placements the author locked, at most MAX_SCATTER_LAYER_LOCKS, in strictly canonical identity order
+    ///        (cell Y, cell X, candidate) and each in the recipe's room and this layer. Borrowed from the caller.
+    ///
+    /// A lock enters thinning in place of its candidate's sampled values. A locked candidate is generated with
+    /// exactly the lock's position, variant, rotation and scale when the lock is honourable: its identity names a
+    /// candidate of the layer, its position lies in the identity's cell, the region and outside every keep-out, and
+    /// its variant and scale are in the layer's range. An honourable lock outranks every unlocked candidate, so
+    /// thinning removes the unlocked candidates it conflicts with; two conflicting locks are ranked by the ordinary
+    /// priority. A lock that is not honourable, or that another lock outranks, removes its candidate, and
+    /// TryExplainScatterCandidate names why.
+    foundation::BorrowedView<const ScatterPlacement> Locks;
 };
 
 /// @brief Validated input for one room. The recipe borrows its arrays; the caller keeps them alive.
@@ -170,23 +200,6 @@ struct ScatterKeys final
     foundation::math::RandomKey Variant;
     /// Key for rotation and scale.
     foundation::math::RandomKey Transform;
-};
-
-/// @brief One accepted placement.
-struct ScatterPlacement final
-{
-    /// Persistent identity.
-    ScatterIdentity Identity;
-    /// X position in lattice units.
-    int32 LatticeX = 0;
-    /// Y position in lattice units.
-    int32 LatticeY = 0;
-    /// Index into the layer's variants.
-    uint32 Variant = 0;
-    /// Rotation in 1/65536 turns.
-    uint16 Rotation = 0;
-    /// Scale between the layer's minimum and maximum, inclusive.
-    uint16 Scale = 0;
 };
 
 /// @brief Result of a scatter operation.
@@ -233,6 +246,9 @@ enum class ScatterRecipeIssue : uint8
     ExclusionRadius,
     /// A layer's maximum scale is below its minimum; Index names it.
     ScaleRange,
+    /// A layer's lock view is invalid or too large, or a lock names another room or layer, repeats an identity or
+    /// breaks canonical order; Index names the layer.
+    Locks,
     /// A domain ID is outside the game range or repeats another scatter domain.
     Domain,
 };
@@ -279,8 +295,9 @@ TryGetScatterCells(const ScatterRecipe& recipe, usize layerIndex, ScatterCellRan
 
 /// @brief Generate the accepted placements of one layer in a range of cells.
 ///
-/// Placements are written in canonical order: cell Y, then cell X, then candidate, ascending. Acceptance depends
-/// only on placement identities, never on the range, so generating a layer's cells in several ranges and joining
+/// Placements are written in canonical order: cell Y, then cell X, then candidate, ascending. A locked placement
+/// carries its lock's values (ScatterLayer::Locks). Acceptance depends only on placement identities and the layer's
+/// locks, never on the range, so generating a layer's cells in several ranges and joining
 /// the results in canonical order equals one call over all of them. Neighbouring cells outside the range are
 /// evaluated but never written. Pure, allocation-free and safe to call concurrently on distinct storage.
 /// @param recipe A recipe that passes ValidateScatterRecipe.
@@ -303,7 +320,8 @@ enum class ScatterDecisionStage : uint8
 {
     /// The candidate was accepted.
     Accepted,
-    /// The identity does not name a candidate of the recipe: its candidate index or cell lies outside the layer.
+    /// The identity does not name a candidate of the recipe: its candidate index or cell lies outside the layer, or
+    /// the candidate's lock holds values outside the layer.
     Recipe,
     /// The candidate's position is outside the region or inside a keep-out.
     Eligibility,
@@ -324,7 +342,11 @@ enum class ScatterDecisionRule : uint8
     OutsideRegion,
     /// The position lies inside a keep-out; ScatterDecision::KeepOut names the first one.
     KeepOut,
-    /// A higher-priority eligible candidate conflicts; ScatterDecision::Outranking names the first one found.
+    /// The candidate is locked, and the lock's position lies outside the identity's cell or its variant or scale
+    /// outside the layer's range.
+    LockOutsideRecipe,
+    /// A higher-ranked eligible candidate conflicts; ScatterDecision::Outranking names the first one found. A locked
+    /// candidate outranks every unlocked one.
     Conflict,
     /// The identity's room has no scope in the compared input. Reported by generation comparisons, not the kernel.
     ScopeRemoved,
@@ -343,6 +365,8 @@ struct ScatterDecision final
     usize KeepOut = 0;
     /// The conflicting candidate for ScatterDecisionRule::Conflict, the lowest in canonical order; otherwise zero.
     ScatterIdentity Outranking;
+    /// Whether the candidate is locked: a lock in the layer names its identity.
+    bool IsLocked = false;
 
     /// Whether the candidate was accepted.
     [[nodiscard]] constexpr bool IsAccepted() const noexcept

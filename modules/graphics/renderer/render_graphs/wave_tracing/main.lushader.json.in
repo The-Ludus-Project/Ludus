@@ -190,7 +190,8 @@
     "programs": 16
   },
   "settings": [
-    {"id": "WT_WAVELENGTH_NANOMETERS", "label": "Scalar optical wavelength (nm)", "type": "Float32", "value": 550, "minimum": 1, "maximum": 1000000},
+    {"id": "WT_WAVELENGTH_NANOMETERS", "label": "Optical wavelength of 550 nm light (nm)", "type": "Float32", "value": 550, "minimum": 1, "maximum": 1000000},
+    {"id": "WT_SPECTRUM", "label": "Spectrum: 0 one wavelength, 1 visible spectrum", "type": "UInt32", "value": 1, "minimum": 0, "maximum": 1},
     {"id": "WT_PATH_VERTICES", "label": "Surface scattering vertices", "type": "UInt32", "value": 3, "minimum": 1, "maximum": 8},
     {"id": "WT_OPTICAL_CONNECTION", "label": "Optical connection: 0 angular spectrum, 1 UTD edges, 2 Fraunhofer edges", "type": "UInt32", "value": 0, "minimum": 0, "maximum": 2}
   ]

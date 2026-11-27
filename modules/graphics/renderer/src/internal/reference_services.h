@@ -127,6 +127,8 @@ constexpr uint32 HDR_UTD_CONNECTION_FLAG = 2048;
 /// LUHDR01 flags bit identifying ReferenceOpticalConnection::FraunhoferEdgeDiffraction; always set with
 /// HDR_OPTICAL_FLAG.
 constexpr uint32 HDR_FRAUNHOFER_CONNECTION_FLAG = 4096;
+/// LUHDR01 flags bit identifying ReferenceOpticalSpectrum::Visible; always set with HDR_OPTICAL_FLAG.
+constexpr uint32 HDR_VISIBLE_SPECTRUM_FLAG = 8192;
 constexpr usize HDR_SCENE_FINGERPRINT_OFFSET = 64;
 constexpr usize HDR_OPTICAL_WAVELENGTH_OFFSET = 92;
 
@@ -165,6 +167,10 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
     if (inoutJob.Description.OpticalConnection == ReferenceOpticalConnection::FraunhoferEdgeDiffraction)
     {
         uniform.Sampling[2] |= LUDUS_REFERENCE_FRAUNHOFER_CONNECTION_FLAG;
+    }
+    if (inoutJob.Description.OpticalSpectrum == ReferenceOpticalSpectrum::Visible)
+    {
+        uniform.Sampling[2] |= LUDUS_REFERENCE_VISIBLE_SPECTRUM_FLAG;
     }
     uniform.Options.Y = inoutJob.Description.OpticalWavelengthWorld;
     uniform.Tile[0] = inoutJob.DirectionalLightCount;
@@ -261,7 +267,8 @@ bool SameReferenceIntegral(const ReferenceJob& a,
         a.EnvironmentOrNull != Access::GetEnvironment(b.EnvironmentTextureOrNull) || d.TextureMip != b.TextureMip ||
         d.Seed != b.Seed || d.CenterRays != b.CenterRays || d.LightSampling != b.LightSampling ||
         d.MaterialProfile != b.MaterialProfile || d.OpticalWavelengthWorld != b.OpticalWavelengthWorld ||
-        d.OpticalConnection != b.OpticalConnection || a.Sky.Words != sky.Words || d.LightCount != lights.Count ||
+        d.OpticalConnection != b.OpticalConnection || d.OpticalSpectrum != b.OpticalSpectrum ||
+        a.Sky.Words != sky.Words || d.LightCount != lights.Count ||
         internal::IsSameReferenceMedium(a.Medium, b.MediumOrNull) == false)
     {
         return false;
@@ -307,6 +314,12 @@ Status ValidateReferenceDescription(const ReferenceCaptureDescription& d, LightS
          d.OpticalConnection != ReferenceOpticalConnection::UtdEdgeDiffraction &&
          d.OpticalConnection != ReferenceOpticalConnection::FraunhoferEdgeDiffraction) ||
         (d.OpticalConnection != ReferenceOpticalConnection::AngularSpectrum && d.OpticalWavelengthWorld == 0))
+    {
+        return Status::InvalidDescription;
+    }
+    if ((d.OpticalSpectrum != ReferenceOpticalSpectrum::Monochromatic &&
+         d.OpticalSpectrum != ReferenceOpticalSpectrum::Visible) ||
+        (d.OpticalSpectrum == ReferenceOpticalSpectrum::Visible && d.OpticalWavelengthWorld == 0))
     {
         return Status::InvalidDescription;
     }
@@ -839,6 +852,20 @@ Status Renderer::EnableReferenceRendering(const rhi::RasterShaderDescription& tr
                                           const rhi::RasterShaderDescription& reduce,
                                           const ReferenceRenderingOptions& options) noexcept
 {
+    return enableReferenceCompute(trace, nullptr, reduce, options);
+}
+Status Renderer::EnableReferenceRendering(const rhi::RasterShaderDescription& trace,
+                                          const rhi::RasterShaderDescription& opticalTrace,
+                                          const rhi::RasterShaderDescription& reduce,
+                                          const ReferenceRenderingOptions& options) noexcept
+{
+    return enableReferenceCompute(trace, &opticalTrace, reduce, options);
+}
+Status Renderer::enableReferenceCompute(const rhi::RasterShaderDescription& trace,
+                                        const rhi::RasterShaderDescription* opticalTraceOrNull,
+                                        const rhi::RasterShaderDescription& reduce,
+                                        const ReferenceRenderingOptions& options) noexcept
+{
     if (mState.Get() == nullptr || mState->Setup != Status::Ready)
     {
         return Status::NotReady;
@@ -887,7 +914,8 @@ Status Renderer::EnableReferenceRendering(const rhi::RasterShaderDescription& tr
         return Status::CapacityExceeded;
     }
     state->GpuBytes = TABLE_BYTES;
-    Status status = internal::CreateReferenceComputePipelines(mState->Device, trace, reduce, state->Compute);
+    Status status =
+        internal::CreateReferenceComputePipelines(mState->Device, trace, opticalTraceOrNull, reduce, state->Compute);
     if (status != Status::Ready)
     {
         return status;
@@ -959,6 +987,12 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     }
     if (description.OpticalWavelengthWorld > 0 && gpuSetup == false &&
         Reference->Options.Traversal == ReferenceTraversal::NativeQueries)
+    {
+        return Status::Unsupported;
+    }
+    // Only the optical kernel evaluates optical connections on the GPU; the geometric kernel compiles none.
+    if (description.OpticalWavelengthWorld > 0 && gpuSetup == false &&
+        Reference->Options.Traversal == ReferenceTraversal::GpuCompute && Reference->Compute.HasOpticalTrace == false)
     {
         return Status::Unsupported;
     }
@@ -2095,7 +2129,8 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
                                                                                              : 0U) |
         (job.Description.OpticalConnection == ReferenceOpticalConnection::FraunhoferEdgeDiffraction
              ? HDR_FRAUNHOFER_CONNECTION_FLAG
-             : 0U);
+             : 0U) |
+        (job.Description.OpticalSpectrum == ReferenceOpticalSpectrum::Visible ? HDR_VISIBLE_SPECTRUM_FLAG : 0U);
     Put32(output + 44, flags);
     Put64(output + 48, job.Description.Seed);
     Put64(output + 56, job.Info.Revision);

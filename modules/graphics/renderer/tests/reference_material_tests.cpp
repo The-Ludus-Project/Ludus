@@ -554,14 +554,17 @@ TEST_CASE("Reference dielectrics admit one real index and a smooth interface onl
     REQUIRE(rr::SampleReferenceBsdf(glass, normalWorld, normalWorld, {0.5F, 0, 0}, sampled) ==
             rhi::RasterStatus::Ready);
     const rr::ReferenceBsdfSample previous = sampled;
-    rr::ReferenceBsdf dispersive = glass;
-    dispersive.Scattering.Eta[2] = 1.52F;
+    // Channel-wise indices are not a declared dispersion; K[1..2] would be absorption, and K[0] is an Abbe number.
+    rr::ReferenceBsdf unequalChannels = glass;
+    unequalChannels.Scattering.Eta[2] = 1.52F;
     rr::ReferenceBsdf absorbing = glass;
-    absorbing.Scattering.K[0] = 0.1F;
+    absorbing.Scattering.K[1] = 0.1F;
+    rr::ReferenceBsdf belowAbbeRange = glass;
+    belowAbbeRange.Scattering.K[0] = format::MIN_DIELECTRIC_ABBE_NUMBER * 0.5F;
     rr::ReferenceBsdf rough = glass;
     rough.Scattering.AlphaU = format::LUDUS_SMOOTH_INTERFACE_ALPHA;
     rough.Scattering.AlphaV = format::LUDUS_SMOOTH_INTERFACE_ALPHA;
-    for (const rr::ReferenceBsdf& rejected : {dispersive, absorbing, rough})
+    for (const rr::ReferenceBsdf& rejected : {unequalChannels, absorbing, belowAbbeRange, rough})
     {
         CHECK(rr::SampleReferenceBsdf(rejected, normalWorld, normalWorld, {0.9F, 0, 0}, sampled) ==
               rhi::RasterStatus::InvalidDescription);
@@ -573,6 +576,75 @@ TEST_CASE("Reference dielectrics admit one real index and a smooth interface onl
             rhi::RasterStatus::Ready);
     CHECK(sampled.Direction.X == Catch::Approx(-0.6F));
     CHECK(sampled.Direction.Z == Catch::Approx(-0.8F));
+}
+
+TEST_CASE("A dispersive dielectric refracts each wavelength by Snell's law at its own index",
+          "[renderer][rt1][dielectric][dispersion]")
+{
+    namespace format = ludus::content::scene_format;
+    const math::Vector3 normalWorld{0, 0, 1};
+    // pbrt-v4's glass-F11 as the importers declare it.
+    constexpr format::DielectricDispersion FLINT{ .IndexD = 1.784743F, .AbbeNumber = 25.7F };
+    rr::ReferenceBsdf glass;
+    glass.Scattering = format::MakeDielectricScattering(format::MaterialModel::Dielectric, FLINT);
+    const float32 incidentSine = 0.6F;
+    const math::Vector3 viewWorld{incidentSine, 0, 0.8F};
+    // The index of each wavelength in float64 from the Cauchy coefficients that n_d and V_d determine, solved here
+    // from n_F - n_C = (n_d - 1) / V_d instead of evaluated through ComputeDielectricIndex. Zero is RGB transport.
+    const float64 lineF = static_cast<float64>(format::LUDUS_DIELECTRIC_F_LINE_NANOMETERS);
+    const float64 lineD = static_cast<float64>(format::LUDUS_DIELECTRIC_D_LINE_NANOMETERS);
+    const float64 lineC = static_cast<float64>(format::LUDUS_DIELECTRIC_C_LINE_NANOMETERS);
+    const float64 indexD = static_cast<float64>(FLINT.IndexD);
+    const float64 cauchyB =
+        (indexD - 1) / static_cast<float64>(FLINT.AbbeNumber) / (1 / (lineF * lineF) - 1 / (lineC * lineC));
+    const float64 cauchyA = indexD - cauchyB / (lineD * lineD);
+    float64 previousSine = 0;
+    for (const float32 wavelength : {0.0F, 780.0F, 656.2725F, 587.5618F, 486.1327F, 380.0F})
+    {
+        CAPTURE(wavelength);
+        glass.WavelengthNanometers = wavelength;
+        const float64 lambda = static_cast<float64>(wavelength);
+        const float64 eta = wavelength == 0 ? indexD : cauchyA + cauchyB / (lambda * lambda);
+        rr::ReferenceBsdfSample transmitted;
+        // 0.999 exceeds every Fresnel reflectance at this incidence, so each sample refracts.
+        REQUIRE(rr::SampleReferenceBsdf(glass, normalWorld, viewWorld, {0.999F, 0.5F, 0.5F}, transmitted) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(transmitted.Accepted == true);
+        const float64 transmittedSine = static_cast<float64>(incidentSine) / eta;
+        CHECK(transmitted.Direction.X == Catch::Approx(-transmittedSine).margin(1e-6));
+        CHECK(transmitted.Direction.Z ==
+              Catch::Approx(-math::Sqrt(1 - transmittedSine * transmittedSine)).margin(1e-6));
+        CHECK(transmitted.Weight.Y == Catch::Approx(1 / (eta * eta)).epsilon(1e-5));
+        // Normal dispersion: shorter wavelengths bend more, toward the normal.
+        if (wavelength > 0)
+        {
+            const float64 sine = static_cast<float64>(-transmitted.Direction.X);
+            CHECK((previousSine == 0 || sine < previousSine) == true);
+            previousSine = sine;
+        }
+    }
+    // RGB transport at zero wavelength and the d line both refract at n_d.
+    rr::ReferenceBsdfSample atRgb;
+    rr::ReferenceBsdfSample atLineD;
+    glass.WavelengthNanometers = 0;
+    REQUIRE(rr::SampleReferenceBsdf(glass, normalWorld, viewWorld, {0.999F, 0.5F, 0.5F}, atRgb) ==
+            rhi::RasterStatus::Ready);
+    glass.WavelengthNanometers = format::LUDUS_DIELECTRIC_D_LINE_NANOMETERS;
+    REQUIRE(rr::SampleReferenceBsdf(glass, normalWorld, viewWorld, {0.999F, 0.5F, 0.5F}, atLineD) ==
+            rhi::RasterStatus::Ready);
+    CHECK(atRgb.Direction.X == Catch::Approx(atLineD.Direction.X).margin(1e-6));
+    // A nondispersive index ignores the wavelength.
+    rr::ReferenceBsdf plain = glass;
+    plain.Scattering.K[0] = 0;
+    rr::ReferenceBsdfSample atBlue;
+    plain.WavelengthNanometers = 400;
+    REQUIRE(rr::SampleReferenceBsdf(plain, normalWorld, viewWorld, {0.999F, 0.5F, 0.5F}, atBlue) ==
+            rhi::RasterStatus::Ready);
+    plain.WavelengthNanometers = 0;
+    rr::ReferenceBsdfSample atNone;
+    REQUIRE(rr::SampleReferenceBsdf(plain, normalWorld, viewWorld, {0.999F, 0.5F, 0.5F}, atNone) ==
+            rhi::RasterStatus::Ready);
+    CHECK(atBlue.Direction == atNone.Direction);
 }
 
 TEST_CASE("Diffuse conductor Mix samples the full weighted directional density", "[renderer][rt1][materials][mix]")
@@ -1078,4 +1150,248 @@ TEST_CASE("Closure programs reject a missing program and stay finite", "[rendere
     REQUIRE(rr::SampleReferenceBsdf(material, normalWorld, viewWorld, {0.5F, 0.5F, 0.5F}, sample) ==
             rhi::RasterStatus::Ready);
     CHECK(sample.Accepted == false);
+}
+
+namespace
+{
+/// The published A coefficient, the reflectance at normal view for unit albedo.
+float64 GetPublishedOrenNayarA(float64 sigma)
+{
+    const math::Vector3 normalWorld{0, 0, 1};
+    return ludus::renderer_tests::EvaluatePublishedOrenNayar(sigma, normalWorld, normalWorld) * math::kPi;
+}
+rr::ReferenceBsdf MakeOrenNayarBsdf(const MaterialProgram& program, math::Vector3 albedo)
+{
+    rr::ReferenceBsdf material;
+    material.Scattering.Model = program_format::MaterialModel::Program;
+    material.ProgramOrNull = &program;
+    material.BaseColor = albedo;
+    return material;
+}
+} // namespace
+
+TEST_CASE("An Oren-Nayar closure lobe matches the published qualitative model and its Lambertian limit",
+          "[renderer][rt1][materials][program][oren-nayar]")
+{
+    namespace fixtures = ludus::renderer_tests;
+    const math::Vector3 normalWorld{0, 0, 1};
+    const math::Vector3 albedo{0.9F, 0.6F, 0.3F};
+    constexpr float64 RELATIVE_TOLERANCE = 2e-5;
+    constexpr usize VIEW_COUNT = 3;
+    constexpr usize LIGHT_COUNT = 9;
+    constexpr float32 VIEW_AZIMUTH = 0.4F;
+    const StaticArray<math::Vector3, VIEW_COUNT> viewsWorld{{
+        MakeHemisphereDirection(1, 0),
+        MakeHemisphereDirection(0.7F, VIEW_AZIMUTH),
+        MakeHemisphereDirection(0.2F, VIEW_AZIMUTH),
+    }};
+    // Light directions at three inclinations, in the view's plane (backscatter), across it, and opposite it.
+    StaticArray<math::Vector3, LIGHT_COUNT> lightsWorld{};
+    usize lightIndex = 0;
+    for (const float32 lightCosine : {0.95F, 0.5F, 0.1F})
+    {
+        for (const float32 relativeAzimuth : {0.0F, 1.5F, 3.5F})
+        {
+            lightsWorld[lightIndex] = MakeHemisphereDirection(lightCosine, VIEW_AZIMUTH + relativeAzimuth);
+            ++lightIndex;
+        }
+    }
+    for (const float32 sigma : {0.0F, 0.2F, fixtures::OREN_NAYAR_SIGMA_RADIANS, 1.0F})
+    {
+        CAPTURE(sigma);
+        const MaterialProgram program = fixtures::MakeOrenNayarProgram(sigma);
+        REQUIRE(program_format::IsMaterialProgramValid(program) == true);
+        const rr::ReferenceBsdf material = MakeOrenNayarBsdf(program, albedo);
+        CHECK(program_format::SupportsFixedDimensionReflection(material.Scattering, program) == true);
+        for (const math::Vector3& viewWorld : viewsWorld)
+        {
+            for (const math::Vector3& lightWorld : lightsWorld)
+            {
+                CAPTURE(viewWorld.Z, lightWorld.X, lightWorld.Y, lightWorld.Z);
+                rr::ReferenceBsdfEvaluation evaluated;
+                REQUIRE(rr::EvaluateReferenceBsdf(material, normalWorld, viewWorld, lightWorld, evaluated) ==
+                        rhi::RasterStatus::Ready);
+                const float64 expected = ludus::renderer_tests::EvaluatePublishedOrenNayar(static_cast<float64>(sigma),
+                                                                                           viewWorld,
+                                                                                           lightWorld);
+                for (const usize channel : {usize{0}, usize{1}, usize{2}})
+                {
+                    const float64 reflectance = static_cast<float64>(channel == 0   ? albedo.X
+                                                                     : channel == 1 ? albedo.Y
+                                                                                    : albedo.Z);
+                    const float64 value = static_cast<float64>(channel == 0   ? evaluated.Value.X
+                                                               : channel == 1 ? evaluated.Value.Y
+                                                                              : evaluated.Value.Z);
+                    CHECK(math::Abs(value - reflectance * expected) <= RELATIVE_TOLERANCE * reflectance * expected);
+                }
+                CHECK(evaluated.Pdf == Catch::Approx(lightWorld.Z / math::kPiF).epsilon(1e-6));
+                // Reciprocity: the model is symmetric in its two directions.
+                rr::ReferenceBsdfEvaluation reversed;
+                REQUIRE(rr::EvaluateReferenceBsdf(material, normalWorld, lightWorld, viewWorld, reversed) ==
+                        rhi::RasterStatus::Ready);
+                CHECK(math::Distance(reversed.Value, evaluated.Value) <= 1e-6F * math::Length(evaluated.Value));
+            }
+        }
+    }
+    // At zero roughness the lobe is the Lambertian control: A = 1 and B = 0.
+    const MaterialProgram smooth = fixtures::MakeOrenNayarProgram(0);
+    const rr::ReferenceBsdf limit = MakeOrenNayarBsdf(smooth, albedo);
+    rr::ReferenceBsdf lambert;
+    lambert.Scattering.Model = program_format::MaterialModel::Diffuse;
+    lambert.BaseColor = albedo;
+    // Sigma outside the admitted range clamps: below zero to the Lambertian limit and above it to one radian.
+    const MaterialProgram negative = fixtures::MakeOrenNayarProgram(-0.3F);
+    const MaterialProgram widest = fixtures::MakeOrenNayarProgram(program_format::MAX_OREN_NAYAR_SIGMA_RADIANS);
+    const MaterialProgram beyond = fixtures::MakeOrenNayarProgram(2);
+    const rr::ReferenceBsdf negativeBsdf = MakeOrenNayarBsdf(negative, albedo);
+    const rr::ReferenceBsdf widestBsdf = MakeOrenNayarBsdf(widest, albedo);
+    const rr::ReferenceBsdf beyondBsdf = MakeOrenNayarBsdf(beyond, albedo);
+    for (const math::Vector3& viewWorld : viewsWorld)
+    {
+        for (const math::Vector3& lightWorld : lightsWorld)
+        {
+            rr::ReferenceBsdfEvaluation program;
+            rr::ReferenceBsdfEvaluation typed;
+            rr::ReferenceBsdfEvaluation clampedLow;
+            rr::ReferenceBsdfEvaluation wide;
+            rr::ReferenceBsdfEvaluation clampedHigh;
+            REQUIRE(rr::EvaluateReferenceBsdf(limit, normalWorld, viewWorld, lightWorld, program) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(rr::EvaluateReferenceBsdf(lambert, normalWorld, viewWorld, lightWorld, typed) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(rr::EvaluateReferenceBsdf(negativeBsdf, normalWorld, viewWorld, lightWorld, clampedLow) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(rr::EvaluateReferenceBsdf(widestBsdf, normalWorld, viewWorld, lightWorld, wide) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(rr::EvaluateReferenceBsdf(beyondBsdf, normalWorld, viewWorld, lightWorld, clampedHigh) ==
+                    rhi::RasterStatus::Ready);
+            CHECK(math::Distance(program.Value, typed.Value) <= 1e-6F * math::Length(typed.Value));
+            CHECK(program.Pdf == Catch::Approx(typed.Pdf).epsilon(1e-6));
+            CHECK(clampedLow.Value == program.Value);
+            CHECK(clampedHigh.Value == wide.Value);
+        }
+    }
+}
+
+TEST_CASE("Oren-Nayar retroreflection depends on the relative azimuth at fixed inclinations",
+          "[renderer][rt1][materials][program][oren-nayar]")
+{
+    namespace fixtures = ludus::renderer_tests;
+    const math::Vector3 normalWorld{0, 0, 1};
+    const MaterialProgram program = fixtures::MakeOrenNayarProgram(fixtures::OREN_NAYAR_SIGMA_RADIANS);
+    const rr::ReferenceBsdf material = MakeOrenNayarBsdf(program, {1, 1, 1});
+    // An oblique incident direction 60 degrees from the normal, and two outgoing directions 45 degrees from it.
+    const float64 incident = math::kPi / 3;
+    const float64 outgoing = math::kPi / 4;
+    const math::Vector3 lightWorld = MakeHemisphereDirection(static_cast<float32>(math::Cos(incident)), 0);
+    const float64 sigma = static_cast<float64>(fixtures::OREN_NAYAR_SIGMA_RADIANS);
+    const float64 a = GetPublishedOrenNayarA(sigma);
+    const math::Vector3 backWorld = MakeHemisphereDirection(static_cast<float32>(math::Cos(outgoing)), 0);
+    const math::Vector3 acrossWorld =
+        MakeHemisphereDirection(static_cast<float32>(math::Cos(outgoing)), math::kPiF / 2);
+    rr::ReferenceBsdfEvaluation back;
+    rr::ReferenceBsdfEvaluation across;
+    REQUIRE(rr::EvaluateReferenceBsdf(material, normalWorld, backWorld, lightWorld, back) == rhi::RasterStatus::Ready);
+    REQUIRE(rr::EvaluateReferenceBsdf(material, normalWorld, acrossWorld, lightWorld, across) ==
+            rhi::RasterStatus::Ready);
+    // Same inclinations: in the light's plane, sin(alpha) tan(beta) = sin(60°) tan(45°) adds the B term; across the
+    // plane the cosine of the relative azimuth is zero and only A remains.
+    const float64 sigmaSquared = sigma * sigma;
+    const float64 b = 0.45 * sigmaSquared / (sigmaSquared + 0.09);
+    const float64 expectedBack = (a + b * math::Sin(incident) * math::Sin(outgoing) / math::Cos(outgoing)) / math::kPi;
+    CHECK(static_cast<float64>(back.Value.X) == Catch::Approx(expectedBack).epsilon(1e-5));
+    CHECK(static_cast<float64>(back.Value.X) ==
+          Catch::Approx(ludus::renderer_tests::EvaluatePublishedOrenNayar(sigma, backWorld, lightWorld)).epsilon(1e-5));
+    CHECK(static_cast<float64>(across.Value.X) == Catch::Approx(a / math::kPi).epsilon(1e-5));
+    CHECK(back.Value.X > across.Value.X * 1.2F);
+    // The density depends only on the incident cosine, so both directions share it.
+    CHECK(back.Pdf == across.Pdf);
+    // The Lambertian control has no azimuthal dependence at the same inclinations.
+    const MaterialProgram smooth = fixtures::MakeOrenNayarProgram(0);
+    const rr::ReferenceBsdf lambert = MakeOrenNayarBsdf(smooth, {1, 1, 1});
+    REQUIRE(rr::EvaluateReferenceBsdf(lambert, normalWorld, backWorld, lightWorld, back) == rhi::RasterStatus::Ready);
+    REQUIRE(rr::EvaluateReferenceBsdf(lambert, normalWorld, acrossWorld, lightWorld, across) ==
+            rhi::RasterStatus::Ready);
+    CHECK(back.Value.X == Catch::Approx(across.Value.X).epsilon(1e-6));
+}
+
+TEST_CASE("Oren-Nayar reflectance and its declared cosine density over the admitted roughness range",
+          "[renderer][rt1][materials][program][oren-nayar]")
+{
+    const math::Vector3 normalWorld{0, 0, 1};
+    constexpr usize SIDE = 96;
+    // The published qualitative model returns more than the albedo near grazing view for small sigma: up to 1.5% at
+    // sigma near 0.2 radians as the view approaches the horizon. It stays at most the albedo up to a 60 degree view.
+    constexpr float64 GRAZING_EXCESS = 0.016;
+    for (const float32 sigma : {0.0F, 0.1F, 0.2F, 0.35F, 0.5F, 0.75F, 1.0F})
+    {
+        CAPTURE(sigma);
+        const MaterialProgram program = ludus::renderer_tests::MakeOrenNayarProgram(sigma);
+        const rr::ReferenceBsdf material = MakeOrenNayarBsdf(program, {1, 1, 1});
+        for (const float32 viewCosine : {1.0F, 0.5F, 0.1F})
+        {
+            CAPTURE(viewCosine);
+            const math::Vector3 viewWorld = MakeHemisphereDirection(viewCosine, 0.3F);
+            float64 energy = 0;
+            float64 published = 0;
+            float64 density = 0;
+            float64 sampledEnergy = 0;
+            usize accepted = 0;
+            for (usize y = 0; y < SIDE; ++y)
+            {
+                const float32 cosine = (static_cast<float32>(y) + 0.5F) / static_cast<float32>(SIDE);
+                for (usize x = 0; x < SIDE; ++x)
+                {
+                    const float32 azimuthSample = (static_cast<float32>(x) + 0.5F) / static_cast<float32>(SIDE);
+                    const math::Vector3 lightWorld = MakeHemisphereDirection(cosine, math::kTauF * azimuthSample);
+                    rr::ReferenceBsdfEvaluation evaluated;
+                    REQUIRE(rr::EvaluateReferenceBsdf(material, normalWorld, viewWorld, lightWorld, evaluated) ==
+                            rhi::RasterStatus::Ready);
+                    energy += static_cast<float64>(evaluated.Value.X * cosine) * math::kTau;
+                    published += ludus::renderer_tests::EvaluatePublishedOrenNayar(static_cast<float64>(sigma),
+                                                                                   viewWorld,
+                                                                                   lightWorld) *
+                                 static_cast<float64>(cosine) * math::kTau;
+                    density += static_cast<float64>(evaluated.Pdf) * math::kTau;
+                    // The declared proposal is the cosine-weighted hemisphere; every proposal is accepted.
+                    rr::ReferenceBsdfSample sampled;
+                    REQUIRE(rr::SampleReferenceBsdf(material,
+                                                    normalWorld,
+                                                    viewWorld,
+                                                    {0.5F, cosine, azimuthSample},
+                                                    sampled) == rhi::RasterStatus::Ready);
+                    REQUIRE(sampled.Accepted == true);
+                    ++accepted;
+                    rr::ReferenceBsdfEvaluation matched;
+                    REQUIRE(rr::EvaluateReferenceBsdf(material, normalWorld, viewWorld, sampled.Direction, matched) ==
+                            rhi::RasterStatus::Ready);
+                    CHECK(sampled.Evaluation.Pdf == matched.Pdf);
+                    CHECK(sampled.MisPdf == matched.Pdf);
+                    CHECK(matched.Pdf == Catch::Approx(sampled.Direction.Z / math::kPiF).epsilon(1e-5));
+                    CHECK(math::Distance(sampled.Weight, matched.Value * (sampled.Direction.Z / matched.Pdf)) <=
+                          1e-5F * math::Length(sampled.Weight));
+                    sampledEnergy += static_cast<float64>(sampled.Weight.X);
+                }
+            }
+            const float64 cellCount = static_cast<float64>(SIDE * SIDE);
+            energy /= cellCount;
+            published /= cellCount;
+            density /= cellCount;
+            sampledEnergy /= static_cast<float64>(accepted);
+            CAPTURE(energy, published, sampledEnergy);
+            // The same quadrature of the renderer's vector form and of the published angular form.
+            CHECK(math::Abs(energy - published) <= 1e-5);
+            // The cosine density integrates to one; its sampled reflectance agrees with the integrated one.
+            CHECK(math::Abs(density - 1) <= 1e-3);
+            CHECK(math::Abs(sampledEnergy - energy) <= 0.01);
+            if (viewCosine == 1)
+            {
+                // At normal view beta is zero, so the reflectance is A.
+                CHECK(math::Abs(energy - GetPublishedOrenNayarA(static_cast<float64>(sigma))) <= 1e-3);
+            }
+            // The Lambertian limit sums to one up to float32 rounding.
+            constexpr float64 ROUNDING = 1e-6;
+            CHECK(energy <= (viewCosine >= 0.5F ? 1 + ROUNDING : 1 + GRAZING_EXCESS));
+        }
+    }
 }

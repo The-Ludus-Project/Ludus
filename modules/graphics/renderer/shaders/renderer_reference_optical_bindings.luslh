@@ -1,0 +1,67 @@
+// Generated from renderer_reference_optical_bindings.luslh.in by cmake/shaders/generate_luslh.py from Slang reflection;
+// edit the template, not this file.
+// LUSL declarations of the optical connections of renderer_reference_optical.lusl (renderer_reference_optical_bindings
+// .slang), for renderer_reference_transport.luslh (LUSL L5d wave 2). The block names the optical bindings file, which
+// includes renderer_reference_bindings.slang and wave_reference_scene.slang.
+#pragma once
+#include "renderer_reference_bindings.luslh"
+
+extern slang "renderer_reference_optical_bindings.slang"
+{
+    /// A relay chain, which the kernel passes to the wave queries unopened; its array fields have no named LUSL size.
+    struct WaveRelay;
+    enum class WaveQuery : uint32
+    {
+        Ready = 0,
+        Invalid = 1,
+        Capacity = 2,
+        PropagationCapacity = 3,
+        EscapeCapacity = 4,
+    };
+    enum class WaveConnectionOperator : uint32
+    {
+        AngularSpectrum = 0,
+        UtdEdgeDiffraction = 1,
+        FraunhoferEdgeDiffraction = 2,
+    };
+    struct SceneContext
+    {
+        uint32 Reserved;
+    };
+    float32 SampleWavelengthNanometers(in float32 randomValue, in uint32 heroIndex);
+    WaveRelay BeginWaveRelay(in float32x3 originWorld);
+    void AppendWaveRelayEvent(inout WaveRelay inoutRelay,
+                              in bool isSolid,
+                              in float32 eta,
+                              in bool isViewerInside,
+                              in bool isReflected,
+                              in float32x3 nextOriginWorld);
+    WaveQuery EvaluateWaveRelay(in SceneContext scene,
+                                in WaveRelay relay,
+                                in float32x3 sourceWorld,
+                                in float32 wavelengthWorld,
+                                in WaveConnectionOperator connectionOperator,
+                                out bool outIsAdmitted,
+                                inout float32x2 inoutField);
+    WaveQuery EvaluateUtdConnectionToReceiver(in SceneContext scene,
+                                              in float32x3 sourceWorld,
+                                              in float32x3 receiverWorld,
+                                              in float32x3 directionWorld,
+                                              in float32 distanceWorld,
+                                              in float32 wavelengthWorld,
+                                              inout float32x2 inoutField);
+    WaveQuery EvaluateFraunhoferConnectionToReceiver(in SceneContext scene,
+                                                     in float32x3 sourceWorld,
+                                                     in float32x3 receiverWorld,
+                                                     in float32x3 directionWorld,
+                                                     in float32 distanceWorld,
+                                                     in float32 wavelengthWorld,
+                                                     inout float32x2 inoutField);
+    WaveQuery EvaluateWaveConnectionToReceiver(in SceneContext scene,
+                                               in float32x3 sourceWorld,
+                                               in float32x3 receiverWorld,
+                                               in float32x3 directionWorld,
+                                               in float32 distanceWorld,
+                                               in float32 wavelengthWorld,
+                                               inout float32x2 inoutField);
+};

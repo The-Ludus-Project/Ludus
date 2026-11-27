@@ -35,7 +35,7 @@ namespace filesystem = foundation::filesystem;
 namespace time = foundation::time;
 
 /// Version of the manifest record written beside each completed capture.
-constexpr uint64 MANIFEST_VERSION = 1;
+constexpr uint64 MANIFEST_VERSION = 2;
 /// Bound on a serialized manifest, in bytes; all fields are bounded well below it.
 constexpr usize MANIFEST_BYTES = 4096;
 /// Artifact stem capacity, in bytes: "ludus-capture-" and two 20-digit decimal identities.
@@ -382,6 +382,7 @@ void PublishManifest() noexcept
     writer.WriteNumber({"capturedFrame"}, GetCapture().Record.Report.CapturedFrame);
     writer.WriteNumber({"skippedFrames"}, GetCapture().Record.Report.SkippedFrames);
     writer.WriteText({"artifact"}, GetText(GetCapture().Record.Report.Artifact));
+    writer.WriteText({"shaderSource"}, GetText(GetCapture().Record.Report.ShaderSource));
     filesystem::WriteDirectory directory;
     filesystem::PublicationResult published;
     if (writer.Finish(bytes) == true && MakeManifestName(GetCapture().Record.Stem.GetView(), manifestName) == true &&
@@ -510,6 +511,7 @@ void ReportGraphicsCaptureFinalization(GraphicsCaptureIdentity identity,
     }
     CopyText(finalization.ToolVersionOrNull, GetCapture().Record.Report.ToolVersion);
     CopyText(finalization.DiagnosticOrNull, GetCapture().Record.Report.Diagnostic);
+    CopyText(finalization.ShaderSourceOrNull, GetCapture().Record.Report.ShaderSource);
     const std::string_view artifact =
         finalization.ArtifactOrNull == nullptr ? std::string_view{} : std::string_view{finalization.ArtifactOrNull};
     const bool isArtifactNamed = IsArtifactName(artifact, GetCapture().Record.Stem.GetView());

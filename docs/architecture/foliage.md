@@ -207,9 +207,58 @@ The tests in `modules/content/foliage_cook/tests` check the following:
 - Holes, slope, wetness, masks and exclusion between strata.
 - Dormant suppressions, signed-limit cells, dirty recooks of terrain and
   suppression edits, and render-only edits.
+- Placement gaps against a maximal fill, described below.
 
 The golden cook in `foliage_cook_golden.h` is shared with the WebAssembly math
 probe, so native and browser builds must produce the same pinned bytes.
+
+#### Placement gaps
+
+Thinning removes a candidate whenever a higher-priority conflict exists, even
+if that conflict is itself removed. The cook therefore keeps the minimum
+spacing but leaves admissible area between placements. The tests in
+`foliage_gap_tests.cpp` measure the two properties separately and compare the
+cook with a maximal Poisson-disk fill:
+
+- **Fixture.** The page-cook fixture is flat, with one layer, one species, a
+  64-unit radius (minimum distance d = 128 lattice units, 0.25 m) and density
+  at capacity. A band of hole cells forms a keep-out beside a valid strip one
+  terrain cell (2d) wide. The pages are 2,048 units across, and the seam zone
+  lies within d of a page boundary.
+- **Control.** Hierarchical dart throwing (Cline, White and Egbert, RT 2007)
+  fills the same eligible roots until none is admissible, the coverage
+  objective of Dunbar and Humphreys (SIGGRAPH 2006). A cell is discarded only when one disk or the
+  keep-out covers all of it. The quadtree starts at 64-unit cells and ends at
+  single roots, which are decided exactly. The smallest explored cell is
+  therefore one root and the termination tolerance is zero.
+- **Probe.** An independent probe checks every eligible root with exact
+  integer distances. It reports nearest-neighbour spacing and the roots that
+  no placement excludes, separately for the interior, the seam and the narrow
+  strip. It confirms that the control leaves no admissible root.
+
+The quick test checks spacing, eligibility, the control's maximality and the
+cook's gaps with sparse probes. The hidden `[.benchmark][gap]` case probes
+every root and reports the following. Times are from a release build on an
+Apple M5 under load.
+
+| Point set | Interior placements | Seam placements | Strip placements | Admissible area left (interior, seam, strip) | Largest empty distance | Time |
+| --- | --- | --- | --- | --- | --- | --- |
+| Cook, cell 128, 1 slot | 928 | 269 | 45 | 15.8 %, 17.9 %, 16.2 % | 1.97 d | 1.9 ms |
+| Cook, cell 64, 1 slot | 830 | 249 | 41 | 20.7 %, 21.1 %, 21.2 % | 2.51 d | 4.3 ms |
+| Dart throwing control | 1,771 | 522 | 86 | 0 % in every zone | below d | 7.8–11.9 ms |
+
+The cook keeps 47–52 % of the maximal fill's count. Its nearest-neighbour
+distances spread across [d, 2d), while 97 % of the control's lie in
+[d, 1.25 d). The seam and the narrow strip stay within about two percentage
+points of the interior, so page halos and keep-outs add no measurable gaps of
+their own. The finer lattice offers four times the candidates but places
+fewer, consistent with more candidates being removed by conflicts that are
+themselves removed. The control threw 24,036 darts and discarded 75,722
+covered cells. It held at most 13,184 active cells and 520,448 bytes.
+At about 10 ms, the control does not limit the study, so the conditional
+raster conflict-culling trial (PixelPie, HPG 2013) is not needed. These gaps are a property of the declared
+placement rule. Shuffled and isolated cooks of the fixture still produce
+identical pages, and the golden bytes remain the product contract.
 
 ## Cooked pages and publication
 
@@ -227,8 +276,8 @@ from the decoded records and evolve its layout independently of the disk format.
 limits in `lufol.h` and `limits.h`. `Ludus::FoliagePages` encodes page sets
 for the cooker and validates and reads them for runtime consumers. Both
 targets depend only on Foundation modules. The [terrain cook](#terrain-cook)
-produces these records. Publication that keeps the previous generation after a
-failed replacement is later F0 and F1 work.
+produces these records. [Page set publication](#page-set-publication) keeps
+the previous generation after a failed replacement.
 
 A page set is one terrain domain's pages, tightly packed in little-endian
 order:
@@ -276,6 +325,36 @@ owners.
 The golden fixture in `modules/content/foliage_pages/tests` pins the encoded
 bytes. The WebAssembly math probe encodes and reads the same fixture, so
 native and browser builds must produce identical bytes.
+
+### Page set publication
+
+`FoliagePageSetPublication` (`foliage_page_publication.h` in
+`Ludus::FoliagePages`) owns the accepted page set of one terrain domain. It
+replaces that page set only with a validated candidate:
+
+1. `TryStage` reads the caller's bytes against the expected domain and terrain
+   revision and the publication's `FoliagePageLimits`. On success the
+   candidate takes the bytes and becomes **Ready**. It records the accepted
+   revision it was staged against. On failure it becomes **Failed** with the
+   read diagnostic, and the caller keeps the bytes to inspect.
+2. `TryPublish` accepts only a Ready candidate that this publication staged
+   against the current accepted revision. It then exchanges storage with the
+   candidate and advances the revision. Of several candidates staged from one
+   revision, only the first one published is accepted. Later ones report
+   `StaleCandidate`, so asynchronous cooks can finish in any order.
+3. After a successful publication, the candidate becomes **Retired** and holds
+   the previous page set. Views of the previous generation stay valid until
+   the caller clears that candidate. This lets consumers finish with them.
+
+Staging, failures and cleared candidates never change the accepted page set,
+its bytes or its views. Staging and publication neither allocate nor copy
+page bytes. The publication is single-owner. Readers may share the accepted
+view while no method runs. The pages tests cover malformed, over-budget and
+mismatched replacements, stale and foreign candidates, and retirement. The
+cook tests publish a dirty-halo recook only after a damaged copy and a copy
+bound to another terrain revision fail. The installed SDK consumer stages,
+publishes and rejects a corrupt replacement. F1 owns drawable uploads and GPU
+retirement for each accepted generation.
 
 Key reuse by the generator and format versions, seed, domain, layer, page
 address, rule and placement-affecting species revisions, and terrain and mask

@@ -330,6 +330,7 @@ scale the lobe:
 | `"diffuse"` | none | Lambertian reflection. |
 | `"conductor"` | `roughness`, `eta`, `k` | Isotropic GGX conductor. Alpha is the square of the roughness operand. `eta` holds three positive and `k` three nonnegative channels, each at most 10000. |
 | `"cosine_power"` | `roughness`, `power` | The [project BRDF](#project-brdf-program) cosine-power term with exponent `(1 - roughness) * power`, power in [0, 32]. |
+| `"oren_nayar"` | `roughness` | Qualitative Oren–Nayar rough diffuse reflection. The `roughness` operand is σ, the standard deviation of the facet slope angle **in radians**, not perceptual roughness; it is clamped to [0, 1]. σ = 0 is Lambertian. See [the project Oren–Nayar lobe](renderer-systems.md#project-oren-nayar-lobe-under-renderer-owned-lights). |
 
 A nested mix is written as a product of weights, so the mixture is always flat.
 The material's `base_color`, `metallic` and `roughness` are the surface inputs.

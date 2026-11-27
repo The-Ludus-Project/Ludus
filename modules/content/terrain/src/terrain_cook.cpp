@@ -1003,6 +1003,44 @@ TerrainCookStatus TryCookTerrainRevision(const TerrainRevisionLayout& layout,
     return TryAssembleTerrainRevision(layout, pages.AsView(), outRevision);
 }
 
+TerrainCookStatus TryComputeTerrainFieldDigest(const TerrainFieldGrid& grid,
+                                               BorrowedView<const float32> elevationsMetres,
+                                               Fingerprint128& outDigest) noexcept
+{
+    if (IsTerrainFieldGridValid(grid) == false)
+    {
+        return TerrainCookStatus::InvalidArgument;
+    }
+    constexpr uint32 MAX_DOMAIN_AXIS_SAMPLES = format::MAX_DOMAIN_AXIS_CELLS + 1;
+    if (grid.Columns > MAX_DOMAIN_AXIS_SAMPLES || grid.Rows > MAX_DOMAIN_AXIS_SAMPLES)
+    {
+        return TerrainCookStatus::LimitExceeded;
+    }
+    const usize sampleCount = GetTerrainSampleCount(grid);
+    if (elevationsMetres.IsValid() == false || elevationsMetres.GetSize() != sampleCount)
+    {
+        return TerrainCookStatus::InvalidStorage;
+    }
+    /// Columns, rows and the two spacings precede the samples.
+    constexpr usize GRID_BYTES = 4 * sizeof(uint32);
+    foundation::Array<uint8> bytes;
+    if (bytes.TryResize(GRID_BYTES + (sampleCount * sizeof(uint32))) == false)
+    {
+        return TerrainCookStatus::AllocationFailed;
+    }
+    ByteWriter writer(bytes.AsView());
+    writer.WriteUint32(grid.Columns);
+    writer.WriteUint32(grid.Rows);
+    writer.WriteFloat32(grid.SpacingXMetres);
+    writer.WriteFloat32(grid.SpacingZMetres);
+    for (usize i = 0; i < sampleCount; ++i)
+    {
+        writer.WriteFloat32(elevationsMetres[i]);
+    }
+    outDigest = ComputeDigest(bytes.AsView());
+    return TerrainCookStatus::Success;
+}
+
 TerrainCookStatus TryReadTerrainManifest(BorrowedView<const uint8> manifestBytes, TerrainManifest& outManifest) noexcept
 {
     if (manifestBytes.IsValid() == false)

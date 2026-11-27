@@ -115,11 +115,12 @@ MaterialProgramLobe ReadMaterialProgramLobe(uint offset, uint lobe, MaterialProg
     result.Weight = weight;
     result.Selection = (weight.x + weight.y + weight.z) / MATERIAL_PROGRAM_CHANNELS;
     uint roughnessRegister = asuint(operation.z);
-    result.Roughness = roughnessRegister == LUDUS_MATERIAL_PROGRAM_NO_REGISTER
-                           ? 1
-                           : clamp(registers.Values[roughnessRegister % LUDUS_MATERIAL_PROGRAM_MAX_REGISTERS].x,
-                                   MATERIAL_PROGRAM_MIN_ROUGHNESS,
-                                   1);
+    float roughness = registers.Values[roughnessRegister % LUDUS_MATERIAL_PROGRAM_MAX_REGISTERS].x;
+    // Oren-Nayar reads sigma in radians, which may be zero; the other lobes read perceptual roughness.
+    result.Roughness = roughnessRegister == LUDUS_MATERIAL_PROGRAM_NO_REGISTER ? 1
+                       : result.Operation == MaterialLobeOperation::OrenNayar
+                           ? clamp(roughness, 0, LUDUS_MATERIAL_PROGRAM_MAX_OREN_NAYAR_SIGMA)
+                           : clamp(roughness, MATERIAL_PROGRAM_MIN_ROUGHNESS, 1);
     result.Power = operation.w;
     result.Eta = SceneValue(first + 1).xyz;
     result.K = SceneValue(first + 2).xyz;
@@ -136,6 +137,20 @@ float GetMaterialProgramSelectionTotal(uint offset, MaterialProgramRegisters reg
     return total;
 }
 
+/// Qualitative Oren-Nayar value without its weight, as EvaluateOrenNayar in reference_bsdf.cpp: Michael Oren and
+/// Shree K. Nayar, "Generalization of Lambert's Reflectance Model", SIGGRAPH '94, pp. 239-246, the qualitative model.
+/// The azimuthal term max(0, cos(phi_i - phi_o)) sin(alpha) tan(beta) is max(0, l.v - (n.l)(n.v)) / max(n.l, n.v).
+float EvaluateOrenNayar(float sigma, float viewLightCosine, float nv, float nl)
+{
+    float sigmaSquared = sigma * sigma;
+    float a = 1 - LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_A_SCALE * sigmaSquared /
+                      (sigmaSquared + LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_A_OFFSET);
+    float b = LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_B_SCALE * sigmaSquared /
+              (sigmaSquared + LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_B_OFFSET);
+    float tangentCosine = max(0, viewLightCosine - nl * nv);
+    return (a + b * tangentCosine / max(nl, nv)) / PI;
+}
+
 /// One lobe's value without its weight, and its own solid-angle density.
 float4 EvaluateMaterialProgramLobe(MaterialProgramLobe lobe,
                                    float3 normalWorld,
@@ -146,6 +161,8 @@ float4 EvaluateMaterialProgramLobe(MaterialProgramLobe lobe,
 {
     if (lobe.Operation == MaterialLobeOperation::Diffuse)
         return float4(float3(1 / PI), nl / PI);
+    if (lobe.Operation == MaterialLobeOperation::OrenNayar)
+        return float4(float3(EvaluateOrenNayar(lobe.Roughness, dot(viewWorld, lightWorld), nv, nl)), nl / PI);
     if (lobe.Operation == MaterialLobeOperation::Conductor)
     {
         float3 halfWorld = NormalizeOrZero(viewWorld + lightWorld);
@@ -236,7 +253,8 @@ float3 SampleMaterialProgramDirection(uint offset,
     float diskX = radius * cos(angle);
     float diskY = radius * sin(angle);
     float3 directionWorld;
-    if (chosen.Operation == MaterialLobeOperation::Diffuse)
+    // Oren-Nayar declares the cosine-weighted proposal of the Lambertian lobe.
+    if (chosen.Operation == MaterialLobeOperation::Diffuse || chosen.Operation == MaterialLobeOperation::OrenNayar)
         directionWorld = axisXWorld * diskX + axisYWorld * diskY + normalWorld * sqrt(max(0, 1 - samples.y));
     else if (chosen.Operation == MaterialLobeOperation::Conductor)
     {

@@ -9,6 +9,9 @@
 // candidate set per cell with priority thinning is the Ludus local rule recorded in
 // docs/architecture/procedural-content-generation.md#vegetation-and-scatter;
 // it trades maximal Poisson-disk coverage for finite, order-independent support.
+// Author locks enter thinning as candidates that outrank every unlocked one, so a
+// lock is honoured before the conflicts around it are decided
+// (docs/architecture/procedural-content-generation.md#author-overrides-and-saved-mutations).
 
 #include <ludus/content/procedural/environment/scatter.h>
 
@@ -47,12 +50,16 @@ struct LayerBounds final
     PreparedBound32 Scale;
 };
 
-/// One candidate's sampled state; details are filled only for eligible candidates.
+/// One candidate's sampled or locked state; details are filled only for eligible candidates.
 struct Candidate final
 {
     uint64 Scope = 0;
     int32 LatticeX = 0;
     int32 LatticeY = 0;
+    /// The layer's lock of this identity, or null when the candidate is sampled.
+    const ScatterPlacement* LockOrNull = nullptr;
+    /// Whether the lock's position lies outside the identity's cell or its variant or scale outside the layer.
+    bool IsLockOutsideRecipe = false;
     bool IsEligible = false;
     bool IsInsideRegion = false;
     usize KeepOut = 0;
@@ -79,6 +86,40 @@ struct Candidate final
 [[nodiscard]] bool Contains(const ScatterRectangle& rectangle, int32 x, int32 y) noexcept
 {
     return x >= rectangle.MinimumX && x < rectangle.MaximumX && y >= rectangle.MinimumY && y < rectangle.MaximumY;
+}
+
+/// Canonical order within a layer: cell Y, cell X, candidate.
+[[nodiscard]] bool IsCanonicallyBefore(const ScatterIdentity& a, const ScatterIdentity& b) noexcept
+{
+    if (a.CellY != b.CellY)
+    {
+        return a.CellY < b.CellY;
+    }
+    if (a.CellX != b.CellX)
+    {
+        return a.CellX < b.CellX;
+    }
+    return a.Candidate < b.Candidate;
+}
+
+/// The layer's lock of an identity, or null. Validation keeps the locks in strictly canonical order.
+[[nodiscard]] const ScatterPlacement* FindLock(const ScatterLayer& layer, const ScatterIdentity& identity) noexcept
+{
+    usize low = 0;
+    usize high = layer.Locks.GetSize();
+    while (low < high)
+    {
+        const usize middle = low + ((high - low) / 2);
+        if (IsCanonicallyBefore(layer.Locks[middle].Identity, identity) == true)
+        {
+            low = middle + 1;
+        }
+        else
+        {
+            high = middle;
+        }
+    }
+    return low < layer.Locks.GetSize() && layer.Locks[low].Identity == identity ? &layer.Locks[low] : nullptr;
 }
 
 /// Cells overlapping the region, half-open, kept in int64 so callers can range-check before narrowing.
@@ -146,6 +187,19 @@ struct LayerCellBounds final
     {
         return MakeIssue(ScatterRecipeIssue::ScaleRange, index);
     }
+    if (layer.Locks.IsValid() == false || layer.Locks.GetSize() > MAX_SCATTER_LAYER_LOCKS)
+    {
+        return MakeIssue(ScatterRecipeIssue::Locks, index);
+    }
+    for (usize lock = 0; lock < layer.Locks.GetSize(); ++lock)
+    {
+        const ScatterIdentity& identity = layer.Locks[lock].Identity;
+        if (identity.Room != recipe.Room || identity.Layer != layer.Id ||
+            (lock > 0 && IsCanonicallyBefore(layer.Locks[lock - 1].Identity, identity) == false))
+        {
+            return MakeIssue(ScatterRecipeIssue::Locks, index);
+        }
+    }
     return {};
 }
 
@@ -176,7 +230,18 @@ struct LayerCellBounds final
            TryPrepareBound32(scaleWidth, outBounds.Scale) == MathStatus::Success;
 }
 
-/// Sample a candidate's position and eligibility. Priority and variant follow only when it is eligible.
+/// Whether a lock's values lie in the layer: its position in the identity's cell, its variant and scale in range.
+/// The cell bound keeps a locked candidate within SCATTER_NEIGHBOR_CELLS of every candidate it can conflict with.
+[[nodiscard]] bool IsLockInRecipe(const ScatterLayer& layer, const ScatterPlacement& lock) noexcept
+{
+    return FloorDivide(lock.LatticeX, layer.CellSize) == lock.Identity.CellX &&
+           FloorDivide(lock.LatticeY, layer.CellSize) == lock.Identity.CellY &&
+           lock.Variant < layer.Variants.GetSize() && lock.Scale >= layer.MinimumScale &&
+           lock.Scale <= layer.MaximumScale;
+}
+
+/// Sample a candidate's position and eligibility, or take them from its lock. Priority and variant follow only when
+/// it is eligible.
 [[nodiscard]] ScatterStatus EvaluateCandidate(const ScatterRecipe& recipe,
                                               const ScatterKeys& keys,
                                               const ScatterLayer& layer,
@@ -186,22 +251,37 @@ struct LayerCellBounds final
 {
     Candidate candidate;
     candidate.Scope = PackScatterScope(identity);
-    uint32 offsetX = 0;
-    uint32 offsetY = 0;
-    if (TrySampleBounded(keys.Placement,
-                         RandomAddress{candidate.Scope, BASE_GENERATION_EVENT, PLACEMENT_OFFSET_X_DIMENSION},
-                         bounds.Cell,
-                         offsetX) != MathStatus::Success ||
-        TrySampleBounded(keys.Placement,
-                         RandomAddress{candidate.Scope, BASE_GENERATION_EVENT, PLACEMENT_OFFSET_Y_DIMENSION},
-                         bounds.Cell,
-                         offsetY) != MathStatus::Success)
+    candidate.LockOrNull = FindLock(layer, identity);
+    if (candidate.LockOrNull != nullptr)
     {
-        return ScatterStatus::SamplingExhausted;
+        if (IsLockInRecipe(layer, *candidate.LockOrNull) == false)
+        {
+            candidate.IsLockOutsideRecipe = true;
+            outCandidate = candidate;
+            return ScatterStatus::Success;
+        }
+        candidate.LatticeX = candidate.LockOrNull->LatticeX;
+        candidate.LatticeY = candidate.LockOrNull->LatticeY;
     }
-    // Validation keeps cells within int16 and the cell size within uint16, so positions fit int32.
-    candidate.LatticeX = static_cast<int32>(static_cast<int64>(identity.CellX) * layer.CellSize + offsetX);
-    candidate.LatticeY = static_cast<int32>(static_cast<int64>(identity.CellY) * layer.CellSize + offsetY);
+    else
+    {
+        uint32 offsetX = 0;
+        uint32 offsetY = 0;
+        if (TrySampleBounded(keys.Placement,
+                             RandomAddress{candidate.Scope, BASE_GENERATION_EVENT, PLACEMENT_OFFSET_X_DIMENSION},
+                             bounds.Cell,
+                             offsetX) != MathStatus::Success ||
+            TrySampleBounded(keys.Placement,
+                             RandomAddress{candidate.Scope, BASE_GENERATION_EVENT, PLACEMENT_OFFSET_Y_DIMENSION},
+                             bounds.Cell,
+                             offsetY) != MathStatus::Success)
+        {
+            return ScatterStatus::SamplingExhausted;
+        }
+        // Validation keeps cells within int16 and the cell size within uint16, so positions fit int32.
+        candidate.LatticeX = static_cast<int32>(static_cast<int64>(identity.CellX) * layer.CellSize + offsetX);
+        candidate.LatticeY = static_cast<int32>(static_cast<int64>(identity.CellY) * layer.CellSize + offsetY);
+    }
     candidate.IsInsideRegion = Contains(recipe.Region, candidate.LatticeX, candidate.LatticeY);
     candidate.IsEligible = candidate.IsInsideRegion;
     for (usize i = 0; i < recipe.KeepOuts.GetSize() && candidate.IsEligible == true; ++i)
@@ -214,10 +294,14 @@ struct LayerCellBounds final
         candidate.Priority =
             SampleUInt32(keys.Placement,
                          RandomAddress{candidate.Scope, BASE_GENERATION_EVENT, PLACEMENT_PRIORITY_DIMENSION});
-        if (TrySampleBounded(keys.Variant,
-                             RandomAddress{candidate.Scope, BASE_GENERATION_EVENT, VARIANT_CHOICE_DIMENSION},
-                             bounds.Variant,
-                             candidate.Variant) != MathStatus::Success)
+        if (candidate.LockOrNull != nullptr)
+        {
+            candidate.Variant = candidate.LockOrNull->Variant;
+        }
+        else if (TrySampleBounded(keys.Variant,
+                                  RandomAddress{candidate.Scope, BASE_GENERATION_EVENT, VARIANT_CHOICE_DIMENSION},
+                                  bounds.Variant,
+                                  candidate.Variant) != MathStatus::Success)
         {
             return ScatterStatus::SamplingExhausted;
         }
@@ -227,9 +311,16 @@ struct LayerCellBounds final
     return ScatterStatus::Success;
 }
 
-/// Whether `other` outranks `candidate`: a higher sampled priority, then a higher packed identity.
+/// Whether `other` outranks `candidate`: a lock over an unlocked candidate, then a higher sampled priority, then a
+/// higher packed identity.
 [[nodiscard]] bool Outranks(const Candidate& other, const Candidate& candidate) noexcept
 {
+    const bool isOtherLocked = other.LockOrNull != nullptr;
+    const bool isCandidateLocked = candidate.LockOrNull != nullptr;
+    if (isOtherLocked != isCandidateLocked)
+    {
+        return isOtherLocked;
+    }
     return other.Priority > candidate.Priority ||
            (other.Priority == candidate.Priority && other.Scope > candidate.Scope);
 }
@@ -465,6 +556,12 @@ ScatterStatus TryGenerateScatter(const ScatterRecipe& recipe,
                 {
                     continue;
                 }
+                if (candidate.LockOrNull != nullptr)
+                {
+                    storage[count] = *candidate.LockOrNull;
+                    ++count;
+                    continue;
+                }
                 // Transforms are drawn after acceptance and never read by it.
                 ScatterPlacement placement;
                 placement.Identity = identity;
@@ -511,6 +608,7 @@ ScatterStatus TryExplainScatterCandidate(const ScatterRecipe& recipe,
         return ScatterStatus::InvalidRecipe;
     }
     ScatterDecision decision;
+    decision.IsLocked = FindLock(layer, identity) != nullptr;
     if (identity.Candidate >= layer.CandidatesPerCell)
     {
         decision.Stage = ScatterDecisionStage::Recipe;
@@ -536,6 +634,13 @@ ScatterStatus TryExplainScatterCandidate(const ScatterRecipe& recipe,
     if (status != ScatterStatus::Success)
     {
         return status;
+    }
+    if (candidate.IsLockOutsideRecipe == true)
+    {
+        decision.Stage = ScatterDecisionStage::Recipe;
+        decision.Rule = ScatterDecisionRule::LockOutsideRecipe;
+        outDecision = decision;
+        return ScatterStatus::Success;
     }
     if (candidate.IsEligible == false)
     {

@@ -406,6 +406,17 @@ void ViewportObjectInteraction::SetTerrainFootprint(const QJsonObject& recipe)
     mTerrainBaseElevation = base;
     Q_EMIT Changed();
 }
+void ViewportObjectInteraction::SetTerrainCookedPages(const QString& key, const QList<QList<math::Vector3>>& linesMesh)
+{
+    const QList<QList<math::Vector3>> lines = key.isEmpty() == true ? QList<QList<math::Vector3>>{} : linesMesh;
+    if (mTerrainCookedPagesKey == key && mTerrainCookedPageLinesMesh == lines)
+    {
+        return;
+    }
+    mTerrainCookedPagesKey = key;
+    mTerrainCookedPageLinesMesh = lines;
+    Q_EMIT Changed();
+}
 void ViewportObjectInteraction::SetClimateOverlay(const QJsonValue& climate)
 {
     QList<ClimateOutline> outlines;
@@ -2156,6 +2167,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
     }
     appendTerrainFootprint(outOverlay);
     appendClimateOutlines(outOverlay);
+    appendTerrainCookedPages(outOverlay);
     appendTerrainBrush(outOverlay);
     appendProbeVolume(outOverlay);
     if (mHasUniformHandle == true)
@@ -2213,6 +2225,40 @@ void ViewportObjectInteraction::appendTerrainBrush(ViewportObjectOverlay& inoutO
                     {linePixel, ViewportObjectOverlay::SELECTION_COLOR, ViewportObjectOverlay::OUTLINE_WIDTH_PIXELS});
             }
             previousMesh = nextMesh;
+        }
+        return;
+    }
+}
+void ViewportObjectInteraction::appendTerrainCookedPages(ViewportObjectOverlay& inoutOverlay) const
+{
+    if (mTerrainCookedPagesKey.isEmpty() == true)
+    {
+        return;
+    }
+    for (const PreviewObject& object : mPreviewOrNull->Scene().Objects)
+    {
+        if (object.Id != mTerrainCookedPagesKey)
+        {
+            continue;
+        }
+        for (const QList<math::Vector3>& lineMesh : mTerrainCookedPageLinesMesh)
+        {
+            for (qsizetype point = 1; point < lineMesh.size(); ++point)
+            {
+                if (inoutOverlay.OutlineLinesPixel.GetSize() >= ViewportObjectOverlay::MAX_OUTLINE_LINES)
+                {
+                    return;
+                }
+                const math::Vector3 firstWorld = math::TransformPoint(object.Transform, lineMesh[point - 1]);
+                const math::Vector3 secondWorld = math::TransformPoint(object.Transform, lineMesh[point]);
+                QLineF linePixel;
+                if (projectSegment({mWorldToClip * math::Vector4{firstWorld.X, firstWorld.Y, firstWorld.Z, 1},
+                                    mWorldToClip * math::Vector4{secondWorld.X, secondWorld.Y, secondWorld.Z, 1}},
+                                   linePixel) == true)
+                {
+                    inoutOverlay.OutlineLinesPixel.Add(linePixel);
+                }
+            }
         }
         return;
     }

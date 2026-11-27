@@ -3051,6 +3051,47 @@ TEST_CASE("Typed PBRT cooks smooth dielectrics and rejects rough transmission", 
         }
         REQUIRE(hasGlass == true);
     }
+    // An index spectrum, a pbrt-v4 named glass or (wavelength nm, index) pairs, cooks to its declared n_d and Abbe
+    // number through the F, d and C lines (format::DielectricDispersion).
+    struct DispersiveCase final
+    {
+        std::string_view Definition;
+        format::DielectricDispersion Expected;
+    };
+    constexpr float32 ABBE_TOLERANCE = 1e-3F;
+    for (const DispersiveCase& dispersive : {
+             DispersiveCase{"\"string type\" [ \"thindielectric\" ] \"spectrum eta\" [ \"glass-BK7\" ]",
+                            { .IndexD = 1.516803F, .AbbeNumber = 63.99F }},
+             // The index falls by 0.0005 per nanometre: n_d = 1.6 + 0.0005 * (600 - 587.5618) and
+             // n_F - n_C = 0.0005 * (656.2725 - 486.1327).
+             DispersiveCase{"\"string type\" [ \"dielectric\" ] \"spectrum eta\" [ 400 1.7 600 1.6 800 1.5 ]",
+                            { .IndexD = 1.6062191F, .AbbeNumber = 0.6062191F / 0.0850699F }},
+         })
+    {
+        CAPTURE(dispersive.Definition);
+        std::ofstream(entry, std::ios::binary) << replacePaint(dispersive.Definition);
+        const bool isCooked = CookMaterials(source.string(), result, error);
+        INFO(error.Message.View());
+        REQUIRE(isCooked == true);
+        ludus::resources::SceneDefinition scene;
+        REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), scene) ==
+                ludus::resources::Status::Ok);
+        bool hasGlass = false;
+        for (const ludus::resources::SceneMaterial& material : scene.Materials)
+        {
+            if (material.Name.View() == "Paint")
+            {
+                hasGlass = true;
+                const format::DielectricDispersion declared = format::GetDielectricDispersion(material.Scattering);
+                CHECK(math::Abs(declared.IndexD - dispersive.Expected.IndexD) <= 1e-6F);
+                CHECK(math::Abs(declared.AbbeNumber - dispersive.Expected.AbbeNumber) <= ABBE_TOLERANCE);
+                CHECK(material.Scattering.Eta[1] == declared.IndexD);
+                CHECK(material.Scattering.K[1] == 0);
+                CHECK(material.Scattering.K[2] == 0);
+            }
+        }
+        REQUIRE(hasGlass == true);
+    }
     const std::string preserved = ToText(result.Bundle);
     // pbrt remaps 0.25 to alpha 0.5 by default; reflectance has no dielectric meaning.
     for (const std::string_view unsupported : {
@@ -3058,7 +3099,13 @@ TEST_CASE("Typed PBRT cooks smooth dielectrics and rejects rough transmission", 
              "\"string type\" [ \"dielectric\" ] \"bool remaproughness\" [ false ] \"float uroughness\" [ 0.01 ]",
              "\"string type\" [ \"dielectric\" ] \"float eta\" [ 0 ]",
              "\"string type\" [ \"dielectric\" ] \"rgb reflectance\" [ 0.2 0.4 0.6 ]",
-             "\"string type\" [ \"thindielectric\" ] \"spectrum eta\" [ \"glass-BK7\" ]",
+             "\"string type\" [ \"thindielectric\" ] \"spectrum eta\" [ \"glass-unknown\" ]",
+             "\"string type\" [ \"dielectric\" ] \"float eta\" [ 1.5 ] \"spectrum eta\" [ \"glass-BK7\" ]",
+             // The F to C lines lie outside these samples, and an index rising with wavelength is anomalous.
+             "\"string type\" [ \"dielectric\" ] \"spectrum eta\" [ 500 1.52 600 1.515 ]",
+             "\"string type\" [ \"dielectric\" ] \"spectrum eta\" [ 400 1.5 800 1.6 ]",
+             // An Abbe number of about 2.5, below MIN_DIELECTRIC_ABBE_NUMBER.
+             "\"string type\" [ \"dielectric\" ] \"spectrum eta\" [ 400 1.9 800 1.3 ]",
          })
     {
         CAPTURE(unsupported);

@@ -13,6 +13,7 @@
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_format/luscn.h>
 
+#include "importers/pbrt/spectrum_tables.h"
 #include "native_files.h"
 #include "python_compat.h"
 
@@ -538,7 +539,7 @@ IsParameterAllowed(std::string_view command, std::string_view key, std::string_v
         }
     }
     if ((typedMaterialType == "dielectric" || typedMaterialType == "thindielectric") &&
-        command == "MakeNamedMaterial" && (key == "float eta" || key == "float roughness"))
+        command == "MakeNamedMaterial" && (key == "float eta" || key == "spectrum eta" || key == "float roughness"))
     {
         return true;
     }
@@ -3072,7 +3073,44 @@ ResolveCoatingParameters(Cooker& inoutCooker, const MaterialReference& source, M
     inoutMaterial.Scattering.CoatingThickness = static_cast<float32>(thickness);
     return true;
 }
-/// pbrt-v4 smooth dielectric: scalar eta and an effectively smooth interface. Rough transmission is rejected.
+/// pbrt-v4 dielectric index spectrum: one of pbrt-v4's named glasses or (wavelength nm, index) pairs, stored as the
+/// declared n_d and Abbe number (format::DielectricDispersion) through its F, d and C lines.
+[[nodiscard]] bool ReadDielectricSpectrum(Cooker& inoutCooker,
+                                          const Parameter& parameter,
+                                          format::DielectricDispersion& outDispersion) noexcept
+{
+    importers::DielectricIndex index;
+    bool isRead = false;
+    if (parameter.Values.GetSize() == 1)
+    {
+        isRead = importers::LookUpGlassIndex(parameter.Values[0].GetView(), index);
+    }
+    else
+    {
+        Array<float64> values;
+        if (inoutCooker.Context.ParseFiniteParameter(&parameter, values, "spectrum eta") == false)
+        {
+            return false;
+        }
+        isRead = importers::FitGlassIndex(foundation::BorrowedView<const float64>(values.GetData(), values.GetSize()),
+                                          index);
+    }
+    const format::DielectricDispersion dispersion =
+    {
+        .IndexD = static_cast<float32>(index.IndexD),
+        .AbbeNumber = static_cast<float32>(index.AbbeNumber),
+    };
+    if (isRead == false || format::IsDielectricDispersionValid(dispersion) == false)
+    {
+        return inoutCooker.Context.Errors.FailInvalid(
+            "unsupported dielectric eta spectrum: name a pbrt-v4 glass or give (wavelength nm, index) pairs spanning "
+            "486-656 nm with an Abbe number in [5, 1000]");
+    }
+    outDispersion = dispersion;
+    return true;
+}
+/// pbrt-v4 smooth dielectric: scalar eta or an index spectrum, and an effectively smooth interface. Rough
+/// transmission is rejected.
 [[nodiscard]] bool
 ResolveDielectricParameters(Cooker& inoutCooker, const MaterialReference& source, Material& inoutMaterial) noexcept
 {
@@ -3105,13 +3143,20 @@ ResolveDielectricParameters(Cooker& inoutCooker, const MaterialReference& source
     {
         return inoutCooker.Context.Errors.FailInvalid("rough dielectric transmission is not supported");
     }
-    for (usize channel = 0; channel < format::MATERIAL_RGB_CHANNELS; ++channel)
+    format::DielectricDispersion dispersion = { .IndexD = static_cast<float32>(eta), .AbbeNumber = 0 };
+    const Parameter* spectrumOrNull = inoutCooker.FindMaterialParameter(source, "spectrum eta");
+    if (spectrumOrNull != nullptr)
     {
-        inoutMaterial.Scattering.Eta[channel] = static_cast<float32>(eta);
-        inoutMaterial.Scattering.K[channel] = 0;
+        if (inoutCooker.FindMaterialParameter(source, "float eta") != nullptr)
+        {
+            return inoutCooker.Context.Errors.FailInvalid("dielectric declares both float eta and spectrum eta");
+        }
+        if (ReadDielectricSpectrum(inoutCooker, *spectrumOrNull, dispersion) == false)
+        {
+            return false;
+        }
     }
-    inoutMaterial.Scattering.AlphaU = format::MIN_MATERIAL_ALPHA;
-    inoutMaterial.Scattering.AlphaV = format::MIN_MATERIAL_ALPHA;
+    inoutMaterial.Scattering = format::MakeDielectricScattering(inoutMaterial.Scattering.Model, dispersion);
     // Evaluators without transmission shade the legacy fields: a smooth dark reflector.
     const float64 fallback = static_cast<float64>(format::DIELECTRIC_FALLBACK_REFLECTANCE);
     inoutMaterial.Reflectance = {fallback, fallback, fallback};

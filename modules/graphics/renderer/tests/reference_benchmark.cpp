@@ -20,16 +20,22 @@
 // material N on every wall.
 //
 // LUDUS_REFERENCE_BENCHMARK_KERNELS selects GPU transport kernels from reference, repeat-closest,
-// repeat-visibility and permuted, separated by commas (default reference). Each kernel gets its own renderer on
-// one device. Runs alternate the kernel order, so slow drift on a loaded machine affects every kernel alike.
-// Every kernel must reproduce the first kernel's checksum and query counts; see the wavefront hit-shading
-// qualification in docs/architecture/renderer-systems.md.
+// repeat-visibility, permuted and optical, separated by commas (default reference). Each kernel gets its own
+// renderer on one device. Runs alternate the kernel order, so slow drift on a loaded machine affects every kernel
+// alike. Every kernel must reproduce the first kernel's checksum and query counts; see the wavefront hit-shading
+// qualification in docs/architecture/renderer-systems.md. `optical` traces geometric captures with
+// renderer_reference_optical too, so `reference,optical` measures what the optical state costs them. A positive
+// WAVELENGTH_NANOMETERS dispatches renderer_reference_optical and accepts only reference and optical; the
+// diagnostic kernels are geometric.
+#include "baseline_renderer_reference.h"
+#include "baseline_renderer_reference_optical.h"
 #include "renderer_authored.h"
 #include "renderer_authored_shadow.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
 #include "renderer_output.h"
 #include "renderer_reference.h"
+#include "renderer_reference_optical.h"
 #include "renderer_reference_permuted.h"
 #include "renderer_reference_reduce.h"
 #include "renderer_reference_repeat_closest.h"
@@ -490,10 +496,15 @@ enum class TransportKernel : uint8
     RepeatClosest,    ///< Every closest-hit query traced twice.
     RepeatVisibility, ///< Every visibility query traced twice.
     Permuted,         ///< Threads take pixels in a fixed pseudorandom order.
+    /// renderer_reference_optical for every capture: what geometric captures cost with the optical state compiled in.
+    Optical,
+    /// The Slang original of the LUSL renderer_reference and renderer_reference_optical recipes
+    /// (shaders/renderer_reference.slang, LUSL L5d wave 2), for an in-process A/B of the port.
+    Slang,
 };
-constexpr usize TRANSPORT_KERNELS = 4;
+constexpr usize TRANSPORT_KERNELS = 6;
 constexpr StaticArray<const char*, TRANSPORT_KERNELS> TRANSPORT_KERNEL_NAMES{
-    {"reference", "repeat-closest", "repeat-visibility", "permuted"}};
+    {"reference", "repeat-closest", "repeat-visibility", "permuted", "optical", "slang"}};
 
 [[nodiscard]] rhi::RasterShaderDescription GetTraceKernel(TransportKernel kernel) noexcept
 {
@@ -505,6 +516,10 @@ constexpr StaticArray<const char*, TRANSPORT_KERNELS> TRANSPORT_KERNEL_NAMES{
             return shaders::renderer_reference_repeat_visibility::Compute();
         case TransportKernel::Permuted:
             return shaders::renderer_reference_permuted::Compute();
+        case TransportKernel::Optical:
+            return shaders::renderer_reference_optical::Compute();
+        case TransportKernel::Slang:
+            return shaders::baseline_renderer_reference::Compute();
         case TransportKernel::Reference:
             break;
     }
@@ -827,11 +842,13 @@ void DiscardPendingTimings(rhi::DeviceHandle device) noexcept
     outResult.MeanLuminance = luminance / float64(pixels.GetSize());
     return inoutRenderer.Release(capture) == Status::Ready;
 }
-// Prepares one renderer with the given trace kernel and installs the scene into it.
+// Prepares one renderer with the given trace kernel, plus the optical kernel for optical captures, and installs the
+// scene into it.
 [[nodiscard]] const char* PrepareRenderer(rr::Renderer& inoutRenderer,
                                           rhi::DeviceHandle device,
                                           const resources::SceneDefinition& scene,
                                           bool isCpu,
+                                          bool isOptical,
                                           TransportKernel kernel,
                                           rr::MaterialProgram& outProgram,
                                           rr::Snapshot& outSnapshot,
@@ -854,10 +871,28 @@ void DiscardPendingTimings(rhi::DeviceHandle device) noexcept
     {
         return "renderer initialization";
     }
-    if ((isCpu == true ? inoutRenderer.EnableReferenceRendering({}, options)
-                       : inoutRenderer.EnableReferenceRendering(GetTraceKernel(kernel),
-                                                                shaders::renderer_reference_reduce::Compute(),
-                                                                options)) != Status::Ready)
+    Status enabled = Status::Ready;
+    if (isCpu == true)
+    {
+        enabled = inoutRenderer.EnableReferenceRendering({}, options);
+    }
+    else if (isOptical == true)
+    {
+        // Optical captures dispatch the optical kernel, so the Slang original is compared through its own.
+        enabled = inoutRenderer.EnableReferenceRendering(GetTraceKernel(kernel),
+                                                         kernel == TransportKernel::Slang
+                                                             ? shaders::baseline_renderer_reference_optical::Compute()
+                                                             : shaders::renderer_reference_optical::Compute(),
+                                                         shaders::renderer_reference_reduce::Compute(),
+                                                         options);
+    }
+    else
+    {
+        enabled = inoutRenderer.EnableReferenceRendering(GetTraceKernel(kernel),
+                                                         shaders::renderer_reference_reduce::Compute(),
+                                                         options);
+    }
+    if (enabled != Status::Ready)
     {
         return "reference rendering";
     }
@@ -938,11 +973,20 @@ int main(int argc, char** argv)
             "usage: %s {SCENE_DIRECTORY|cornell:ARRANGEMENT[:TILES]} [WIDTH HEIGHT SAMPLES DEPTH {gpu|cpu} RUNS "
             "[WAVELENGTH_NANOMETERS]]\n"
             "LUDUS_REFERENCE_BENCHMARK_KERNELS: distinct comma-separated GPU kernels from reference, "
-            "repeat-closest, repeat-visibility and permuted\n",
+            "repeat-closest, repeat-visibility, permuted, optical and slang\n",
             argc > 0 ? argv[0] : "ludus_reference_benchmark");
         return 1;
     }
     description.OpticalWavelengthWorld = static_cast<float32>(wavelengthNanometers) * METRES_PER_NANOMETRE;
+    for (const TransportKernel kernel : kernels)
+    {
+        if (wavelengthNanometers > 0 && kernel != TransportKernel::Reference && kernel != TransportKernel::Optical &&
+            kernel != TransportKernel::Slang)
+        {
+            std::fprintf(stderr, "WAVELENGTH_NANOMETERS needs the reference, optical or slang kernel\n");
+            return 1;
+        }
+    }
     // LUDUS_REFERENCE_BENCHMARK_OPTICAL_CONNECTION=utd or fraunhofer selects an edge-diffraction operator for a
     // wavelength's connections.
     const char* connectionOrNull = std::getenv("LUDUS_REFERENCE_BENCHMARK_OPTICAL_CONNECTION");
@@ -1056,8 +1100,15 @@ int main(int argc, char** argv)
         usize triangles = 0;
         for (usize k = 0; k < kernels.GetSize(); ++k)
         {
-            const char* failureOrNull =
-                PrepareRenderer(renderers[k], device, scene, isCpu, kernels[k], programs[k], snapshots[k], triangles);
+            const char* failureOrNull = PrepareRenderer(renderers[k],
+                                                        device,
+                                                        scene,
+                                                        isCpu,
+                                                        wavelengthNanometers > 0,
+                                                        kernels[k],
+                                                        programs[k],
+                                                        snapshots[k],
+                                                        triangles);
             if (failureOrNull != nullptr)
             {
                 std::fprintf(stderr,

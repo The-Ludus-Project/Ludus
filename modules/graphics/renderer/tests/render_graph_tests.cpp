@@ -579,6 +579,41 @@ TEST_CASE("RG2 invalid surfaces report ownership failure without pretending prep
     REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
 }
 
+TEST_CASE("RG2 a frame whose submission cannot be reserved stays owned and its retry reports no false output",
+          "[render-graph]")
+{
+    GraphFixture fixture;
+    REQUIRE(fixture.Initialize() == rhi::RasterStatus::Ready);
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    // The first draw reserves the frame's submission, so exhaustion fails the recording and EndFrame.
+    rhi::reference::Submission = rhi::RasterStatus::CapacityExceeded;
+    rhi::SubmissionToken completion;
+    CHECK(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::CapacityExceeded);
+    CHECK(completion.IsNull() == true);
+    CHECK(rhi::reference::Draws == 0);
+    rhi::FrameInfo frame;
+    CHECK(rhi::GetFrameInfo(fixture.Device, fixture.Surface, frame) == rhi::DeviceStatus::Ready);
+    // The graph keeps the open frame: device work refuses until the close is retried.
+    CHECK(fixture.Graph.Resize(96, 64) == rhi::RasterStatus::InvalidState);
+    CHECK(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::CapacityExceeded);
+    CHECK(rhi::GetFrameInfo(fixture.Device, fixture.Surface, frame) == rhi::DeviceStatus::Ready);
+    rhi::reference::Submission = rhi::RasterStatus::Ready;
+    // The retry closes exactly the owned frame without encoding again and keeps the recording failure.
+    CHECK(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::CapacityExceeded);
+    CHECK(rhi::GetFrameInfo(fixture.Device, fixture.Surface, frame) == rhi::DeviceStatus::InvalidState);
+    CHECK(rhi::reference::Draws == 0);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    CHECK(fixture.Graph.GetOutputSceneRevision() == 0);
+    // The next frame records and publishes normally.
+    rhi::SubmissionToken complete;
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, complete) == rhi::RasterStatus::Ready);
+    CHECK(complete.IsNull() == false);
+    CHECK(rhi::reference::Draws == 1);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    CHECK(fixture.Graph.GetOutputSceneRevision() == 1);
+}
+
 TEST_CASE("RG2 offscreen encoding shares one caller-owned frame and tracks its actual producer", "[render-graph]")
 {
     GraphFixture fixture;

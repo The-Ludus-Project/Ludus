@@ -185,7 +185,7 @@ float ComputeWavenumberPerWorld(float wavelengthNanometers)
     return 2 * PI * NANOMETERS_PER_WORLD_UNIT / wavelengthNanometers;
 }
 
-/// The channel of an RGB optical constant that covers a wavelength: the uplift's bands (spectrum.slang).
+/// The channel of an RGB optical constant that covers a wavelength: the uplift's bands (spectral_sensor.slang).
 float SelectBandChannel(float3 rgb, float wavelengthNanometers)
 {
     if (wavelengthNanometers >= SPECTRUM_RED_BAND_MINIMUM_NANOMETERS)

@@ -3912,8 +3912,10 @@ The sources in `main_shaders/` cite the paper's equations at each step.
   shows an image of the source at the wavelength that the grating equation sends
   toward the viewer. These closed forms are derived from the paper's equations; the
   paper does not print them.
-- **Spectral camera** (`spectrum.slang`). The full-range sampler draws wavelengths
-  uniformly over 380–780 nm. Both Steinberg templates evaluate the CIE 1931 2° observer using the multi-lobe fit in
+- **Spectral camera** (the renderer's `spectral_sensor.slang`, which the
+  [wave-tracing template](#spectral-optical-connections) and spectral reference
+  captures share; the CPU oracle reads the same constants). The full-range sampler
+  draws wavelengths uniformly over 380–780 nm. Both Steinberg templates evaluate the CIE 1931 2° observer using the multi-lobe fit in
   [Wyman, Sloan and Shirley, §2.2, Eq. (4)](https://jcgt.org/published/0002/02/01/paper.pdf#page=4).
   To form the camera response, they convert XYZ to linear sRGB at each wavelength,
   clip negative channel sensitivities to zero for accumulation, and scale each channel
@@ -11530,8 +11532,9 @@ and physical-device qualification remain distinct from any local macOS result.
 
 The **Wave tracing — scene optical transport** template (`wave-tracing`) uses the
 selected World's camera, geometry, lights, emissive meshes, textures and supported
-materials. It samples truncated surface paths, with coherent scalar connections to
-finite lights. Glass reflection and refraction carry a connection on instead of ending
+materials. It samples truncated spectral surface paths, with coherent scalar
+connections to finite lights at each path's wavelength
+([spectral optical connections](#spectral-optical-connections)). Glass reflection and refraction carry a connection on instead of ending
 it ([relayed connections](#relayed-connections-through-glass)). `WT_OPTICAL_CONNECTION` selects the connection
 operator: `0` (the default) propagates a Gaussian mode through an angular-spectrum
 lattice, `1` adds [UTD edge diffraction](#utd-edge-diffraction-connections) to the
@@ -11573,9 +11576,12 @@ beam's centre ray misses. It does not require a manually positioned screen or a
 replacement light source.
 
 - **Optical** renders surface emission and next-event lighting through the optical
-  connection operator. `WT_WAVELENGTH_NANOMETERS` defaults to 550 nm. The scalar
-  transmission multiplies the authored RGB light; this is not spectral colour
-  integration or wavelength-dependent material scattering.
+  connection operator. `WT_SPECTRUM` `1` (the default) samples one wavelength per
+  path over 380–780 nm and integrates the result against the camera's CIE 1931
+  sensor, so diffraction separates colours. `WT_WAVELENGTH_NANOMETERS` (550 by
+  default) is the optical wavelength of 550 nm light; each path scales it by its
+  sampled wavelength. `WT_SPECTRUM` `0` evaluates `WT_WAVELENGTH_NANOMETERS` alone,
+  and its scalar transmission multiplies the authored RGB light.
 - **Geometric** traces matching surface paths and light proposals with ordinary
   binary visibility. At rough vertices both paths use next-event estimation alone
   for light endpoints: emitter/environment hits after a rough vertex are omitted to
@@ -11584,7 +11590,8 @@ replacement light source.
   light sample reaches a delta direction. Optical weights the emitter by its relayed
   connection; Geometric weights it by one.
 - **Transmission** shows the first receiver's sampled light-connection power,
-  relative to the unobstructed Gaussian mode, without tone mapping. It is zero
+  relative to the unobstructed Gaussian mode, at the path's wavelength, without
+  tone mapping. It is zero
   without a contributing light sample. Diffraction can redistribute power above
   one locally. Linear capture data retains that range; RGBA8 presentation clips
   values above one.
@@ -11644,12 +11651,12 @@ unit directions and `lambda/L <= 1/32`. Invalid inputs and exhaustion of the
 256-triangle region or 64-region connection limit reject the contribution
 with an actionable diagnostic, preserving the last accepted image.
 
-This is a scene-capable **scalar paraxial connection profile**, with classical RGB
-scattering at rough surfaces and coherent relays through glass. It is not the
-paper's full polarimetric bidirectional cone path tracer: multiple edge diffraction,
-UTD corner diffraction, interference-aware material-direction rejection sampling,
-diffraction by the edges of glass and mirrors, polarization and spectral material
-transport are not implemented here. The [UTD](#utd-edge-diffraction-connections) and
+This is a scene-capable **scalar paraxial connection profile**, with classical
+scattering of uplifted spectra at rough surfaces and coherent relays through glass.
+It is not the paper's full polarimetric bidirectional cone path tracer: multiple
+edge diffraction, UTD corner diffraction, interference-aware material-direction
+rejection sampling, diffraction by the edges of glass and mirrors, polarization and
+absorbing glass are not implemented here. The [UTD](#utd-edge-diffraction-connections) and
 [Fraunhofer](#fraunhofer-edge-diffraction-connections) connections cover single
 edge diffraction.
 
@@ -11968,17 +11975,122 @@ Evidence for relayed connections, on an Apple M5 with Metal:
   of the Geometric output. The test admits 0.25 to 0.75. Classical scattering at the
   pane would give one.
 
+### Spectral optical connections
+
+Diffraction depends on the wavelength, so a white light's fringes separate into
+colours. Steinberg and Pharr's Section 3 (*Dispersion and color*) treats wave optics
+as spectral rendering, with emission and sensitivity spectra and wavelength-dependent
+media; this section declares the integral that the template's `WT_SPECTRUM` `1` and
+`ReferenceOpticalSpectrum::Visible` estimate. Each camera channel `c` of a pixel is
+
+```text
+I_c = integral over lambda in [380, 780] nm of s_c(lambda) * L(lambda) d lambda
+L(lambda) = sum over paths of (product of U[f_i](lambda)) * U[L_e](lambda) * |u(lambda)|^2
+```
+
+- `s_c` is the camera's sensitivity: the CIE 1931 2° observer, from Wyman, Sloan and
+  Shirley's fit, converted to linear sRGB with negative lobes clipped and each channel
+  normalized so that a unit equal-energy spectrum reads white. It is the
+  [spectral camera](#what-the-passes-compute) of the Steinberg templates, from one
+  owner (`spectral_sensor.slang`, with the CPU twin `spectral_sensor.cpp`).
+- `U[x](lambda)` uplifts an authored linear RGB value `x` to a three-band spectrum
+  that the sensor reads back as `x`. The emission spectrum `U[L_e]` of every light and
+  emissive surface is the uplift of its authored RGB; the scene format declares no
+  other emission spectra. Each `f_i` is a path vertex's classical BSDF weight or a
+  glass event's Fresnel weight, evaluated in RGB and uplifted at `lambda`. Products of
+  uplifted factors are spectral products, so multiple bounces between coloured
+  surfaces differ from the RGB profile's channel products.
+- `u(lambda)` is the selected operator's field ratio of the light connection, or of the
+  [relayed chain](#relayed-connections-through-glass), evaluated at the optical
+  wavelength `W * lambda / 550 nm`. `W` is `WT_WAVELENGTH_NANOMETERS` or
+  `OpticalWavelengthWorld`, the optical wavelength of 550 nm light. The scalar wave
+  equation is unchanged when all lengths and the wavelength scale together, so a `W`
+  above 550 nm renders the colours of the scene shrunk by `550 nm / W`. The UTD
+  checks below use this to keep fringe phases exact in binary32.
+- Glass relays propagate each leg at `lambda/n(lambda)`, and glass reflects and
+  refracts at `n(lambda)`. A `Dielectric` or `ThinDielectric` declares its index as
+  `n_d` and an Abbe number, evaluated by the two-term Cauchy equation
+  ([dispersive dielectrics](../architecture/renderer-systems.md#dispersive-dielectrics)).
+  Glass with a zero Abbe number keeps one index, and RGB transport (`WT_SPECTRUM` `0`,
+  monochromatic captures) uses `n_d`.
+
+Each path draws one wavelength, uniform over the 400 nm range, from its own random
+dimension (`LUDUS_REFERENCE_WAVELENGTH_DIMENSION` in captures; after every vertex's
+dimensions in the template). The estimate is `400 nm * s_c(lambda) * L(lambda)`.
+Rough vertices, the camera path, light selection and the connection operators are
+unchanged. Only their inputs are spectral. Infinite lights and the environment keep
+geometric visibility, at the uplifted spectrum. The **Geometric** output samples the same wavelengths with binary
+visibility. Where every factor but one is white (flat), its expectation equals the
+RGB profile's. The **Transmission** output averages the connection power over the
+sampled wavelengths.
+The implementation is original. It departs from the paper in three ways:
+
+- **One wavelength per path.** Hero wavelength sampling would multiply the cost of
+  the optical connections, which dominate a sample. Colour noise therefore converges
+  at the path rate.
+- **Uplifted RGB inputs.** Emission and reflection spectra come from the three-band
+  uplift, not from measured or analytic spectra.
+- **Catalogue dispersion.** Dielectrics declare `n_d` and an Abbe number (two Cauchy
+  terms), not measured or Sellmeier spectra.
+
+Evidence for spectral connections, on an Apple M5 with Metal:
+
+- `wave_tracing_parity_tests.cpp` (`[wave-spectral]`) checks that the CPU twin's
+  sensor reads a unit equal-energy spectrum as white and uplifted colours back
+  within `1e-3`, and runs the Slang camera on the GPU at 16 wavelengths, including
+  both sides of the uplift's band edges and clamped band values. The GPU sensitivity,
+  colour-matching values, uplift and wavelength draw agree with the CPU twin within
+  `1e-5` relative. Its UTD and Fraunhofer sweeps also run the production kernels
+  on a slit at 16 wavelengths across the spectrum (scaled from 5 mm at 550 nm), within the
+  same `5e-4` field bound as the other connection parity cases.
+- `reference_compute_tests.cpp` (`[wave-spectral][wave-utd]`) renders a white-light
+  slit fixture: a point light 0.5 m before a 10 cm slit, and a white diffuse wall 1 m
+  behind it, at 5 mm for 550 nm light. Each column's RGB, divided by the unobstructed
+  geometric capture, is compared with the sensor-weighted spectral integral of
+  Fresnel–Kirchhoff slit diffraction. That reference uses 200 midpoint wavelengths
+  and Simpson Fresnel integrals, and shares no code with the operators. The bound is four standard errors of the
+  one-wavelength estimate, from the same quadrature, plus 0.02 for the UTD operator's
+  agreement with Fresnel–Kirchhoff diffraction. The fringes are coloured: the
+  analytic red and blue differ by up to 0.230 of the unobstructed power. At 4096
+  samples per column the CPU oracle stays within 0.105 of the analytic value (52% of
+  its bound). At 65,536 samples per column the GPU stays within 0.025 (39%), and its
+  strongest tint is -0.230 against the analytic -0.230. CPU and GPU follow the same
+  samples and agree within `2e-5`.
+- The raw-AOV scene (`[wave-spectral]`) and the glass-sphere relays (`[wave-relay]`)
+  run spectral captures with each operator. CPU oracle and GPU compute meet the same
+  bounds as their monochromatic cases; on the raw-AOV scene every radiance component
+  agreed within `1e-5`.
+- Dispersion: `reference_compute_tests.cpp` and `wave_scene_graph_tests.cpp`
+  (`[dispersion]`) render a white strip through a flint prism (pbrt-v4's `glass-F11`)
+  with the CPU oracle, the GPU reference and the template. Each column matches the
+  analytic spectral integral of the refracted rays that land on the strip within four
+  standard errors plus 0.01 (captures) or 0.02 (template), and the columns sweep from
+  violet to red. A nondispersive control at the same `n_d` stays white, and RGB
+  captures equal the nondispersive glass's bit for bit
+  ([dispersive dielectrics](../architecture/renderer-systems.md#dispersive-dielectrics)).
+- `wave_scene_graph_tests.cpp` renders the spectral template. A single spectral sample can leave a channel dark where
+  the sensor does not respond, so these checks use the channel sum, and the glass-relay case compares image means. The
+  unobstructed Optical and Geometric outputs sample the same wavelengths and agree within 1%.
+
 ### CPU oracle and validation
 
 Set `ReferenceCaptureDescription::OpticalWavelengthWorld` to a positive wavelength
 in metres to select the same connection profile in reference captures. Zero
 preserves the geometric reference profile. `ReferenceCaptureDescription::OpticalConnection`
 selects `AngularSpectrum` (the default), `UtdEdgeDiffraction` or
-`FraunhoferEdgeDiffraction`; an edge operator without a wavelength is rejected. Select `CpuOracle` or `GpuCompute` and `UniformArea` light
+`FraunhoferEdgeDiffraction`; an edge operator without a wavelength is rejected.
+`ReferenceCaptureDescription::OpticalSpectrum` selects `Monochromatic` (the
+default, one wavelength) or `Visible`, the [spectral integral](#spectral-optical-connections)
+of the template's `WT_SPECTRUM` `1`; `Visible` without a wavelength is rejected.
+Select `CpuOracle` or `GpuCompute` and `UniformArea` light
 sampling; incompatible native-query or resampled requests reject explicitly.
-Changing the wavelength or operator resets progressive accumulation. Raw `LUHDR01`
-exports retain the wavelength at byte 92, optical flag 256 and, for UTD, flag 2048
-or, for Fraunhofer, flag 4096.
+`GpuCompute` evaluates these connections only in the `renderer_reference_optical`
+kernel: cook it beside `renderer_reference` and pass it to the four-argument
+`EnableReferenceRendering`, or an optical capture reports `Unsupported`. See
+[GPU-compute reference](../architecture/renderer-systems.md#gpu-compute-reference).
+Changing the wavelength, operator or spectrum resets progressive accumulation. Raw
+`LUHDR01` exports retain the wavelength at byte 92, optical flag 256 and, for UTD,
+flag 2048 or, for Fraunhofer, flag 4096. Flag 8192 marks a `Visible` capture.
 
 The existing scene benchmark accepts an optional final wavelength in nanometres:
 

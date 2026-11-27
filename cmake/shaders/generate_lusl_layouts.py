@@ -19,6 +19,11 @@ OWNERS = (
     (RENDERER_SHADERS / 'skin_diffusion_layout.h', ()),
     (RENDER_GRAPH_HEADERS / 'light_transformer_layout.h', ()),
     (RENDER_GRAPH_HEADERS / 'light_transformer_encoder_layout.h', ()),
+    (RENDERER_HEADERS / 'lighting_layout.h', ()),
+    (RENDERER_SHADERS / 'renderer_atmosphere_layout.h', ()),
+    (RENDERER_SHADERS / 'renderer_reference_sky_layout.h', ()),
+    (RENDERER_SHADERS / 'ggx_albedo_table_layout.h', ()),
+    (RENDERER_SHADERS / 'wave_connection_layout.h', ()),
 )
 # The preview owner includes the scene failure reason count for C++ and Slang.
 # The generated view includes its LUSL counterpart through OWNERS.
@@ -41,12 +46,15 @@ PREVIEW_DEFAULT = re.compile(
 )
 # The deferred owner selects its binding-slot include, opens its C++ namespace and checks the
 # authored binding count under __cplusplus. The generated view includes deferred_binding_slots.luslh
-# through OWNERS; its constants use only that header and each other.
+# through OWNERS; its constants use only that header and each other. The lighting owner's
+# __cplusplus blocks choose LightingLayoutValue and open and close its namespace.
 CPLUSPLUS_BLOCK = re.compile(r'#ifdef __cplusplus\n.*?#endif\n', re.S)
 LIGHTING_INCLUDE = '#include "lighting_layout.h"\n'
 # A shared constant, `static const LightingLayoutValue NAME = expression;`, possibly over several lines.
 CONSTANT = re.compile(r'static const LightingLayoutValue ([A-Z_0-9]+) = (\S.*);')
 UNSIGNED_SUFFIX = re.compile(r"\b(0[xX][0-9a-fA-F]+|[0-9]+)[uU]\b")
+# LUSL literals take no suffix; C and Slang spell a binary32 literal with f, as in 1e-6f.
+FLOAT_SUFFIX = re.compile(r"\b([0-9]+\.[0-9]*(?:[eE][-+]?[0-9]+)?|[0-9]+[eE][-+]?[0-9]+)[fF]\b")
 # An object-like macro, or a function-like one such as LUDUS_LIGHT_TRANSFORMER_AFFINE_SIZE(inputCount, outputCount).
 DEFINE = re.compile(r'#define (LUDUS_[A-Z_0-9]+(?:\([A-Za-z_][A-Za-z_0-9]*(?:, *[A-Za-z_][A-Za-z_0-9]*)*\))?)[ \t]+(\S.*)')
 
@@ -58,6 +66,8 @@ def render(source, owner, includes):
         source = PREVIEW_DEFAULT.sub(r'#define \1 \2\n', source)
     if owner.name == 'deferred_layout.h':
         source = CPLUSPLUS_BLOCK.sub('', source.replace(LIGHTING_INCLUDE, ''))
+    if owner.name == 'lighting_layout.h':
+        source = CPLUSPLUS_BLOCK.sub('', source)
 
     lines = [f'// Generated from {owner.name} by generate_lusl_layouts.py. Edit the owner.',
              '#pragma once', '']
@@ -84,7 +94,7 @@ def render(source, owner, includes):
         if match is None:
             raise ValueError(f'{owner}: expected a shared layout macro, got {line!r}')
         name, expression = match.groups()
-        expression = UNSIGNED_SUFFIX.sub(r"\1", expression)
+        expression = FLOAT_SUFFIX.sub(r"\1", UNSIGNED_SUFFIX.sub(r"\1", expression))
         lines.append(f'#define {name} {" ".join(expression.split())}')
     if statement != '':
         raise ValueError(f'{owner}: unterminated shared layout constant {statement!r}')

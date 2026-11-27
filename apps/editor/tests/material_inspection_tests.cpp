@@ -56,7 +56,9 @@ const MaterialPropertyRow* FindRowOrNull(const QVector<MaterialPropertyRow>& row
 }
 /// A cooked scene of three objects: a named textured conductor, an emissive masked coated diffuse
 /// with a surface map, and an untextured third material of thirdModel (legacy by default).
-RenderScene MakeScene(format::MaterialModel thirdModel = format::MaterialModel::MetallicRoughness)
+/// @param dielectricAbbeNumber The third material's Abbe number when it is a dielectric; zero is nondispersive.
+RenderScene MakeScene(format::MaterialModel thirdModel = format::MaterialModel::MetallicRoughness,
+                      ludus::foundation::float32 dielectricAbbeNumber = 0)
 {
     using namespace ludus::foundation;
     SharedPtr<ludus::resources::SceneDefinition> definition;
@@ -125,6 +127,7 @@ RenderScene MakeScene(format::MaterialModel thirdModel = format::MaterialModel::
     {
         legacy.Scattering.Eta = {
             {format::DEFAULT_DIELECTRIC_ETA, format::DEFAULT_DIELECTRIC_ETA, format::DEFAULT_DIELECTRIC_ETA}};
+        legacy.Scattering.K = {{dielectricAbbeNumber, 0, 0}};
     }
     if (thirdModel == format::MaterialModel::HairCard)
     {
@@ -257,7 +260,15 @@ TEST_CASE("Material inspection names dielectrics and their index", "[editor][wor
             true);
     CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Dielectric"));
     CHECK(FindValue(rows, QStringLiteral("IOR η")) == QStringLiteral("1.5"));
+    CHECK(FindValue(rows, QStringLiteral("Abbe number")) == QStringLiteral("Nondispersive"));
     CHECK(FindValue(rows, QStringLiteral("Coating IOR")).isNull() == true);
+
+    // A dispersive glass shows its declared Abbe number beside n_d.
+    REQUIRE(DescribeSceneObjectMaterial(MakeScene(format::MaterialModel::Dielectric, 25.7F),
+                                        QString(LEGACY_ID),
+                                        rows) == true);
+    CHECK(FindValue(rows, QStringLiteral("IOR η")) == QStringLiteral("1.5"));
+    CHECK(FindValue(rows, QStringLiteral("Abbe number")) == QStringLiteral("25.7"));
 
     REQUIRE(DescribeSceneObjectMaterial(MakeScene(format::MaterialModel::ThinDielectric), QString(LEGACY_ID), rows) ==
             true);
