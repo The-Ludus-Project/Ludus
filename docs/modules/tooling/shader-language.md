@@ -1084,6 +1084,23 @@ SPIR-V, WGSL and Metal. A type that one of them lacks therefore fails them all.
 For example, WGSL has no 16-bit or 64-bit integers, so `int16` and `int64`
 values fail the portable set, and the Slang diagnostic names the type.
 
+Compilation checks whether the selected toolchain can emit an artifact.
+Execution also requires the RHI to enable the features used by that artifact.
+For example, Slang can emit WGSL for LUSL `float16`, but Ludus's WebGPU device
+setup does not request `shader-f16`. The Vulkan device setup does not enable
+optional 16-bit arithmetic or storage features. The Windows DXIL profile uses
+Shader Model 6.0, while native 16-bit HLSL types require Shader Model 6.2 or
+later. Use `float32` arithmetic and 32-bit integer types for shaders that must
+run across the current profiles.
+[WGSL extensions](https://www.w3.org/TR/WGSL/#enable-extension) ·
+[Vulkan float16 arithmetic](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceShaderFloat16Int8Features.html) ·
+[Vulkan 16-bit storage](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDevice16BitStorageFeatures.html) ·
+[DXC 16-bit scalar types](https://github.com/microsoft/DirectXShaderCompiler/wiki/16-Bit-Scalar-Types)
+
+For a target-specific variant, check arithmetic width and buffer layout
+separately in the emitted shader. Verify the required features are enabled and
+check the output on the target device from an installed-SDK build.
+
 ### Debug views
 
 The emitted module's `#line` directives map each declaration and statement to
