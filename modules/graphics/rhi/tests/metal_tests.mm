@@ -1,7 +1,6 @@
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
-#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/rhi/adapter.h>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
@@ -25,8 +24,6 @@
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
-
-#include <zlib.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -841,77 +838,24 @@ NSArray<NSString*>* GetTraceFiles(NSString* bundle)
     }
     return files;
 }
-/// Most bytes InflateTrace decodes from one trace file; a capture of the tests' 16-pixel frames is far smaller.
-constexpr usize MAX_INFLATED_TRACE_BYTES = usize{64} * 1024 * 1024;
-/// Bytes InflateTrace decodes per inflate call.
-constexpr usize INFLATE_CHUNK_BYTES = usize{64} * 1024;
-/// The decoded bytes of a file holding consecutive zlib streams, as the macOS 15 trace's store0 does, or nil when the
-/// file does not begin with one. A corrupt or truncated stream ends the decode with the bytes before it.
-NSData* InflateTrace(NSData* bytes)
-{
-    // A zlib stream opens with CMF 0x78 (deflate, 32 KiB window) and a header that is a multiple of 31 (RFC 1950).
-    constexpr uint8 DEFLATE_HEADER = 0x78;
-    constexpr uint32 HEADER_CHECK_DIVISOR = 31;
-    const uint8* data = static_cast<const uint8*>(bytes.bytes);
-    if (bytes.length < 2 || data[0] != DEFLATE_HEADER ||
-        ((uint32{data[0]} << 8U) | uint32{data[1]}) % HEADER_CHECK_DIVISOR != 0)
-    {
-        return nil;
-    }
-    NSMutableData* inflated = [NSMutableData data];
-    z_stream stream{};
-    if (inflateInit(&stream) != Z_OK)
-    {
-        return nil;
-    }
-    stream.next_in = const_cast<Bytef*>(data);
-    stream.avail_in = static_cast<uInt>(bytes.length);
-    StaticArray<uint8, INFLATE_CHUNK_BYTES> chunk{};
-    while (stream.avail_in > 0 && inflated.length < MAX_INFLATED_TRACE_BYTES)
-    {
-        stream.next_out = chunk.GetData();
-        stream.avail_out = static_cast<uInt>(chunk.GetSize());
-        const int32 result = inflate(&stream, Z_NO_FLUSH);
-        [inflated appendBytes:chunk.GetData() length:chunk.GetSize() - stream.avail_out];
-        if (result == Z_STREAM_END)
-        {
-            // The next stream, if any, starts where this one ended.
-            if (inflateReset(&stream) != Z_OK)
-            {
-                break;
-            }
-        }
-        else if (result != Z_OK)
-        {
-            break;
-        }
-    }
-    static_cast<void>(inflateEnd(&stream));
-    return inflated;
-}
-/// True when some file of the .gputrace bundle, at any depth, holds `text` as UTF-8 or UTF-16LE, read as stored or
-/// after InflateTrace. Traces written on macOS 26 record labels as UTF-8 in a top-level file; the macOS 15 runner of
-/// batch 45934093190 wrote them into a zlib-compressed store0 (DescribeTrace showed 78 9c).
+/// True when some file of the .gputrace bundle, at any depth, holds `text` as UTF-8 or UTF-16LE. Traces written on
+/// macOS 26 record labels as UTF-8 in a top-level file; batch 45934093190's macOS 15 runner found neither there.
 bool DoesTraceContain(NSString* bundle, const char* text)
 {
     NSData* utf8 = [NSData dataWithBytes:text length:std::strlen(text)];
     NSData* utf16 = [[NSString stringWithUTF8String:text] dataUsingEncoding:NSUTF16LittleEndianStringEncoding];
     for (NSString* entry in GetTraceFiles(bundle))
     {
-        NSData* stored = [NSData dataWithContentsOfFile:[bundle stringByAppendingPathComponent:entry]];
-        if (stored == nil)
+        NSData* bytes = [NSData dataWithContentsOfFile:[bundle stringByAppendingPathComponent:entry]];
+        if (bytes == nil)
         {
             continue;
         }
-        NSData* inflatedOrNil = InflateTrace(stored);
-        for (NSData* bytes in inflatedOrNil == nil ? @[ stored ] : @[ stored, inflatedOrNil ])
+        for (NSData* needle in @[ utf8, utf16 ])
         {
-            for (NSData* needle in @[ utf8, utf16 ])
+            if ([bytes rangeOfData:needle options:0 range:NSMakeRange(0, bytes.length)].location != NSNotFound)
             {
-                if ([bytes rangeOfData:needle options:0 range:NSMakeRange(0, bytes.length)].location != NSNotFound)
-                {
-                    return true;
-                }
+                return true;
             }
         }
     }
