@@ -367,10 +367,13 @@ nonempty bundle directory as verified and reports synchronously. Opening the
 trace in Xcode remains the acceptance check.
 
 Every Metal library in the RHI is compiled at runtime from generated MSL, and
-the trace records that source. The manifest's `shaderSource` says so. Xcode can
-show the generated MSL, but no authored LUSL or Slang line is mapped to it.
-Shader stepping is unqualified until checked in Xcode. The tool version names
-the Metal framework and macOS versions.
+the trace records that source. The manifest's `shaderSource` says so. Xcode
+shows the generated MSL. Slang keeps `#line` directives in it unless the shader
+build disabled them, so each generated block names its authored LUSL or Slang
+file and line, such as `#line 45 "diagnostic.lusl"` before `FragmentMain`. The
+trace does not embed the authored file, so Xcode shows the MSL rather than the
+LUSL text. Shader stepping is unqualified. The tool version names the Metal
+framework and macOS versions.
 
 `ludus_rhi_metal_tests` checks the restart requirement. A second CTest entry,
 `ludus_rhi_metal_capture_tests`, runs its `[graphics-capture]` cases with
@@ -416,10 +419,17 @@ that the traces record the frame, scope and texture names and the generated
 MSL. It prints an `open -a Xcode` command for each trace.
 
 To qualify the traces, open each in Xcode and replay it. Each has one
-`Ludus/Frame` command buffer with a `Fixture/View` group. In the first, check
-the diagnostic's generated MSL in the shader view. In the second, check the
-`Fixture/OffscreenPass` group and the `Fixture/OffscreenColor` texture. Record the Xcode, macOS and GPU versions with the result. Editor controls
-for capture belong to G4.
+`Ludus/Frame` command buffer with a `Fixture/View` group. In the first, the
+group is a debug group inside the frame's render encoder and contains the draw.
+A compatibility draw records into the encoder that `BeginFrame` opened before
+any scope, so the Metal backend mirrors the open scopes as encoder debug groups
+before such a draw. Select the draw, open its bound pipeline state and check
+the fragment function's generated MSL and its `#line` directives. In the
+second, `Fixture/View` contains the `Fixture/OffscreenPass` encoder, whose
+color attachment is `Fixture/OffscreenColor` and whose depth attachment is
+`Fixture/OffscreenColor/Depth`. A texture's private depth backing is labelled
+with its name plus `/Depth` on every backend. Record the Xcode, macOS and GPU
+versions with the result. Editor controls for capture belong to G4.
 
 ### RenderDoc on Linux and Vulkan
 

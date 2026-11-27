@@ -167,8 +167,9 @@ struct GraphicsCaptureReport final
     foundation::StaticArray<char, GRAPHICS_CAPTURE_DIAGNOSTIC_BYTES> ToolVersion{};
     /// Bounded native detail of the failure, if any.
     foundation::StaticArray<char, GRAPHICS_CAPTURE_DIAGNOSTIC_BYTES> Diagnostic{};
-    /// Shader source the artifact lets a viewer show, as reported by the adapter; for Metal,
-    /// the generated MSL compiled at runtime, without a mapping to authored LUSL or Slang lines.
+    /// Shader source the artifact lets a viewer show, as reported by the adapter. For Metal,
+    /// the generated MSL compiled at runtime; its `#line` directives, where the shader build
+    /// kept them, name authored LUSL or Slang files and lines whose text is not embedded.
     foundation::StaticArray<char, GRAPHICS_CAPTURE_DIAGNOSTIC_BYTES> ShaderSource{};
 };
 

@@ -385,6 +385,15 @@ bool IsRasterRequestCurrent(RasterRequestIdentity identity) noexcept;
 void RasterComplete(foundation::uint32 request, RasterStatus status) noexcept;
 void RasterFail(foundation::uint32 request, RasterStatus status) noexcept;
 void ResetLifetimeRecords() noexcept;
+/// Native labels for one Buffer or Texture slot's objects; both terminated UTF-8, empty to clear.
+struct RasterDebugNames final
+{
+    /// The resource's validated debug name.
+    const char* Name = "";
+    /// Label of a texture's private depth backing: Name plus "/Depth", or empty for an empty
+    /// Name and for buffers.
+    const char* DepthName = "";
+};
 } // namespace ludus::graphics::rhi::internal
 namespace ludus::graphics::rhi::backend
 {
@@ -423,9 +432,11 @@ RasterStatus RasterCreateSet(foundation::usize,
                              foundation::uint32) noexcept;
 RasterStatus RasterCreatePipeline(foundation::usize, const internal::RasterPipelineInfo&, foundation::uint32) noexcept;
 void RasterDestroy(internal::RasterKind, foundation::usize) noexcept;
-/// Apply a validated, terminated debug name to a live Buffer or Texture slot's native objects;
-/// an empty name clears it. Best effort: backends without object labels ignore the call.
-void RasterSetDebugName(internal::RasterKind kind, foundation::usize slot, const char* name) noexcept;
+/// Apply validated debug names to a live Buffer or Texture slot's native objects; empty names
+/// clear them. Best effort: backends without object labels ignore the call.
+void RasterSetDebugName(internal::RasterKind kind,
+                        foundation::usize slot,
+                        const internal::RasterDebugNames& names) noexcept;
 RasterStatus RasterDraw(const internal::RasterPacket&) noexcept;
 RasterStatus RasterPreparePass(const internal::RasterPassInfo&) noexcept;
 RasterStatus RasterBeginPass(const internal::RasterPassInfo&) noexcept;

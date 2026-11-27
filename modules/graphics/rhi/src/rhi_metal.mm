@@ -81,6 +81,7 @@ void TimingEnd() noexcept;
 void BeginPassTimingFrame() noexcept;
 void SubmitPassTimings() noexcept;
 void ClosePassLabels() noexcept;
+void OpenScopeEncoderGroups() noexcept;
 namespace
 {
 using namespace foundation;
@@ -1072,6 +1073,7 @@ ResourceStatus Draw(usize slot) noexcept
     Uniform& uniform = GetMetal().Uniforms[pipeline.UniformSlot];
     id<MTLBuffer> buffer = uniform.Buffers[GetMetal().Slot];
     std::memcpy(buffer.contents, uniform.Bytes, uniform.Size);
+    OpenScopeEncoderGroups();
     [GetMetal().Encoder setRenderPipelineState:pipeline.Object];
     [GetMetal().Encoder setVertexBuffer:buffer offset:0 atIndex:0];
     [GetMetal().Encoder setFragmentBuffer:buffer offset:0 atIndex:0];

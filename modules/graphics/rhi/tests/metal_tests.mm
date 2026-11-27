@@ -771,6 +771,7 @@ namespace
 constexpr uint64 CAPTURE_DEADLINE_MILLISECONDS = 120'000;
 constexpr uint32 CAPTURE_EXTENT = 16;
 constexpr char CAPTURE_TEXTURE[] = "Capture/SceneColor";
+constexpr char CAPTURE_DEPTH[] = "Capture/SceneColor/Depth";
 constexpr char CAPTURE_VIEW[] = "Capture/View";
 constexpr char CAPTURE_PASS[] = "Capture/OffscreenPass";
 
@@ -994,6 +995,8 @@ TEST_CASE("G2 Metal captures named offscreen frames to verified .gputrace docume
         CHECK(DoesTraceContain(bundle, CAPTURE_VIEW) == true);
         CHECK(DoesTraceContain(bundle, CAPTURE_PASS) == true);
         CHECK(DoesTraceContain(bundle, CAPTURE_TEXTURE) == true);
+        // The depth backing carries its own label beside the color texture's.
+        CHECK(DoesTraceContain(bundle, CAPTURE_DEPTH) == true);
         // Destroying the device with an armed request ends it without writing anything.
         rhi::GraphicsCaptureIdentity armed;
         REQUIRE(rhi::RequestGraphicsCapture(device, directory.MakeRequest(), armed) == rhi::GraphicsCaptureError::None);

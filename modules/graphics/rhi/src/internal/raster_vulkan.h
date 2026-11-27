@@ -2191,19 +2191,19 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     task->Request = request;
     return SubmitNativePreparation(foundation::Move(task), info.ShouldPrepareAsynchronously);
 }
-void RasterSetDebugName(internal::RasterKind kind, usize slot, const char* name) noexcept
+void RasterSetDebugName(internal::RasterKind kind, usize slot, const internal::RasterDebugNames& names) noexcept
 {
     if (kind == internal::RasterKind::Buffer)
     {
         SetVulkanObjectName(VK_OBJECT_TYPE_BUFFER,
                             reinterpret_cast<uint64>(GetRasterVulkan().Buffers[slot].Object),
-                            name);
+                            names.Name);
     }
     else if (kind == internal::RasterKind::Texture)
     {
         const RasterVulkanTexture& texture = GetRasterVulkan().Textures[slot];
-        SetVulkanObjectName(VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64>(texture.Object), name);
-        SetVulkanObjectName(VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64>(texture.Depth), name);
+        SetVulkanObjectName(VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64>(texture.Object), names.Name);
+        SetVulkanObjectName(VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64>(texture.Depth), names.DepthName);
     }
 }
 void RasterDestroy(internal::RasterKind kind, usize slot) noexcept

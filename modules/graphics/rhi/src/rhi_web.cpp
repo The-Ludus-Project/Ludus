@@ -522,15 +522,15 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     return MakeWebGlCurrent() == true ? webgl::RasterCreatePipeline(slot, info, id)
                                       : webgpu::RasterCreatePipeline(slot, info, id);
 }
-void RasterSetDebugName(internal::RasterKind kind, usize slot, const char* name) noexcept
+void RasterSetDebugName(internal::RasterKind kind, usize slot, const internal::RasterDebugNames& names) noexcept
 {
     if (MakeWebGlCurrent() == true)
     {
-        webgl::RasterSetDebugName(kind, slot, name);
+        webgl::RasterSetDebugName(kind, slot, names);
     }
     else
     {
-        webgpu::RasterSetDebugName(kind, slot, name);
+        webgpu::RasterSetDebugName(kind, slot, names);
     }
 }
 void RasterDestroy(internal::RasterKind kind, usize slot) noexcept

@@ -48,8 +48,12 @@ using foundation::usize;
 constexpr foundation::logging::LogCategory LOG_CAPTURE{"RHI"};
 constexpr std::string_view ARTIFACT_EXTENSION = ".gputrace";
 /// What a Ludus Metal trace can show as shader source: every RHI library is compiled at
-/// runtime from generated MSL, which the trace records.
-constexpr const char* SHADER_SOURCE = "generated MSL compiled at runtime; authored LUSL/Slang lines are not mapped";
+/// runtime from generated MSL, which the trace records. Slang keeps `#line` directives in that
+/// MSL unless the build disabled them; they name the authored file and line, but the trace
+/// does not embed that file's text.
+constexpr const char* SHADER_SOURCE =
+    "generated MSL compiled at runtime; any #line directives name the authored LUSL/Slang file and line, "
+    "whose text is not embedded";
 
 using ArtifactName = foundation::StaticString<GRAPHICS_CAPTURE_NAME_BYTES>;
 
