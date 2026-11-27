@@ -500,6 +500,9 @@ public:
     /// Opt in to the GPU-compute RT1 reference before any meshes or material versions
     /// are live. Retains the same CPU geometry/material inputs as CpuOracle; captures then
     /// traverse the median BVH and integrate transport on the device, without native rays.
+    /// The geometric kernel compiles no optical connections: a capture with a positive
+    /// ReferenceCaptureDescription::OpticalWavelengthWorld reports Unsupported unless the
+    /// renderer was enabled with the overload that also takes `renderer_reference_optical`.
     /// @param trace Cooked `renderer_reference` compute kernel from the installed helper.
     /// @param reduce Cooked `renderer_reference_reduce` kernel from the same source.
     /// @param options Traversal must be GpuCompute with positive CPU and GPU byte budgets.
@@ -508,6 +511,21 @@ public:
     /// or reflected bindings that differ from the frozen kernel ABI. Failure preserves
     /// disabled state. Owner-thread/between-frames only.
     [[nodiscard]] rhi::RasterStatus EnableReferenceRendering(const rhi::RasterShaderDescription& trace,
+                                                             const rhi::RasterShaderDescription& reduce,
+                                                             const ReferenceRenderingOptions& options) noexcept;
+    /// Opt in to the GPU-compute RT1 reference with optical captures. As the three-argument
+    /// overload, and captures with a positive OpticalWavelengthWorld dispatch opticalTrace,
+    /// which adds the optical connections' interaction regions, field lattices and relay
+    /// chains to the geometric transport. Geometric captures keep dispatching trace, so they
+    /// do not pay for that state. Pipeline preparation also compiles opticalTrace.
+    /// @param trace Cooked `renderer_reference` compute kernel from the installed helper.
+    /// @param opticalTrace Cooked `renderer_reference_optical` kernel from the same helper.
+    /// @param reduce Cooked `renderer_reference_reduce` kernel from the same source.
+    /// @param options Traversal must be GpuCompute with positive CPU and GPU byte budgets.
+    /// @return As the three-argument overload; InvalidDescription also when opticalTrace's
+    /// reflected bindings differ from the frozen kernel ABI.
+    [[nodiscard]] rhi::RasterStatus EnableReferenceRendering(const rhi::RasterShaderDescription& trace,
+                                                             const rhi::RasterShaderDescription& opticalTrace,
                                                              const rhi::RasterShaderDescription& reduce,
                                                              const ReferenceRenderingOptions& options) noexcept;
     /// Cancel reference jobs, detach their accepted native work and drop retained
@@ -990,6 +1008,11 @@ private:
     [[nodiscard]] foundation::usize
     getProgramPipelines(MaterialProgram program,
                         foundation::BorrowedView<rhi::RasterPipelineHandle> outPipelines) const noexcept;
+    /// Shared GPU-compute EnableReferenceRendering; a null opticalTraceOrNull leaves optical captures unsupported.
+    [[nodiscard]] rhi::RasterStatus enableReferenceCompute(const rhi::RasterShaderDescription& trace,
+                                                           const rhi::RasterShaderDescription* opticalTraceOrNull,
+                                                           const rhi::RasterShaderDescription& reduce,
+                                                           const ReferenceRenderingOptions& options) noexcept;
     [[nodiscard]] rhi::RasterStatus prewarmProgram(const rhi::RasterShaderDescription& vertex,
                                                    const rhi::RasterShaderDescription& fragment,
                                                    const rhi::RasterShaderDescription* shadowOrNull,

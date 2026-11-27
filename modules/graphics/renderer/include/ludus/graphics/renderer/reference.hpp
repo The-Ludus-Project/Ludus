@@ -361,8 +361,10 @@ struct ReferenceCaptureDescription final
     /// with optical visibility. Emission reached through glass (smooth dielectric reflection and transmission, which
     /// no light sample reaches) keeps full weight; its connection is relayed coherently back through the glass events
     /// to the last rough vertex or the camera. Requires UniformArea and CpuOracle/GpuCompute; NativeQueries rejects
-    /// this profile. Lattice, projection and range limits are documented in render-graph-authoring.md, "Wave tracing".
-    /// Changing wavelength resets accumulation. Nonfinite/negative values are rejected. No silent fallback.
+    /// this profile, and GpuCompute reports Unsupported unless EnableReferenceRendering received the
+    /// `renderer_reference_optical` kernel. Lattice, projection and range limits are documented in
+    /// render-graph-authoring.md, "Wave tracing". Changing wavelength resets accumulation. Nonfinite/negative values
+    /// are rejected. No silent fallback.
     foundation::float32 OpticalWavelengthWorld = 0;
     /// Optional borrowed bounded absorbing medium, validated and copied during Begin/Update; null is
     /// vacuum and keeps every existing capture bit for bit. The medium joins the integral key:

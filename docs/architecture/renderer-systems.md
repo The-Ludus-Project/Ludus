@@ -3251,6 +3251,29 @@ instances, lights, pixels or samples.
 mesh or material version exists. It needs negotiated compute storage but no
 native ray queries. Devices without compute reject with `Unsupported`.
 
+`renderer_reference` is the geometric kernel: it compiles none of the optical
+connections of a positive `OpticalWavelengthWorld`, so geometric captures do not
+carry their interaction regions, field lattices or relay chains in private
+memory. Optical captures also need the `renderer_reference_optical` recipe,
+passed to the four-argument `EnableReferenceRendering` (trace, optical trace,
+reduce, options). Its transport is `renderer_reference.slang` compiled with
+`LUDUS_REFERENCE_OPTICAL_CONNECTIONS`, and it is dispatched only for optical
+captures. Without it an optical GPU-compute capture reports `Unsupported`; the
+renderer never runs one with the geometric kernel, which marks such a dispatch
+invalid. Pipeline preparation compiles every kernel it receives.
+
+Removing the optical state from the geometric kernel changed it as follows. The
+kernels were compiled with the pinned slangc 2026.1.2 (`-target spirv -profile
+spirv_1_3 -entry TraceMain`). Private memory is the sum of Function-storage
+variables after inlining every call, as Mesa does:
+
+| `TraceMain` kernel | SPIR-V assembly lines | Private memory | In arrays |
+| --- | ---: | ---: | ---: |
+| `79ae887c7`, before the UTD, Fraunhofer and glass-relay connections | 144,709 | 138 KiB | 53 KiB |
+| One kernel for both profiles (`e5b0ba580`, spectral) | 215,690 | 368 KiB | 125 KiB |
+| Geometric `renderer_reference` | 120,111 | 71 KiB | 26 KiB |
+| Optical `renderer_reference_optical` | 215,979 | 368 KiB | 125 KiB |
+
 Setup is the CPU oracle's: the same admitted geometry, materials, retained
 texture mip and binned-SAH BVH, packed once in the GPU preview's scene layout. Each
 `AdvanceReferenceCapture(capture, surface)` step polls setup or a readback, or
@@ -3344,8 +3367,10 @@ Cornell tile room of the
 arrangements are `single`, `striped`, `interleaved`, `shuffled` and `only-0` to
 `only-4`, and TILES is 5 or 10. `LUDUS_REFERENCE_BENCHMARK_KERNELS` names GPU
 transport kernels to compare in one process: `reference`, `repeat-closest`,
-`repeat-visibility` and `permuted`, separated by commas. Runs alternate their
-order. The benchmark fails when a kernel's checksum or query counts differ from
+`repeat-visibility`, `permuted` and `optical`, separated by commas. `optical`
+traces geometric captures with `renderer_reference_optical`, so
+`reference,optical` measures what the optical connection state costs them. Runs
+alternate their order. The benchmark fails when a kernel's checksum or query counts differ from
 the first kernel's, and prints each kernel's median per-dispatch transport time
 and its paired difference:
 

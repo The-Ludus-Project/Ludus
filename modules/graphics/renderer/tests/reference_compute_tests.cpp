@@ -10,6 +10,7 @@
 #include "renderer_lit_shadow.h"
 #include "renderer_output.h"
 #include "renderer_reference.h"
+#include "renderer_reference_optical.h"
 #include "renderer_reference_reduce.h"
 #include "renderer_shadow.h"
 #include <catch2/generators/catch_generators.hpp>
@@ -57,20 +58,42 @@ struct Session final
     rr::MaterialProgram Program;
     rr::Snapshot Snapshot;
 };
+/// Trace kernels a GPU-compute Prepare enables.
+enum class TraceKernels : uint8
+{
+    /// renderer_reference alone: optical captures report Unsupported.
+    Geometric,
+    /// renderer_reference and renderer_reference_optical, for captures with a positive optical wavelength.
+    WithOptical,
+};
 S Prepare(rhi::DeviceHandle device,
           rr::ReferenceTraversal traversal,
           Session& outSession,
-          bool shouldIncludeDegenerateTriangles = false)
+          bool shouldIncludeDegenerateTriangles = false,
+          TraceKernels kernels = TraceKernels::Geometric)
 {
     rr::Renderer& renderer = outSession.Renderer;
     REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
             S::Ready);
     const rr::ReferenceRenderingOptions options{traversal, CPU_BUDGET, 0, CPU_TILE_PIXELS, GPU_BUDGET};
-    const S enabled = traversal == rr::ReferenceTraversal::GpuCompute
-                          ? renderer.EnableReferenceRendering(shaders::renderer_reference::Compute(),
-                                                              shaders::renderer_reference_reduce::Compute(),
-                                                              options)
-                          : renderer.EnableReferenceRendering({}, options);
+    S enabled = S::Ready;
+    if (traversal != rr::ReferenceTraversal::GpuCompute)
+    {
+        enabled = renderer.EnableReferenceRendering({}, options);
+    }
+    else if (kernels == TraceKernels::WithOptical)
+    {
+        enabled = renderer.EnableReferenceRendering(shaders::renderer_reference::Compute(),
+                                                    shaders::renderer_reference_optical::Compute(),
+                                                    shaders::renderer_reference_reduce::Compute(),
+                                                    options);
+    }
+    else
+    {
+        enabled = renderer.EnableReferenceRendering(shaders::renderer_reference::Compute(),
+                                                    shaders::renderer_reference_reduce::Compute(),
+                                                    options);
+    }
     if (enabled != S::Ready)
     {
         return enabled;
@@ -530,6 +553,11 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
                                                 shaders::renderer_reference_reduce::Compute(),
                                                 options) == S::InvalidDescription);
         CHECK(rejected.EnableReferenceRendering({}, options) == S::InvalidDescription);
+        // The optical kernel binds the same whole ABI.
+        CHECK(rejected.EnableReferenceRendering(shaders::renderer_reference::Compute(),
+                                                shaders::renderer_reference_reduce::Compute(),
+                                                shaders::renderer_reference_reduce::Compute(),
+                                                options) == S::InvalidDescription);
         rr::ReferenceRenderingOptions oracle = options;
         oracle.Traversal = rr::ReferenceTraversal::CpuOracle;
         CHECK(rejected.EnableReferenceRendering(shaders::renderer_reference::Compute(),
@@ -541,7 +569,11 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
                                                 shaders::renderer_reference_reduce::Compute(),
                                                 unbudgeted) == S::InvalidDescription);
     }
-    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu, true);
+    const S enabled = Prepare(device,
+                              rr::ReferenceTraversal::GpuCompute,
+                              gpu,
+                              true,
+                              test.OpticalWavelengthWorld > 0 ? TraceKernels::WithOptical : TraceKernels::Geometric);
     if (enabled == S::Unsupported)
     {
         SKIP("Compute storage is unavailable on this device");
@@ -1075,6 +1107,10 @@ TEST_CASE("GPU-compute reference continues targets and exports its traversal", "
     capture.Seed = 3;
     capture.Environment = {.3F, .4F, .5F};
     rr::ReferenceCapture handle;
+    // The geometric kernel compiles no optical connections: an optical capture needs renderer_reference_optical.
+    rr::ReferenceCaptureDescription optical = capture;
+    optical.OpticalWavelengthWorld = 5e-7F;
+    CHECK(gpu.Renderer.BeginReferenceCapture(gpu.Snapshot, optical, handle) == S::Unsupported);
     const S begun = gpu.Renderer.BeginReferenceCapture(gpu.Snapshot, capture, handle);
     REQUIRE((begun == S::Ready || begun == S::Pending));
     // Setup polls without a surface; a dispatch needs one and the capture stays retryable.
@@ -2437,7 +2473,7 @@ TEST_CASE("Optical connections relayed through glass match between CPU and GPU r
         SKIP("No Metal adapter");
     }
     Session gpu;
-    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu, false, TraceKernels::WithOptical);
     if (enabled == S::Unsupported)
     {
         SKIP("Compute storage is unavailable on this device");
@@ -2599,7 +2635,7 @@ TEST_CASE("A white-light slit's colour fringes match the analytic spectral integ
         SKIP("No Metal adapter");
     }
     Session gpu;
-    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu, false, TraceKernels::WithOptical);
     if (enabled == S::Unsupported)
     {
         SKIP("Compute storage is unavailable on this device");

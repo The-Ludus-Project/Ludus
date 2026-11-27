@@ -267,8 +267,10 @@ Status BuildDispatchGraph(const ReferenceComputePipelines& pipelines,
     };
     if (status == Status::Ready)
     {
+        // An optical capture reaches here only with the optical kernel (BeginReferenceCapture checks it).
+        const bool isOptical = job.Description.OpticalWavelengthWorld > 0;
         status = appendPass("Reference compute transport",
-                            pipelines.TracePipeline,
+                            isOptical == true ? pipelines.OpticalTracePipeline : pipelines.TracePipeline,
                             (job.Description.Width + LUDUS_REFERENCE_GROUP_WIDTH - 1) / LUDUS_REFERENCE_GROUP_WIDTH,
                             job.Description.Height);
     }
@@ -539,6 +541,7 @@ ReferenceComputeJob::~ReferenceComputeJob() noexcept
 }
 Status CreateReferenceComputePipelines(rhi::DeviceHandle device,
                                        const rhi::RasterShaderDescription& trace,
+                                       const rhi::RasterShaderDescription* opticalTraceOrNull,
                                        const rhi::RasterShaderDescription& reduce,
                                        ReferenceComputePipelines& outPipelines) noexcept
 {
@@ -552,12 +555,18 @@ Status CreateReferenceComputePipelines(rhi::DeviceHandle device,
     {
         return Status::Unsupported;
     }
-    if (IsExpectedKernel(trace, true) == false || IsExpectedKernel(reduce, false) == false)
+    if (IsExpectedKernel(trace, true) == false || IsExpectedKernel(reduce, false) == false ||
+        (opticalTraceOrNull != nullptr && IsExpectedKernel(*opticalTraceOrNull, true) == false))
     {
         return Status::InvalidDescription;
     }
     ReferenceComputePipelines pipelines;
     Status status = rhi::CreateRasterShader(device, trace, pipelines.TraceShader);
+    if (Accepted(status) == true && opticalTraceOrNull != nullptr)
+    {
+        status = rhi::CreateRasterShader(device, *opticalTraceOrNull, pipelines.OpticalTraceShader);
+        pipelines.HasOpticalTrace = Accepted(status);
+    }
     if (Accepted(status) == true)
     {
         status = rhi::CreateRasterShader(device, reduce, pipelines.ReduceShader);
@@ -589,7 +598,8 @@ Status PollReferenceComputePipelines(rhi::DeviceHandle device, ReferenceComputeP
 {
     constexpr uint32 LAYOUT_PHASE = 0;
     constexpr uint32 TRACE_PHASE = 1;
-    constexpr uint32 REDUCE_PHASE = 2;
+    constexpr uint32 OPTICAL_TRACE_PHASE = 2;
+    constexpr uint32 REDUCE_PHASE = 3;
     ReferenceComputePipelines& pipelines = inoutPipelines;
     while (pipelines.Setup == Status::Pending)
     {
@@ -598,6 +608,10 @@ Status PollReferenceComputePipelines(rhi::DeviceHandle device, ReferenceComputeP
         if (pipelines.Phase == LAYOUT_PHASE)
         {
             status = rhi::GetStatus(device, pipelines.TraceShader);
+            if (status == Status::Ready && pipelines.HasOpticalTrace == true)
+            {
+                status = rhi::GetStatus(device, pipelines.OpticalTraceShader);
+            }
             if (status == Status::Ready)
             {
                 status = rhi::GetStatus(device, pipelines.ReduceShader);
@@ -629,6 +643,18 @@ Status PollReferenceComputePipelines(rhi::DeviceHandle device, ReferenceComputeP
                 isCreated = Accepted(status);
             }
         }
+        else if (pipelines.Phase == OPTICAL_TRACE_PHASE)
+        {
+            // Without the optical kernel the phase creates nothing and advances.
+            isCreated = true;
+            if (pipelines.HasOpticalTrace == true)
+            {
+                status = rhi::CreateComputePipeline(device,
+                                                    {pipelines.OpticalTraceShader, pipelines.Layout},
+                                                    pipelines.OpticalTracePipeline);
+                isCreated = Accepted(status);
+            }
+        }
         else if (pipelines.Phase == REDUCE_PHASE)
         {
             status = rhi::CreateComputePipeline(device,
@@ -639,6 +665,10 @@ Status PollReferenceComputePipelines(rhi::DeviceHandle device, ReferenceComputeP
         else
         {
             status = rhi::GetStatus(device, pipelines.TracePipeline);
+            if (status == Status::Ready && pipelines.HasOpticalTrace == true)
+            {
+                status = rhi::GetStatus(device, pipelines.OpticalTracePipeline);
+            }
             if (status == Status::Ready)
             {
                 status = rhi::GetStatus(device, pipelines.ReducePipeline);
@@ -669,9 +699,11 @@ Status PollReferenceComputePipelines(rhi::DeviceHandle device, ReferenceComputeP
 void DestroyReferenceComputePipelines(rhi::DeviceHandle device, ReferenceComputePipelines& inoutPipelines) noexcept
 {
     static_cast<void>(rhi::Destroy(device, inoutPipelines.TracePipeline));
+    static_cast<void>(rhi::Destroy(device, inoutPipelines.OpticalTracePipeline));
     static_cast<void>(rhi::Destroy(device, inoutPipelines.ReducePipeline));
     static_cast<void>(rhi::Destroy(device, inoutPipelines.Layout));
     static_cast<void>(rhi::Destroy(device, inoutPipelines.TraceShader));
+    static_cast<void>(rhi::Destroy(device, inoutPipelines.OpticalTraceShader));
     static_cast<void>(rhi::Destroy(device, inoutPipelines.ReduceShader));
     static_cast<void>(rhi::Destroy(device, inoutPipelines.LtcTable));
     static_cast<void>(rhi::Destroy(device, inoutPipelines.GgxAlbedoTable));

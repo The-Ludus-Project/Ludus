@@ -852,6 +852,20 @@ Status Renderer::EnableReferenceRendering(const rhi::RasterShaderDescription& tr
                                           const rhi::RasterShaderDescription& reduce,
                                           const ReferenceRenderingOptions& options) noexcept
 {
+    return enableReferenceCompute(trace, nullptr, reduce, options);
+}
+Status Renderer::EnableReferenceRendering(const rhi::RasterShaderDescription& trace,
+                                          const rhi::RasterShaderDescription& opticalTrace,
+                                          const rhi::RasterShaderDescription& reduce,
+                                          const ReferenceRenderingOptions& options) noexcept
+{
+    return enableReferenceCompute(trace, &opticalTrace, reduce, options);
+}
+Status Renderer::enableReferenceCompute(const rhi::RasterShaderDescription& trace,
+                                        const rhi::RasterShaderDescription* opticalTraceOrNull,
+                                        const rhi::RasterShaderDescription& reduce,
+                                        const ReferenceRenderingOptions& options) noexcept
+{
     if (mState.Get() == nullptr || mState->Setup != Status::Ready)
     {
         return Status::NotReady;
@@ -900,7 +914,8 @@ Status Renderer::EnableReferenceRendering(const rhi::RasterShaderDescription& tr
         return Status::CapacityExceeded;
     }
     state->GpuBytes = TABLE_BYTES;
-    Status status = internal::CreateReferenceComputePipelines(mState->Device, trace, reduce, state->Compute);
+    Status status =
+        internal::CreateReferenceComputePipelines(mState->Device, trace, opticalTraceOrNull, reduce, state->Compute);
     if (status != Status::Ready)
     {
         return status;
@@ -972,6 +987,12 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     }
     if (description.OpticalWavelengthWorld > 0 && gpuSetup == false &&
         Reference->Options.Traversal == ReferenceTraversal::NativeQueries)
+    {
+        return Status::Unsupported;
+    }
+    // Only the optical kernel evaluates optical connections on the GPU; the geometric kernel compiles none.
+    if (description.OpticalWavelengthWorld > 0 && gpuSetup == false &&
+        Reference->Options.Traversal == ReferenceTraversal::GpuCompute && Reference->Compute.HasOpticalTrace == false)
     {
         return Status::Unsupported;
     }

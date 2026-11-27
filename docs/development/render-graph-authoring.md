@@ -12084,6 +12084,10 @@ default, one wavelength) or `Visible`, the [spectral integral](#spectral-optical
 of the template's `WT_SPECTRUM` `1`; `Visible` without a wavelength is rejected.
 Select `CpuOracle` or `GpuCompute` and `UniformArea` light
 sampling; incompatible native-query or resampled requests reject explicitly.
+`GpuCompute` evaluates these connections only in the `renderer_reference_optical`
+kernel: cook it beside `renderer_reference` and pass it to the four-argument
+`EnableReferenceRendering`, or an optical capture reports `Unsupported`. See
+[GPU-compute reference](../architecture/renderer-systems.md#gpu-compute-reference).
 Changing the wavelength, operator or spectrum resets progressive accumulation. Raw
 `LUHDR01` exports retain the wavelength at byte 92, optical flag 256 and, for UTD,
 flag 2048 or, for Fraunhofer, flag 4096. Flag 8192 marks a `Visible` capture.
