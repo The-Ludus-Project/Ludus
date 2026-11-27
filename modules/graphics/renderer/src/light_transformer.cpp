@@ -2,12 +2,15 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/geometry/point_search.hpp>
 #include <ludus/foundation/geometry/status.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/status.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/rhi/profile.h>
+
+#include "renderer_light_transformer_decoder_slots.h"
 
 // Thanks to Bing Xu et al., "A Generalizable Light Transport 3D Embedding for
 // Global Illumination", SIGGRAPH 2026, section 3.3, https://arxiv.org/abs/2510.18189,
@@ -25,6 +28,10 @@ constexpr usize BUFFER_COUNT = LIGHT_TRANSFORMER_RESULT_BUFFER + 1;
 constexpr usize PARAMETER_COUNT = 4;
 constexpr usize ANCHOR_WORDS = 1 + LIGHT_TRANSFORMER_DIMENSION / LUDUS_LIGHT_TRANSFORMER_WORD_CHANNELS;
 constexpr usize QUERY_WORDS = LUDUS_LIGHT_TRANSFORMER_QUERY_WORDS;
+namespace decoder_slots = ludus::shaders::renderer_light_transformer_decoder::slots;
+/// Binding slot of each workload buffer, in buffer order, from the recipe's generated slot table.
+constexpr StaticArray<uint32, BUFFER_COUNT> BUFFER_SLOTS{
+    {decoder_slots::NODES, decoder_slots::WEIGHTS, decoder_slots::FEATURES, decoder_slots::RESULTS}};
 constexpr uint32 FLOAT_EXPONENT_MASK = 0x7f800000;
 // Decode through unsigned character object representations, without alignment,
 // native byte-order or float-pointer aliasing assumptions.
@@ -248,7 +255,7 @@ Status PrepareLightTransformerDecoder(BorrowedView<const float32> weights,
     StaticArray<rhi::ComputeWorkloadBinding, BUFFER_COUNT> bindings{};
     for (usize i = 0; i < BUFFER_COUNT; ++i)
     {
-        bindings[i] = {static_cast<uint32>(i),
+        bindings[i] = {BUFFER_SLOTS[i],
                        static_cast<uint32>(i),
                        0,
                        buffers[i].Size,

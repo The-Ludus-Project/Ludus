@@ -383,7 +383,10 @@ independently: an emitter behind a unit cube of absorber with
 must attenuate the centre pixel by `exp(-σ_a)` within 0.2 % and leave the image
 corners unattenuated. Their images must agree within 1e-5, and `acceptance` must
 stop at step 18. Where the device lacks compute storage, the test checks the CPU
-oracle alone and says so. The matched analytic and CPU/GPU parity fixtures are
+oracle alone and says so. A cold GPU-compute capture compiles the reference
+kernel, so each capture gets the renderer's reference cold-preparation budget:
+180 seconds, or 300 with `LUDUS_SCENE_SANITIZERS`, passed as the script's second
+argument. The matched analytic and CPU/GPU parity fixtures are
 described in the
 [homogeneous absorbing medium reference](../architecture/renderer-systems.md#homogeneous-absorbing-medium-reference).
 

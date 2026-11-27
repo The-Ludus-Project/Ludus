@@ -367,7 +367,7 @@ PBRT. See [PBRT's participating-media format](https://www.pbrt.org/fileformat-v4
 
 | glTF / OBJ | Ludus |
 | --- | --- |
-| glTF metallic-roughness | base colour factor x texture; metallic/roughness factors stay scalars and multiply the surface map's metallic (blue) and roughness (green) channels |
+| glTF metallic-roughness | base colour factor x texture; metallic and roughness factors stay scalars. The cook takes metallic from glTF blue and roughness from glTF green, and writes them as metallic in surface-map alpha and roughness in surface-map blue |
 | glTF `normalTexture` / MTL `norm` | surface map RG at the normal map's resolution; `scale`/`-bm` is the normal strength, clamped to [0, 8] |
 | glTF `alphaMode` | `MASK`: LUSCN v5 alpha mask at `alphaCutoff`, coverage = texture alpha x `baseColorFactor` alpha; `BLEND`: opaque (`ALPHA_APPROXIMATED`) |
 | glTF / MTL emissive (`emissiveFactor` x strength, `Ke`) | linear RGB nits; *decorative* emission (see the budget planner); `emissiveTexture`/`map_Ke` become an sRGB emission map multiplying it |

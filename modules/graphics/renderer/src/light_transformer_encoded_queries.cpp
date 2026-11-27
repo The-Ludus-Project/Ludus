@@ -1,5 +1,7 @@
 #include <ludus/graphics/renderer/light_transformer_encoder.hpp>
 
+#include "internal/light_transformer_encoded_queries.h"
+
 #include <ludus/content/render_graph_format/detail/light_transformer_encoder_layout.h>
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -10,6 +12,8 @@
 
 #include <cstring>
 
+#include "renderer_light_transformer_encoded_queries_slots.h"
+
 namespace ludus::graphics::renderer
 {
 using namespace foundation;
@@ -19,22 +23,23 @@ using Status = rhi::RasterStatus;
 constexpr usize PARAMETER_SCALARS = LUDUS_LIGHT_TRANSFORMER_WORD_CHANNELS;
 constexpr usize BUFFER_COUNT = 3;
 constexpr usize RESULT_BUFFER = 2;
-constexpr usize RESULT_SLOT = 3;
 constexpr usize QUERY_CHANNELS = LUDUS_LIGHT_TRANSFORMER_QUERY_CHANNELS;
 template <typename Element>
 BorrowedView<const uint8> GetBytes(BorrowedView<const Element> values) noexcept
 {
     return {reinterpret_cast<const uint8*>(values.GetDataOrNull()), values.GetSize() * sizeof(Element)};
 }
+namespace query_slots = ludus::shaders::renderer_light_transformer_encoded_queries::slots;
 } // namespace
-Status PrepareLightTransformerPacketQueries(BorrowedView<const float32> weights,
-                                            rhi::BufferHandle packet,
-                                            usize packetBytes,
-                                            BorrowedView<const LightTransformerQuery> queries,
-                                            rhi::DeviceHandle device,
-                                            const rhi::RasterShaderDescription& shader,
-                                            usize maximumBufferBytes,
-                                            rhi::ComputeWorkload& outWorkload) noexcept
+Status internal::PrepareLightTransformerPacketQueries(BorrowedView<const float32> weights,
+                                                      rhi::BufferHandle packet,
+                                                      usize packetBytes,
+                                                      BorrowedView<const LightTransformerQuery> queries,
+                                                      rhi::DeviceHandle device,
+                                                      const rhi::RasterShaderDescription& shader,
+                                                      const LightTransformerPacketQuerySlots& slots,
+                                                      usize maximumBufferBytes,
+                                                      rhi::ComputeWorkload& outWorkload) noexcept
 {
     if (weights.IsValid() == false || weights.GetSize() != LIGHT_TRANSFORMER_DECODER_WEIGHTS ||
         queries.IsValid() == false || queries.IsEmpty() == true || queries.GetSize() > ~uint32{0} ||
@@ -128,9 +133,9 @@ Status PrepareLightTransformerPacketQueries(BorrowedView<const float32> weights,
          {parameterBytes, GetBytes(BorrowedView<const float32>{parameters.GetData(), parameters.GetSize()}), true},
          {resultBytes, {}, false}}};
     const StaticArray<rhi::ComputeWorkloadBinding, BUFFER_COUNT> bindings{
-        {{0, 0, 0, packetBytes, false},
-         {1, 1, 0, parameterBytes, false},
-         {RESULT_SLOT, RESULT_BUFFER, 0, resultBytes, true}}};
+        {{slots.Packet, 0, 0, packetBytes, false},
+         {slots.Weights, 1, 0, parameterBytes, false},
+         {slots.Results, RESULT_BUFFER, 0, resultBytes, true}}};
     rhi::ComputeWorkloadKernel kernel;
     kernel.NameOrNull = "Light Transformer encoded queries";
     kernel.Shader = shader;
@@ -138,6 +143,27 @@ Status PrepareLightTransformerPacketQueries(BorrowedView<const float32> weights,
     kernel.GroupsX = groupsX;
     kernel.GroupsY = groupsY;
     return outWorkload.Initialize(device, {{buffers.GetData(), buffers.GetSize()}, {&kernel, 1}, maximumBufferBytes});
+}
+Status PrepareLightTransformerPacketQueries(BorrowedView<const float32> weights,
+                                            rhi::BufferHandle packet,
+                                            usize packetBytes,
+                                            BorrowedView<const LightTransformerQuery> queries,
+                                            rhi::DeviceHandle device,
+                                            const rhi::RasterShaderDescription& shader,
+                                            usize maximumBufferBytes,
+                                            rhi::ComputeWorkload& outWorkload) noexcept
+{
+    // The built-in recipe binds by its generated slot table (LUSL L5d wave 2).
+    return internal::PrepareLightTransformerPacketQueries(
+        weights,
+        packet,
+        packetBytes,
+        queries,
+        device,
+        shader,
+        { .Packet = query_slots::PACKET, .Weights = query_slots::WEIGHTS, .Results = query_slots::RESULTS },
+        maximumBufferBytes,
+        outWorkload);
 }
 Status PrepareLightTransformerEncodedQueries(BorrowedView<const float32> weights,
                                              const LightTransformerEncoding& encoding,

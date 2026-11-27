@@ -1,0 +1,286 @@
+// Thanks to Bing Xu et al., "A Generalizable Light Transport 3D Embedding for
+// Global Illumination", SIGGRAPH 2026, section 3.3, https://arxiv.org/abs/2510.18189,
+// and Xiaoyang Wu et al., "Point Transformer V3: Simpler, Faster, Stronger",
+// CVPR 2024, https://arxiv.org/abs/2312.10035. This independent binary32 inference
+// kernel replaces vendor sparse-convolution, scatter and FlashAttention runtimes.
+// Geometry-only indices are prepared by the host; every learned layer executes here.
+//
+// The LUSL compiler assigns the four buffer slots in declaration order, which is the Slang original's
+// manual layout, and the renderer binds the generated renderer_light_transformer_encoder_slots.h constants.
+// A renderer GPU test compares its packets with its Slang original, renderer_light_transformer_encoder.slang,
+// which stays as the differential oracle (L5d wave 2).
+#include "light_transformer_encoder_layout.luslh"
+#include "light_transformer_layout.luslh"
+#include "math.luslh"
+
+StructuredBuffer<uint32x4> dispatch;
+StructuredBuffer<float32> weights;
+StructuredBuffer<uint32> topology;
+RWStructuredBuffer<float32> tensors;
+
+static const uint32 GROUP_WIDTH = LUDUS_LIGHT_ENCODER_GROUP_WIDTH;
+static const uint32 MAX_CHANNELS = LUDUS_LIGHT_ENCODER_MAX_CHANNELS;
+static const uint32 HEAD_CHANNELS = LUDUS_LIGHT_ENCODER_HEAD_CHANNELS;
+static const uint32 NEIGHBORS = LUDUS_LIGHT_ENCODER_NEIGHBORS;
+static const uint32 PACKET_WORD_CHANNELS = 4;
+// Attention inputs hold the query, key and value projections of each point, in that order.
+static const uint32 ATTENTION_PROJECTIONS = 3;
+static const float32 LOWEST_FINITE = -3.402823466e38;
+static const float32 GELU_INVERSE_ROOT_TWO = 0.7071067811865475;
+// Every invocation writes its channels before the barrier that publishes them, so neither needs a clear.
+groupshared float32 neighborHidden[MAX_CHANNELS] = void;
+groupshared float32 neighborMaximum[MAX_CHANNELS] = void;
+
+// Every invocation reads the same dispatch word, so the layer kind and counts stay uniform and the
+// neighbour encoder's barriers are reached by the whole group.
+uint32 ReadDispatch(in uniform uint32 index)
+{
+    return dispatch[index / PACKET_WORD_CHANNELS][index % PACKET_WORD_CHANNELS];
+}
+float32 ComputeActivation(in float32 value, in uint32 activation)
+{
+    if (activation == LUDUS_LIGHT_ENCODER_RELU)
+    {
+        return max(value, 0);
+    }
+    if (activation == LUDUS_LIGHT_ENCODER_GELU)
+    {
+        return value * 0.5 * (1 + ComputeErrorFunction(value * GELU_INVERSE_ROOT_TWO));
+    }
+    return value;
+}
+
+[stage(compute), threads(GROUP_WIDTH, 1, 1)]
+void ComputeMain(in uint32x3 groupId : GroupId, in uint32 lane : GroupIndex)
+{
+    uint32 kind = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_KIND);
+    uint32 pointIndex = groupId.x + groupId.y * ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_GROUPS_X);
+    uint32 count = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_COUNT);
+    if (pointIndex >= count)
+    {
+        return;
+    }
+    uint32 inputs = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_INPUTS);
+    uint32 outputs = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_OUTPUTS);
+    uint32 source = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_SOURCE);
+    uint32 destination = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_DESTINATION);
+    uint32 weightOffset = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_WEIGHTS);
+    uint32 auxiliaryWeightOffset = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_AUXILIARY_WEIGHTS);
+    uint32 indices = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_INDICES);
+    uint32 pairs = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_PAIRS);
+    uint32 other = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_OTHER);
+    uint32 activation = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_ACTIVATION);
+    uint32 parameter = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_PARAMETER);
+    if (kind == LUDUS_LIGHT_ENCODER_INPUT)
+    {
+        for (uint32 channel = lane; channel < outputs; channel += GROUP_WIDTH)
+        {
+            tensors[destination + pointIndex * outputs + channel] =
+                asfloat(topology[indices + pointIndex * outputs + channel]);
+        }
+        return;
+    }
+    if (kind == LUDUS_LIGHT_ENCODER_PACK)
+    {
+        // Header/tree/positions are host-prepared geometry, never neural features.
+        if (pointIndex == 0)
+        {
+            for (uint32 channel = lane; channel < parameter; channel += GROUP_WIDTH)
+            {
+                tensors[channel] = asfloat(topology[indices + channel]);
+            }
+        }
+        uint32 decoderOffset = ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_DECODER_DESTINATION);
+        if (pointIndex == 0 && decoderOffset != 0)
+        {
+            for (uint32 channel = lane; channel < LUDUS_LIGHT_TRANSFORMER_WEIGHT_COUNT; channel += GROUP_WIDTH)
+            {
+                tensors[decoderOffset + channel] =
+                    asfloat(topology[ReadDispatch(LUDUS_LIGHT_ENCODER_DISPATCH_DECODER_SOURCE) + channel]);
+            }
+        }
+        uint32 anchor = pointIndex * LUDUS_LIGHT_ENCODER_ANCHOR_WORDS * PACKET_WORD_CHANNELS + destination;
+        if (lane < PACKET_WORD_CHANNELS)
+        {
+            tensors[anchor + lane] = asfloat(topology[pairs + pointIndex * PACKET_WORD_CHANNELS + lane]);
+        }
+        for (uint32 channel = lane; channel < outputs; channel += GROUP_WIDTH)
+        {
+            tensors[anchor + PACKET_WORD_CHANNELS + channel] = tensors[source + pointIndex * outputs + channel];
+        }
+        return;
+    }
+    if (kind == LUDUS_LIGHT_ENCODER_NEIGHBOR)
+    {
+        uint32 center = topology[indices + pointIndex * (NEIGHBORS + 1) + NEIGHBORS];
+        for (uint32 channel = lane; channel < outputs; channel += GROUP_WIDTH)
+        {
+            neighborMaximum[channel] = LOWEST_FINITE;
+        }
+        barrier groupshared;
+        for (uint32 neighbor = 0; neighbor <= NEIGHBORS; ++neighbor)
+        {
+            uint32 index = topology[indices + pointIndex * (NEIGHBORS + 1) + neighbor];
+            for (uint32 channel = lane; channel < outputs; channel += GROUP_WIDTH)
+            {
+                float32 value = weights[weightOffset + inputs * outputs + channel];
+                for (uint32 input = 0; input < inputs; ++input)
+                {
+                    float32 feature = tensors[source + index * inputs + input];
+                    if (neighbor < NEIGHBORS)
+                    {
+                        feature -= tensors[source + center * inputs + input];
+                    }
+                    value += weights[weightOffset + channel * inputs + input] * feature;
+                }
+                neighborHidden[channel] = max(value, 0);
+            }
+            barrier groupshared;
+            for (uint32 channel = lane; channel < outputs; channel += GROUP_WIDTH)
+            {
+                float32 value = weights[auxiliaryWeightOffset + outputs * outputs + channel];
+                for (uint32 input = 0; input < outputs; ++input)
+                {
+                    value += weights[auxiliaryWeightOffset + channel * outputs + input] * neighborHidden[input];
+                }
+                neighborMaximum[channel] = max(neighborMaximum[channel], max(value, 0));
+            }
+            barrier groupshared;
+        }
+        for (uint32 channel = lane; channel < outputs; channel += GROUP_WIDTH)
+        {
+            tensors[destination + pointIndex * outputs + channel] = neighborMaximum[channel];
+        }
+        return;
+    }
+    if (kind == LUDUS_LIGHT_ENCODER_ATTENTION)
+    {
+        // A lane owns one complete head. Online softmax avoids a patch-squared
+        // score buffer, subgroup-size assumptions and global floating atomics.
+        uint32 heads = parameter;
+        if (lane >= heads)
+        {
+            return;
+        }
+        uint32 width = inputs / heads;
+        uint32 channelBegin = lane * width;
+        float32 maximum = LOWEST_FINITE;
+        float32 denominator = 0;
+        // The loop below zeroes the `width` channels the head uses, as the original does.
+        float32 aggregate[HEAD_CHANNELS] = void;
+        for (uint32 channel = 0; channel < width; ++channel)
+        {
+            aggregate[channel] = 0;
+        }
+        uint32 begin = topology[indices + pointIndex * 2];
+        uint32 neighbors = topology[indices + pointIndex * 2 + 1];
+        for (uint32 neighbor = 0; neighbor < neighbors; ++neighbor)
+        {
+            uint32 index = topology[indices + begin + neighbor];
+            float32 score = 0;
+            for (uint32 channel = 0; channel < width; ++channel)
+            {
+                score += tensors[source + pointIndex * inputs * ATTENTION_PROJECTIONS + channelBegin + channel] *
+                    tensors[source + index * inputs * ATTENTION_PROJECTIONS + inputs + channelBegin + channel];
+            }
+            score *= rsqrt(float32(width));
+            float32 nextMaximum = max(maximum, score);
+            float32 previousWeight = exp(maximum - nextMaximum);
+            float32 weight = exp(score - nextMaximum);
+            denominator = denominator * previousWeight + weight;
+            for (uint32 channel = 0; channel < width; ++channel)
+            {
+                aggregate[channel] = aggregate[channel] * previousWeight +
+                    weight * tensors[source + index * inputs * ATTENTION_PROJECTIONS + inputs * 2 + channelBegin +
+                                     channel];
+            }
+            maximum = nextMaximum;
+        }
+        for (uint32 channel = 0; channel < width; ++channel)
+        {
+            tensors[destination + pointIndex * outputs + channelBegin + channel] = aggregate[channel] / denominator;
+        }
+        return;
+    }
+    float32 mean = 0;
+    float32 inverseDeviation = 0;
+    if (kind == LUDUS_LIGHT_ENCODER_NORMALIZE)
+    {
+        for (uint32 input = 0; input < inputs; ++input)
+        {
+            mean += tensors[source + pointIndex * inputs + input];
+        }
+        mean /= float32(inputs);
+        float32 variance = 0;
+        for (uint32 input = 0; input < inputs; ++input)
+        {
+            float32 difference = tensors[source + pointIndex * inputs + input] - mean;
+            variance += difference * difference;
+        }
+        inverseDeviation = rsqrt(variance / float32(inputs) + LUDUS_LIGHT_ENCODER_NORM_EPSILON);
+    }
+    for (uint32 channel = lane; channel < outputs; channel += GROUP_WIDTH)
+    {
+        float32 value = 0;
+        if (kind == LUDUS_LIGHT_ENCODER_AFFINE)
+        {
+            value = weights[weightOffset + inputs * outputs + channel];
+            for (uint32 input = 0; input < inputs; ++input)
+            {
+                value +=
+                    weights[weightOffset + channel * inputs + input] * tensors[source + pointIndex * inputs + input];
+            }
+        }
+        else if (kind == LUDUS_LIGHT_ENCODER_CONVOLUTION)
+        {
+            value = weights[weightOffset + parameter * inputs * outputs + channel];
+            uint32 begin = topology[indices + pointIndex];
+            uint32 end = topology[indices + pointIndex + 1];
+            for (uint32 neighbor = begin; neighbor < end; ++neighbor)
+            {
+                uint32 index = topology[pairs + neighbor * 2];
+                uint32 kernel = topology[pairs + neighbor * 2 + 1];
+                for (uint32 input = 0; input < inputs; ++input)
+                {
+                    value += weights[weightOffset + (channel * parameter + kernel) * inputs + input] *
+                        tensors[source + index * inputs + input];
+                }
+            }
+        }
+        else if (kind == LUDUS_LIGHT_ENCODER_NORMALIZE)
+        {
+            value = (tensors[source + pointIndex * inputs + channel] - mean) * inverseDeviation *
+                weights[weightOffset + channel] +
+                weights[weightOffset + inputs + channel];
+        }
+        else if (kind == LUDUS_LIGHT_ENCODER_ADD)
+        {
+            value = tensors[source + pointIndex * inputs + channel] + tensors[other + pointIndex * inputs + channel];
+        }
+        else if (kind == LUDUS_LIGHT_ENCODER_GATHER)
+        {
+            value = tensors[source + topology[indices + pointIndex] * inputs + channel] +
+                tensors[other + pointIndex * inputs + channel];
+        }
+        else if (kind == LUDUS_LIGHT_ENCODER_POOL)
+        {
+            value = LOWEST_FINITE;
+            uint32 begin = topology[indices + pointIndex];
+            uint32 end = topology[indices + pointIndex + 1];
+            for (uint32 neighbor = begin; neighbor < end; ++neighbor)
+            {
+                uint32 index = topology[pairs + neighbor];
+                float32 projected = weights[weightOffset + inputs * outputs + channel];
+                for (uint32 input = 0; input < inputs; ++input)
+                {
+                    projected +=
+                        weights[weightOffset + channel * inputs + input] * tensors[source + index * inputs + input];
+                }
+                value = max(value, projected);
+            }
+            uint32 normalization = weightOffset + (inputs + 1) * outputs;
+            value = value * weights[normalization + channel] + weights[normalization + outputs + channel];
+        }
+        tensors[destination + pointIndex * outputs + channel] = ComputeActivation(value, activation);
+    }
+}

@@ -2070,6 +2070,13 @@ mappings and explicit Project BRDF assignments. Renderables that override
 coating or roughness still appear under the same resource. Inspect an individual
 renderable to see its effective values.
 
+On a slot with a cooked **Surface map**, inspect **Roughness map** and
+**Metallic map** as separate grayscale previews of the stored multipliers. The
+blue channel multiplies the scalar roughness and the alpha channel multiplies the
+scalar metallic factor. Hover over **Surface map** to see how its red and green
+channels encode the tangent-space normal. To change the maps, correct the source
+textures and reimport.
+
 ### Author a World's regional climate
 
 Open **Environment** in the World sidebar to author the World's climate presets,

@@ -431,7 +431,7 @@ usize CountDifferingBytes(const SkinScene& left, const SkinScene& right) noexcep
 } // namespace
 
 TEST_CASE("The LUSL skin diffusion recipes render their Slang originals' pixels",
-          "[render-graph][clustered-deferred][skin][gpu][lusl]")
+          "[render-graph][clustered-deferred][skin][gpu][lusl][skin-parity]")
 {
     // LUSL L5d wave 2: every skin scene drawn with renderer_skin_blur and renderer_skin_composite and with their Slang
     // originals (shaders/renderer_skin_blur.slang, renderer_skin_composite.slang) on one device; every byte must

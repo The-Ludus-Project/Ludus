@@ -1105,8 +1105,10 @@ listed in the retained list with its reason:
 `renderer_composite`, `renderer_overlay`, `renderer_grid`,
 `renderer_selection_mask` and `renderer_selection_outline`. So are the skin
 diffusion passes of the clustered deferred profile, `renderer_skin_blur` and
-`renderer_skin_composite`, and the point-neighbor kernel,
-`renderer_point_neighbors`. The renderer binds them by their generated
+`renderer_skin_composite`, the point-neighbor kernel,
+`renderer_point_neighbors`, and the Light Transformer compute kernels,
+`renderer_light_transformer_encoder`, `renderer_light_transformer_decoder` and
+`renderer_light_transformer_encoded_queries`. The renderer binds them by their generated
 `<NAME>_slots.h` constants. For the recipes its callers compile, its build takes
 the tables from the recipe sources with `ludus_generate_renderer_shader_slots`
 (lowering only, see the [module guide](../modules/tooling/shader-language.md#resources-and-bindings)).
@@ -1114,8 +1116,8 @@ Their Slang originals stay unchanged beside them, out of the recipe manifest and
 SDK, and the retained list names each one. In the same run, the renderer GPU suites draw each recipe
 and its original on one device and require identical bytes. The composite and skin comparisons are in
 the render-graph pixel suite, which also runs on Direct3D 12 (WARP). The others run in the
-Vulkan and Metal renderer suites. The grid and skin cases have an in-process A/B timing mode
-(`LUDUS_RENDERER_BENCHMARK`), which alternates GPU-timed blocks of the two programs.
+Vulkan and Metal renderer suites. The grid, skin and Light Transformer cases have an in-process
+A/B timing mode (`LUDUS_RENDERER_BENCHMARK`), which alternates GPU-timed blocks of the two programs.
 
 The skin recipes share `renderer_skin_diffusion.luslh`, the port of the originals'
 `renderer_skin_diffusion.slang`, and the fullscreen vertex stage
@@ -1134,6 +1136,26 @@ worker lowers them from the same snapshot. Interface varyings that the Slang ori
 `nointerpolation` travel as `asuint` bit patterns in integer fields, which LUSL interpolates
 flat, so the fragment stages read identical values.
 
+The two Light Transformer query decoders share `renderer_light_transformer_decoder.luslh`, the
+port of the cooperative decoder in `renderer_light_transformer_decoder.slang`. Each kernel
+declares its own buffers before the include and defines the reads the header declares, so the
+header names no buffer and replaces the original's `LUDUS_LIGHT_TRANSFORMER_PACKED_ENCODER`
+conditionals. The decoder and encoder keep their originals' manual layouts as their declaration
+order. The encoded-query kernel declares only its three buffers, so its results move from the
+original's slot 3 to slot 2. Its GPU test binds the original through the renderer-internal
+`PrepareLightTransformerPacketQueries` overload that takes explicit slots. The original decoder
+leaves early when lane 0's neighbour search fails, which it publishes in group memory. A LUSL
+return on a group-memory value would put every later barrier in non-uniform control flow
+(`non-uniform-barrier`). The port therefore takes the uniform exits before the first barrier
+(an invalid packet, or fewer anchors than neighbours). After a failed search, it decodes
+anchor 0 and writes the original's quiet-NaN record. The parity test covers both failure
+paths with crafted packets. `generate_lusl_layouts.py` also writes `light_transformer_layout.luslh`
+and `light_transformer_encoder_layout.luslh`, including the function-like
+`LUDUS_LIGHT_TRANSFORMER_AFFINE_SIZE`. `renderer_light_transformer_query.slang` stays Slang.
+It is not a recipe: `render_graph_ray.py` splices it into the Slang wrapper of packages that
+request `scene_interface.light_transformer`, where it reads the graph's `GraphBuffer0`. It
+migrates with the render-graph scene interface.
+
 The composite verification fixture (`tests/sdk_consumer/composite_recipe_fixture.h`) feeds
 an asymmetric 4×2 texture through the composite stages. It uses a cropped quad and a nearest
 sampler, binds by the generated slots, and checks every pixel against the image derived from
@@ -1146,7 +1168,7 @@ prints the reflected binding kinds, and both runs print the image's hash. `rende
 wrappers and calls their entry points by name (`ForwardFlatShadow`, `DeferredDepthCopy`), and
 `cmake/LudusRenderGraph.cmake` stages their sources as render-graph helpers. They migrate with
 that profile. The remaining recipes, the lit, material, output, deferred lighting and material,
-atmosphere, skin resolve, light transformer, GPU preview and reference programs, need their
+atmosphere, skin resolve, GPU preview and reference programs, need their
 renderer-local helper libraries ported first and migrate in later wave 2 changes. The renderer shader directory joins the
 migrated scope with the last of them.
 

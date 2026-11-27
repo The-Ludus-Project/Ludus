@@ -12281,7 +12281,9 @@ against the CPU query. Physical backend qualification is reported separately.
 
 `<ludus/graphics/renderer/light_transformer.hpp>` implements the released model's
 128-dimensional, six-block query decoder. Cook `renderer_light_transformer_decoder`
-with the installed `ludus_compile_renderer_shaders` helper. The implementation uses
+with the installed `ludus_compile_renderer_shaders` helper. The decoder, the encoder and the
+encoded-query recipes are LUSL (`renderer_light_transformer_*.lusl`, sharing
+`renderer_light_transformer_decoder.luslh`); the renderer binds each by its generated slot table. The implementation uses
 ordinary float32 compute and point-tree queries on Metal and Vulkan. It includes
 both query MLPs, inference BatchNorm folding, LayerNorm, vector attention over the
 32 closest anchors, residual/feed-forward blocks and Softplus. Value projection

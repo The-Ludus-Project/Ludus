@@ -5,6 +5,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/content/scene_format/material.h>
 #include <ludus/content/scene_format/material_program.h>
@@ -17,6 +18,7 @@
 #include <string_view>
 
 #include <QJsonArray>
+#include <QSize>
 #include <QStringList>
 
 namespace ludus::editor
@@ -32,6 +34,9 @@ using foundation::usize;
 constexpr foundation::int32 DISPLAYED_DIGITS = 6;
 /// Most texels a texture may have and still read as a constant when every texel is the same (4 × 4).
 constexpr usize MAX_CONSTANT_TEXTURE_TEXELS = 16;
+// Cooked surface-map byte offsets from the MaterialRecordV6 channel layout.
+constexpr usize SURFACE_ROUGHNESS_CHANNEL = 2;
+constexpr usize SURFACE_METALLIC_CHANNEL = format::TEXEL_BYTES - 1;
 
 QString FormatScalar(float32 value)
 {
@@ -155,6 +160,42 @@ QImage MakeThumbnail(const resources::SceneDefinition& definition, uint32 textur
                        Qt::SmoothTransformation);
 }
 
+/// Preview one linear multiplier as opaque gray. Sample only the thumbnail's texels.
+/// Named packed-map previews are adapted from Alloy's texture inspector.
+/// https://github.com/Josh015/Alloy/blob/1c46654ffe783650644bda82b4e06998e34d6cf0/Scripts/MaterialInspectors/Editor/FieldBased/Drawers/AlloyTextureDrawer.cs#L147-L224
+QImage MakeSurfaceChannelThumbnail(const resources::SceneTexture& source, usize channel)
+{
+    if (source.IsLinear == false || source.Width == 0 || source.Height == 0 ||
+        source.Width > format::MAX_TEXTURE_DIMENSION || source.Height > format::MAX_TEXTURE_DIMENSION ||
+        source.Pixels.GetSize() != static_cast<usize>(source.Width) * source.Height * format::TEXEL_BYTES)
+    {
+        return {};
+    }
+    QSize extent(static_cast<int>(source.Width), static_cast<int>(source.Height));
+    if (extent.width() > MATERIAL_THUMBNAIL_EXTENT || extent.height() > MATERIAL_THUMBNAIL_EXTENT)
+    {
+        extent.scale(MATERIAL_THUMBNAIL_EXTENT, MATERIAL_THUMBNAIL_EXTENT, Qt::KeepAspectRatio);
+    }
+    QImage thumbnail(std::max(1, extent.width()), std::max(1, extent.height()), QImage::Format_Grayscale8);
+    if (thumbnail.isNull() == true)
+    {
+        return {};
+    }
+    const usize width = static_cast<usize>(thumbnail.width());
+    const usize height = static_cast<usize>(thumbnail.height());
+    for (usize y = 0; y < height; ++y)
+    {
+        foundation::uint8* row = thumbnail.scanLine(static_cast<int>(y));
+        const usize sourceY = ((2 * y + 1) * source.Height) / (2 * height);
+        for (usize x = 0; x < width; ++x)
+        {
+            const usize sourceX = ((2 * x + 1) * source.Width) / (2 * width);
+            row[x] = source.Pixels[(sourceY * source.Width + sourceX) * format::TEXEL_BYTES + channel];
+        }
+    }
+    return thumbnail;
+}
+
 /// A colour row: its text, the display colour that stands for it, and what its short label leaves out.
 MaterialPropertyRow MakeColourRow(const QString& label, const foundation::math::Vector3& linear, const QString& detail)
 {
@@ -187,7 +228,7 @@ QString DescribeTexture(const resources::SceneDefinition& definition, uint32 tex
     // A tiny texture of one texel value is a constant, such as an importer's 4 × 4 white stand-in: name the constant.
     constexpr usize BYTES_PER_TEXEL = 4;
     const usize texelCount = static_cast<usize>(source.Width) * source.Height;
-    if (texelCount > 0 && texelCount <= MAX_CONSTANT_TEXTURE_TEXELS &&
+    if (source.IsLinear == false && texelCount > 0 && texelCount <= MAX_CONSTANT_TEXTURE_TEXELS &&
         source.Pixels.GetSize() == texelCount * BYTES_PER_TEXEL)
     {
         bool isUniform = true;
@@ -496,10 +537,25 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
         distance.IsSkinParameter = true;
         rows.append(distance);
     }
-    rows.append(MakeTextureRow(QStringLiteral("Surface map"),
-                               QStringLiteral("Surface map"),
-                               definition,
-                               material.SurfaceTexture));
+    const uint32 surfaceTexture = material.SurfaceTexture;
+    const QString surfaceMapLabel = QStringLiteral("Surface map");
+    MaterialPropertyRow surfaceMap{surfaceMapLabel, DescribeTexture(definition, surfaceTexture)};
+    surfaceMap.Detail = DescribeTextureDetail(surfaceMapLabel, definition, surfaceTexture);
+    rows.append(surfaceMap);
+    if (surfaceTexture != format::NO_TEXTURE && static_cast<usize>(surfaceTexture) < definition.Textures.GetSize())
+    {
+        rows.last().Detail +=
+            QStringLiteral("\nR/G encode tangent-space normal X/Y. B multiplies roughness. A multiplies metallic.");
+        const resources::SceneTexture& texture = definition.Textures[surfaceTexture];
+        MaterialPropertyRow roughnessMap{QStringLiteral("Roughness map"), QStringLiteral("Blue (B)")};
+        roughnessMap.Detail = QStringLiteral("Linear blue channel, multiplied by the material roughness");
+        roughnessMap.Thumbnail = MakeSurfaceChannelThumbnail(texture, SURFACE_ROUGHNESS_CHANNEL);
+        MaterialPropertyRow metallicMap{QStringLiteral("Metallic map"), QStringLiteral("Alpha (A)")};
+        metallicMap.Detail = QStringLiteral("Linear alpha channel, multiplied by the material metallic factor");
+        metallicMap.Thumbnail = MakeSurfaceChannelThumbnail(texture, SURFACE_METALLIC_CHANNEL);
+        rows.append(roughnessMap);
+        rows.append(metallicMap);
+    }
     if (material.SurfaceTexture != format::NO_TEXTURE)
     {
         rows.append({QStringLiteral("Normal scale"), FormatScalar(material.NormalScale)});

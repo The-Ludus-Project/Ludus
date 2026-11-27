@@ -33,6 +33,9 @@ CENTER_TOLERANCE = 2e-3
 PARITY_TOLERANCE = 1e-5
 MEDIUM_STEP = 18
 UNAVAILABLE_STEPS = (4, 6)
+# A cold GPU-compute capture compiles the reference kernel. CMake passes the renderer's reference cold-preparation
+# budget as the second argument; this default is the unsanitized value.
+DEFAULT_CAPTURE_TIMEOUT_SECONDS = 180
 
 
 def material(name, emission, flags, area_source, model, reflectance, k):
@@ -87,16 +90,17 @@ def fixture():
     return data
 
 
-def capture(binary, root, mode):
+def capture(binary, root, mode, timeout_seconds):
     arguments = [binary, str(root), str(root), str(EXTENT), str(SAMPLES)] + ([mode] if mode else [])
     output = root / "capture.luhdr"
     output.unlink(missing_ok=True)
-    result = subprocess.run(arguments, timeout=90)
+    result = subprocess.run(arguments, timeout=timeout_seconds)
     return result.returncode, output.read_bytes() if result.returncode == 0 else None
 
 
 def main():
     binary = str(Path(sys.argv[1]).resolve())
+    timeout_seconds = float(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_CAPTURE_TIMEOUT_SECONDS
     loader = importlib.machinery.SourceFileLoader(
         "reference_hdr",
         str(Path(__file__).resolve().parents[3] / "scripts/reference-hdr"),
@@ -108,7 +112,7 @@ def main():
         (root / "scene.luscn").write_bytes(fixture())
         images = {}
         for mode, traversal in ((None, "cpu_oracle"), ("gpu-compute", "gpu_compute")):
-            status, data = capture(binary, root, mode)
+            status, data = capture(binary, root, mode, timeout_seconds)
             if mode is not None and status in UNAVAILABLE_STEPS:
                 print(f"{mode}: no compute device (step {status}); CPU oracle checked only")
                 continue
@@ -130,7 +134,7 @@ def main():
                 abs(a - b) for cpu, gpu in zip(images[None], images["gpu-compute"]) for a, b in zip(cpu[:3], gpu[:3]))
             assert difference <= PARITY_TOLERANCE, difference
         # Raster acceptance would drop the medium, so the sample stops explicitly instead.
-        status, _ = capture(binary, root, "acceptance")
+        status, _ = capture(binary, root, "acceptance", timeout_seconds)
         assert status == MEDIUM_STEP, status
 
 
