@@ -1,6 +1,7 @@
 #include "elliptical_cone.slang"
 #include "math.slang"
 #include "raster_bindings.slang"
+#include "spectral_sensor.slang"
 #include "wave.slang"
 #include "wave_tracing_parity_layout.h"
 LUDUS_SHADER_BINDING(0) RWStructuredBuffer<uint4> Cases;
@@ -12,6 +13,16 @@ WaveTracingParityMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
     uint index = dispatchThreadId.x;
     if (index >= LUDUS_WAVE_PARITY_CASE_COUNT)
         return;
+    if (Cases[0].w == LUDUS_WAVE_PARITY_SPECTRUM_TAG)
+    {
+        float4 spectrumCase = asfloat(Cases[1 + index]);
+        uint spectrumDestination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS;
+        Results[spectrumDestination] = asuint(float4(EvaluateSensorSensitivity(spectrumCase.x),
+                                                     EvaluateUpliftedSpectrum(spectrumCase.yzw, spectrumCase.x)));
+        Results[spectrumDestination + 1] =
+            asuint(float4(EvaluateCieXyz1931(spectrumCase.x), SampleWavelengthNanometers(spectrumCase.y, 0)));
+        return;
+    }
     if (Cases[0].w == LUDUS_WAVE_PARITY_REGION_TAG || Cases[0].w == LUDUS_WAVE_PARITY_CONNECTION_TAG ||
         Cases[0].w == LUDUS_WAVE_PARITY_UTD_CONNECTION_TAG ||
         Cases[0].w == LUDUS_WAVE_PARITY_FRAUNHOFER_CONNECTION_TAG || Cases[0].w == LUDUS_WAVE_PARITY_CHAIN_TAG)

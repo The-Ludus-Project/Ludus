@@ -205,6 +205,9 @@ struct ReferencePath final
     ReferenceOpticalRelay OpticalRelay{};
     /// Medium inside count (0 or 1) at the current ray's origin; derived from the primary ray's crossings.
     uint32 MediumInside = 0;
+    /// ReferenceOpticalSpectrum::Visible: the path's sampled vacuum wavelength in nanometres, drawn with its primary
+    /// vertex. Zero for every other capture, whose transport stays RGB.
+    float32 WavelengthNanometers = 0;
     /// Resampled modes: the previous vertex's receiver and its Z-hat cache, read bit-identically by the
     /// BSDF-hit MIS density of the emitter that the continuation reaches.
     ReferenceReceiverFrame PreviousReceiver{};
@@ -438,6 +441,7 @@ static_assert(LUDUS_REFERENCE_DIRECTIONAL_FIRST_DIMENSION + LUDUS_REFERENCE_MAX_
 static_assert(LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION +
                   LUDUS_REFERENCE_DIRECTIONAL_DISK_DIMENSIONS * LUDUS_REFERENCE_MAX_DEPTH - 1 <=
               math::RandomMaxDimension);
+static_assert(LUDUS_REFERENCE_WAVELENGTH_DIMENSION <= math::RandomMaxDimension);
 /// Dimensions per scattering event of `sampling`'s sampler version.
 [[nodiscard]] inline constexpr uint32 GetReferenceDimensionsPerBounce(ReferenceLightSampling sampling) noexcept
 {

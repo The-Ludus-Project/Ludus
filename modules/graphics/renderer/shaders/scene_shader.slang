@@ -2130,6 +2130,8 @@ float4 SampleMaterialTexture(SceneContext scene, SurfaceHit hit, float2 texcoord
 }
 
 #include "stochastic_reuse.slang"
+// The spectral camera of the spectral templates and the wave-tracing template's spectral profile.
+#include "spectral_sensor.slang"
 
 // Scalar optical connections share this immutable scene and its fixed-mip material coverage.
 bool IsWaveTriangleCovered(SceneContext scene, uint triangleIndex, float2 barycentric)

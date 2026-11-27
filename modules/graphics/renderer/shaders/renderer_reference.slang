@@ -9,6 +9,7 @@
 #include "renderer_reference_layout.h"
 #include "renderer_reference_sky_layout.h"
 #include "renderer_surface_functions.slang"
+#include "spectral_sensor.slang"
 
 // GPU-compute implementation of the frozen RT1 reference integral. Each function
 // below ports its CPU oracle counterpart in reference_scene.cpp (BVH traversal,
@@ -75,6 +76,7 @@ static const uint FORM_FACTOR_TARGET_FLAG = LUDUS_REFERENCE_FORM_FACTOR_TARGET_F
 static const uint MULTIPLE_SCATTERING_FLAG = LUDUS_REFERENCE_MULTIPLE_SCATTERING_FLAG;
 static const uint UTD_CONNECTION_FLAG = LUDUS_REFERENCE_UTD_CONNECTION_FLAG;
 static const uint FRAUNHOFER_CONNECTION_FLAG = LUDUS_REFERENCE_FRAUNHOFER_CONNECTION_FLAG;
+static const uint VISIBLE_SPECTRUM_FLAG = LUDUS_REFERENCE_VISIBLE_SPECTRUM_FLAG;
 static const uint LINEAR_FILTER_FLAG = 1;
 static const uint REPEAT_U_FLAG = 2;
 static const uint REPEAT_V_FLAG = 4;
@@ -1022,6 +1024,8 @@ struct PathSample
     uint Status;
     uint Failure;
     uint MediumInside; // Medium inside count (0 or 1) at the current vertex; see reference_medium.slang.
+    // ReferenceOpticalSpectrum::Visible: the path's sampled vacuum wavelength in nanometres; zero for RGB transport.
+    float WavelengthNanometers;
 };
 // SelectReferenceLight in reference_path.cpp owns the same category and CDF draws.
 enum ReferenceLightChoiceKind : uint
@@ -1077,8 +1081,27 @@ void CountQuery(inout PathSample inoutPath, bool isVisibility)
     inoutPath.Status += isVisibility == true ? 1u << LUDUS_REFERENCE_VISIBILITY_SHIFT : 1u;
 }
 // AddTransport: primary emission, first-surface direct, then later transport.
-void AddTransport(inout PathSample inoutPath, float3 contribution, uint depth, bool isEmission)
+// A ReferenceOpticalSpectrum::Visible path carries one sampled wavelength (reference_path.cpp cites Section 3 of the
+// wave-tracing paper): its authored RGB factors are uplifted to their spectral values at that wavelength, in every
+// channel, and the camera's sensor reads its spectral radiance. RGB paths keep both unchanged.
+float3 ProjectSpectrum(PathSample path, float3 linearRgb)
 {
+    return path.WavelengthNanometers > 0 ? float3(EvaluateUpliftedSpectrum(linearRgb, path.WavelengthNanometers))
+                                         : linearRgb;
+}
+// Vacuum wavelength of the path's optical connections, in world metres: the declared one, scaled by a spectral path's
+// sampled wavelength relative to the light that the declared wavelength belongs to.
+float GetOpticalWavelengthWorld(PathSample path)
+{
+    return path.WavelengthNanometers > 0
+               ? Options.y * (path.WavelengthNanometers / LUDUS_WAVE_SPECTRAL_REFERENCE_WAVELENGTH_NANOMETERS)
+               : Options.y;
+}
+void AddTransport(inout PathSample inoutPath, float3 spectralContribution, uint depth, bool isEmission)
+{
+    float3 contribution = inoutPath.WavelengthNanometers > 0
+                              ? ConvertSpectralRadiance(spectralContribution.x, inoutPath.WavelengthNanometers)
+                              : spectralContribution;
     if (isEmission == true && depth == 0)
         inoutPath.Emission += contribution;
     else if ((isEmission == true && depth == 1) || (isEmission == false && depth == 0))
@@ -1360,7 +1383,7 @@ bool TraceProposal(inout PathSample inoutPath,
                                                      shadow.OriginWorld,
                                                      -shadow.DirectionWorld,
                                                      shadow.MaximumDistanceWorld,
-                                                     Options.y,
+                                                     GetOpticalWavelengthWorld(inoutPath),
                                                      field);
         else if ((Sampling.z & FRAUNHOFER_CONNECTION_FLAG) != 0)
             status = EvaluateFraunhoferConnectionToReceiver((SceneContext)0,
@@ -1368,7 +1391,7 @@ bool TraceProposal(inout PathSample inoutPath,
                                                             shadow.OriginWorld,
                                                             -shadow.DirectionWorld,
                                                             shadow.MaximumDistanceWorld,
-                                                            Options.y,
+                                                            GetOpticalWavelengthWorld(inoutPath),
                                                             field);
         else
             status = EvaluateWaveConnectionToReceiver((SceneContext)0,
@@ -1376,7 +1399,7 @@ bool TraceProposal(inout PathSample inoutPath,
                                                       shadow.OriginWorld,
                                                       -shadow.DirectionWorld,
                                                       shadow.MaximumDistanceWorld,
-                                                      Options.y,
+                                                      GetOpticalWavelengthWorld(inoutPath),
                                                       field);
         if (status != WaveQuery::Ready)
         {
@@ -1451,7 +1474,8 @@ bool EvaluateDirectProposal(inout PathSample inoutPath,
         return false;
     }
     float weight = proposal.IsDelta == true || Options.y > 0 ? 1 : PowerWeight(proposal.Pdf, evaluation.w);
-    outContribution = throughput * evaluation.xyz * proposal.Radiance * (cosine * weight / proposal.Pdf);
+    outContribution = throughput * ProjectSpectrum(inoutPath, evaluation.xyz) *
+                      ProjectSpectrum(inoutPath, proposal.Radiance) * (cosine * weight / proposal.Pdf);
     if (IsValidContribution(outContribution) == false)
     {
         MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_DIRECT_CONTRIBUTION);
@@ -2003,6 +2027,7 @@ PathSample TracePath(uint pixel, uint sample)
     path.Status = 0;
     path.Failure = LUDUS_REFERENCE_FAILURE_NONE;
     path.MediumInside = 0;
+    path.WavelengthNanometers = 0;
     if (SurfaceLayout.x != LUDUS_GPU_PREVIEW_SURFACE_WORDS || SurfaceLayout.z != LUDUS_GPU_PREVIEW_KERNEL_VERSION)
     {
         MarkInvalid(path, 0, LUDUS_REFERENCE_FAILURE_INVALID_SCENE_LAYOUT);
@@ -2020,6 +2045,9 @@ PathSample TracePath(uint pixel, uint sample)
     bool isPreviousSpecular = false;
     // Glass events since the last rough vertex, for relayed optical connections (reference_path.cpp).
     WaveRelay relay = BeginWaveRelay(ray.OriginWorld);
+    if (Options.y > 0 && (Sampling.z & VISIBLE_SPECTRUM_FLAG) != 0)
+        path.WavelengthNanometers =
+            SampleWavelengthNanometers(RandomValue(pixel, sample, LUDUS_REFERENCE_WAVELENGTH_DIMENSION), 0);
     uint lights = GetLightCount();
     // The resampled modes keep the previous vertex's receiver and Z-hat for the BSDF-hit density.
     bool isResampled = IsResampled();
@@ -2062,7 +2090,7 @@ PathSample TracePath(uint pixel, uint sample)
             float lightPdf = ComputeEnvironmentLightPdf(environment.w, lights);
             float weight =
                 depth == 0 || isPreviousSpecular == true ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, lightPdf));
-            AddTransport(path, throughput * environment.xyz * weight, depth, true);
+            AddTransport(path, throughput * ProjectSpectrum(path, environment.xyz) * weight, depth, true);
             if (HasValidTransport(path) == false)
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RADIANCE);
             return path;
@@ -2122,7 +2150,7 @@ PathSample TracePath(uint pixel, uint sample)
                 WaveQuery status = EvaluateWaveRelay((SceneContext)0,
                                                      relay,
                                                      OffsetOrigin(positionWorld, triangle, viewWorld),
-                                                     Options.y,
+                                                     GetOpticalWavelengthWorld(path),
                                                      connectionOperator,
                                                      isAdmitted,
                                                      field);
@@ -2152,7 +2180,7 @@ PathSample TracePath(uint pixel, uint sample)
                 }
                 weight *= transmission;
             }
-            AddTransport(path, throughput * SampleEmission(instance, uv) * weight, depth, true);
+            AddTransport(path, throughput * ProjectSpectrum(path, SampleEmission(instance, uv)) * weight, depth, true);
         }
         // pbrt-v4's reflection models scatter on the viewer's side of the surface (reference_path.cpp cites the
         // source); emission above stays one-sided.
@@ -2329,10 +2357,11 @@ PathSample TracePath(uint pixel, uint sample)
         else
         {
             if (isSpecular == true)
-                throughput *= specular.Weight;
+                throughput *= ProjectSpectrum(path, specular.Weight);
             else
-                throughput *= hasCoating == true ? coating.Weight
-                                                 : evaluation.xyz * (dot(normalWorld, outgoingWorld) / evaluation.w);
+                throughput *= hasCoating == true ? ProjectSpectrum(path, coating.Weight)
+                                                 : ProjectSpectrum(path, evaluation.xyz) *
+                                                       (dot(normalWorld, outgoingWorld) / evaluation.w);
             if (IsValidContribution(throughput) == false)
             {
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_THROUGHPUT);
