@@ -2708,6 +2708,33 @@ void CheckGlassRelayedConnection(rr::ReferenceOpticalConnection connection, rr::
     rr::ReferenceCaptureInfo computeInfo;
     Capture(cpu, capture, surface, oracle, oracleInfo);
     Capture(gpu, capture, surface, compute, computeInfo);
+    {
+        // DIAGNOSTIC ONLY (not for review): the same capture with the Slang original on this device.
+        Session slang;
+        REQUIRE(Prepare(device,
+                        rr::ReferenceTraversal::GpuCompute,
+                        slang,
+                        false,
+                        TraceKernels::WithOptical,
+                        GetReferenceKernels(KernelSource::SlangOriginal, ReferenceDiagnostic::None)) == S::Ready);
+        rr::Snapshot sphere;
+        REQUIRE(BuildSphereSnapshot(device, slang.Renderer, slang.Program, sphere, true, SphereSurfaces::Glass) ==
+                S::Ready);
+        REQUIRE(slang.Renderer.Release(slang.Snapshot) == S::Ready);
+        slang.Snapshot = sphere;
+        Array<rr::ReferencePixel> original;
+        rr::ReferenceCaptureInfo originalInfo;
+        Capture(slang, capture, surface, original, originalInfo);
+        const Comparison slangToCpu = Compare(oracle, original, capture.TargetSamples);
+        const Comparison luslToCpu = Compare(oracle, compute, capture.TargetSamples);
+        WARN("DIAG connection=" << static_cast<uint32>(connection) << " spectrum=" << static_cast<uint32>(spectrum)
+                                << " luslVsSlangPixels=" << CountDifferingPixels(compute, original)
+                                << " rmsLuslCpu=" << math::Sqrt(luslToCpu.SquaredRadiance) << " rmsSlangCpu="
+                                << math::Sqrt(slangToCpu.SquaredRadiance) << " visCpu=" << oracleInfo.VisibilityQueries
+                                << " visLusl=" << computeInfo.VisibilityQueries << " visSlang="
+                                << originalInfo.VisibilityQueries << " closestLusl=" << computeInfo.ClosestQueries
+                                << " closestSlang=" << originalInfo.ClosestQueries);
+    }
     const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
     CAPTURE(comparison.MaximumRadiance,
             comparison.MaximumEmission,
