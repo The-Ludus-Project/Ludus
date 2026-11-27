@@ -904,6 +904,10 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_terrain_surface.cpp
     src/world_aperture.cpp
     src/world_demo_adapter.cpp
+    src/internal/scatter_generation_session.h
+    src/scatter_generation_session.cpp
+    src/internal/world_scatter_panel.h
+    src/world_scatter_panel.cpp
     src/internal/material_inspection.h
     src/material_inspection.cpp
     src/internal/inspector_fields.h
@@ -974,6 +978,9 @@ target_link_libraries(ludus_editor_application
         ludus_editor_code
         ludus_world_demo_model
         ludus_world_render_items
+        # The Scatter tab stages room scatter on the generation executor (Generation P1).
+        Ludus::ProceduralCore
+        Ludus::ProceduralEnvironment
         Qt6::Core
         Qt6::Gui
         Qt6::Widgets
@@ -1433,6 +1440,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/viewport_screenshot_tests.cpp
         tests/world_demo_workspace_tests.cpp
         tests/world_identity_tests.cpp
+        tests/world_scatter_panel_tests.cpp
         tests/browser_import_tests.cpp
         tests/configuration_workspace_tests.cpp
         tests/audio_content_tests.cpp
