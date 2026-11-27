@@ -82,6 +82,7 @@ struct WorldSunPlacement final
 [[nodiscard]] bool IsWorldAtmosphereLight(const QJsonObject& entity);
 /// Create one bundled World preset as one validated history transaction.
 /// "Aperture Slit" creates a default-sized aperture screen at the origin (internal/world_aperture.h).
+/// "Absorbing Medium" creates a 1 m absorbing box at the origin (internal/world_absorbing_medium.h).
 /// Failure preserves the document and outId. Must run on the editor thread.
 [[nodiscard]] bool CreateWorldObject(WorldDocument& inoutWorld,
                                      const foundation::identity::EntropySource& entropy,

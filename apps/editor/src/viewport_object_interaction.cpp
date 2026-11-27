@@ -4,6 +4,7 @@
 #include "internal/render_preview.h"
 #include "internal/viewport_gizmo_readout.h"
 #include "internal/viewport_overlay_layer.h"
+#include "internal/world_absorbing_medium.h"
 #include "internal/world_document.h"
 #include "internal/world_probe_volume.h"
 #include "internal/world_terrain.h"
@@ -296,6 +297,7 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
     mProbeVolume = {};
     mProbeGrid = {};
     mLuminaireHalfExtentWorld = 0;
+    mMediumSizeBox = {};
     mParentToWorld = {};
     QString probeError;
     const bool hasProbeVolume = IsBuiltInWorld(world) == true &&
@@ -338,6 +340,14 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
         {
             mLuminaireHalfExtentWorld = static_cast<float32>(halfExtent.toDouble());
         }
+    }
+    const QJsonObject medium =
+        world.HasBuiltInSchema() == true ? components.value(GetAbsorbingMediumComponentId()).toObject() : QJsonObject{};
+    if (medium.isEmpty() == false)
+    {
+        mMediumSizeBox = {static_cast<float32>(medium.value(QStringLiteral("width")).toDouble()),
+                          static_cast<float32>(medium.value(QStringLiteral("height")).toDouble()),
+                          static_cast<float32>(medium.value(QStringLiteral("depth")).toDouble())};
     }
     if (mPlacement.isEmpty() == true)
     {
@@ -2126,6 +2136,14 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
             }
             outOverlay.OutlineLinesPixel.Add(QLineF(centerPixel, emissionPixel));
         }
+    }
+    if (mMediumSizeBox.X > 0 && mPlacement.isEmpty() == false)
+    {
+        // The invisible medium box, turned and scaled by its Transform, follows a drag in progress.
+        const math::Vector3 half = mMediumSizeBox * 0.5F;
+        const math::Matrix4 boxToClip =
+            mWorldToClip * math::ToMatrix4(makeTransform(mDragTarget.IsValid() == true ? mCandidate : mPlacement));
+        appendBoxOutline({{-half.X, -half.Y, -half.Z}, half}, boxToClip, outOverlay);
     }
     buildHandles();
     for (const HandleLine& handle : mHandles)

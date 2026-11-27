@@ -5543,8 +5543,9 @@ never see it. It must be closed and consistently oriented, with its oriented fro
 side (counterclockwise corners) facing the outside. Admission sorts the directed
 edges and requires every edge to appear once with its reverse once, on
 bit-identical corners. Disjoint closed pieces form one medium. Admission rejects an
-open, nonmanifold or inconsistently wound boundary, degenerate or out-of-range
-corners and invalid absorption with `InvalidDescription`.
+open, nonmanifold or inconsistently wound boundary, degenerate corners, corners
+beyond `MAX_REFERENCE_MEDIUM_COORDINATE_WORLD` (1,000,000 m) and invalid absorption
+with `InvalidDescription`.
 
 Both tracers follow every camera, continuation and light-visibility segment through
 the boundary's ordered crossings. A crossing against the outward normal enters the
@@ -5588,7 +5589,9 @@ Cooked scenes carry the medium as a LUSCN v12 `MediumInterface` material whose
 objects are the boundary, and the authored source as a
 [`medium_interface` material](scene-source-format.md#medium-interface). The
 [installed-SDK reference-scene sample](../examples/reference-scene.md#absorbing-medium-capture)
-turns those objects into the capture's medium.
+turns those objects into the capture's medium. The Editor authors a medium as a
+World's [Absorbing Medium](../development/editor-workspace.md#absorbing-media) box,
+whose extraction generates the closed boundary for **Reference…** captures.
 
 **Evidence.** On Apple M5 Metal (macOS 26.6, debug build), the `[medium]` cases of
 the [renderer test](../../modules/graphics/renderer/tests/reference_compute_tests.cpp)

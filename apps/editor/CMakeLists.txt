@@ -402,6 +402,7 @@ function(ludus_editor_add_builtin_world target)
         FILES "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/world.schema.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/terrain.component.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/aperture.component.json"
+              "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/absorbing_medium.component.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/atmosphere.component.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/render.preview.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/cube.mesh.json"
@@ -903,6 +904,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/world_terrain_surface.h
     src/world_terrain_surface.cpp
     src/world_aperture.cpp
+    src/internal/world_absorbing_medium.h
+    src/world_absorbing_medium.cpp
     src/world_demo_adapter.cpp
     src/internal/material_inspection.h
     src/material_inspection.cpp
@@ -1395,6 +1398,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/world_workspace_tests.cpp
         tests/world_terrain_tests.cpp
         tests/world_aperture_tests.cpp
+        tests/world_absorbing_medium_tests.cpp
         tests/material_inspection_tests.cpp
         tests/inspector_fields_tests.cpp
         tests/level_workspace_tests.cpp

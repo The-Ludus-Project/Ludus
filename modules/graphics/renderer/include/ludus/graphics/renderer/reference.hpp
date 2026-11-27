@@ -232,6 +232,9 @@ inline constexpr ludus::foundation::usize REFERENCE_MEDIUM_TRIANGLE_CORNERS = 3;
 /// Most boundary triangles of one ReferenceMediumDescription. Both implementations test every
 /// boundary triangle on every path segment and visibility ray, so cost grows linearly with it.
 inline constexpr ludus::foundation::usize MAX_REFERENCE_MEDIUM_TRIANGLES = 4096;
+/// Largest admitted magnitude, in world metres, of each coordinate of a ReferenceMediumDescription
+/// boundary corner. Applications that generate a boundary check their corners against it before a capture.
+inline constexpr ludus::foundation::float32 MAX_REFERENCE_MEDIUM_COORDINATE_WORLD = 1000000;
 /// One bounded homogeneous absorbing medium for CpuOracle and GpuCompute reference captures.
 ///
 /// The boundary is an invisible, index-matched interface (pbrt-v4's `interface` material): it
@@ -258,7 +261,7 @@ struct ReferenceMediumDescription final
 {
     /// Borrowed world-space corners, REFERENCE_MEDIUM_TRIANGLE_CORNERS per triangle for
     /// 1..MAX_REFERENCE_MEDIUM_TRIANGLES triangles, copied during Begin/Update. Each corner is finite and within
-    /// +/-1000000 metres; every triangle has positive area.
+    /// +/-MAX_REFERENCE_MEDIUM_COORDINATE_WORLD metres; every triangle has positive area.
     ludus::foundation::BorrowedView<const ludus::foundation::math::Vector3> BoundaryCornersWorld;
     /// Linear RGB absorption coefficient sigma_a of the enclosed medium, per world metre. Each channel
     /// is finite and in [0, content::scene_format::MAX_MEDIUM_ABSORPTION_PER_WORLD]; zero is vacuum.

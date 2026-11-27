@@ -45,6 +45,8 @@ class RendererWorkspace;
 void PopulateReferenceTraversalChoices(QComboBox& inoutChoice, graphics::renderer::ReferenceTraversal traversal);
 
 /// Disable unsupported choices. When choosing a default, prefer GPU compute when available and otherwise CPU.
+/// A scene with an absorbing medium (RenderScene::Medium) disables native ray queries, naming the medium in the
+/// item's tooltip, and moves a native selection to that default, because only the other two transport media.
 void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice,
                                           const RenderPreview* previewOrNull,
                                           bool shouldSelectDefault);

@@ -460,9 +460,10 @@ not part of version 1. The cook stores the material as a LUSCN v12
 `MediumInterface` record. RT1 CPU-oracle and GPU-compute reference captures
 render it as described in the
 [homogeneous absorbing medium reference](renderer-systems.md#homogeneous-absorbing-medium-reference).
-The World viewport cannot show media yet: opening a cooked bundle with a medium in
-the Editor names the material and asks you to remove its objects or use a
-reference capture.
+A World cannot import a medium yet: opening a cooked bundle with a medium in the
+Editor names the material and asks you to remove its objects, then author the box
+with the World's [Absorbing Medium preset](../development/editor-workspace.md#absorbing-media),
+or to use a reference capture of the bundle.
 
 ### Object
 

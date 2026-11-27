@@ -391,6 +391,9 @@ private:
     void commitProbeSize(const QString& id, foundation::int32 axis, foundation::float64 sizeMetres, bool isMinimumFace);
     /// Offer to raise the selected volume's spacing so the probe limit reaches every edge, then apply it.
     void coverProbeVolume(foundation::float64 spacingMetres);
+    /// Show the Absorbing Medium's attenuation distances and transmittance across the box as its fields are
+    /// typed, and how to view the medium (an RT1 reference capture with the CPU oracle or GPU compute).
+    void configureAbsorbingMediumFields(QWidget& inoutGroup, QFormLayout& inoutRows, const QString& cid);
     /// Show the GI Probe Volume's layout-dependent rows: counts for the counts layout, the derived grid and a
     /// spacing repair for the volume layout.
     void configureProbeVolumeFields(QWidget& inoutGroup,
