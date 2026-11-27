@@ -249,12 +249,26 @@ endforeach()
 set_property(GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_DIR "${default_render_graph}")
 set_property(GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_FILES "${default_render_graph_files}")
 install(DIRECTORY "${default_render_graph}/" DESTINATION "${CMAKE_INSTALL_DATADIR}/${LUDUS_ENGINE_PACKAGE_NAME}/render-graphs/default")
+# Adds the Linux default-thread-stack raiser (tests/software_vulkan_thread_stack.cpp) to a test executable.
+# Every executable that runs reference-compute kernels on lavapipe calls it; elsewhere it does nothing.
+function(ludus_add_software_vulkan_thread_stack target_name)
+    if(TARGET ludus_software_vulkan_thread_stack)
+        target_sources(${target_name} PRIVATE "$<TARGET_OBJECTS:ludus_software_vulkan_thread_stack>")
+    endif()
+endfunction()
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     # Independent Earth clear-sky quadrature shared by the CPU reference-sky and GPU atmosphere pixel tests.
     add_library(ludus_renderer_earth_sky_quadrature OBJECT tests/earth_sky_quadrature.cpp)
     target_link_libraries(ludus_renderer_earth_sky_quadrature PRIVATE Ludus::FoundationContainers Ludus::FoundationMath)
     ludus_apply_project_defaults(ludus_renderer_earth_sky_quadrature)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # lavapipe's compute workers take the default thread stack; the CI driver profile's unoptimized shader
+        # frames outgrow glibc's 8 MiB default (see the source).
+        add_library(ludus_software_vulkan_thread_stack OBJECT tests/software_vulkan_thread_stack.cpp)
+        target_link_libraries(ludus_software_vulkan_thread_stack PRIVATE Ludus::FoundationBase)
+        ludus_apply_project_defaults(ludus_software_vulkan_thread_stack)
+    endif()
     # CPU test oracles compile once with the renderer's non-contracted arithmetic, so the
     # deterministic oracle tests and the GPU parity suites compare against the same objects.
     # A static archive lets each executable pull only the oracles it calls.
@@ -382,11 +396,7 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/directional_near_render_tests.cpp tests/render_graph_default_render_tests.cpp tests/render_graph_hair_card_render_tests.cpp tests/render_graph_skin_render_tests.cpp tests/render_graph_reload_render_tests.cpp tests/render_graph_pool_render_tests.cpp tests/render_graph_ordered_render_tests.cpp tests/selection_outline_render_tests.cpp
         tests/hybrid_shadow_tests.cpp tests/hybrid_area_shadow_tests.cpp tests/hybrid_reflection_tests.cpp tests/hybrid_indirect_diffuse_tests.cpp)
     target_sources(ludus_renderer_render_tests PRIVATE tests/wave_tracing_parity_tests.cpp tests/large_world_sky_tests.cpp)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        # lavapipe's compute workers take the default thread stack; the CI driver profile's unoptimized shader
-        # frames outgrow glibc's 8 MiB default (see the source).
-        target_sources(ludus_renderer_render_tests PRIVATE tests/software_vulkan_thread_stack.cpp)
-    endif()
+    ludus_add_software_vulkan_thread_stack(ludus_renderer_render_tests)
     target_sources(ludus_renderer_render_tests PRIVATE tests/viewport_antialiasing_coverage_tests.cpp
         "$<TARGET_OBJECTS:ludus_renderer_earth_sky_quadrature>")
     target_include_directories(ludus_renderer_render_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests/support" ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
@@ -870,6 +880,7 @@ if(TARGET ludus_renderer_render_tests)
         Ludus::FoundationStrings Ludus::FoundationFilesystem Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_wave_graph_tests)
     ludus_enable_test_exceptions(ludus_wave_graph_tests)
+    ludus_add_software_vulkan_thread_stack(ludus_wave_graph_tests)
     ludus_compile_renderer_shaders(TARGET ludus_wave_graph_tests SHADERS renderer_composite)
     set(wave_graph_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/wave_graph")
     ludus_stage_render_graph_fixture("${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wave_aperture" "${wave_graph_staged}")
@@ -947,6 +958,7 @@ if(TARGET ludus_renderer_render_tests)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE LUDUS_TEST_SCENES_DIR="${PROJECT_SOURCE_DIR}/tests/scenes")
     ludus_apply_project_defaults(ludus_render_graph_ray_tests)
     ludus_enable_test_exceptions(ludus_render_graph_ray_tests)
+    ludus_add_software_vulkan_thread_stack(ludus_render_graph_ray_tests)
     ludus_compile_renderer_shaders(TARGET ludus_render_graph_ray_tests SHADERS renderer_composite)
     set(ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/raytracing")
     set(ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/raytracing")

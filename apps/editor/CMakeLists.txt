@@ -1771,6 +1771,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         # This journey runs in ludus_editor_hosted_play with a native viewport.
         string(APPEND editor_shard_filter "~[native-hosted-frames]")
     endif()
+    ludus_add_software_vulkan_thread_stack(ludus_editor_tests)
     ludus_add_editor_test_shards(ludus_editor_tests 4 600 "unit;editor" "${editor_shard_filter}")
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT WIN32)
         # Give each cold GPU capture its own deadline, independent of the editor shard's other tests.

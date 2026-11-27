@@ -1175,14 +1175,19 @@ validation layers, sample counts and independent CPU/GPU comparisons, while
 bounding driver optimization work. Engine shader artifacts and driver defaults
 are unchanged; performance qualification uses its own normal driver profile.
 The unchanged reference artifact took 111 seconds in a fresh-cache raw-AOV run
-with this profile. The profile also compiles with LLVM's `CodeGenOpt::None`, so a
-compute shader's stack frame grows with its kernel, and llvmpipe's compute
-workers use the default thread stack without stack probes. The reference kernel
-outgrew glibc's 8 MiB default (a SIGSEGV in shader code and "stack smashing
-detected" in another thread), so Linux `ludus_renderer_render_tests` raises its
-process default to 64 MiB before any device starts
-(`modules/graphics/renderer/tests/software_vulkan_thread_stack.cpp`). Its readiness window has 180 seconds of cold allowance
+with this profile. Its readiness window has 180 seconds of cold allowance
 (300 with ASan/UBSan), leaving room for capture within the existing case deadline.
+
+The profile also compiles with LLVM's `CodeGenOpt::None`, so a compute shader's
+stack frame grows with its kernel, and llvmpipe's compute workers use the
+default thread stack without stack probes. The reference kernel outgrew glibc's
+8 MiB default (a SIGSEGV in shader code and "stack smashing detected" in another
+thread). On Linux, each test executable that runs reference-compute kernels
+calls `ludus_add_software_vulkan_thread_stack`, whose objects
+(`modules/graphics/renderer/tests/software_vulkan_thread_stack.cpp`) raise the
+process default to 64 MiB before any device starts. The renderer render, wave
+graph, render-graph ray and editor tests call it; a new executable with
+`[reference-compute]` cases must call it too.
 
 These correctness deadlines include shader preparation on software adapters.
 Independent deadlines keep growth in the number of reference captures from

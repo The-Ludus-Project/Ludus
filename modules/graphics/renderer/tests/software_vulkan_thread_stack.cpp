@@ -1,4 +1,5 @@
-// Raises the default thread stack size of Linux renderer test processes before lavapipe starts its workers.
+// Raises the default thread stack size of Linux test processes that run reference-compute kernels, before lavapipe
+// starts its workers. ludus_add_software_vulkan_thread_stack (modules/graphics/renderer/CMakeLists.txt) adds it.
 //
 // CI runs these tests on lavapipe with GALLIVM_PERF=nopt (docs/development/continuous-integration.md). That
 // profile compiles shaders with LLVM's CodeGenOpt::None, which gives each spilled value its own stack slot, so
