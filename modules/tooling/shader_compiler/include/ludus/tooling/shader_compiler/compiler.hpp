@@ -92,6 +92,11 @@ struct Request final
     /// A Source ending in `.lusl` is lowered to Slang first, with the same library `luslc` uses; the
     /// generated module takes the path `Source + ".slang"` in the compiled snapshot, replacing any
     /// file there. The fields below apply only to such a Source.
+    ///
+    /// The compiler adds the target macros an offline build defines for one artifact: `LUDUS_DXIL`
+    /// is 1 for Target::Dxil and 0 otherwise, and `LUDUS_GLSL_ES` is 0. A request that names either is
+    /// InvalidRequest with a diagnostic. Both count against `shader_language::MAX_CONFIGURATION_VALUES`,
+    /// and Result::ConfigurationReadMask covers only the values given here.
     foundation::BorrowedView<const ConfigurationValue> Configuration;
     LanguageStyle Style = LanguageStyle::Strict; ///< Style setting of a `.lusl` Source.
     /// Development bounds checks for a `.lusl` Source; release builds leave this false.

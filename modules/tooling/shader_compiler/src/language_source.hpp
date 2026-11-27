@@ -25,6 +25,10 @@ class LanguageLowering final
 {
 public:
     /// @brief Lower `request`.
+    ///
+    /// The source sees `LUDUS_DXIL` as 1 for Target::Dxil and 0 otherwise, and `LUDUS_GLSL_ES` as 0,
+    /// as an offline build's lowering does for that artifact (cmake/shaders/lower_lusl.py). A request
+    /// that sets either in its configuration is InvalidRequest.
     /// @return False when lowering failed; `outResult` then holds the outcome and the LUSL
     /// diagnostics, and no Slang compilation should run.
     [[nodiscard]] bool Lower(const Request& request, Result& outResult) noexcept;
@@ -46,6 +50,8 @@ private:
     using PathText = foundation::StaticString<foundation::filesystem::MAX_PATH_BYTES>;
 
     shader_language::LoweringResult mLowered;
+    /// The request's configuration values followed by the target macros Lower defines for its target.
+    foundation::Array<ConfigurationValue> mConfiguration;
     foundation::Array<SourceFile> mFiles;
     /// Index in mFiles of each request file, or the request's file count for the one replaced.
     foundation::Array<foundation::usize> mFileIndices;

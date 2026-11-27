@@ -179,6 +179,12 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
 }
 '''
 
+# Fails to lower unless the compiler defines both target macros for a SPIR-V request.
+TARGET_MACRO_SOURCE = '''#if LUDUS_DXIL != 0 || LUDUS_GLSL_ES != 0
+#    error "a SPIR-V request lowers with both target macros 0"
+#endif
+'''
+
 
 def check_lusl(endpoint):
     """A .lusl source crosses the protocol with its configuration values and style setting."""
@@ -195,6 +201,18 @@ def check_lusl(endpoint):
     assert 'generated_source' not in failed
     bad_style = NATIVE.exchange(endpoint, dict(request, identity=33, style=9))
     assert bad_style['status'] == STATUS_INVALID_REQUEST
+    # The compiler defines the target macros as an offline build does for this artifact, so a live
+    # edit of a renderer recipe that tests LUDUS_DXIL lowers (batch 46048120177); the read mask still
+    # covers only the request's values, and a request may not set them itself.
+    targeted = TARGET_MACRO_SOURCE + LUSL_SOURCE
+    reply = NATIVE.exchange(endpoint, dict(request, identity=38, files={'shade.lusl': targeted}))
+    assert reply['status'] == STATUS_READY, reply['diagnostics']
+    assert reply['configuration_read_mask'] == '0100'
+    for macro in ('LUDUS_DXIL', 'LUDUS_GLSL_ES'):
+        reserved = NATIVE.exchange(endpoint, dict(request, identity=39,
+                                                  configuration=[['SCALE', '2'], [macro, '1']]))
+        assert reserved['status'] == STATUS_INVALID_REQUEST
+        assert macro in reserved['diagnostics'], reserved['diagnostics']
     # Debug information crosses the protocol; SPIR-V then imports the debug instruction set and
     # embeds the LUSL text, and a release request after it gets none.
     debug_set = b'NonSemantic.Shader.DebugInfo.100'

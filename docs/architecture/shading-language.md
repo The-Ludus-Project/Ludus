@@ -1217,7 +1217,9 @@ way. Their structs and entry names stay those the wrappers name (`Input`, `Varyi
 that entry point's parameter transform. `renderer_output.lusl` replaces its search-offset table with a switch,
 because LUSL has no constant array initializer. It spells its display helpers' `[noinline]` through a macro,
 as the original's `LUDUS_SHADER_NOINLINE_WHEN_SUPPORTED` does. The macro is empty under the `LUDUS_DXIL` target
-macro, which `lower_lusl.py` and the render-graph lowering now treat like `LUDUS_GLSL_ES`. SPIR-V keeps the
+macro, which `lower_lusl.py` and the render-graph lowering now treat like `LUDUS_GLSL_ES`. The shader compiler,
+which the Editor's live shader reload and the shader worker use, defines both for its request's target:
+`LUDUS_DXIL` is 1 only for DXIL and `LUDUS_GLSL_ES` is 0, and a request may not set them. SPIR-V keeps the
 attribute as `DontInline`. The Metal build restores `[noinline]` only where a source line spells it
 (`restore_metal_noinline`), so Metal inlines these helpers for both programs. A first port that spelled
 `[noinline]` directly kept them out of line on Metal and made the 1080p Balanced pass 0.74–0.90 ms slower; the

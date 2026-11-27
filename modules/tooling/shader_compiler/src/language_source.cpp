@@ -28,6 +28,11 @@ constexpr usize DIAGNOSTIC_CODE_DIGITS = 4;
 /// Decimal digits of the largest uint64.
 constexpr usize MAX_DECIMAL_DIGITS = 20;
 constexpr uint64 DECIMAL_BASE = 10;
+/// The macros an offline build defines for some artifacts only (cmake/shaders/lower_lusl.py, TARGET_MACROS). It lowers
+/// a source for both values of each and selects the artifact's, so a live compile defines them for its target.
+constexpr std::string_view DXIL_MACRO = "LUDUS_DXIL";
+constexpr std::string_view GLSL_ES_MACRO = "LUDUS_GLSL_ES";
+constexpr usize TARGET_MACRO_COUNT = 2;
 
 [[nodiscard]] std::string_view GetText(const foundation::BorrowedView<const char>& view) noexcept
 {
@@ -122,10 +127,36 @@ bool IsLanguageSource(std::string_view source) noexcept
 
 bool LanguageLowering::Lower(const Request& request, Result& outResult) noexcept
 {
+    mConfiguration.Clear();
+    if (mConfiguration.TryEnsureCapacity(request.Configuration.GetSize() + TARGET_MACRO_COUNT) == false)
+    {
+        outResult.Outcome = Status::OutOfMemory;
+        return false;
+    }
+    for (usize i = 0; i < request.Configuration.GetSize(); ++i)
+    {
+        const ConfigurationValue& value = request.Configuration[i];
+        const std::string_view name = GetText(value.Name);
+        if (name == DXIL_MACRO || name == GLSL_ES_MACRO)
+        {
+            DiagnosticText text(outResult.Diagnostics);
+            text.Append(GetText(request.Source));
+            text.Append(": ");
+            text.Append(name);
+            text.Append(" is defined by the shader compiler for the request's target; remove it from the "
+                        "configuration values\n");
+            outResult.Outcome = Status::InvalidRequest;
+            return false;
+        }
+        mConfiguration.Add(value);
+    }
+    const bool isDxil = request.OutputTarget == Target::Dxil;
+    mConfiguration.Add({{DXIL_MACRO.data(), DXIL_MACRO.size()}, {isDxil == true ? "1" : "0", 1}});
+    mConfiguration.Add({{GLSL_ES_MACRO.data(), GLSL_ES_MACRO.size()}, {"0", 1}});
     language::PreprocessRequest source;
     source.Files = request.Files;
     source.Source = request.Source;
-    source.Configuration = request.Configuration;
+    source.Configuration = {mConfiguration.GetData(), mConfiguration.GetSize()};
     language::LoweringOptions options;
     options.Check.Style = request.Style == LanguageStyle::Warn  ? language::StyleSetting::Warn
                           : request.Style == LanguageStyle::Off ? language::StyleSetting::Off
@@ -204,7 +235,12 @@ void LanguageLowering::Finish(const Request& request, Result& inoutResult) noexc
         readMask[i] = isReadBySlang == true || isReadByLanguage == true ? 1 : 0;
     }
     inoutResult.SourceReadMask = foundation::Move(readMask);
+    // The mask covers the request's values only, not the target macros Lower appended.
     inoutResult.ConfigurationReadMask = foundation::Move(mLowered.ConfigurationReadMask);
+    if (inoutResult.ConfigurationReadMask.GetSize() > request.Configuration.GetSize())
+    {
+        static_cast<void>(inoutResult.ConfigurationReadMask.TryResize(request.Configuration.GetSize(), 0));
+    }
     if (mLowered.Text.IsEmpty() == false)
     {
         std::memcpy(inoutResult.GeneratedSource.GetData(), mLowered.Text.GetData(), mLowered.Text.GetSize());
