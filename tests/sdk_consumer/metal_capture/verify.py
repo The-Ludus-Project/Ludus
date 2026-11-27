@@ -56,9 +56,13 @@ def run_fixture(executable, destination, is_capture_enabled):
 
 
 def does_trace_contain(bundle, text):
-    for entry in bundle.iterdir():
-        if entry.is_file() and text in entry.read_bytes():
-            return True
+    # Like the rhi test's DoesTraceContain: any file at any depth, as UTF-8 or UTF-16LE.
+    needles = (text, text.decode("utf-8").encode("utf-16-le"))
+    for entry in bundle.rglob("*"):
+        if entry.is_file():
+            data = entry.read_bytes()
+            if any(needle in data for needle in needles):
+                return True
     return False
 
 
