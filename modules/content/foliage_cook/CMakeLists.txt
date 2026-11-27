@@ -24,7 +24,7 @@ ludus_apply_project_defaults(ludus_foliage_cook)
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_foliage_cook_tests tests/foliage_cook_tests.cpp tests/foliage_cook_fixed_point_tests.cpp
-        tests/foliage_coverage.cpp tests/foliage_gap_tests.cpp)
+        tests/foliage_coverage.cpp tests/foliage_gap_tests.cpp tests/foliage_tiling.cpp)
     target_link_libraries(ludus_foliage_cook_tests
         PRIVATE Ludus::FoliageCook Ludus::FoundationThreading Ludus::FoundationTime Catch2::Catch2WithMain)
     # The fixed-point tests exercise the private rounding helpers directly; the FNV digest helper is the

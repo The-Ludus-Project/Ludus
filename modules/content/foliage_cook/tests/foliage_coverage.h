@@ -45,6 +45,13 @@ struct EligibleRegion final
     [[nodiscard]] bool IsEligible(int64 x, int64 z) const noexcept;
 };
 
+/// Quotient rounded towards negative infinity, for lattice coordinates on either side of the origin.
+[[nodiscard]] constexpr int64 FloorDivide(int64 value, int64 divisor) noexcept
+{
+    const int64 quotient = value / divisor;
+    return (value % divisor != 0 && (value < 0) != (divisor < 0)) ? quotient - 1 : quotient;
+}
+
 /// Integer squared distance below which two equal-radius roots conflict: (2 * radius)^2.
 [[nodiscard]] constexpr int64 GetConflictDistanceSquared(int64 minimumDistance) noexcept
 {
@@ -77,7 +84,51 @@ public:
     /// @return False when no point lies within the reach box; outDistanceSquared is then unchanged.
     [[nodiscard]] bool TryFindNearest(const NearestQuery& query, int64& outDistanceSquared) const noexcept;
 
+    /// @brief Visit the index of every point in the cells that overlap the query's reach box.
+    ///
+    /// Visits a superset of the points within the reach; the visitor tests distances itself and returns true to
+    /// stop. The query's skipped point is not visited.
+    /// @return True when the visitor stopped the visit.
+    template <typename Visitor>
+    [[nodiscard]] bool VisitNear(const NearestQuery& query, const Visitor& visitor) const noexcept
+    {
+        const int64 x = query.Position.X;
+        const int64 z = query.Position.Z;
+        const int64 firstColumn = clampCell(getCell(x - query.Reach - mExtent.MinimumX), mColumns);
+        const int64 lastColumn = clampCell(getCell(x + query.Reach - mExtent.MinimumX), mColumns);
+        const int64 firstRow = clampCell(getCell(z - query.Reach - mExtent.MinimumZ), mRows);
+        const int64 lastRow = clampCell(getCell(z + query.Reach - mExtent.MinimumZ), mRows);
+        for (int64 row = firstRow; row <= lastRow; ++row)
+        {
+            for (int64 column = firstColumn; column <= lastColumn; ++column)
+            {
+                const usize cell = static_cast<usize>(row * mColumns + column);
+                for (uint32 entry = mFirst[cell]; entry < mFirst[cell + 1]; ++entry)
+                {
+                    const usize index = mIndices[entry];
+                    if (index != query.SkipIndex && visitor(index) == true)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
 private:
+    /// Cell of an offset from the extent minimum, rounded towards negative infinity.
+    [[nodiscard]] int64 getCell(int64 offset) const noexcept
+    {
+        return FloorDivide(offset, mCellSize);
+    }
+
+    /// A cell clamped to [0, count - 1].
+    [[nodiscard]] static int64 clampCell(int64 cell, int64 count) noexcept
+    {
+        return cell < 0 ? 0 : (cell >= count ? count - 1 : cell);
+    }
+
     foundation::BorrowedView<const CoveragePoint> mPoints;
     FoliageLatticeRectangle mExtent{};
     int64 mCellSize = 1;
@@ -128,12 +179,13 @@ struct DartThrowingStatistics final
 enum class CoverageZone : uint8
 {
     Interior,    ///< At least the reach of a seam away from every page boundary.
-    Seam,        ///< Within the reach of a page boundary.
+    Seam,        ///< Within the reach of a boundary between two pages, away from page corners.
+    Junction,    ///< Within the reach of a page corner on both axes, where four pages meet.
     NarrowStrip, ///< Inside the narrow valid strip beside the keep-out.
 };
 
 /// Number of reporting zones.
-inline constexpr usize COVERAGE_ZONE_COUNT = 3;
+inline constexpr usize COVERAGE_ZONE_COUNT = 4;
 
 /// Geometry that assigns zones.
 struct ZoneLayout final
@@ -142,7 +194,7 @@ struct ZoneLayout final
     int64 SeamReach = 0;                   ///< Distance from a page boundary that still counts as the seam.
     FoliageLatticeRectangle NarrowStrip{}; ///< The narrow valid strip, half-open.
 
-    /// Zone of a root; the narrow strip takes precedence over the seam.
+    /// Zone of a root; the narrow strip takes precedence over a junction, and a junction over a seam.
     [[nodiscard]] CoverageZone Classify(int64 x, int64 z) const noexcept;
 };
 
@@ -185,6 +237,7 @@ struct ProbeSpacing final
 {
     int64 Interior = 1;    ///< Stride in the interior zone.
     int64 Seam = 1;        ///< Stride in the seam zone.
+    int64 Junction = 1;    ///< Stride in the junction zone.
     int64 NarrowStrip = 1; ///< Stride in the narrow strip.
 };
 

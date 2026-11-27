@@ -1,13 +1,15 @@
-// Placement gaps of the foliage cook against a maximal Poisson-disk control (issue 1694, slice 4).
+// Placement gaps of the foliage cook against maximal Poisson-disk comparators (issue 1694, slices 4 and 5).
 //
 // One flat, uniform, single-species layer with equal exclusion radii covers the golden fixture's terrain and its
-// negative page seams. Hole cells form a keep-out with a narrow valid strip between two bands, so an exclusion
-// can be told apart from a gap. Hierarchical dart throwing (foliage_coverage.h) fills the same eligible roots
-// maximally with the same minimum distance and layer seed. An independent probe then counts, for each zone, the
-// roots where one more candidate could still be admitted.
+// negative page seams and junctions. Hole cells form a keep-out with a narrow valid strip between two bands, so an
+// exclusion can be told apart from a gap. Hierarchical dart throwing (foliage_coverage.h) fills the same eligible
+// roots maximally with the same minimum distance and layer seed, and randomized tiling with boundary repair
+// (foliage_tiling.h) builds a maximal fill from clippings of one small seed pattern. An independent probe then
+// counts, for each zone, the roots where one more candidate could still be admitted.
 
 #include "foliage_cook_golden.h"
 #include "foliage_coverage.h"
+#include "foliage_tiling.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/array.hpp>
@@ -56,8 +58,18 @@ constexpr uint32 CONTROL_DOMAIN = 0x46474150U;
 constexpr uint64 MAXIMUM_DARTS = uint64{1} << 24;
 /// Probe stride of the interior zone in the quick test.
 constexpr int64 QUICK_INTERIOR_STRIDE = 4;
-/// Probe stride of the seam zone in the quick test.
+/// Probe stride of the seam and junction zones in the quick test.
 constexpr int64 QUICK_SEAM_STRIDE = 2;
+/// Random domain of the tiling seed pattern.
+constexpr uint32 SEED_DOMAIN = 0x46534544U;
+/// Random domain of tile choices and repair priorities.
+constexpr uint32 TILING_DOMAIN = 0x4654494CU;
+/// Seed pattern edge: sixteen minimum distances.
+constexpr int64 SEED_SIZE = 2048;
+/// Tile edge: half the seed, so two tiles span a page and every page seam and junction is a tile border.
+constexpr int64 TILE_SIZE = 1024;
+/// Reach of a repeated configuration: neighbours closer than two minimum distances.
+constexpr int64 CONFIGURATION_REACH = 2 * MINIMUM_DISTANCE;
 
 /// The candidate lattice of one gap configuration.
 struct LatticeChoice final
@@ -205,11 +217,16 @@ Array<coverage::CoveragePoint> GetRoots(const FoliageCookedPages& cooked, uint32
     return roots;
 }
 
-math::RandomKey MakeControlKey()
+math::RandomKey MakeKey(uint32 domain)
 {
     math::RandomKey key;
-    REQUIRE(math::TryMakeRandomKey(LAYER_SEED, CONTROL_DOMAIN, key) == math::MathStatus::Success);
+    REQUIRE(math::TryMakeRandomKey(LAYER_SEED, domain, key) == math::MathStatus::Success);
     return key;
+}
+
+math::RandomKey MakeControlKey()
+{
+    return MakeKey(CONTROL_DOMAIN);
 }
 
 float64 GetElapsedMilliseconds(timing::Timestamp start)
@@ -274,6 +291,7 @@ void ReportMeasurement(const char* name, const coverage::CoverageMeasurement& me
     constexpr ludus::foundation::StaticArray<const char*, coverage::COVERAGE_ZONE_COUNT> ZONE_NAMES = {
         "interior",
         "seam",
+        "junction",
         "narrow strip",
     };
     for (usize i = 0; i < coverage::COVERAGE_ZONE_COUNT; ++i)
@@ -348,6 +366,7 @@ TEST_CASE("the page cook leaves gaps that a maximal dart throwing control fills"
     {
         .Interior = QUICK_INTERIOR_STRIDE,
         .Seam = QUICK_SEAM_STRIDE,
+        .Junction = QUICK_SEAM_STRIDE,
         .NarrowStrip = 1,
     };
     coverage::CoverageMeasurement productMeasurement;
@@ -386,7 +405,7 @@ TEST_CASE("Benchmark: foliage placement gaps against hierarchical dart throwing"
 {
     // Run with the "[.benchmark]" tag in an optimized build; prints counts, spacing and gap histograms per zone,
     // the cook and control times, and the control's work and peak bytes. Every root is probed.
-    const coverage::ProbeSpacing spacing = { .Interior = 1, .Seam = 1, .NarrowStrip = 1 };
+    const coverage::ProbeSpacing spacing = { .Interior = 1, .Seam = 1, .Junction = 1, .NarrowStrip = 1 };
     constexpr usize LATTICE_COUNT = 2;
     constexpr ludus::foundation::StaticArray<const char*, LATTICE_COUNT> LATTICE_NAMES = {
         "sparse lattice (cell 128, 1 slot)",
@@ -443,4 +462,346 @@ TEST_CASE("Benchmark: foliage placement gaps against hierarchical dart throwing"
     }
     ReportMeasurement("control", measurement, spacing.Interior);
     CHECK(GetAdmissibleRoots(measurement) == 0);
+}
+
+namespace
+{
+/// A tiling configuration of the comparator.
+struct TilingChoice final
+{
+    const char* Name = "";
+    int64 SeedSize = 0;
+    int64 TileSize = 0;
+    uint32 SymmetryCount = coverage::TRANSLATION_ONLY;
+};
+
+coverage::SeedPattern MakeSeed(int64 size, coverage::DartThrowingStatistics& outStatistics)
+{
+    coverage::SeedPattern seed;
+    REQUIRE(coverage::TryMakeSeedPattern(size,
+                                         MINIMUM_DISTANCE,
+                                         MakeKey(SEED_DOMAIN),
+                                         MAXIMUM_DARTS,
+                                         seed,
+                                         outStatistics) == true);
+    return seed;
+}
+
+coverage::TilingParameters MakeTilingParameters(const TilingChoice& choice, bool isReversed)
+{
+    return
+    {
+        .TileSize = choice.TileSize,
+        .SymmetryCount = choice.SymmetryCount,
+        .Key = MakeKey(TILING_DOMAIN),
+        .IsReversed = isReversed,
+    };
+}
+
+Array<coverage::CoveragePoint> TileWindow(const coverage::EligibleRegion& region,
+                                          const FoliageLatticeRectangle& window,
+                                          const coverage::SeedPattern& seed,
+                                          const coverage::TilingParameters& parameters,
+                                          coverage::TilingStatistics& outStatistics)
+{
+    Array<coverage::CoveragePoint> points;
+    REQUIRE(coverage::TryTileAndRepair(region, window, seed, MINIMUM_DISTANCE, parameters, points, outStatistics) ==
+            true);
+    return points;
+}
+
+bool ArePointsEqual(const Array<coverage::CoveragePoint>& left, const Array<coverage::CoveragePoint>& right)
+{
+    if (left.GetSize() != right.GetSize())
+    {
+        return false;
+    }
+    for (usize i = 0; i < left.GetSize(); ++i)
+    {
+        if (left[i].X != right[i].X || left[i].Z != right[i].Z)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsInside(const FoliageLatticeRectangle& rectangle, const coverage::CoveragePoint& point)
+{
+    return point.X >= rectangle.MinimumX && point.X < rectangle.MaximumX && point.Z >= rectangle.MinimumZ &&
+           point.Z < rectangle.MaximumZ;
+}
+
+/// Points of two Z-then-X sorted sets inside a rectangle that the other set lacks.
+uint64 CountDifferences(const Array<coverage::CoveragePoint>& left,
+                        const Array<coverage::CoveragePoint>& right,
+                        const FoliageLatticeRectangle& rectangle)
+{
+    const auto isBefore = [](const coverage::CoveragePoint& a, const coverage::CoveragePoint& b) {
+        return a.Z != b.Z ? a.Z < b.Z : a.X < b.X;
+    };
+    uint64 differences = 0;
+    usize i = 0;
+    usize j = 0;
+    while (i < left.GetSize() || j < right.GetSize())
+    {
+        if (i < left.GetSize() && IsInside(rectangle, left[i]) == false)
+        {
+            ++i;
+        }
+        else if (j < right.GetSize() && IsInside(rectangle, right[j]) == false)
+        {
+            ++j;
+        }
+        else if (i == left.GetSize() || (j < right.GetSize() && isBefore(right[j], left[i]) == true))
+        {
+            ++differences;
+            ++j;
+        }
+        else if (j == right.GetSize() || isBefore(left[i], right[j]) == true)
+        {
+            ++differences;
+            ++i;
+        }
+        else
+        {
+            ++i;
+            ++j;
+        }
+    }
+    return differences;
+}
+
+/// Pages, clipped to the region, that a full and an isolated tiling disagree on.
+struct IsolationResult final
+{
+    uint64 Pages = 0;
+    uint64 MismatchedPages = 0;
+    uint64 MismatchedPoints = 0;
+};
+
+/// Tile each page alone with a halo and compare it with the full tiling.
+IsolationResult MeasureIsolation(const GapFixture& fixture,
+                                 const coverage::SeedPattern& seed,
+                                 const coverage::TilingParameters& parameters,
+                                 const Array<coverage::CoveragePoint>& full,
+                                 int64 halo)
+{
+    const FoliageLatticeRectangle& extent = fixture.Region.Extent;
+    const int64 pageSize = golden::PAGE_SIZE;
+    IsolationResult result;
+    for (int64 pageZ = coverage::FloorDivide(extent.MinimumZ, pageSize); pageZ * pageSize < extent.MaximumZ; ++pageZ)
+    {
+        for (int64 pageX = coverage::FloorDivide(extent.MinimumX, pageSize); pageX * pageSize < extent.MaximumX;
+             ++pageX)
+        {
+            const FoliageLatticeRectangle page =
+            {
+                .MinimumX = pageX * pageSize,
+                .MinimumZ = pageZ * pageSize,
+                .MaximumX = (pageX + 1) * pageSize,
+                .MaximumZ = (pageZ + 1) * pageSize,
+            };
+            const FoliageLatticeRectangle window =
+            {
+                .MinimumX = page.MinimumX - halo,
+                .MinimumZ = page.MinimumZ - halo,
+                .MaximumX = page.MaximumX + halo,
+                .MaximumZ = page.MaximumZ + halo,
+            };
+            coverage::TilingStatistics statistics;
+            const Array<coverage::CoveragePoint> isolated =
+                TileWindow(fixture.Region, window, seed, parameters, statistics);
+            const uint64 differences = CountDifferences(full, isolated, page);
+            result.Pages += 1;
+            if (differences != 0)
+            {
+                result.MismatchedPages += 1;
+                result.MismatchedPoints += differences;
+            }
+        }
+    }
+    return result;
+}
+
+coverage::RepetitionMeasurement MeasureRepetition(const GapFixture& fixture,
+                                                  const Array<coverage::CoveragePoint>& points)
+{
+    coverage::RepetitionMeasurement measurement;
+    REQUIRE(coverage::TryMeasureRepetition({points.GetData(), points.GetSize()},
+                                           fixture.Region.Extent,
+                                           CONFIGURATION_REACH,
+                                           measurement) == true);
+    return measurement;
+}
+
+void ReportRepetition(const char* name, const coverage::RepetitionMeasurement& measurement)
+{
+    constexpr float64 PERCENT = 100.0;
+    const float64 configurations = static_cast<float64>(measurement.Configurations);
+    WARN(name << " repetition: " << measurement.Configurations << " configurations of " << measurement.Points
+              << " points, " << measurement.TranslatedRepeats << " translated repeats ("
+              << PERCENT * static_cast<float64>(measurement.TranslatedRepeats) / configurations << " %), "
+              << measurement.SymmetricRepeats << " repeats under a square symmetry ("
+              << PERCENT * static_cast<float64>(measurement.SymmetricRepeats) / configurations << " %)");
+}
+
+constexpr TilingChoice QUICK_TILING =
+{
+    .Name = "tiles 1024 from seed 2048, dihedral",
+    .SeedSize = SEED_SIZE,
+    .TileSize = TILE_SIZE,
+    .SymmetryCount = coverage::DIHEDRAL_SYMMETRIES,
+};
+} // namespace
+
+TEST_CASE("randomized tiling repairs seams and junctions into a maximal fill", "[foliage][cook][gap][tiling]")
+{
+    const GapFixture fixture(DENSE_LATTICE);
+    coverage::DartThrowingStatistics seedStatistics;
+    const coverage::SeedPattern seed = MakeSeed(QUICK_TILING.SeedSize, seedStatistics);
+    CHECK(seedStatistics.SmallestCellSize == 1);
+
+    coverage::TilingStatistics statistics;
+    const Array<coverage::CoveragePoint> tiled =
+        TileWindow(fixture.Region, fixture.Region.Extent, seed, MakeTilingParameters(QUICK_TILING, false), statistics);
+    RequireEveryRootEligible(fixture.Region, tiled);
+    // Repair did work at the borders: clipped points lost conflicts and gaps were filled.
+    CHECK(statistics.RemovedPoints > 0);
+    CHECK(statistics.IneligiblePoints > 0);
+    CHECK(statistics.FilledPoints > 0);
+    CHECK(tiled.GetSize() ==
+          statistics.ClippedPoints - statistics.IneligiblePoints - statistics.RemovedPoints + statistics.FilledPoints);
+
+    const coverage::ProbeSpacing spacing =
+    {
+        .Interior = QUICK_INTERIOR_STRIDE,
+        .Seam = QUICK_SEAM_STRIDE,
+        .Junction = QUICK_SEAM_STRIDE,
+        .NarrowStrip = 1,
+    };
+    coverage::CoverageMeasurement measurement;
+    REQUIRE(coverage::TryMeasureCoverage(fixture.Region,
+                                         fixture.Zones,
+                                         {tiled.GetData(), tiled.GetSize()},
+                                         MINIMUM_DISTANCE,
+                                         spacing,
+                                         measurement) == true);
+    RequireMinimumSpacing(measurement);
+    CHECK(GetAdmissibleRoots(measurement) == 0);
+    CHECK(GetZone(measurement, coverage::CoverageZone::Seam).Points > 0);
+    CHECK(GetZone(measurement, coverage::CoverageZone::Junction).Points > 0);
+    CHECK(GetZone(measurement, coverage::CoverageZone::NarrowStrip).Points > 0);
+
+    // Repair is a function of addresses and priorities, not of the order tiles and rows are visited.
+    coverage::TilingStatistics reversedStatistics;
+    const Array<coverage::CoveragePoint> reversed = TileWindow(fixture.Region,
+                                                               fixture.Region.Extent,
+                                                               seed,
+                                                               MakeTilingParameters(QUICK_TILING, true),
+                                                               reversedStatistics);
+    CHECK(ArePointsEqual(reversed, tiled) == true);
+
+    // Clippings of one seed repeat its configurations; an independent maximal fill does not.
+    Array<coverage::CoveragePoint> control;
+    coverage::DartThrowingStatistics controlStatistics;
+    REQUIRE(coverage::TryThrowHierarchicalDarts(fixture.Region,
+                                                MINIMUM_DISTANCE,
+                                                MakeControlKey(),
+                                                MAXIMUM_DARTS,
+                                                control,
+                                                controlStatistics) == true);
+    const coverage::RepetitionMeasurement tiledRepetition = MeasureRepetition(fixture, tiled);
+    const coverage::RepetitionMeasurement controlRepetition = MeasureRepetition(fixture, control);
+    CHECK(tiledRepetition.SymmetricRepeats > 0);
+    CHECK(tiledRepetition.TranslatedRepeats <= tiledRepetition.SymmetricRepeats);
+    CHECK(controlRepetition.Configurations > 0);
+    CHECK(controlRepetition.SymmetricRepeats == 0);
+}
+
+TEST_CASE("Benchmark: randomized tiling against hierarchical dart throwing", "[.benchmark][foliage][gap][tiling]")
+{
+    // Run with the "[.benchmark]" tag in an optimized build; prints the control and each tiling's counts, spacing,
+    // gaps, repetition, work, bytes and isolated-page agreement over a halo sweep. Every root is probed.
+    const coverage::ProbeSpacing spacing = { .Interior = 1, .Seam = 1, .Junction = 1, .NarrowStrip = 1 };
+    const GapFixture fixture(DENSE_LATTICE);
+
+    const FoliageCookInput input = fixture.Cook.MakeInput();
+    const Array<FoliagePageAddress> all = GetTerrainPages(input);
+    ReportRepetition(
+        "cook (cell 64)",
+        MeasureRepetition(fixture, GetRoots(CookPages(input, {all.GetData(), all.GetSize()}), DENSE_LATTICE.CellSize)));
+
+    Array<coverage::CoveragePoint> control;
+    coverage::DartThrowingStatistics controlStatistics;
+    const timing::Timestamp controlStart = timing::Now();
+    REQUIRE(coverage::TryThrowHierarchicalDarts(fixture.Region,
+                                                MINIMUM_DISTANCE,
+                                                MakeControlKey(),
+                                                MAXIMUM_DARTS,
+                                                control,
+                                                controlStatistics) == true);
+    const float64 controlMilliseconds = GetElapsedMilliseconds(controlStart);
+    WARN("control: " << control.GetSize() << " samples in " << controlMilliseconds << " ms, "
+                     << controlStatistics.PeakBytes << " peak bytes");
+    ReportRepetition("control", MeasureRepetition(fixture, control));
+
+    constexpr usize TILING_COUNT = 3;
+    constexpr ludus::foundation::StaticArray<TilingChoice, TILING_COUNT> TILINGS = {
+        TilingChoice
+        {
+            .Name = "tiles 1024 from seed 2048, translations",
+            .SeedSize = SEED_SIZE,
+            .TileSize = TILE_SIZE,
+            .SymmetryCount = coverage::TRANSLATION_ONLY,
+        },
+        QUICK_TILING,
+        TilingChoice
+        {
+            .Name = "tiles 512 from seed 1024, dihedral",
+            .SeedSize = SEED_SIZE / 2,
+            .TileSize = TILE_SIZE / 2,
+            .SymmetryCount = coverage::DIHEDRAL_SYMMETRIES,
+        },
+    };
+    constexpr usize HALO_COUNT = 6;
+    constexpr ludus::foundation::StaticArray<int64, HALO_COUNT> HALO_DISTANCES = {0, 1, 2, 4, 8, 16};
+    for (const TilingChoice& choice : TILINGS)
+    {
+        coverage::DartThrowingStatistics seedStatistics;
+        const timing::Timestamp seedStart = timing::Now();
+        const coverage::SeedPattern seed = MakeSeed(choice.SeedSize, seedStatistics);
+        const float64 seedMilliseconds = GetElapsedMilliseconds(seedStart);
+        const coverage::TilingParameters parameters = MakeTilingParameters(choice, false);
+        coverage::TilingStatistics statistics;
+        const timing::Timestamp tilingStart = timing::Now();
+        const Array<coverage::CoveragePoint> tiled =
+            TileWindow(fixture.Region, fixture.Region.Extent, seed, parameters, statistics);
+        const float64 tilingMilliseconds = GetElapsedMilliseconds(tilingStart);
+        WARN(choice.Name << ": seed " << seed.Points.GetSize() << " points in " << seedMilliseconds << " ms; "
+                         << tiled.GetSize() << " points in " << tilingMilliseconds << " ms over " << statistics.Tiles
+                         << " tiles: " << statistics.ClippedPoints << " clipped, " << statistics.IneligiblePoints
+                         << " in the keep-out, " << statistics.RemovedPoints << " removed, " << statistics.GapRoots
+                         << " gap roots, " << statistics.FilledPoints << " filled, peak " << statistics.PeakBytes
+                         << " bytes");
+        coverage::CoverageMeasurement measurement;
+        REQUIRE(coverage::TryMeasureCoverage(fixture.Region,
+                                             fixture.Zones,
+                                             {tiled.GetData(), tiled.GetSize()},
+                                             MINIMUM_DISTANCE,
+                                             spacing,
+                                             measurement) == true);
+        ReportMeasurement("tiling", measurement, spacing.Interior);
+        CHECK(GetAdmissibleRoots(measurement) == 0);
+        ReportRepetition("tiling", MeasureRepetition(fixture, tiled));
+        for (const int64 halo : HALO_DISTANCES)
+        {
+            const timing::Timestamp isolationStart = timing::Now();
+            const IsolationResult isolation =
+                MeasureIsolation(fixture, seed, parameters, tiled, halo * MINIMUM_DISTANCE);
+            WARN("  isolated pages with a halo of "
+                 << halo << " d: " << isolation.MismatchedPages << " of " << isolation.Pages << " pages differ by "
+                 << isolation.MismatchedPoints << " points (" << GetElapsedMilliseconds(isolationStart) << " ms)");
+        }
+    }
 }
