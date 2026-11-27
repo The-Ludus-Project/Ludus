@@ -30,6 +30,7 @@ LABEL_VIEW_COLORS = {0: (0, 0, 0), 1: (255, 128, 0), 2: (0, 192, 255)}
 LABEL_VIEW_UNKNOWN = (255, 0, 255)
 # Moving the foreground cube 0.5 m (four pixels) right uncovers a 4 x 16 strip of background and covers
 # 4 x 16 pixels to its right: rows 16-23 become foreground over background and rows 24-31 over the rear cube.
+CAPTURE_LOG_TAIL = 4000  # characters of a failed host's log repeated in the job output
 GEOMETRY_SHIFT = 0.5
 GEOMETRY_CHANGED_PIXELS = 2 * 4 * 16
 
@@ -48,7 +49,9 @@ def capture(command, package, evidence, name, environment, outputs=('capture.png
         process = subprocess.run(command, cwd=package, env=environment, stdout=log,
                                  stderr=subprocess.STDOUT, timeout=150)
     if process.returncode or not all((package / output).is_file() for output in outputs):
-        raise RuntimeError(f'{name} failed to capture. Inspect {log.name}')
+        # Show the host's own diagnostics in the job log as well as in the retained artifact.
+        print((evidence / f'{name}.log').read_text(errors='replace')[-CAPTURE_LOG_TAIL:], file=sys.stderr)
+        raise RuntimeError(f'{name} failed to capture with exit {process.returncode}. Inspect {log.name}')
     for output in outputs:
         shutil.move(package / output, evidence / (f'{name}.png' if len(outputs) == 1 else f'{name}-{output}'))
 
