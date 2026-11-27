@@ -28,6 +28,14 @@
   dt { color: #c0c8d0; }
   dd { margin: .25rem 0 0; font-variant-numeric: tabular-nums; }
   pre { overflow: auto; }
+  #heatmap-image, .legend img { image-rendering: pixelated; }
+  .legend { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem 1.5rem; align-items: start; }
+  .legend figcaption { grid-column: 1 / -1; padding: 0; }
+  .ramp img { height: 1rem; }
+  .ticks { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; color: #c0c8d0; }
+  .swatches { display: flex; flex-direction: column; gap: .35rem; margin: 0; padding: 0; list-style: none; }
+  .swatches li { display: flex; align-items: center; gap: .5rem; }
+  .swatches img { width: 1rem; height: 1rem; border: 1px solid #5a6068; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -64,7 +72,18 @@
 </section>
 <section id="error" hidden>
   <figure><img id="heatmap-image" alt="Largest absolute RGB channel error at each pixel">
-    <figcaption>Black · zero error. Orange · $scale or more. Grey · no samples in one or both inputs.</figcaption>
+    <div class="legend">
+      <figcaption>Largest absolute channel error per pixel ($unit). Brightness rises with the error, from dark red
+        for the smallest nonzero error to pale yellow at $scale or more.</figcaption>
+      <div class="ramp">
+        <img src="$ramp_image" alt="Error scale from dark red to pale yellow">
+        <div class="ticks">$ticks</div>
+      </div>
+      <ul class="swatches">
+        <li><img src="$zero_image" alt="">Black · exact match</li>
+        <li><img src="$unsampled_image" alt="">Grey stripes · no samples in one or both inputs</li>
+      </ul>
+    </div>
   </figure>
 </section>
 <section id="gallery" hidden><div id="gallery-images"></div></section>

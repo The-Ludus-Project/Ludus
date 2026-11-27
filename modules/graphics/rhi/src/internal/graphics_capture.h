@@ -52,6 +52,8 @@ struct GraphicsCaptureFinalization final
     const char* ToolVersionOrNull = nullptr;
     /// Native failure detail; null if none.
     const char* DiagnosticOrNull = nullptr;
+    /// What shader source the artifact lets a viewer show, for the manifest; null if unknown.
+    const char* ShaderSourceOrNull = nullptr;
 };
 
 /// What Abandon left behind.

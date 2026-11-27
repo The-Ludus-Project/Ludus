@@ -3688,9 +3688,16 @@ Open the HTML report in a browser for side-by-side, wipe and error heatmap
 views. Use the candidate menu to switch between several inputs against the same
 baseline. The file embeds its images and data for offline use. The command also
 writes JSON to standard output with the full metrics and input metadata. The
-heatmap shows the largest absolute RGB channel error per pixel, from black at
-zero to orange at `--diff-scale` (0.25 by default). Grey marks pixels missing
-a sample on either side. Changing this scale leaves the metrics unchanged.
+heatmap shows the largest absolute RGB channel error per pixel. Black marks an
+exact match. A nonzero error starts at dark red and gets brighter through orange
+to pale yellow at `--diff-scale` (0.25 by default) or more. Its CIELAB lightness
+rises linearly from 20 to 95, so a brighter pixel always has a larger error, in
+greyscale and under common colour-vision deficiencies. Even the smallest
+nonzero error stands clear of black. Diagonal grey stripes mark pixels missing a
+sample on either side, so they cannot be mistaken for any error value. The
+legend labels the scale in the compared encoding: normalized sRGB from 0 to 1,
+or scene-linear RGB. All candidates in one report share the scale. Changing it
+leaves the metrics and exit status unchanged.
 
 Both inputs need the same pixel dimensions and comparison space. HDR captures
 use their raw scene-linear RGB values. Preview images compress each channel with

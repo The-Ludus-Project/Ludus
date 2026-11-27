@@ -164,6 +164,7 @@ struct ControlledAdapter final : internal::GraphicsCaptureAdapter
             .IsArtifactPreserved = false,
             .ToolVersionOrNull = "controlled 1.0",
             .DiagnosticOrNull = nullptr,
+            .ShaderSourceOrNull = "controlled source",
         };
         internal::ReportGraphicsCaptureFinalization(identity, finalization);
     }
@@ -420,10 +421,13 @@ TEST_CASE("G1 skipped frames keep a capture armed until the next eligible frame"
     CHECK(report.IsManifestPublished == true);
     CHECK(GetText(report.Artifact.GetData()) == session.Adapter.GetArtifactName());
     CHECK(GetText(report.ToolVersion.GetData()) == "controlled 1.0");
+    CHECK(GetText(report.ShaderSource.GetData()) == "controlled source");
     String manifest;
     REQUIRE(ludus::test_support::ReadFile(session.GetPath(report.Manifest.GetData()), manifest) == true);
     const std::string_view text = manifest.GetView();
     CHECK(text.find("\"format\": \"ludus-graphics-capture\"") != std::string_view::npos);
+    CHECK(text.find("\"version\": 2") != std::string_view::npos);
+    CHECK(text.find("\"shaderSource\": \"controlled source\"") != std::string_view::npos);
     CHECK(text.find("\"backend\": \"Metal\"") != std::string_view::npos);
     CHECK(text.find("\"capturedFrame\": 2") != std::string_view::npos);
     CHECK(text.find("\"requestedFrame\": 1") != std::string_view::npos);

@@ -3,9 +3,10 @@
 Status: implementation contract, 2026-10-20. Native local-editor P0/P1 recording
 and local P2 pass-duration counters are implemented: CPU/GPU/Both controls,
 the Record Profiling shortcut (Ctrl+Alt+F9), frame timing and shared pass scopes.
-G0 resource names and nested GPU scopes and the G1 capture request owner are
-implemented, and P2 hosted recording returns a hosted game's own pass durations
-to the editor. P3 and the native Metal/RenderDoc capture adapters remain planned.
+G0 resource names and nested GPU scopes, the G1 capture request owner and the G2
+Metal capture adapter are implemented, and P2 hosted recording returns a hosted
+game's own pass durations to the editor. G2 awaits viewer qualification in Xcode.
+P3 and the RenderDoc capture adapter remain planned.
 Implementation availability is distinct from platform/hardware qualification.
 
 Shader and renderer developers should be able to run the selected project in
@@ -41,8 +42,9 @@ process supervisor or viewport publication transaction.
 
 Graph pass descriptions carry authored diagnostic names, and G0 adds buffer
 and texture names and nested GPU scopes ([delivered contract](#delivered-g0-names-and-nested-scopes)).
-G1 adds the capture request owner ([delivered contract](#delivered-g1-capture-session-contract)).
-Naming the remaining object kinds, native capture adapters and editor capture
+G1 adds the capture request owner ([delivered contract](#delivered-g1-capture-session-contract)),
+and G2 its Metal adapter ([delivered adapter](#delivered-g2-metal-adapter)).
+Naming the remaining object kinds, the RenderDoc adapter and editor capture
 controls remain work in this plan. Finding an
 installed tool or a single existing Metal label does not establish support.
 The RHI already exposes an optional single-sample, nonblocking frame-duration
@@ -290,17 +292,19 @@ needs the device, so its manifest is still published.
 file I/O stays out of frame recording. The adapter names its artifact
 `ludus-capture-<session>-<request>.<extension>` and verifies it. The owner then
 publishes `<stem>.manifest.json` atomically, without replacing an existing
-entry. Manifest version 1 records the session and request, the build flavor,
+entry. The manifest records the session and request, the build flavor,
 backend, tool and version, GPU adapter name, vendor, device and driver, the
-requested, captured and skipped frames, and the artifact name. If publication
+requested, captured and skipped frames, and the artifact name. Version 2 adds
+`shaderSource`: the shader source the artifact lets a viewer show, as the
+adapter reports it. If publication
 fails, the request reports ManifestFailed, keeps the artifact and claims no
 manifest. A cancelled request never gets a manifest. A partial artifact named
 by the adapter's cleanup is reported as preserved.
 
 The adapter interface and its frame hooks are private:
-`src/internal/graphics_capture.h`. No backend registers an adapter yet, so a
-capture request returns UnsupportedBackend everywhere until G2 (Metal) and G3
-(RenderDoc). The `[graphics-capture]` cases in `ludus_rhi_lifecycle_tests`
+`src/internal/graphics_capture.h`. The Metal backend registers the G2 adapter;
+other backends register none, so a capture request returns UnsupportedBackend
+there until G3 (RenderDoc). The `[graphics-capture]` cases in `ludus_rhi_lifecycle_tests`
 cover the lifecycle with a controlled adapter that writes real files. They
 drive the real device frame and session path. Engine revision, world/view,
 renderer profile, shader hashes and validation settings belong to the
@@ -327,6 +331,75 @@ File capture does not require an open Xcode GUI. Xcode provides the supported
 interactive inspection workflow; feature availability depends on the installed
 Xcode/macOS/GPU combination. New Apple command-line capture/debugging tools may
 be exposed later after availability checks, without replacing this adapter.
+
+#### Delivered G2 Metal adapter
+
+Every Metal device session registers the adapter
+(`src/graphics_capture_metal.mm`), so `GetGraphicsCaptureCapabilities` reports
+the Metal tool. Apple inserts its capture layer only when the process starts
+with `MTL_CAPTURE_ENABLED=1` in its environment, or with the app's
+`MetalCaptureEnabled` Info.plist property. Without it, capabilities report
+`IsRestartRequired`, a request returns RestartRequired and nothing is written.
+The repair is a relaunch with the variable set; Ludus never sets it for you,
+because Metal reads it before any Ludus code runs. An Xcode capture already
+running in the process is reported as an external capture and makes requests
+Busy. Ludus never stops it.
+
+A request captures the whole `MTLDevice` from before the frame's command
+buffers are created until after they are committed. The trace therefore holds
+every queue the process uses on that device during the frame, including other
+device owners that share it. Uploads and other work committed between frames
+are outside the capture. Offscreen-only frames can be captured. A zero-size
+target never starts a capture. If an acquisition is skipped after the capture
+started, for example on a hidden window, the adapter stops it, deletes the
+empty trace it created and keeps the request armed.
+
+The artifact is `ludus-capture-<session>-<request>.gputrace`, a bundle
+directory in the request's destination. The adapter refuses to start when that
+name exists. `stopCapture` is synchronous: it returns after the captured
+command buffers have finished and the trace is written. This capture-specific
+drain happens inside `EndFrame` of the captured frame. The first trace in a
+process can take several seconds: 6–11 s were measured in a standalone probe
+on an M-series Mac, and under half a second in the RHI tests. Later traces take
+tens to hundreds of milliseconds. Apple documents no completion query for a
+trace document, so the adapter treats a stopped capture manager and a
+nonempty bundle directory as verified and reports synchronously. Opening the
+trace in Xcode remains the acceptance check.
+
+Every Metal library in the RHI is compiled at runtime from generated MSL, and
+the trace records that source. The manifest's `shaderSource` says so. Xcode can
+show the generated MSL, but no authored LUSL or Slang line is mapped to it.
+Shader stepping is unqualified until checked in Xcode. The tool version names
+the Metal framework and macOS versions.
+
+`ludus_rhi_metal_tests` checks the restart requirement. A second CTest entry,
+`ludus_rhi_metal_capture_tests`, runs its `[graphics-capture]` cases with
+`MTL_CAPTURE_ENABLED=1`. Those cases capture two offscreen frames and check the
+report, manifest and trace contents. A frame holds either the legacy fullscreen
+draw or raster passes, so one capture checks the drawn MSL source and the other
+the named texture and pass. They also check that a skipped
+zero-size frame keeps the request armed and that destroying the device ends an
+armed request without writing a file. With `LUDUS_TEST_COCOA=1` they also check
+that a hidden window's skipped acquisition discards its empty trace.
+
+To capture from an application built against the installed SDK, build and
+install the `macos-clang-development` SDK. Then configure
+`tests/sdk_consumer/metal_capture` as a separate CMake project with the
+installed prefix, the pinned compiler and the preset's macOS SDK flags, and run
+`ctest --test-dir <consumer-build> -V`. The fixture captures two frames inside a
+`Fixture/View` scope. The first draws the LUSL diagnostic shader. The second
+clears a texture named `Fixture/OffscreenColor` in a `Fixture/OffscreenPass`
+scope. Its `verify.py` runs it without capture enabled and expects the restart
+report. It then runs it with `MTL_CAPTURE_ENABLED=1` into a fresh directory
+under the consumer build's `artifacts/` folder. It checks both manifests and
+that the traces record the frame, scope and texture names and the generated
+MSL. It prints an `open -a Xcode` command for each trace.
+
+To qualify the traces, open each in Xcode and replay it. Each has one
+`Ludus/Frame` command buffer with a `Fixture/View` group. In the first, check
+the diagnostic's generated MSL in the shader view. In the second, check the
+`Fixture/OffscreenPass` group and the `Fixture/OffscreenColor` texture. Record the Xcode, macOS and GPU versions with the result. Editor controls
+for capture belong to G4.
 
 ### RenderDoc on Linux and Vulkan
 
@@ -549,10 +622,11 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -version
 ```
 
 Tool discovery should report missing Xcode/components and a remedy, without
-automatically downloading them or changing `xcode-select`. Once the Metal phase
-is delivered, capture from Ludus and explicitly open the generated `.gputrace`
-in Xcode. Before then, use Xcode's external executable capture workflow where
-applicable; installing Xcode alone does not implement Ludus's capture button.
+automatically downloading them or changing `xcode-select`. Launch the process
+with `MTL_CAPTURE_ENABLED=1`, request a capture through the
+[G2 Metal adapter](#delivered-g2-metal-adapter) and explicitly open the
+generated `.gputrace` in Xcode. The editor has no capture button until G4; until
+then, Xcode's external executable capture workflow also works.
 RenderDoc is the initial Linux/Vulkan workflow, not the debugger for Ludus's
 native Metal backend. PIX GPU capture requires Windows/D3D12.
 
@@ -560,8 +634,9 @@ native Metal backend. PIX GPU capture requires Windows/D3D12.
 
 P0/P1 and P2 physical-pass counters are implemented for the native editor, for
 its own viewport and for a game playing in it ([hosted recording](editor-gui-systems.md#hosted-recording)).
-G0 buffer/texture names and nested scopes and the G1 capture session contract are
-implemented. Capture adapters remain pending. Implement changes in isolated reviewable branches targeting
+G0 buffer/texture names and nested scopes, the G1 capture session contract and
+the G2 Metal adapter are implemented. G2 awaits Xcode qualification, and the G3
+RenderDoc adapter remains pending. Implement changes in isolated reviewable branches targeting
 `develop`, following [CI qualification](../development/continuous-integration.md).
 Acceptance into `develop` is distinct from full batch/platform qualification.
 
@@ -579,7 +654,7 @@ adapters. It does not wait for G2/G3 or for a full pass-timing implementation.
 | --- | --- | --- |
 | G0 Shared GPU annotations | Implemented: owned RHI names, buffer/texture names, nested scopes and merged logical-pass labels. Scopes use Metal, optional Vulkan and optional D3D12 PIX regions; object names also reach WebGPU labels. Shader and pipeline names remain pending. | Native captures show useful resource and logical/physical pass names; disabled/missing annotation paths preserve rendering. |
 | G1 Capture contract | Implemented: session/request ownership, bounded state machine, capabilities, destinations and manifest publication, with private adapter hooks; no native adapter is registered yet. Depends on G0 identities. | Production-path tests cover admission, skipped frames, deadlines, cancellation, stale replies, shutdown and output preservation. |
-| G2 Metal capture | Programmatic `.gputrace`, startup enablement and standalone SDK fixture. Depends on G1; first local platform adapter. | A real Mac capture opens in Xcode, contains the intended frame and exposes named resources/passes and recorded shader-source capability. |
+| G2 Metal capture | Implemented: programmatic device `.gputrace`, `MTL_CAPTURE_ENABLED` startup enablement, verified artifact and `shaderSource` manifest field, and the `tests/sdk_consumer/metal_capture` fixture. Xcode qualification is pending. Depends on G1; first local platform adapter. | A real Mac capture opens in Xcode, contains the intended frame and exposes named resources/passes and recorded shader-source capability. |
 | G3 RenderDoc capture | Linux/Vulkan launch attachment, version negotiation and explicit frame capture. Depends on G1; can follow the same contract independently of G2. | A real `.rdc` replays in the tested RenderDoc version with named resources/passes, correct offscreen boundaries and explicit feature limits. |
 | G4 Editor and hosted target control | Shared launch/request controls, IPC identities, target selection and standalone fallback. Depends on qualified G2/G3 adapters. | Selected-world viewport and hosted-game captures target the correct process through edits/navigation/resize; failed capture retains the last drawable view. |
 | G5 Shader investigation and automation | Debug/performance shader artifacts, source mapping evidence, CLI/SDK controls and reproducible capture bundles. | Installed-SDK reproduction opens without the developer's original build tree; source-display/stepping claims and overhead have recorded evidence. |
