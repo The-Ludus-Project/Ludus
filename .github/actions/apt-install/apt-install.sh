@@ -7,7 +7,8 @@
 # Every network attempt here has a deadline and is retried. Installation then
 # uses only the downloaded archives, so a deadline never interrupts dpkg.
 # The native setup and image keep the same policy in
-# .github/actions/native-setup/install-packages.sh.
+# .github/actions/native-setup/install-packages.sh. Both first set aside hosted
+# APT sources that no job installs from (use-required-sources.sh).
 set -euo pipefail
 
 install_options=(-y -qq)
@@ -43,6 +44,7 @@ fetch_with_apt() {
   done
   return "$status"
 }
+bash "$(dirname "${BASH_SOURCE[0]}")/use-required-sources.sh"
 fetch_with_apt 5m update -qq
 fetch_with_apt 10m install --download-only "${install_options[@]}" "${packages[@]}"
 sudo DEBIAN_FRONTEND=noninteractive apt-get install --no-download "${install_options[@]}" "${packages[@]}"

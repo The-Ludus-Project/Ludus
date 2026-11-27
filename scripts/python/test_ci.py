@@ -368,6 +368,9 @@ class ToolchainBootstrapTests(unittest.TestCase):
                         installer = checkout / ".github/actions/apt-install/apt-install.sh"
                         installer.parent.mkdir(parents=True)
                         shutil.copy2(root / ".github/actions/apt-install/apt-install.sh", installer)
+                        shutil.copy2(root / ".github/actions/apt-install/use-required-sources.sh",
+                                     installer.parent / "use-required-sources.sh")
+                        (checkout / "sources.list.d").mkdir()
                         binaries = checkout / "bin"
                         binaries.mkdir()
                         (binaries / "python3").symlink_to(sys.executable)
@@ -383,7 +386,8 @@ class ToolchainBootstrapTests(unittest.TestCase):
                         log = checkout / "apt.log"
                         github_environment = checkout / "github.env"
                         environment = {**os.environ, "PATH": str(binaries) + os.pathsep + os.defpath,
-                                       "APT_LOG": str(log), "GITHUB_ENV": str(github_environment)}
+                                       "APT_LOG": str(log), "GITHUB_ENV": str(github_environment),
+                                       "LUDUS_APT_SOURCE_PARTS": str(checkout / "sources.list.d")}
                         subprocess.run(["/bin/bash", "-e", "-c", script], cwd=checkout, env=environment,
                                        check=True, capture_output=True, text=True)
                         commands = log.read_text().splitlines()
@@ -1417,6 +1421,57 @@ class BoundedAptInstallTests(unittest.TestCase):
         self.assertIn("timeout --signal=TERM --kill-after=30s", text)
         self.assertIn("install --download-only", text)
         self.assertIn("apt-get install --no-download", text)
+
+    SOURCE_FILTER = ".github/actions/apt-install/use-required-sources.sh"
+
+    def run_source_filter(self, sources, runner_environment):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            parts = root / "sources.list.d"
+            parts.mkdir()
+            for name, text in sources.items():
+                (parts / name).write_text(text, encoding="utf-8")
+            binaries = root / "bin"
+            binaries.mkdir()
+            sudo = binaries / "sudo"
+            sudo.write_text('#!/bin/sh\nexec "$@"\n')
+            sudo.chmod(0o755)
+            environment = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+                           "RUNNER_ENVIRONMENT": runner_environment, "LUDUS_APT_SOURCE_PARTS": str(parts),
+                           "LUDUS_APT_SET_ASIDE_SOURCES": str(root / "set-aside")}
+            result = subprocess.run(["/bin/bash", str(self.ROOT / self.SOURCE_FILTER)], env=environment,
+                                    capture_output=True, text=True, check=True)
+            aside = sorted(path.name for path in (root / "set-aside").glob("*"))
+            return sorted(path.name for path in parts.iterdir()), aside, result.stdout
+
+    def test_hosted_runner_sets_aside_sources_no_job_installs_from(self):
+        """Batch 45920191091: packages.microsoft.com answered 403 and failed every index update."""
+        sources = {
+            "ubuntu.sources": "Types: deb\nURIs: http://azure.archive.ubuntu.com/ubuntu/\nSuites: noble\n"
+                              "URIs: http://security.ubuntu.com/ubuntu\n",
+            "ludus-apt.llvm.org.sources": "Types: deb\nURIs: https://apt.llvm.org/noble/\n",
+            "microsoft-prod.list": "deb [arch=amd64,armhf,arm64] https://packages.microsoft.com/ubuntu/24.04/prod noble main\n",
+            "mixed.list": "deb http://archive.ubuntu.com/ubuntu noble main\ndeb https://ppa.launchpadcontent.net/x/y noble main\n",
+            "commented.list": "# deb https://packages.microsoft.com/ubuntu/24.04/prod noble main\n",
+            "notes.txt": "deb https://packages.microsoft.com/ubuntu/24.04/prod noble main\n",
+        }
+        kept, aside, output = self.run_source_filter(sources, "github-hosted")
+        self.assertEqual(kept, ["commented.list", "ludus-apt.llvm.org.sources", "notes.txt", "ubuntu.sources"])
+        self.assertEqual(aside, ["microsoft-prod.list", "mixed.list"])
+        self.assertIn("Set aside unused APT source microsoft-prod.list (packages.microsoft.com)", output)
+        # Self-hosted runners and developer machines keep their configuration.
+        kept, aside, _ = self.run_source_filter(sources, "self-hosted")
+        self.assertEqual(kept, sorted(sources))
+        self.assertEqual(aside, [])
+
+    def test_every_hosted_package_update_first_sets_aside_unused_sources(self):
+        filter_call = "bash \"$(dirname \"${BASH_SOURCE[0]}\")/use-required-sources.sh\""
+        installer = (self.ROOT / self.INSTALLER).read_text(encoding="utf-8")
+        self.assertLess(installer.index(filter_call), installer.index("fetch_with_apt 5m update"))
+        action = (self.ROOT / ".github/actions/native-setup/action.yml").read_text(encoding="utf-8")
+        hosted = action.split("bash /opt/ludus-ci/use-tools.sh", 1)[1].split("        fi\n", 1)[0]
+        self.assertLess(hosted.index(f"bash {self.SOURCE_FILTER}"),
+                        hosted.index("bash .github/actions/native-setup/install-packages.sh"))
 
 
 class MacosCrashReportTests(unittest.TestCase):
