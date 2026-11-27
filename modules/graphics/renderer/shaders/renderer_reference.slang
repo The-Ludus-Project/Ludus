@@ -77,6 +77,7 @@ static const uint MULTIPLE_SCATTERING_FLAG = LUDUS_REFERENCE_MULTIPLE_SCATTERING
 static const uint UTD_CONNECTION_FLAG = LUDUS_REFERENCE_UTD_CONNECTION_FLAG;
 static const uint FRAUNHOFER_CONNECTION_FLAG = LUDUS_REFERENCE_FRAUNHOFER_CONNECTION_FLAG;
 static const uint VISIBLE_SPECTRUM_FLAG = LUDUS_REFERENCE_VISIBLE_SPECTRUM_FLAG;
+static const uint BIDIRECTIONAL_FLAG = LUDUS_REFERENCE_BIDIRECTIONAL_FLAG;
 static const uint LINEAR_FILTER_FLAG = 1;
 static const uint REPEAT_U_FLAG = 2;
 static const uint REPEAT_V_FLAG = 4;
@@ -1087,6 +1088,10 @@ struct LightProposal
     bool HasFiniteEndpoint;
     // A resampled mode drew the emissive category; the vertex resamples an emitter itself.
     bool IsEmissiveCategory;
+    // ReferenceOpticalPathSampling::Bidirectional: the proposal's finite light endpoint, from which a light subpath
+    // could also start, and its emissive triangle (NO_TRIANGLE for an analytic light).
+    bool HasLightEndpoint;
+    uint EndpointTriangle;
 };
 void MarkInvalid(inout PathSample inoutPath, uint depth, uint failure)
 {
@@ -1146,16 +1151,17 @@ ReferenceLightChoice MakeReferenceLightChoice(ReferenceLightChoiceKind kind, uin
     result.SelectionPmf = selectionPmf;
     return result;
 }
-ReferenceLightChoice SelectReferenceLight(uint pixel, uint sample, uint depth, uint lightCount)
+// Draw a light at selectionDimension, and an emissive triangle from the power CDF at emitterDimension.
+ReferenceLightChoice
+SelectReferenceLightAt(uint pixel, uint sample, uint lightCount, uint selectionDimension, uint emitterDimension)
 {
     if (lightCount == 0)
         return (ReferenceLightChoice)0;
     uint selected;
-    if (TrySampleRandomBounded(
-            Sampling.xy,
-            PixelRandomAddress(pixel, sample, GetBounceDimension(depth, LUDUS_PATH_RANDOM_LIGHT_SELECTION_SLOT)),
-            lightCount,
-            selected) == false)
+    if (TrySampleRandomBounded(Sampling.xy,
+                               PixelRandomAddress(pixel, sample, selectionDimension),
+                               lightCount,
+                               selected) == false)
         return MakeReferenceLightChoice(ReferenceLightChoiceKind::Invalid, 0, 0);
     float uniformPmf = 1 / float(lightCount);
     uint remainingAnalyticLights = Counts.w - Tile.x;
@@ -1172,15 +1178,20 @@ ReferenceLightChoice SelectReferenceLight(uint pixel, uint sample, uint depth, u
     if (total == 0)
         return (ReferenceLightChoice)0; // No emitter carries power.
     uint value;
-    if (TrySampleRandomBounded(Sampling.xy,
-                               PixelRandomAddress(pixel, sample, GetBounceDimension(depth, EMITTER_SLOT)),
-                               total,
-                               value) == false)
+    if (TrySampleRandomBounded(Sampling.xy, PixelRandomAddress(pixel, sample, emitterDimension), total, value) == false)
         return MakeReferenceLightChoice(ReferenceLightChoiceKind::Invalid, 0, 0);
     uint emitter = SelectEmitter(value);
     return MakeReferenceLightChoice(ReferenceLightChoiceKind::Triangle,
                                     emitter,
                                     GetEmitterSelection(emitter, lightCount));
+}
+ReferenceLightChoice SelectReferenceLight(uint pixel, uint sample, uint depth, uint lightCount)
+{
+    return SelectReferenceLightAt(pixel,
+                                  sample,
+                                  lightCount,
+                                  GetBounceDimension(depth, LUDUS_PATH_RANDOM_LIGHT_SELECTION_SLOT),
+                                  GetBounceDimension(depth, EMITTER_SLOT));
 }
 // Uniform direction in the disk of a directional light of positive angular radius; reference_path.cpp
 // SampleDirectionalDisk owns the derivation, the PBRT 4e §A.5.4 attribution and the same operation order. The
@@ -1264,15 +1275,20 @@ EvaluateAnalyticIncidentLight(uint pixel, uint sample, uint depth, uint lightInd
     result.Radiance *= window * window * angular / max(square, NEAR_LIGHT_SQUARED_DISTANCE_FLOOR);
     return result;
 }
-ReferenceIncidentLight
-SampleTriangleIncidentLight(uint pixel, uint sample, uint depth, uint emitter, float3 positionWorld)
+// Barycentric (u, v) of the area-uniform point that the two unit draws select on a triangle.
+float2 SampleTriangleBarycentric(float first, float second)
+{
+    float root = sqrt(first);
+    float u = root * (1 - second);
+    return float2(u, root - u);
+}
+// The incident proposal of emitter `emitter` at `barycentric`, seen from positionWorld.
+ReferenceIncidentLight EvaluateTriangleIncidentLight(uint emitter, float2 barycentric, float3 positionWorld)
 {
     ReferenceIncidentLight result = (ReferenceIncidentLight)0;
     uint triangle = GetEmitterTriangle(emitter);
-    float root = sqrt(RandomValue(pixel, sample, GetBounceDimension(depth, LUDUS_PATH_RANDOM_INCIDENT_FIRST_SLOT)));
-    float u =
-        root * (1 - RandomValue(pixel, sample, GetBounceDimension(depth, LUDUS_PATH_RANDOM_INCIDENT_SECOND_SLOT)));
-    float v = root - u;
+    float u = barycentric.x;
+    float v = barycentric.y;
     result.PositionWorld = GetPositionWorld(triangle, u, v);
     float3 deltaWorld = result.PositionWorld - positionWorld;
     result.DistanceWorld = length(deltaWorld);
@@ -1291,6 +1307,16 @@ SampleTriangleIncidentLight(uint pixel, uint sample, uint depth, uint emitter, f
         result.DistanceWorld <= Options.x && IsOpaque(instance, uv, GetVertexAlpha(triangle, u, v)) == true)
         result.Radiance = SampleEmission(instance, uv);
     return result;
+}
+ReferenceIncidentLight
+SampleTriangleIncidentLight(uint pixel, uint sample, uint depth, uint emitter, float3 positionWorld)
+{
+    return EvaluateTriangleIncidentLight(
+        emitter,
+        SampleTriangleBarycentric(
+            RandomValue(pixel, sample, GetBounceDimension(depth, LUDUS_PATH_RANDOM_INCIDENT_FIRST_SLOT)),
+            RandomValue(pixel, sample, GetBounceDimension(depth, LUDUS_PATH_RANDOM_INCIDENT_SECOND_SLOT))),
+        positionWorld);
 }
 ReferenceIncidentLight SampleEnvironmentIncidentLight(uint pixel, uint sample, uint depth)
 {
@@ -1344,11 +1370,10 @@ float EvaluateSampledLightProbability(ReferenceLightChoice choice,
 }
 // Keep source choice and incident evaluation local to the direct-light proposal.
 // Inlining the split proposal into TracePath regressed the resampled L6 parity fixture on Metal.
-[noinline] LightProposal SampleLight(uint pixel, uint sample, uint depth, float3 positionWorld)
+// The proposal of `incident` for `choice` at positionWorld.
+LightProposal
+MakeLightProposal(ReferenceLightChoice choice, ReferenceIncidentLight incident, float3 positionWorld, uint lightCount)
 {
-    uint lightCount = GetLightCount();
-    ReferenceLightChoice choice = SelectReferenceLight(pixel, sample, depth, lightCount);
-    ReferenceIncidentLight incident = SampleReferenceIncidentLight(pixel, sample, depth, choice, positionWorld);
     LightProposal result;
     result.DirectionWorld = incident.DirectionWorld;
     result.Radiance = incident.Radiance;
@@ -1360,7 +1385,19 @@ float EvaluateSampledLightProbability(ReferenceLightChoice choice,
     result.IsDelta = incident.IsDelta;
     result.HasFiniteEndpoint = incident.HasFiniteEndpoint;
     result.IsEmissiveCategory = choice.Kind == ReferenceLightChoiceKind::ResampledTriangles;
+    result.HasLightEndpoint =
+        incident.HasFiniteEndpoint == true &&
+        (choice.Kind == ReferenceLightChoiceKind::Analytic || choice.Kind == ReferenceLightChoiceKind::Triangle);
+    result.EndpointTriangle =
+        choice.Kind == ReferenceLightChoiceKind::Triangle ? GetEmitterTriangle(choice.Index) : NO_TRIANGLE;
     return result;
+}
+[noinline] LightProposal SampleLight(uint pixel, uint sample, uint depth, float3 positionWorld)
+{
+    uint lightCount = GetLightCount();
+    ReferenceLightChoice choice = SelectReferenceLight(pixel, sample, depth, lightCount);
+    ReferenceIncidentLight incident = SampleReferenceIncidentLight(pixel, sample, depth, choice, positionWorld);
+    return MakeLightProposal(choice, incident, positionWorld, lightCount);
 }
 // Trace one shadow segment for an accepted proposal; false reports an invalid ray.
 bool TraceProposal(inout PathSample inoutPath,
@@ -2046,6 +2083,405 @@ bool TryEvaluateResampledLightDensity(uint pixel,
     return true;
 }
 
+// PrepareReferenceSurface (reference_path.cpp): the shading normal, mirrored to a viewer behind the oriented geometric
+// normal when isBackFace, and the BSDF at (u, v) of `triangle`. False marks the path invalid.
+bool TryPrepareSurface(inout PathSample inoutPath,
+                       uint depth,
+                       uint triangle,
+                       float u,
+                       float v,
+                       float3 geometricNormalWorld,
+                       bool isBackFace,
+                       out float3 outNormalWorld,
+                       out Bsdf outBsdf)
+{
+    outNormalWorld = 0;
+    outBsdf = (Bsdf)0;
+    uint instance = GetInstance(triangle);
+    float2 uv = GetTexcoordUv(triangle, u, v);
+    // Corner normals on both sides of the face can cancel; pbrt-v4 then shades with the geometric normal.
+    float3 normalWorld = NormalizeOrZero(InterpolateTriangle(triangle, 3, u, v).xyz);
+    if (all(normalWorld == float3(0)) == true)
+        normalWorld = geometricNormalWorld;
+    float4 texel = SampleImage(instance, COLOR_IMAGE, uv);
+    if (asuint(SurfaceValue(instance, 7).z) != 0)
+        texel *= InterpolateTriangleColor(triangle, u, v);
+    float4 baseAndMetallic = SurfaceValue(instance, 0);
+    Bsdf bsdf;
+    bsdf.BaseColor = texel.xyz * baseAndMetallic.xyz;
+    bsdf.Metallic = baseAndMetallic.w;
+    bsdf.Roughness = SurfaceValue(instance, 1).x;
+    float4 etaAndModel = SurfaceValue(instance, LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD);
+    float4 extinctionAndAlpha = SurfaceValue(instance, LUDUS_GPU_PREVIEW_SCATTERING_K_WORD);
+    bsdf.Model = MaterialModel(asuint(etaAndModel.w));
+    bsdf.Eta = etaAndModel.xyz;
+    bsdf.K = extinctionAndAlpha.xyz;
+    bsdf.Alpha = extinctionAndAlpha.w;
+    float4 coatingParameters = SurfaceValue(instance, LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD);
+    bsdf.CoatingEta = coatingParameters.y;
+    bsdf.CoatingThickness = coatingParameters.z;
+    bsdf.ProgramOffset = asuint(coatingParameters.w);
+    float4 surfaceMap = SurfaceValue(instance, 6);
+    if (asuint(surfaceMap.w) != 0)
+    {
+        float4 parametersTexel = SampleImage(instance, SURFACE_IMAGE, uv);
+        if (all(isfinite(parametersTexel)) == false || any(parametersTexel < 0) || any(parametersTexel > 1))
+        {
+            MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_SURFACE_PARAMETERS);
+            return false;
+        }
+        SurfaceParameters parameters =
+            DecodeSurfaceParameters(parametersTexel, bsdf.Metallic, bsdf.Roughness, surfaceMap.x);
+        bsdf.Metallic = parameters.Metallic;
+        bsdf.Roughness = parameters.Roughness;
+        normalWorld = ApplySurfaceNormal(triangle, instance, normalWorld, parameters.NormalTangent, u, v);
+    }
+    if (isBackFace == true)
+        normalWorld = -normalWorld;
+    // A dielectric's medium lies behind its oriented front side; viewed from the back, the ray is inside.
+    bsdf.IsViewerInside = isBackFace;
+    outNormalWorld = normalWorld;
+    outBsdf = bsdf;
+    return true;
+}
+#if LUDUS_REFERENCE_OPTICAL_CONNECTIONS != 0
+// --- Light-vertex connections (ReferenceOpticalPathSampling::Bidirectional) -------------------------------------
+// reference_path.cpp owns the strategy, its declared integral and the attribution of Veach, Pharr et al. and Steinberg
+// and Pharr (Section 6.1); each function below mirrors its CPU oracle counterpart operation for operation.
+static const float LIGHT_SPHERE_SOLID_ANGLE_FACTOR = 4;
+bool IsBidirectional()
+{
+    return HasOpticalConnections() == true && (Sampling.z & BIDIRECTIONAL_FLAG) != 0;
+}
+uint GetLightVertexDimension(uint depth, uint slot)
+{
+    return LUDUS_REFERENCE_LIGHT_VERTEX_FIRST_DIMENSION + LUDUS_REFERENCE_LIGHT_VERTEX_DIMENSIONS * depth + slot;
+}
+// ReferenceLightEndpoint: the start y0 of a light subpath.
+struct LightEndpoint
+{
+    float3 PositionWorld;
+    float3 NormalWorld; // Oriented geometric normal of an emissive triangle; unused for an analytic light.
+    uint Triangle;      // Emissive triangle, or NO_TRIANGLE for an analytic light.
+    bool IsTwoSided;
+};
+LightEndpoint MakeProposalEndpoint(LightProposal proposal)
+{
+    LightEndpoint result;
+    result.PositionWorld = proposal.PositionWorld;
+    result.NormalWorld = proposal.NormalWorld;
+    result.Triangle = proposal.EndpointTriangle;
+    result.IsTwoSided =
+        proposal.EndpointTriangle != NO_TRIANGLE && IsEmissionTwoSided(GetInstance(proposal.EndpointTriangle)) == true;
+    return result;
+}
+float EvaluateLightDirectionPdf(LightEndpoint endpoint, float3 directionWorld)
+{
+    if (endpoint.Triangle == NO_TRIANGLE)
+        return 1 / (LIGHT_SPHERE_SOLID_ANGLE_FACTOR * PI);
+    float cosine = dot(endpoint.NormalWorld, directionWorld);
+    if (endpoint.IsTwoSided == true)
+        return abs(cosine) / (2 * PI);
+    return cosine > 0 ? cosine / PI : 0;
+}
+// ReferenceLightVertexDensities: the area densities of y1 under the camera's BSDF draw and the light ray.
+struct LightVertexDensities
+{
+    float Camera;
+    float Light;
+};
+LightVertexDensities EvaluateLightVertexDensities(LightEndpoint endpoint,
+                                                  float3 vertexWorld,
+                                                  float3 vertexNormalWorld,
+                                                  float3 cameraVertexWorld,
+                                                  float bsdfPdf)
+{
+    LightVertexDensities result;
+    result.Camera = 0;
+    result.Light = 0;
+    float3 lightDeltaWorld = vertexWorld - endpoint.PositionWorld;
+    float3 cameraDeltaWorld = vertexWorld - cameraVertexWorld;
+    float lightDistanceSquared = dot(lightDeltaWorld, lightDeltaWorld);
+    float cameraDistanceSquared = dot(cameraDeltaWorld, cameraDeltaWorld);
+    if (lightDistanceSquared <= 0 || cameraDistanceSquared <= 0 || isfinite(lightDistanceSquared) == false ||
+        isfinite(cameraDistanceSquared) == false)
+        return result;
+    float3 lightDirectionWorld = lightDeltaWorld / sqrt(lightDistanceSquared);
+    float3 cameraDirectionWorld = cameraDeltaWorld / sqrt(cameraDistanceSquared);
+    result.Light = EvaluateLightDirectionPdf(endpoint, lightDirectionWorld) *
+                   abs(dot(vertexNormalWorld, lightDirectionWorld)) / lightDistanceSquared;
+    result.Camera = max(bsdfPdf, 0) * abs(dot(vertexNormalWorld, cameraDirectionWorld)) / cameraDistanceSquared;
+    return result;
+}
+// TraceLightRay: the light ray from `endpoint` along directionWorld to its first surface. False marks the path invalid.
+bool TraceLightRay(inout PathSample inoutPath,
+                   uint depth,
+                   LightEndpoint endpoint,
+                   float3 directionWorld,
+                   out Hit outHit)
+{
+    outHit = (Hit)0;
+    outHit.Triangle = NO_TRIANGLE;
+    Ray ray;
+    ray.OriginWorld = endpoint.Triangle == NO_TRIANGLE
+                          ? endpoint.PositionWorld
+                          : OffsetOrigin(endpoint.PositionWorld, endpoint.Triangle, directionWorld);
+    ray.DirectionWorld = directionWorld;
+    ray.MinimumDistanceWorld = 0;
+    ray.MaximumDistanceWorld = Options.x;
+    if (IsFiniteVector(ray.OriginWorld) == false || IsWithinWorld(ray.OriginWorld) == false)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_RAY_ORIGIN);
+        return false;
+    }
+    CountQuery(inoutPath, false);
+    outHit = TraceScene(ray, false);
+    if (outHit.HasExceededStack == true)
+    {
+        inoutPath.Status |= LUDUS_REFERENCE_CAPACITY_FLAG;
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED);
+        return false;
+    }
+    return true;
+}
+// ComputeNextEventWeight: the next-event weight at the rough vertex on `triangle` against the light-vertex strategy of
+// the rough camera vertex before it, which reaches this path only when the light ray towards the vertex lands on it.
+bool ComputeNextEventWeight(inout PathSample inoutPath,
+                            uint depth,
+                            LightProposal proposal,
+                            uint triangle,
+                            float3 positionWorld,
+                            float3 scatteringNormalWorld,
+                            float3 previousPositionWorld,
+                            float previousPdf,
+                            bool isPreviousSpecular,
+                            out float outWeight)
+{
+    outWeight = 1;
+    if (depth == 0 || isPreviousSpecular == true || proposal.HasLightEndpoint == false)
+        return true;
+    LightEndpoint endpoint = MakeProposalEndpoint(proposal);
+    LightVertexDensities densities = EvaluateLightVertexDensities(endpoint,
+                                                                  positionWorld,
+                                                                  scatteringNormalWorld,
+                                                                  previousPositionWorld,
+                                                                  previousPdf);
+    if (densities.Light <= 0)
+        return true;
+    Hit hit;
+    if (TraceLightRay(inoutPath, depth, endpoint, NormalizeOrZero(positionWorld - endpoint.PositionWorld), hit) ==
+        false)
+        return false;
+    if (hit.Triangle == triangle)
+        outWeight = PowerWeight(densities.Camera, densities.Light);
+    return true;
+}
+// ConnectLightVertex: the light-vertex strategy at the rough camera vertex on `triangle`. A light subpath y0 -> y1,
+// drawn from the light vertex dimensions of `depth`, connects its rough vertex y1 to the camera vertex by a binary
+// visibility segment; the light segment keeps next-event estimation's optical connection at y1. False marks the path
+// invalid.
+bool ConnectLightVertex(inout PathSample inoutPath,
+                        uint pixel,
+                        uint sample,
+                        uint depth,
+                        uint triangle,
+                        float3 positionWorld,
+                        float3 scatteringNormalWorld,
+                        float3 normalWorld,
+                        float3 viewWorld,
+                        Bsdf bsdf,
+                        float3 throughput)
+{
+    uint lightCount = GetLightCount();
+    ReferenceLightChoice choice =
+        SelectReferenceLightAt(pixel,
+                               sample,
+                               lightCount,
+                               GetLightVertexDimension(depth, LUDUS_REFERENCE_LIGHT_VERTEX_SELECTION_SLOT),
+                               GetLightVertexDimension(depth, LUDUS_REFERENCE_LIGHT_VERTEX_EMITTER_SLOT));
+    if (choice.Kind == ReferenceLightChoiceKind::Invalid)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
+        return false;
+    }
+    LightEndpoint endpoint = (LightEndpoint)0;
+    endpoint.Triangle = NO_TRIANGLE;
+    float2 barycentric = 0;
+    uint analyticLight = SurfaceLayout.y + choice.Index * LUDUS_GPU_PREVIEW_LIGHT_WORDS;
+    if (choice.Kind == ReferenceLightChoiceKind::Triangle)
+    {
+        endpoint.Triangle = GetEmitterTriangle(choice.Index);
+        barycentric = SampleTriangleBarycentric(
+            RandomValue(pixel,
+                        sample,
+                        GetLightVertexDimension(depth, LUDUS_REFERENCE_LIGHT_VERTEX_POSITION_FIRST_SLOT)),
+            RandomValue(pixel,
+                        sample,
+                        GetLightVertexDimension(depth, LUDUS_REFERENCE_LIGHT_VERTEX_POSITION_SECOND_SLOT)));
+        endpoint.PositionWorld = GetPositionWorld(endpoint.Triangle, barycentric.x, barycentric.y);
+        endpoint.NormalWorld = GetOrientedGeometricNormalWorld(endpoint.Triangle, barycentric.x, barycentric.y);
+        endpoint.IsTwoSided = IsEmissionTwoSided(GetInstance(endpoint.Triangle));
+    }
+    else if (choice.Kind == ReferenceLightChoiceKind::Analytic &&
+             uint(SceneValue(analyticLight).w) != DIRECTIONAL_LIGHT)
+        endpoint.PositionWorld = SceneValue(analyticLight + 1).xyz;
+    else
+        return true; // The environment sources no light subpath.
+    // Cosine-weighted about the emitting side of a triangle, uniform over the sphere for an analytic light.
+    float first =
+        RandomValue(pixel, sample, GetLightVertexDimension(depth, LUDUS_REFERENCE_LIGHT_VERTEX_DIRECTION_FIRST_SLOT));
+    float second =
+        RandomValue(pixel, sample, GetLightVertexDimension(depth, LUDUS_REFERENCE_LIGHT_VERTEX_DIRECTION_SECOND_SLOT));
+    float3 axisWorld = float3(0, 0, 1);
+    float axial = 1 - 2 * first;
+    if (endpoint.Triangle != NO_TRIANGLE)
+    {
+        bool isBackSide =
+            endpoint.IsTwoSided == true &&
+            RandomValue(pixel, sample, GetLightVertexDimension(depth, LUDUS_REFERENCE_LIGHT_VERTEX_SIDE_SLOT)) < 0.5;
+        axisWorld = isBackSide == true ? -endpoint.NormalWorld : endpoint.NormalWorld;
+        axial = sqrt(max(0, 1 - first));
+    }
+    float radial = sqrt(max(0, 1 - axial * axial));
+    float angle = 2 * PI * second;
+    float3 tangentWorld =
+        NormalizeOrZero(cross(abs(axisWorld.z) < BASIS_POLE_COSINE ? float3(0, 0, 1) : float3(0, 1, 0), axisWorld));
+    float3 bitangentWorld = cross(axisWorld, tangentWorld);
+    float3 lightDirectionWorld = NormalizeOrZero(tangentWorld * (radial * cos(angle)) +
+                                                 bitangentWorld * (radial * sin(angle)) + axisWorld * axial);
+    Hit hit;
+    if (TraceLightRay(inoutPath, depth, endpoint, lightDirectionWorld, hit) == false)
+        return false;
+    if (hit.Triangle == NO_TRIANGLE)
+        return true;
+    // The light vertex y1, viewed from the camera vertex that it connects to.
+    uint vertexTriangle = hit.Triangle;
+    float3 vertexWorld = GetPositionWorld(vertexTriangle, hit.U, hit.V);
+    float3 connectionDeltaWorld = vertexWorld - positionWorld;
+    float connectionDistance = length(connectionDeltaWorld);
+    if (connectionDistance <= 0 || isfinite(connectionDistance) == false)
+        return true;
+    float3 connectionWorld = connectionDeltaWorld / connectionDistance;
+    float receiverCosine = dot(normalWorld, connectionWorld);
+    if (receiverCosine <= 0 || dot(scatteringNormalWorld, connectionWorld) <= 0)
+        return true;
+    float3 vertexViewWorld = -connectionWorld;
+    float3 geometricNormalWorld = GetOrientedGeometricNormalWorld(vertexTriangle, hit.U, hit.V);
+    bool isBackFace = dot(geometricNormalWorld, vertexViewWorld) < 0;
+    float3 vertexScatteringNormalWorld = isBackFace == true ? -geometricNormalWorld : geometricNormalWorld;
+    if (dot(vertexScatteringNormalWorld, vertexViewWorld) <= 0)
+        return true;
+    float3 vertexNormalWorld;
+    Bsdf vertexBsdf;
+    if (TryPrepareSurface(inoutPath,
+                          depth,
+                          vertexTriangle,
+                          hit.U,
+                          hit.V,
+                          geometricNormalWorld,
+                          isBackFace,
+                          vertexNormalWorld,
+                          vertexBsdf) == false)
+        return false;
+    if (IsDielectricModel(vertexBsdf.Model) == true)
+        return true; // Coherent relays through glass stay with the camera strategies.
+    // Next-event estimation's proposal at y1 for the same endpoint.
+    ReferenceIncidentLight incident =
+        endpoint.Triangle != NO_TRIANGLE
+            ? EvaluateTriangleIncidentLight(choice.Index, barycentric, vertexWorld)
+            : EvaluateAnalyticIncidentLight(pixel, sample, depth, choice.Index, vertexWorld);
+    LightProposal proposal = MakeLightProposal(choice, incident, vertexWorld, lightCount);
+    if (isfinite(proposal.Pdf) == false || proposal.Pdf < 0 || IsValidContribution(proposal.Radiance) == false)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
+        return false;
+    }
+    float vertexCosine = dot(vertexNormalWorld, proposal.DirectionWorld);
+    if ((proposal.Pdf > 0 && HasPositiveComponent(proposal.Radiance) == true && vertexCosine > 0 &&
+         dot(vertexScatteringNormalWorld, proposal.DirectionWorld) > 0) == false)
+        return true;
+    if (IsValidBsdf(bsdf) == false || IsValidBsdf(vertexBsdf) == false || IsUnit(normalWorld) == false ||
+        IsUnit(viewWorld) == false || IsUnit(vertexNormalWorld) == false || IsUnit(proposal.DirectionWorld) == false)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
+        return false;
+    }
+    float4 receiverEvaluation =
+        EvaluateBsdf(bsdf, normalWorld, viewWorld, connectionWorld, MakeMaterialRandomContext(pixel, sample, depth));
+    float4 vertexEvaluation = EvaluateBsdf(vertexBsdf,
+                                           vertexNormalWorld,
+                                           vertexViewWorld,
+                                           proposal.DirectionWorld,
+                                           MakeMaterialRandomContext(pixel, sample, depth + 1));
+    if (IsFiniteVector(receiverEvaluation.xyz) == false || isfinite(receiverEvaluation.w) == false ||
+        receiverEvaluation.w < 0 || IsFiniteVector(vertexEvaluation.xyz) == false ||
+        isfinite(vertexEvaluation.w) == false || vertexEvaluation.w < 0)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
+        return false;
+    }
+    LightVertexDensities densities = EvaluateLightVertexDensities(endpoint,
+                                                                  vertexWorld,
+                                                                  vertexScatteringNormalWorld,
+                                                                  positionWorld,
+                                                                  receiverEvaluation.w);
+    if (densities.Light <= 0)
+        return true;
+    // Next-event estimate at y1 times the camera's area-measure factor x -> y1, over the light ray's density at y1.
+    float scale = receiverCosine * abs(dot(vertexScatteringNormalWorld, connectionWorld)) /
+                  (connectionDistance * connectionDistance) * vertexCosine / proposal.Pdf / densities.Light *
+                  PowerWeight(densities.Light, densities.Camera);
+    float3 contribution =
+        throughput * ProjectSpectrum(inoutPath, receiverEvaluation.xyz) *
+        (ProjectSpectrum(inoutPath, vertexEvaluation.xyz) * ProjectSpectrum(inoutPath, proposal.Radiance)) * scale;
+    if (IsValidContribution(contribution) == false)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_DIRECT_CONTRIBUTION);
+        return false;
+    }
+    if (HasPositiveComponent(contribution) == false)
+        return true;
+    // Binary visibility of the connection between the two rough vertices.
+    float3 startWorld = OffsetOrigin(positionWorld, triangle, connectionWorld);
+    float3 endWorld = OffsetOrigin(vertexWorld, vertexTriangle, vertexViewWorld);
+    float3 segmentWorld = endWorld - startWorld;
+    float segmentDistance = length(segmentWorld);
+    if (isfinite(segmentDistance) == false || segmentDistance <= 0 || IsWithinWorld(startWorld) == false)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT);
+        return false;
+    }
+    Ray shadow;
+    shadow.OriginWorld = startWorld;
+    shadow.DirectionWorld = segmentWorld / segmentDistance;
+    shadow.MinimumDistanceWorld = 0;
+    shadow.MaximumDistanceWorld = NextFloatDown(segmentDistance);
+    CountQuery(inoutPath, true);
+    Hit blocker = TraceScene(shadow, true);
+    if (blocker.HasExceededStack == true)
+    {
+        inoutPath.Status |= LUDUS_REFERENCE_CAPACITY_FLAG;
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED);
+        return false;
+    }
+    if (blocker.Triangle != NO_TRIANGLE)
+        return true;
+    // The light segment's optical connection, evaluated as next-event estimation at y1 evaluates it.
+    float3 transmission;
+    if (TraceProposal(inoutPath, proposal, vertexTriangle, vertexWorld, depth, transmission) == false)
+    {
+        MarkInvalid(inoutPath,
+                    depth,
+                    (inoutPath.Status & LUDUS_REFERENCE_CAPACITY_FLAG) != 0
+                        ? LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED
+                        : LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT);
+        return false;
+    }
+    if (HasPositiveComponent(transmission) == true)
+        AddTransport(inoutPath, contribution * transmission, depth + 1, false);
+    return true;
+}
+#endif
 PathSample TracePath(uint pixel, uint sample)
 {
     PathSample path;
@@ -2234,47 +2670,11 @@ PathSample TracePath(uint pixel, uint sample)
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RADIANCE);
             return path;
         }
-        // Corner normals on both sides of the face can cancel; pbrt-v4 then shades with the geometric normal.
-        float3 normalWorld = NormalizeOrZero(InterpolateTriangle(triangle, 3, u, v).xyz);
-        if (all(normalWorld == float3(0)) == true)
-            normalWorld = geometricNormalWorld;
-        float4 texel = SampleImage(instance, COLOR_IMAGE, uv);
-        if (asuint(SurfaceValue(instance, 7).z) != 0)
-            texel *= InterpolateTriangleColor(triangle, u, v);
-        float4 baseAndMetallic = SurfaceValue(instance, 0);
+        float3 normalWorld;
         Bsdf bsdf;
-        bsdf.BaseColor = texel.xyz * baseAndMetallic.xyz;
-        bsdf.Metallic = baseAndMetallic.w;
-        bsdf.Roughness = SurfaceValue(instance, 1).x;
-        float4 etaAndModel = SurfaceValue(instance, LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD);
-        float4 extinctionAndAlpha = SurfaceValue(instance, LUDUS_GPU_PREVIEW_SCATTERING_K_WORD);
-        bsdf.Model = MaterialModel(asuint(etaAndModel.w));
-        bsdf.Eta = etaAndModel.xyz;
-        bsdf.K = extinctionAndAlpha.xyz;
-        bsdf.Alpha = extinctionAndAlpha.w;
-        float4 coatingParameters = SurfaceValue(instance, LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD);
-        bsdf.CoatingEta = coatingParameters.y;
-        bsdf.CoatingThickness = coatingParameters.z;
-        bsdf.ProgramOffset = asuint(coatingParameters.w);
-        float4 surfaceMap = SurfaceValue(instance, 6);
-        if (asuint(surfaceMap.w) != 0)
-        {
-            float4 parametersTexel = SampleImage(instance, SURFACE_IMAGE, uv);
-            if (all(isfinite(parametersTexel)) == false || any(parametersTexel < 0) || any(parametersTexel > 1))
-            {
-                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_SURFACE_PARAMETERS);
-                return path;
-            }
-            SurfaceParameters parameters =
-                DecodeSurfaceParameters(parametersTexel, bsdf.Metallic, bsdf.Roughness, surfaceMap.x);
-            bsdf.Metallic = parameters.Metallic;
-            bsdf.Roughness = parameters.Roughness;
-            normalWorld = ApplySurfaceNormal(triangle, instance, normalWorld, parameters.NormalTangent, u, v);
-        }
-        if (isBackFace == true)
-            normalWorld = -normalWorld;
-        // A dielectric's medium lies behind its oriented front side; viewed from the back, the ray is inside.
-        bsdf.IsViewerInside = isBackFace;
+        if (TryPrepareSurface(path, depth, triangle, u, v, geometricNormalWorld, isBackFace, normalWorld, bsdf) ==
+            false)
+            return path;
         bool isSpecular = IsDielectricModel(bsdf.Model);
         ReferenceReceiverFrame frame = previousFrame;
         TargetTotal targetTotal = MakeTargetTotal();
@@ -2324,6 +2724,25 @@ PathSample TracePath(uint pixel, uint sample)
                                    pendingDirect) == false)
             return path;
         bool hasShadow = HasPositiveComponent(pendingDirect);
+#if LUDUS_REFERENCE_OPTICAL_CONNECTIONS != 0
+        if (hasShadow == true && IsBidirectional() == true)
+        {
+            float nextEventWeight;
+            if (ComputeNextEventWeight(path,
+                                       depth,
+                                       proposal,
+                                       triangle,
+                                       positionWorld,
+                                       scatteringNormalWorld,
+                                       previousPositionWorld,
+                                       previousPdf,
+                                       isPreviousSpecular,
+                                       nextEventWeight) == false)
+                return path;
+            pendingDirect *= nextEventWeight;
+            hasShadow = HasPositiveComponent(pendingDirect);
+        }
+#endif
         if (isSpecular == false && Tile.x != 0 &&
             TraceDirectionalLight(path,
                                   pixel,
@@ -2337,6 +2756,21 @@ PathSample TracePath(uint pixel, uint sample)
                                   normalWorld,
                                   viewWorld) == false)
             return path;
+#if LUDUS_REFERENCE_OPTICAL_CONNECTIONS != 0
+        if (isSpecular == false && IsBidirectional() == true && depth + 1 < Dimensions.z &&
+            ConnectLightVertex(path,
+                               pixel,
+                               sample,
+                               depth,
+                               triangle,
+                               positionWorld,
+                               scatteringNormalWorld,
+                               normalWorld,
+                               viewWorld,
+                               bsdf,
+                               throughput) == false)
+            return path;
+#endif
         float3 samples = float3(RandomValue(pixel, sample, GetBounceDimension(depth, BSDF_LOBE_SLOT)),
                                 RandomValue(pixel, sample, GetBounceDimension(depth, BSDF_FIRST_SLOT)),
                                 RandomValue(pixel, sample, GetBounceDimension(depth, BSDF_SECOND_SLOT)));

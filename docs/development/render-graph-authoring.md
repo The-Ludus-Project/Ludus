@@ -11535,7 +11535,9 @@ selected World's camera, geometry, lights, emissive meshes, textures and support
 materials. It samples truncated spectral surface paths, with coherent scalar
 connections to finite lights at each path's wavelength
 ([spectral optical connections](#spectral-optical-connections)). Glass reflection and refraction carry a connection on instead of ending
-it ([relayed connections](#relayed-connections-through-glass)). `WT_OPTICAL_CONNECTION` selects the connection
+it ([relayed connections](#relayed-connections-through-glass)). `WT_BIDIRECTIONAL` `1` adds light subpaths
+that connect to the camera subpaths ([bidirectional connections](#bidirectional-optical-connections)).
+`WT_OPTICAL_CONNECTION` selects the connection
 operator: `0` (the default) propagates a Gaussian mode through an angular-spectrum
 lattice, `1` adds [UTD edge diffraction](#utd-edge-diffraction-connections) to the
 straight ray, and `2` adds
@@ -11584,8 +11586,9 @@ replacement light source.
   sampled wavelength. `WT_SPECTRUM` `0` evaluates `WT_WAVELENGTH_NANOMETERS` alone,
   and its scalar transmission multiplies the authored RGB light.
 - **Geometric** traces matching surface paths and light proposals with ordinary
-  binary visibility. At rough vertices both paths use next-event estimation alone
-  for light endpoints: emitter/environment hits after a rough vertex are omitted to
+  binary visibility. At rough vertices both paths use next-event estimation (and,
+  with `WT_BIDIRECTIONAL` `1`, light vertices) for light endpoints: emitter/environment
+  hits after a rough vertex are omitted to
   avoid inconsistent MIS weights when optical and geometric visibility differ.
   Emitter and environment hits after a glass event keep full weight, because no
   light sample reaches a delta direction. Optical weights the emitter by its relayed
@@ -11607,8 +11610,8 @@ The connection's mode and [envelope cone](#declared-scalar-connection-integral)
 are defined by the finite length `L` from the light to the receiver, which an
 infinite light does not have; Section 4.2's emission operator sources a bounded
 initial region. Admitting distant and environment emission is tracked by
-[issue 2283](https://github.com/The-Ludus-Project/Ludus/issues/2283), with the
-light subpaths of a bidirectional estimator.
+[issue 2283](https://github.com/The-Ludus-Project/Ludus/issues/2283). Infinite
+lights and the environment source no [light subpaths](#bidirectional-optical-connections).
 
 ### Declared scalar connection integral
 
@@ -12024,6 +12027,115 @@ Evidence for relayed connections, on an Apple M5 with Metal:
   of the Geometric output. The test admits 0.25 to 0.75. Classical scattering at the
   pane would give one.
 
+### Bidirectional optical connections
+
+Steinberg and Pharr's Section 6.1 renders with bidirectional path tracing: each
+connection strategy traces its beams from both of its path vertices. They note that
+multiple importance sampling then changes, because optical occlusion can differ between
+strategies, and they use classical MIS as an approximation. This profile declares its
+integral so that every strategy evaluates the same integrand, and the classical weights
+are then exact.
+
+**Declared integral.** A path runs from the camera through rough vertices
+`x_1 ... x_k` (with glass events between them) to a point `y_0` on a finite light.
+Its contribution is the product of the classical BSDF and geometry factors. Each
+segment between rough vertices, or from the camera, carries binary visibility. The
+*light segment*, from `y_0` to the first rough vertex `x_k`, carries the selected
+operator's connection power `|u|^2`, oriented from the light (relayed through glass when
+glass events lie on it). This is the integral that the camera-subpath estimator already
+estimates, so `WT_BIDIRECTIONAL` and `OpticalPathSampling` change the estimator, not the
+image's expectation.
+
+**Strategies.** Two strategies sample the light segment of a path whose last two rough
+vertices are `x = x_(k-1)` and `y_1 = x_k`:
+
+- *Next-event estimation* (the camera strategy): the camera path reaches `y_1` by BSDF
+  sampling at `x`, then samples `y_0` on the light and evaluates the light segment's
+  connection from `y_0` to `y_1`.
+- *Light vertex*: at every rough camera vertex `x`, a light subpath samples `y_0` with
+  the same light selection, samples a direction from it and traces a light ray to its
+  first surface `y_1`. When `y_1` is rough, it connects `y_1` to `x` by a binary
+  visibility segment and evaluates the light segment's connection exactly as
+  next-event estimation at `y_1` does, with the same endpoint offsets. Light directions
+  are cosine-weighted about an emissive triangle's emitting side (either side, with
+  probability one half, for a two-sided emitter) and uniform over the sphere for point,
+  spot and analytic area lights.
+
+Both strategies sample `x` and `y_0` with the same densities, so their path densities
+differ only in the area density of `y_1`:
+
+```text
+p_camera(y_1) = p_bsdf(x -> y_1) * |cos theta_(y_1, x)|   / |y_1 - x|^2
+p_light(y_1)  = p_dir(y_0 -> y_1) * |cos theta_(y_1, y_0)| / |y_1 - y_0|^2
+w_camera = p_camera^2 / (p_camera^2 + p_light^2),  w_light = 1 - w_camera
+```
+
+The cosines use `y_1`'s geometric normal. The light-vertex contribution is next-event
+estimation's estimate at `y_1`, times the camera's area factor
+`f(x) * cos theta_x * |cos theta_(y_1, x)| / |y_1 - x|^2`, divided by `p_light(y_1)` and
+weighted by `w_light`. Glass at `y_1` (the light ray meets glass first) gives no light
+vertex: those paths, and relays through glass, keep the camera strategies with their
+full weight. The light strategy can produce a path only when the light ray from `y_0`
+towards `y_1` lands on `y_1`'s triangle first. Next-event estimation therefore traces that
+ray (one closest-hit query) before it takes `w_camera`; where the light ray is blocked,
+for example in a diffracted shadow that only the optical connection lights, the camera
+strategy keeps weight one. The weights ignore Russian roulette, which both strategies
+compensate on their own. They need not see it to sum to one.
+
+**Scope.** Light subpaths have one rough vertex, and they connect only to rough camera
+vertices, not to the camera: light tracing to the camera would splat into other pixels.
+Deeper light subpaths, relays through glass on the light side and connections at glass
+vertices are not implemented. Infinite lights and the environment source no light
+subpath, because their light segment has no finite length. The first rough vertex's
+next-event estimate (the Direct output of captures) is unchanged. The strategy adds up
+to three queries per rough vertex: a light ray, its connection's visibility and its
+light segment's connection, plus the landing query of each later next-event estimate.
+The template's scene interface therefore declares 24 surface and 16 visibility queries,
+and `WT_BIDIRECTIONAL` `1` admits at most six `WT_PATH_VERTICES` (three shadow queries
+per vertex), rejecting more with the visibility-budget diagnostic. Light vertices draw
+their own random dimensions after the wavelength, so camera subpaths and their samples
+are unchanged.
+
+The implementation is original. It follows the combination of bidirectional strategies
+in Eric Veach, [*Robust Monte Carlo Methods for Light Transport Simulation*](https://graphics.stanford.edu/papers/veach_thesis/),
+PhD thesis, Stanford University (1997), Chapters 9 and 10, and Matt Pharr, Wenzel Jakob
+and Greg Humphreys, [*Physically Based Rendering*, 3rd edition](https://pbr-book.org/3ed-2018/Light_Transport_III_Bidirectional_Methods/Bidirectional_Path_Tracing),
+section 16.3. Thank you to the authors.
+
+`ReferenceCaptureDescription::OpticalPathSampling` selects `CameraSubpaths` (the default)
+or `Bidirectional` for reference captures; `Bidirectional` without an optical wavelength
+is rejected. Raw `LUHDR01` exports set flag 16384 for it.
+
+Evidence for bidirectional connections, on an Apple M5 with Metal:
+
+- `reference_compute_tests.cpp` (`[wave-bidirectional]`) renders a white wall that a
+  small two-sided area light lights through a white floor, past a 10 cm slit, with the
+  UTD operator at the 5 mm design wavelength. Both captures share their camera subpaths,
+  so the per-pixel differences of their Indirect outputs carry only the light vertices
+  and the next-event weights; their means are zero within four standard errors in every
+  column and over the image. Over the image, the difference is -0.00036 ± 0.0011
+  (0.3 standard errors) of a mean of 0.081 on the CPU oracle (16 by 8 pixels, 256
+  samples), and 0.00006 ± 0.0004 of 0.079 on the GPU (16 by 64 pixels). The Direct
+  outputs are bit-identical. The light vertices lower the Indirect output's column
+  standard error by 30% (CPU) and 24% (GPU), for 61% more closest-hit and 5% more
+  visibility queries. Taking next-event estimation's weight as one, which double-counts
+  the light vertices, moves every column by about 8 standard errors, so the check
+  detects a wrong weight. The CPU oracle and GPU compute captures agree within the raw
+  AOV bounds.
+- The raw-AOV scene (`[wave-bidirectional]`) runs bidirectional captures with the
+  lattice, spectral UTD and Fraunhofer operators. Its emissive triangle, point, spot and
+  area lights source light vertices, and its directional light and environment do not.
+  CPU oracle and GPU compute meet the bounds of the camera-subpath cases, and the LUSL
+  kernels match their Slang original bit for bit.
+- The glass-sphere relays (`[wave-relay][wave-bidirectional]`) run a bidirectional
+  lattice capture whose light rays meet glass, within the relay cases' bounds.
+- `wave_scene_graph_tests.cpp` (`[wave-bidirectional]`) cooks the template with
+  `WT_BIDIRECTIONAL` `1` and renders a white wall lit by a lamp directly and through a
+  white floor. Paired with the shipped camera-subpath cook, the per-pixel differences
+  have zero mean within four standard errors: 0.0020 ± 0.0032 of a mean of 1.33 over
+  16 by 16 pixels at 64 samples. With next-event estimation's weight taken as one, the
+  difference is 0.118, 49 standard errors.
+
 ### Spectral optical connections
 
 Diffraction depends on the wavelength, so a white light's fringes separate into
@@ -12139,7 +12251,8 @@ kernel: cook it beside `renderer_reference` and pass it to the four-argument
 [GPU-compute reference](../architecture/renderer-systems.md#gpu-compute-reference).
 Changing the wavelength, operator or spectrum resets progressive accumulation. Raw
 `LUHDR01` exports retain the wavelength at byte 92, optical flag 256 and, for UTD,
-flag 2048 or, for Fraunhofer, flag 4096. Flag 8192 marks a `Visible` capture.
+flag 2048 or, for Fraunhofer, flag 4096. Flag 8192 marks a `Visible` capture, and flag
+16384 a [bidirectional](#bidirectional-optical-connections) one.
 
 The existing scene benchmark accepts an optional final wavelength in nanometres:
 

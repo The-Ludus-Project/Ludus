@@ -961,6 +961,23 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_wave_graph_tests PRIVATE
             LUDUS_WAVE_SCENE_${wave_scene_variant_macro}_TEMPLATE_DIRECTORY="${wave_scene_variant_directory}")
     endforeach()
+    # The same template with WT_BIDIRECTIONAL 1, so the graph tests compare the bidirectional estimate with the
+    # shipped camera-subpath one.
+    set(wave_scene_bidirectional_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/wave_scene_bidirectional_graph")
+    ludus_stage_render_graph_inputs("${wave_scene_template}" "${wave_scene_bidirectional_staged}")
+    string(REGEX REPLACE "(\"WT_BIDIRECTIONAL\"[^}]*\"value\": )0" "\\11" wave_scene_bidirectional_manifest
+        "${wave_scene_manifest}")
+    if(wave_scene_bidirectional_manifest STREQUAL wave_scene_manifest)
+        message(FATAL_ERROR "The wave-tracing template no longer declares WT_BIDIRECTIONAL with value 0; "
+            "update the bidirectional graph variant in ${CMAKE_CURRENT_LIST_FILE}.")
+    endif()
+    file(CONFIGURE OUTPUT "${wave_scene_bidirectional_staged}/main.lushader.json"
+        CONTENT "${wave_scene_bidirectional_manifest}" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_wave_graph_tests NAME wave_scene_bidirectional_graph
+        MANIFEST "${wave_scene_bidirectional_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET wave_scene_bidirectional_graph_RUNTIME_PACKAGE PARENT_PATH wave_scene_bidirectional_directory)
+    target_compile_definitions(ludus_wave_graph_tests PRIVATE
+        LUDUS_WAVE_SCENE_BIDIRECTIONAL_TEMPLATE_DIRECTORY="${wave_scene_bidirectional_directory}")
     # Every template correctness case gets its own bounded acceptance deadline.
     catch_discover_tests(ludus_wave_graph_tests TEST_SPEC "~[.]" TEST_PREFIX "ludus_wave_graph_pixels: "
         TEST_LIST LUDUS_WAVE_GRAPH_CASES EXTRA_ARGS --durations yes

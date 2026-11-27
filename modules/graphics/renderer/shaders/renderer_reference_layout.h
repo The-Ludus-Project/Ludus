@@ -4,7 +4,7 @@
 // renderer_reference.slang. The packed scene and Parameters block reuse the GPU
 // preview layout (renderer_gpu_preview_layout.h); strides count 16-byte words.
 // Update the kernel version when changing anything below.
-#define LUDUS_REFERENCE_KERNEL_VERSION 14
+#define LUDUS_REFERENCE_KERNEL_VERSION 15
 
 #define LUDUS_REFERENCE_PARAMETERS_BINDING 0
 #define LUDUS_REFERENCE_SCENE_BINDING 1
@@ -39,6 +39,8 @@
 #define LUDUS_REFERENCE_FRAUNHOFER_CONNECTION_FLAG 1024
 // Parameters Sampling.z flag selecting ReferenceOpticalSpectrum::Visible for optical captures.
 #define LUDUS_REFERENCE_VISIBLE_SPECTRUM_FLAG 2048
+// Parameters Sampling.z flag selecting ReferenceOpticalPathSampling::Bidirectional for optical captures.
+#define LUDUS_REFERENCE_BIDIRECTIONAL_FLAG 4096
 
 // Sampler 4 keeps the version-1 addresses and reserves a separate dimension per
 // depth after all version-2/3 bounce dimensions. Tile.x carries the directional
@@ -57,6 +59,20 @@
 #define LUDUS_REFERENCE_WAVELENGTH_DIMENSION                                                                           \
     (LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION +                                                                \
      LUDUS_REFERENCE_MAX_DEPTH * LUDUS_REFERENCE_DIRECTIONAL_DISK_DIMENSIONS)
+// ReferenceOpticalPathSampling::Bidirectional draws the light subpath of the camera vertex at `depth` from the
+// LIGHT_VERTEX_DIMENSIONS dimensions at LIGHT_VERTEX_FIRST + LIGHT_VERTEX_DIMENSIONS * depth, after the wavelength,
+// in the order of the LIGHT_VERTEX_*_SLOT offsets below. Camera-subpath captures draw none, so their addresses and
+// output are unchanged.
+#define LUDUS_REFERENCE_LIGHT_VERTEX_FIRST_DIMENSION (LUDUS_REFERENCE_WAVELENGTH_DIMENSION + 1)
+#define LUDUS_REFERENCE_LIGHT_VERTEX_DIMENSIONS 8
+#define LUDUS_REFERENCE_LIGHT_VERTEX_SELECTION_SLOT 0
+#define LUDUS_REFERENCE_LIGHT_VERTEX_EMITTER_SLOT 1
+#define LUDUS_REFERENCE_LIGHT_VERTEX_POSITION_FIRST_SLOT 2
+#define LUDUS_REFERENCE_LIGHT_VERTEX_POSITION_SECOND_SLOT 3
+#define LUDUS_REFERENCE_LIGHT_VERTEX_DIRECTION_FIRST_SLOT 4
+#define LUDUS_REFERENCE_LIGHT_VERTEX_DIRECTION_SECOND_SLOT 5
+// The side of a two-sided emitter that the light ray leaves.
+#define LUDUS_REFERENCE_LIGHT_VERTEX_SIDE_SLOT 6
 
 // Sampler version 2 bounce slots (docs/architecture/many-area-light-sampling-reference-review.md, "Random layout,
 // sampler version 2"). Slots 0-7 keep their version-1 meanings, with slots 1-2 also holding the diffuse

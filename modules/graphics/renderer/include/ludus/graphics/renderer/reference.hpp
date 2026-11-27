@@ -75,6 +75,19 @@ enum class ReferenceOpticalSpectrum : ludus::foundation::uint8
     /// colours as the scene shrunk by the ratio.
     Visible,
 };
+/// Path sampling of an optical reference capture (positive OpticalWavelengthWorld). Both choices estimate the same
+/// declared integral, which render-graph-authoring.md declares in "Bidirectional optical connections"; the CPU oracle
+/// and GPU compute traversals implement both.
+enum class ReferenceOpticalPathSampling : ludus::foundation::uint8
+{
+    /// The default: camera subpaths with next-event optical connections at every rough vertex.
+    CameraSubpaths,
+    /// Camera subpaths plus one-vertex light subpaths: at every rough camera vertex a light ray from a sampled point on
+    /// a finite light lands on a rough surface, which connects to the camera vertex by a binary visibility segment.
+    /// The light segment keeps its optical connection. Power-heuristic weights combine the light-vertex connection
+    /// with next-event estimation at the same vertex.
+    Bidirectional,
+};
 /// RT1 RGB reflection input. Scattering selects legacy metallic/roughness,
 /// Lambertian diffuse or isotropic rough conductor with complex-IOR Fresnel.
 /// CoatedDiffuse is a rough dielectric layer over Lambertian reflection with
@@ -355,6 +368,11 @@ struct ReferenceCaptureDescription final
     /// key: changing it replaces the job and resets accumulation. Visible with a zero wavelength, and values outside
     /// the enumeration, are rejected as InvalidDescription.
     ReferenceOpticalSpectrum OpticalSpectrum = ReferenceOpticalSpectrum::Monochromatic;
+    /// Path sampling of the optical transport that a positive OpticalWavelengthWorld enables. The declared integral
+    /// does not depend on it, but it is recorded in the integral key: changing it replaces the job and resets
+    /// accumulation. Bidirectional with a zero wavelength, and values outside the enumeration, are rejected as
+    /// InvalidDescription.
+    ReferenceOpticalPathSampling OpticalPathSampling = ReferenceOpticalPathSampling::CameraSubpaths;
     /// Zero retains geometric reference transport. Positive metres enable scalar paraxial Gaussian-mode
     /// coupling on finite light connections, including coherent diffraction by successive scene regions.
     /// The positive range starts at one nanometre; smaller values reject before capture preparation.

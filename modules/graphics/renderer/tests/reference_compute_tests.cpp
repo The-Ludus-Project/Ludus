@@ -571,6 +571,7 @@ struct ReferenceRawAovCase final
     float32 OpticalWavelengthWorld = 0;
     rr::ReferenceOpticalConnection OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
     rr::ReferenceOpticalSpectrum OpticalSpectrum = rr::ReferenceOpticalSpectrum::Monochromatic;
+    rr::ReferenceOpticalPathSampling OpticalPathSampling = rr::ReferenceOpticalPathSampling::CameraSubpaths;
     bool IsFarConventional = false;
     rr::ReferenceLightSampling LightSampling = rr::ReferenceLightSampling::UniformArea;
     bool HasSecondDirectionalLight = false;
@@ -774,6 +775,7 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
     capture.OpticalWavelengthWorld = test.OpticalWavelengthWorld;
     capture.OpticalConnection = test.OpticalConnection;
     capture.OpticalSpectrum = test.OpticalSpectrum;
+    capture.OpticalPathSampling = test.OpticalPathSampling;
     capture.RouletteDepth = test.RouletteDepth;
     capture.Seed = test.Seed;
     capture.LightSampling = test.LightSampling;
@@ -1072,6 +1074,65 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: Fraunhofer edge diffractio
         .HasEnvironmentMap = false,
         .OpticalWavelengthWorld = 0.001F,
         .OpticalConnection = rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction,
+        .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: bidirectional angular-spectrum scene connections",
+          "[renderer][gpu][reference-compute][wave-bidirectional]")
+{
+    // Light-vertex connections from the emissive triangle, the point, spot and area lights; the directional light and
+    // the environment source no light subpath.
+    CheckReferenceRawAovs(
+    {
+        .Name = "bidirectional angular-spectrum scene connections",
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 2283,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0.001F,
+        .OpticalPathSampling = rr::ReferenceOpticalPathSampling::Bidirectional,
+        .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: bidirectional spectral UTD edge diffraction scene connections",
+          "[renderer][gpu][reference-compute][wave-bidirectional][wave-utd]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "bidirectional spectral UTD edge diffraction scene connections",
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 2287,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0.001F,
+        .OpticalConnection = rr::ReferenceOpticalConnection::UtdEdgeDiffraction,
+        .OpticalSpectrum = rr::ReferenceOpticalSpectrum::Visible,
+        .OpticalPathSampling = rr::ReferenceOpticalPathSampling::Bidirectional,
+        .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: bidirectional Fraunhofer edge diffraction scene connections",
+          "[renderer][gpu][reference-compute][wave-bidirectional][wave-fraunhofer]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "bidirectional Fraunhofer edge diffraction scene connections",
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 2293,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0.001F,
+        .OpticalConnection = rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction,
+        .OpticalPathSampling = rr::ReferenceOpticalPathSampling::Bidirectional,
         .IsFarConventional = false,
     });
 }
@@ -2644,11 +2705,14 @@ namespace
 /// Relays one operator's connection through glass at one spectrum. Each operator is its own test case, so CTest gives
 /// each its own deadline: one spectrum starts a device and compiles both reference kernels, which under ASan on
 /// lavapipe took 140-190 s.
-void CheckGlassRelayedConnection(rr::ReferenceOpticalConnection connection, rr::ReferenceOpticalSpectrum spectrum)
+void CheckGlassRelayedConnection(
+    rr::ReferenceOpticalConnection connection,
+    rr::ReferenceOpticalSpectrum spectrum,
+    rr::ReferenceOpticalPathSampling pathSampling = rr::ReferenceOpticalPathSampling::CameraSubpaths)
 {
     // The glass spheres (a solid dielectric and a thin one) relay the emissive sphere's connection: camera paths and
     // rough vertices reach it through reflections and refractions, and every operator evaluates the relayed chain.
-    CAPTURE(connection, spectrum);
+    CAPTURE(connection, spectrum, pathSampling);
     rhi::Shutdown();
     struct Guard final
     {
@@ -2694,6 +2758,7 @@ void CheckGlassRelayedConnection(rr::ReferenceOpticalConnection connection, rr::
     capture.OpticalWavelengthWorld = OPTICAL_WAVELENGTH_WORLD;
     capture.OpticalConnection = connection;
     capture.OpticalSpectrum = spectrum;
+    capture.OpticalPathSampling = pathSampling;
     math::Matrix4 view;
     math::Matrix4 projection;
     capture.CameraPosition = {.3F, .2F, -2};
@@ -2728,6 +2793,7 @@ void CheckGlassRelayedConnection(rr::ReferenceOpticalConnection connection, rr::
     geometric.OpticalWavelengthWorld = 0;
     geometric.OpticalConnection = rr::ReferenceOpticalConnection::AngularSpectrum;
     geometric.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Monochromatic;
+    geometric.OpticalPathSampling = rr::ReferenceOpticalPathSampling::CameraSubpaths;
     Array<rr::ReferencePixel> classical;
     rr::ReferenceCaptureInfo classicalInfo;
     Capture(cpu, geometric, surface, classical, classicalInfo);
@@ -2742,6 +2808,16 @@ TEST_CASE("Angular-spectrum connections relayed through glass match between CPU 
     const rr::ReferenceOpticalSpectrum spectrum =
         GENERATE(rr::ReferenceOpticalSpectrum::Monochromatic, rr::ReferenceOpticalSpectrum::Visible);
     CheckGlassRelayedConnection(rr::ReferenceOpticalConnection::AngularSpectrum, spectrum);
+}
+
+TEST_CASE(
+    "Bidirectional angular-spectrum connections beside glass relays match between CPU and GPU reference transport",
+    "[renderer][gpu][reference-compute][wave-relay][wave-bidirectional]")
+{
+    // Light rays that meet glass first source no light vertex, so relays through glass stay with the camera strategies.
+    CheckGlassRelayedConnection(rr::ReferenceOpticalConnection::AngularSpectrum,
+                                rr::ReferenceOpticalSpectrum::Monochromatic,
+                                rr::ReferenceOpticalPathSampling::Bidirectional);
 }
 
 TEST_CASE("UTD edge diffraction connections relayed through glass match between CPU and GPU reference transport",
@@ -3059,6 +3135,249 @@ TEST_CASE("A white-light slit's colour fringes match the analytic spectral integ
     };
     checkAgainstAnalytic(capture, oracle, "CPU oracle");
     checkAgainstAnalytic(tall, converged, "GPU compute");
+}
+
+namespace
+{
+/// Paired comparison of two captures' indirect AOVs whose camera subpaths share their random addresses: the mean
+/// difference of each column and of the image, with standard errors from the spread of the per-pixel differences.
+/// Pixels are independent samples, so each error is that of the difference's mean; an unbiased pair of estimators of
+/// one integral has zero expected difference everywhere.
+struct PairedStatistics final
+{
+    Array<float64> ColumnDifferences;
+    Array<float64> ColumnStandardErrors;
+    float64 ImageDifference = 0;
+    float64 ImageStandardError = 0;
+    float64 ImageMean = 0;
+};
+/// Running sums of samples, for their mean and its standard error.
+struct SampleSums final
+{
+    float64 Sum = 0;
+    float64 Squares = 0;
+    float64 Count = 0;
+    void Add(float64 sample) noexcept
+    {
+        Sum += sample;
+        Squares += sample * sample;
+        Count += 1;
+    }
+    [[nodiscard]] float64 GetMean() const noexcept
+    {
+        return Sum / Count;
+    }
+    [[nodiscard]] float64 GetStandardError() const noexcept
+    {
+        const float64 mean = GetMean();
+        return math::Sqrt(math::Max(Squares / Count - mean * mean, 0.0) / (Count - 1));
+    }
+};
+/// Pixel columns and rows of a capture.
+struct CaptureExtent final
+{
+    uint32 Columns = 0;
+    uint32 Rows = 0;
+};
+PairedStatistics ComputePairedIndirectStatistics(const Array<rr::ReferencePixel>& reference,
+                                                 const Array<rr::ReferencePixel>& candidate,
+                                                 CaptureExtent extent)
+{
+    const uint32 columns = extent.Columns;
+    const uint32 rows = extent.Rows;
+    // The channel sum: a white scene's channels follow one path, and the sum keeps every channel's bias visible.
+    const auto getIndirect = [](const rr::ReferencePixel& pixel) {
+        return static_cast<float64>(pixel.Indirect.X) + static_cast<float64>(pixel.Indirect.Y) +
+               static_cast<float64>(pixel.Indirect.Z);
+    };
+    PairedStatistics result;
+    SampleSums image;
+    SampleSums referenceImage;
+    for (uint32 column = 0; column < columns; ++column)
+    {
+        SampleSums differences;
+        for (uint32 row = 0; row < rows; ++row)
+        {
+            const usize pixel = usize{row} * columns + column;
+            const float64 difference = getIndirect(candidate[pixel]) - getIndirect(reference[pixel]);
+            differences.Add(difference);
+            image.Add(difference);
+            referenceImage.Add(getIndirect(reference[pixel]));
+        }
+        REQUIRE(result.ColumnDifferences.TryAdd(differences.GetMean()) == true);
+        REQUIRE(result.ColumnStandardErrors.TryAdd(differences.GetStandardError()) == true);
+    }
+    result.ImageDifference = image.GetMean();
+    result.ImageStandardError = image.GetStandardError();
+    result.ImageMean = referenceImage.GetMean();
+    return result;
+}
+} // namespace
+
+TEST_CASE("Bidirectional light-vertex connections estimate the camera-only integral through a diffracting slit",
+          "[renderer][gpu][reference-compute][wave-bidirectional][wave-utd]")
+{
+    // The integral of render-graph-authoring.md, "Bidirectional optical connections": a small two-sided area light
+    // shines through a 10 cm slit onto a white floor, which lights a white wall seen by an orthographic camera. Every
+    // wall pixel's indirect light crosses the slit on its light segment, light -> floor, whose UTD connection
+    // diffracts. Camera subpaths reach the floor by BSDF sampling and connect it to the light by next-event
+    // estimation; the bidirectional capture also traces light rays through the slit to the floor and connects them to
+    // the wall. Both estimate one declared integral: the paired differences of their indirect light have zero mean,
+    // within four standard errors in every column and over the image, on the CPU oracle and on the GPU.
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu, false, TraceKernels::WithOptical);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    namespace format = ludus::content::scene_format;
+    constexpr float32 HALF_EXTENT_WORLD = 2;
+    constexpr float32 SLIT_HALF_WIDTH_WORLD = 0.05F;
+    constexpr float32 WALL_DEPTH_WORLD = 1;
+    constexpr float32 FLOOR_HEIGHT_WORLD = -0.3F;
+    constexpr float32 WHITE_ALBEDO = 0.8F;
+    constexpr float32 LIGHT_DEPTH_WORLD = -0.2F;
+    constexpr float32 LIGHT_HALF_EXTENT_WORLD = 0.05F;
+    constexpr float32 LIGHT_RADIANCE = 200;
+    constexpr usize QUAD_COUNT = 5;
+    StaticArray<QuadItem, QUAD_COUNT> quads{};
+    quads[0].CornersWorld = {{{-HALF_EXTENT_WORLD, -HALF_EXTENT_WORLD, WALL_DEPTH_WORLD},
+                              {-HALF_EXTENT_WORLD, HALF_EXTENT_WORLD, WALL_DEPTH_WORLD},
+                              {HALF_EXTENT_WORLD, HALF_EXTENT_WORLD, WALL_DEPTH_WORLD},
+                              {HALF_EXTENT_WORLD, -HALF_EXTENT_WORLD, WALL_DEPTH_WORLD}}};
+    quads[1].CornersWorld = {{{-HALF_EXTENT_WORLD, FLOOR_HEIGHT_WORLD, 0},
+                              {-HALF_EXTENT_WORLD, FLOOR_HEIGHT_WORLD, WALL_DEPTH_WORLD},
+                              {HALF_EXTENT_WORLD, FLOOR_HEIGHT_WORLD, WALL_DEPTH_WORLD},
+                              {HALF_EXTENT_WORLD, FLOOR_HEIGHT_WORLD, 0}}};
+    for (usize index = 0; index < 2; ++index)
+    {
+        quads[index].Model = format::MaterialModel::Diffuse;
+        quads[index].BaseColor = {WHITE_ALBEDO, WHITE_ALBEDO, WHITE_ALBEDO};
+    }
+    // A black screen with a vertical slit at z = 0.
+    for (usize side = 0; side < 2; ++side)
+    {
+        const float32 innerWorld = side == 0 ? -SLIT_HALF_WIDTH_WORLD : SLIT_HALF_WIDTH_WORLD;
+        const float32 outerWorld = side == 0 ? -HALF_EXTENT_WORLD : HALF_EXTENT_WORLD;
+        const float32 leftWorld = math::Min(innerWorld, outerWorld);
+        const float32 rightWorld = math::Max(innerWorld, outerWorld);
+        QuadItem& screen = quads[2 + side];
+        screen.CornersWorld = {{{leftWorld, -HALF_EXTENT_WORLD, 0},
+                                {leftWorld, HALF_EXTENT_WORLD, 0},
+                                {rightWorld, HALF_EXTENT_WORLD, 0},
+                                {rightWorld, -HALF_EXTENT_WORLD, 0}}};
+        screen.Model = format::MaterialModel::Diffuse;
+        screen.BaseColor = {};
+    }
+    // The emitter faces the slit; it is two-sided, so light vertices also draw its far side.
+    quads[4].CornersWorld = {{{-LIGHT_HALF_EXTENT_WORLD, -LIGHT_HALF_EXTENT_WORLD, LIGHT_DEPTH_WORLD},
+                              {-LIGHT_HALF_EXTENT_WORLD, LIGHT_HALF_EXTENT_WORLD, LIGHT_DEPTH_WORLD},
+                              {LIGHT_HALF_EXTENT_WORLD, LIGHT_HALF_EXTENT_WORLD, LIGHT_DEPTH_WORLD},
+                              {LIGHT_HALF_EXTENT_WORLD, -LIGHT_HALF_EXTENT_WORLD, LIGHT_DEPTH_WORLD}}};
+    quads[4].Model = format::MaterialModel::Diffuse;
+    quads[4].BaseColor = {};
+    quads[4].Emission = {LIGHT_RADIANCE, LIGHT_RADIANCE, LIGHT_RADIANCE};
+    REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
+    REQUIRE(gpu.Renderer.Release(gpu.Snapshot) == S::Ready);
+    REQUIRE(BuildQuadSnapshot(cpu.Renderer, cpu.Program, quads.GetData(), QUAD_COUNT, cpu.Snapshot) == S::Ready);
+    REQUIRE(BuildQuadSnapshot(gpu.Renderer, gpu.Program, quads.GetData(), QUAD_COUNT, gpu.Snapshot) == S::Ready);
+    rr::ReferenceCaptureDescription capture;
+    constexpr uint32 COLUMNS = 16;
+    constexpr uint32 CPU_ROWS = 8;
+    constexpr uint32 GPU_ROWS = 64;
+    constexpr uint32 SAMPLES = 256;
+    capture.Width = COLUMNS;
+    capture.Height = CPU_ROWS;
+    capture.TargetSamples = SAMPLES;
+    // Two rough vertices: the wall, then the floor that the light segment ends on.
+    capture.MaxDepth = 2;
+    capture.RouletteDepth = 2;
+    capture.Seed = 2283;
+    capture.Environment = {};
+    constexpr float32 CAMERA_DEPTH_WORLD = 0.3F;
+    constexpr float32 HALF_WIDTH_WORLD = 0.18F;
+    constexpr float32 HALF_HEIGHT_WORLD = 0.0625F;
+    capture.OrthographicCamera = true;
+    capture.WorldToClip.Columns[0].X = 1 / HALF_WIDTH_WORLD;
+    capture.WorldToClip.Columns[1].Y = 1 / HALF_HEIGHT_WORLD;
+    capture.WorldToClip.Columns[3].Z = -CAMERA_DEPTH_WORLD;
+    capture.CameraPosition = {0, 0, CAMERA_DEPTH_WORLD};
+    // Design scale, as in the white-light slit: the 5 mm wavelength keeps UTD fringe phases exact in binary32.
+    constexpr float32 OPTICAL_WAVELENGTH_WORLD = 0.005F;
+    capture.OpticalWavelengthWorld = OPTICAL_WAVELENGTH_WORLD;
+    capture.OpticalConnection = rr::ReferenceOpticalConnection::UtdEdgeDiffraction;
+    rr::ReferenceCaptureDescription bidirectional = capture;
+    bidirectional.OpticalPathSampling = rr::ReferenceOpticalPathSampling::Bidirectional;
+    constexpr float64 STANDARD_ERRORS = 4;
+    const auto checkAgreement = [&](Session& inoutSession, uint32 rows, const char* name) {
+        CAPTURE(name, rows);
+        rr::ReferenceCaptureDescription cameraDescription = capture;
+        rr::ReferenceCaptureDescription bidirectionalDescription = bidirectional;
+        cameraDescription.Height = rows;
+        bidirectionalDescription.Height = rows;
+        Array<rr::ReferencePixel> cameraPixels;
+        Array<rr::ReferencePixel> bidirectionalPixels;
+        rr::ReferenceCaptureInfo cameraInfo;
+        rr::ReferenceCaptureInfo bidirectionalInfo;
+        Capture(inoutSession, cameraDescription, surface, cameraPixels, cameraInfo);
+        Capture(inoutSession, bidirectionalDescription, surface, bidirectionalPixels, bidirectionalInfo);
+        CHECK(cameraInfo.InvalidContributions == 0);
+        CHECK(bidirectionalInfo.InvalidContributions == 0);
+        // The light vertices traced light rays; next-event estimation at the wall, the first vertex, is unchanged.
+        CAPTURE(cameraInfo.ClosestQueries, bidirectionalInfo.ClosestQueries);
+        CHECK(bidirectionalInfo.ClosestQueries > cameraInfo.ClosestQueries);
+        usize differingDirect = 0;
+        for (usize pixel = 0; pixel < cameraPixels.GetSize(); ++pixel)
+        {
+            differingDirect +=
+                AreBitsEqual(cameraPixels[pixel].Direct, bidirectionalPixels[pixel].Direct) == true ? 0 : 1;
+        }
+        CHECK(differingDirect == 0);
+        const PairedStatistics statistics =
+            ComputePairedIndirectStatistics(cameraPixels, bidirectionalPixels, { .Columns = COLUMNS, .Rows = rows });
+        for (uint32 column = 0; column < COLUMNS; ++column)
+        {
+            INFO("column " << column << " difference " << statistics.ColumnDifferences[column] << " +- "
+                           << statistics.ColumnStandardErrors[column]);
+            CHECK(math::Abs(statistics.ColumnDifferences[column]) <=
+                  STANDARD_ERRORS * statistics.ColumnStandardErrors[column]);
+        }
+        INFO("image indirect " << statistics.ImageMean << " difference " << statistics.ImageDifference << " +- "
+                               << statistics.ImageStandardError);
+        CHECK(statistics.ImageMean > 0);
+        CHECK(math::Abs(statistics.ImageDifference) <= STANDARD_ERRORS * statistics.ImageStandardError);
+        return bidirectionalPixels;
+    };
+    const Array<rr::ReferencePixel> oracle = checkAgreement(cpu, CPU_ROWS, "CPU oracle");
+    // The GPU follows the CPU oracle's samples and paths on the short capture.
+    Array<rr::ReferencePixel> compute;
+    rr::ReferenceCaptureInfo computeInfo;
+    rr::ReferenceCaptureDescription parity = bidirectional;
+    parity.Height = CPU_ROWS;
+    Capture(gpu, parity, surface, compute, computeInfo);
+    const Comparison comparison = Compare(oracle, compute, parity.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance));
+    CHECK(computeInfo.InvalidContributions == 0);
+    CHECK(comparison.MaximumRadiance <= 2e-3F);
+    CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+    static_cast<void>(checkAgreement(gpu, GPU_ROWS, "GPU compute"));
 }
 
 TEST_CASE("A dispersive prism separates white light by each wavelength's refraction angle",

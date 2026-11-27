@@ -100,7 +100,7 @@ bool AreCapturesEqual(const ReferenceCaptureDescription& left, const ReferenceCa
            left.LightSampling == right.LightSampling && left.MaterialProfile == right.MaterialProfile &&
            left.OpticalWavelengthWorld == right.OpticalWavelengthWorld &&
            left.OpticalConnection == right.OpticalConnection && left.OpticalSpectrum == right.OpticalSpectrum &&
-           left.MediumOrNull == right.MediumOrNull &&
+           left.OpticalPathSampling == right.OpticalPathSampling && left.MediumOrNull == right.MediumOrNull &&
            left.AtmosphereBackgroundOrNull == right.AtmosphereBackgroundOrNull;
 }
 bool SameGpuTexture(const rhi::TextureCpuContent& a, const rhi::TextureCpuContent& b) noexcept

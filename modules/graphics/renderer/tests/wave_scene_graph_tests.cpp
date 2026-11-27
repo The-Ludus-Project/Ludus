@@ -62,6 +62,8 @@ enum class WaveConnection : uint8
     UtdEdgeDiffraction,
     /// The same template cooked with WT_OPTICAL_CONNECTION 2.
     FraunhoferEdgeDiffraction,
+    /// The shipped angular-spectrum lattice, cooked with WT_BIDIRECTIONAL 1.
+    BidirectionalAngularSpectrum,
 };
 void LoadPackage(WaveConnection connection, renderer::RenderGraphPackage& outPackage)
 {
@@ -77,6 +79,11 @@ void LoadPackage(WaveConnection connection, renderer::RenderGraphPackage& outPac
     {
         directoryPath = LUDUS_WAVE_SCENE_FRAUNHOFER_TEMPLATE_DIRECTORY;
         packageName = "wave_scene_fraunhofer_graph.lurgrt";
+    }
+    else if (connection == WaveConnection::BidirectionalAngularSpectrum)
+    {
+        directoryPath = LUDUS_WAVE_SCENE_BIDIRECTIONAL_TEMPLATE_DIRECTORY;
+        packageName = "wave_scene_bidirectional_graph.lurgrt";
     }
     REQUIRE(directory.Open(directoryPath).Succeeded() == true);
     filesystem::File file;
@@ -750,6 +757,123 @@ void CapturePrism(const WaveDevice& device,
                         height);
 }
 } // namespace
+
+namespace
+{
+/// Capture the optical export of a white wall lit by a lamp directly and through a white floor.
+void CaptureLitCorner(WaveConnection connection, uint32 extent, uint32 samples, Array<math::Vector3>& outPixels)
+{
+    // The camera looks down from its near plane at z = 1.5 onto the wall at z = 1.1, before its far plane at z = 1.
+    // The floor at y = -0.3 rises from the wall to z = 2.1, and the small two-sided lamp hangs above it at y = 0.3,
+    // outside the camera's view, so the wall receives the lamp directly and through the floor. The lamp is black, and
+    // nothing else scatters.
+    constexpr usize CORNER_TABLE_COUNT = 3;
+    constexpr float32 WALL_DEPTH_WORLD = 1.1F;
+    constexpr float32 FLOOR_HEIGHT_WORLD = -0.3F;
+    constexpr float32 FLOOR_DEPTH_WORLD = 2.1F;
+    constexpr float32 LAMP_HEIGHT_WORLD = 0.3F;
+    constexpr float32 LAMP_DEPTH_WORLD = 1.6F;
+    constexpr float32 LAMP_HALF_EXTENT_WORLD = 0.05F;
+    constexpr float32 LAMP_RADIANCE = 100;
+    constexpr float32 WHITE_ALBEDO = 0.8F;
+    const StaticArray<math::Vector3, QUAD_VERTICES> wallWorld{
+        {{-1, -1, WALL_DEPTH_WORLD}, {1, -1, WALL_DEPTH_WORLD}, {-1, 1, WALL_DEPTH_WORLD}, {1, 1, WALL_DEPTH_WORLD}}};
+    const StaticArray<math::Vector3, QUAD_VERTICES> floorWorld{{{-1, FLOOR_HEIGHT_WORLD, WALL_DEPTH_WORLD},
+                                                                {1, FLOOR_HEIGHT_WORLD, WALL_DEPTH_WORLD},
+                                                                {-1, FLOOR_HEIGHT_WORLD, FLOOR_DEPTH_WORLD},
+                                                                {1, FLOOR_HEIGHT_WORLD, FLOOR_DEPTH_WORLD}}};
+    const StaticArray<math::Vector3, QUAD_VERTICES> lampWorld{
+        {{-LAMP_HALF_EXTENT_WORLD, LAMP_HEIGHT_WORLD, LAMP_DEPTH_WORLD - LAMP_HALF_EXTENT_WORLD},
+         {LAMP_HALF_EXTENT_WORLD, LAMP_HEIGHT_WORLD, LAMP_DEPTH_WORLD - LAMP_HALF_EXTENT_WORLD},
+         {-LAMP_HALF_EXTENT_WORLD, LAMP_HEIGHT_WORLD, LAMP_DEPTH_WORLD + LAMP_HALF_EXTENT_WORLD},
+         {LAMP_HALF_EXTENT_WORLD, LAMP_HEIGHT_WORLD, LAMP_DEPTH_WORLD + LAMP_HALF_EXTENT_WORLD}}};
+    const StaticArray<uint32, QUAD_INDICES> indices{{0, 1, 2, 1, 3, 2}};
+    StaticArray<renderer::RenderGraphMesh, CORNER_TABLE_COUNT> meshes;
+    meshes[0].Geometry = {wallWorld.GetData(), wallWorld.GetSize(), indices.GetData(), indices.GetSize()};
+    meshes[1].Geometry = {floorWorld.GetData(), floorWorld.GetSize(), indices.GetData(), indices.GetSize()};
+    meshes[2].Geometry = {lampWorld.GetData(), lampWorld.GetSize(), indices.GetData(), indices.GetSize()};
+    StaticArray<renderer::SceneShaderMaterial, CORNER_TABLE_COUNT> materials;
+    for (usize index = 0; index < 2; ++index)
+    {
+        materials[index].BaseColor = {WHITE_ALBEDO, WHITE_ALBEDO, WHITE_ALBEDO};
+        materials[index].Scattering.Model = MaterialModel::Diffuse;
+    }
+    materials[2].BaseColor = {0, 0, 0};
+    materials[2].Scattering.Model = MaterialModel::Diffuse;
+    materials[2].Emission = {LAMP_RADIANCE, LAMP_RADIANCE, LAMP_RADIANCE};
+    materials[2].IsEmissionTwoSided = true;
+    const StaticArray<uint32, CORNER_TABLE_COUNT> materialIndices{{0, 1, 2}};
+    StaticArray<renderer::RenderGraphItem, CORNER_TABLE_COUNT> items;
+    for (usize item = 0; item < CORNER_TABLE_COUNT; ++item)
+    {
+        items[item].SourceId = static_cast<uint32>(item + 1);
+        items[item].MeshIndex = static_cast<uint32>(item);
+        items[item].Material.Color = {1, 1, 1, 1};
+        items[item].MaterialOverrides = {&materialIndices[item], 1};
+    }
+    StaticArray<renderer::ViewDescription, CAMERA_COUNT> cameras;
+    cameras[0].OrthographicCamera = true;
+    cameras[0].WorldToClip.Columns[0].X = 10000;
+    cameras[0].WorldToClip.Columns[1].Y = 10000;
+    cameras[0].WorldToClip.Columns[2].Z = -2;
+    cameras[0].WorldToClip.Columns[3].Z = 3;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    WaveDevice device;
+    CreateWaveDevice(device, connection);
+    RunSceneWaveCapture(device,
+                        {meshes.GetData(), meshes.GetSize()},
+                        {items.GetData(), items.GetSize()},
+                        {cameras.GetData(), CAMERA_COUNT},
+                        inputs,
+                        WAVE_PASS,
+                        samples,
+                        outPixels,
+                        extent,
+                        extent);
+}
+} // namespace
+
+TEST_CASE("Scene wave graph's bidirectional light vertices estimate the camera-subpath integral",
+          "[renderer][gpu][wave-tracing][wave-bidirectional][graph]")
+{
+    // The shipped template and its WT_BIDIRECTIONAL 1 cook estimate one declared integral (render-graph-authoring.md,
+    // "Bidirectional optical connections"). Their camera subpaths share random dimensions, so each pixel's difference
+    // carries only the light-vertex strategy and the next-event weights; over the image those differences have zero
+    // mean within four standard errors. Every pixel sees the same wall point, so pixels are independent samples.
+    constexpr uint32 CORNER_EXTENT = 16;
+    constexpr uint32 CORNER_SAMPLES = 64;
+    constexpr float64 STANDARD_ERRORS = 4;
+    Array<math::Vector3> camera;
+    Array<math::Vector3> bidirectional;
+    CaptureLitCorner(WaveConnection::AngularSpectrum, CORNER_EXTENT, CORNER_SAMPLES, camera);
+    CaptureLitCorner(WaveConnection::BidirectionalAngularSpectrum, CORNER_EXTENT, CORNER_SAMPLES, bidirectional);
+    REQUIRE(camera.GetSize() == bidirectional.GetSize());
+    float64 sum = 0;
+    float64 squares = 0;
+    float64 cameraSum = 0;
+    usize differing = 0;
+    for (usize index = 0; index < camera.GetSize(); ++index)
+    {
+        const float64 left = static_cast<float64>(SumChannels(camera[index]));
+        const float64 right = static_cast<float64>(SumChannels(bidirectional[index]));
+        REQUIRE(math::IsFinite(left) == true);
+        REQUIRE(math::IsFinite(right) == true);
+        const float64 difference = right - left;
+        sum += difference;
+        squares += difference * difference;
+        cameraSum += left;
+        differing += difference != 0 ? 1 : 0;
+    }
+    const float64 count = static_cast<float64>(camera.GetSize());
+    const float64 mean = sum / count;
+    const float64 standardError = math::Sqrt(math::Max(squares / count - mean * mean, 0.0) / (count - 1));
+    CAPTURE(cameraSum / count, mean, standardError, differing);
+    CHECK(cameraSum > 0);
+    // The light vertices contributed: most pixels' estimates changed.
+    CHECK(differing * 2 > camera.GetSize());
+    CHECK(math::Abs(mean) <= STANDARD_ERRORS * standardError);
+}
 
 TEST_CASE("Scene wave graph disperses white light through a flint prism by each wavelength's index",
           "[renderer][gpu][wave-tracing][wave-spectral][dispersion][graph]")

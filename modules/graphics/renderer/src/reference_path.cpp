@@ -180,16 +180,25 @@ struct ReferenceLightChoice final
     float32 SelectionPmf = 0;
 };
 
-ReferenceLightChoice SelectReferenceLight(const ReferenceJob& job, const ReferencePath& path, usize lightCount) noexcept
+// The random dimensions of one light choice: the light draw, then the emissive triangle's power-CDF draw.
+struct ReferenceLightChoiceDimensions final
+{
+    uint16 Selection = 0;
+    uint16 Emitter = 0;
+};
+// Draw a light and, for the emissive category, an emissive triangle at `dimensions`.
+ReferenceLightChoice SelectReferenceLightAt(const ReferenceJob& job,
+                                            const ReferencePath& path,
+                                            usize lightCount,
+                                            ReferenceLightChoiceDimensions dimensions) noexcept
 {
     if (lightCount == 0)
     {
         return {};
     }
-    const uint16 dimension = Dimension(job, path, LUDUS_PATH_RANDOM_LIGHT_SELECTION_SLOT);
     uint32 selected = 0;
     if (math::TrySampleBounded(job.Key,
-                               {path.Pixel, path.Sample, dimension},
+                               {path.Pixel, path.Sample, dimensions.Selection},
                                static_cast<uint32>(lightCount),
                                selected) != math::MathStatus::Success)
     {
@@ -219,15 +228,23 @@ ReferenceLightChoice SelectReferenceLight(const ReferenceJob& job, const Referen
         return {}; // No emitter carries power.
     }
     uint32 value = 0;
-    if (math::TrySampleBounded(job.Key,
-                               {path.Pixel, path.Sample, Dimension(job, path, LUDUS_PATH_RANDOM_EMITTER_SLOT)},
-                               total,
-                               value) != math::MathStatus::Success)
+    if (math::TrySampleBounded(job.Key, {path.Pixel, path.Sample, dimensions.Emitter}, total, value) !=
+        math::MathStatus::Success)
     {
         return {ReferenceLightChoiceKind::Invalid};
     }
     const usize emitter = SelectReferenceEmitter(job.Scene, value);
     return {ReferenceLightChoiceKind::Triangle, emitter, ComputeEmitterSelection(job, emitter, lightCount)};
+}
+ReferenceLightChoice SelectReferenceLight(const ReferenceJob& job, const ReferencePath& path, usize lightCount) noexcept
+{
+    return SelectReferenceLightAt(job,
+                                  path,
+                                  lightCount,
+                                  {
+                                      .Selection = Dimension(job, path, LUDUS_PATH_RANDOM_LIGHT_SELECTION_SLOT),
+                                      .Emitter = Dimension(job, path, LUDUS_PATH_RANDOM_EMITTER_SLOT),
+                                  });
 }
 
 struct ReferenceIncidentLight final
@@ -337,18 +354,23 @@ ReferenceIncidentLight EvaluateAnalyticIncidentLight(const ReferenceJob& job,
     }
     return result;
 }
-ReferenceIncidentLight SampleTriangleIncidentLight(const ReferenceJob& job,
-                                                   const ReferencePath& path,
-                                                   usize emitter,
-                                                   math::Vector3 receiverWorld) noexcept
+// Barycentric (u, v) of the area-uniform point that the two unit draws select on a triangle.
+math::Vector2 SampleTriangleBarycentric(float32 first, float32 second) noexcept
+{
+    const float32 root = math::Sqrt(first);
+    const float32 u = root * (1 - second);
+    return {u, root - u};
+}
+// The incident proposal of emitter triangle `emitter` at barycentric (u, v), seen from receiverWorld.
+ReferenceIncidentLight EvaluateTriangleIncidentLight(const ReferenceJob& job,
+                                                     usize emitter,
+                                                     math::Vector2 barycentric,
+                                                     math::Vector3 receiverWorld) noexcept
 {
     ReferenceIncidentLight result;
     const ReferenceTriangle& triangle = job.Scene.Triangles[job.Scene.Emitters[emitter]];
-    const float32 root =
-        math::Sqrt(ReferenceRandom(job, path, Dimension(job, path, LUDUS_PATH_RANDOM_INCIDENT_FIRST_SLOT)));
-    const float32 u =
-        root * (1 - ReferenceRandom(job, path, Dimension(job, path, LUDUS_PATH_RANDOM_INCIDENT_SECOND_SLOT)));
-    const float32 v = root - u;
+    const float32 u = barycentric.X;
+    const float32 v = barycentric.Y;
     result.PositionWorld = Position(triangle, u, v);
     const math::Vector3 deltaWorld = result.PositionWorld - receiverWorld;
     result.Distance = math::Length(deltaWorld);
@@ -369,6 +391,19 @@ ReferenceIncidentLight SampleTriangleIncidentLight(const ReferenceJob& job,
         result.Radiance = SampleReferenceEmission(instance, Uv(triangle, u, v));
     }
     return result;
+}
+ReferenceIncidentLight SampleTriangleIncidentLight(const ReferenceJob& job,
+                                                   const ReferencePath& path,
+                                                   usize emitter,
+                                                   math::Vector3 receiverWorld) noexcept
+{
+    return EvaluateTriangleIncidentLight(
+        job,
+        emitter,
+        SampleTriangleBarycentric(
+            ReferenceRandom(job, path, Dimension(job, path, LUDUS_PATH_RANDOM_INCIDENT_FIRST_SLOT)),
+            ReferenceRandom(job, path, Dimension(job, path, LUDUS_PATH_RANDOM_INCIDENT_SECOND_SLOT))),
+        receiverWorld);
 }
 ReferenceIncidentLight SampleEnvironmentIncidentLight(const ReferenceJob& job, const ReferencePath& path) noexcept
 {
@@ -441,6 +476,125 @@ float32 EvaluateSampledLightProbability(const ReferenceJob& job,
             return 0;
     }
 }
+// The visibility segment of a light proposal at `point` on `triangle`: from the receiver's offset origin to the
+// light's offset endpoint, one representable step short of it, or along the proposal's direction for an infinite light.
+struct ReferenceLightSegment final
+{
+    math::Vector3 StartWorld{};
+    math::Vector3 EndWorld{};
+    math::Vector3 DirectionWorld{};
+    float32 Distance = 0;
+};
+// Power of the finite light's optical connection over `segment`, from the light's offset endpoint to the receiver's
+// offset origin. Failure records the cause.
+rhi::RasterStatus EvaluateOpticalLightConnection(const ReferenceJob& job,
+                                                 ReferenceCaptureInfo& inoutInfo,
+                                                 const ReferencePath& path,
+                                                 const ReferenceLightSegment& segment,
+                                                 float32& outTransmission) noexcept
+{
+    const math::Vector3 start = segment.StartWorld;
+    const math::Vector3 endWorld = segment.EndWorld;
+    const math::Vector3 direction = segment.DirectionWorld;
+    const float32 distance = segment.Distance;
+    // Retain the robustly offset light endpoint; reconstructing it from a rounded direction can land on the emitter.
+    const math::Vector3 sourceWorld = endWorld;
+    WaveField field;
+    const math::Vector3d opticalSourceWorld{static_cast<float64>(sourceWorld.X),
+                                            static_cast<float64>(sourceWorld.Y),
+                                            static_cast<float64>(sourceWorld.Z)};
+    const math::Vector3d opticalReceiverWorld{static_cast<float64>(start.X),
+                                              static_cast<float64>(start.Y),
+                                              static_cast<float64>(start.Z)};
+    const math::Vector3d opticalDirectionWorld{-static_cast<float64>(direction.X),
+                                               -static_cast<float64>(direction.Y),
+                                               -static_cast<float64>(direction.Z)};
+    const ReferenceOpticalConnection connection = job.Description.OpticalConnection;
+    const float64 opticalWavelengthWorld = GetOpticalWavelengthWorld(job, path);
+    rhi::RasterStatus opticalStatus = rhi::RasterStatus::Ready;
+    if (connection == ReferenceOpticalConnection::UtdEdgeDiffraction)
+    {
+        opticalStatus = EvaluateUtdConnectionToReceiver(job.Scene,
+                                                        opticalSourceWorld,
+                                                        opticalReceiverWorld,
+                                                        opticalDirectionWorld,
+                                                        static_cast<float64>(distance),
+                                                        opticalWavelengthWorld,
+                                                        field);
+    }
+    else if (connection == ReferenceOpticalConnection::FraunhoferEdgeDiffraction)
+    {
+        opticalStatus = EvaluateFraunhoferConnectionToReceiver(job.Scene,
+                                                               opticalSourceWorld,
+                                                               opticalReceiverWorld,
+                                                               opticalDirectionWorld,
+                                                               static_cast<float64>(distance),
+                                                               opticalWavelengthWorld,
+                                                               field);
+    }
+    else
+    {
+        opticalStatus = EvaluateWaveConnectionToReceiver(job.Scene,
+                                                         opticalSourceWorld,
+                                                         opticalReceiverWorld,
+                                                         opticalDirectionWorld,
+                                                         static_cast<float64>(distance),
+                                                         opticalWavelengthWorld,
+                                                         field);
+    }
+    if (opticalStatus != rhi::RasterStatus::Ready)
+    {
+        return FailReferencePath(inoutInfo,
+                                 path,
+                                 opticalStatus == rhi::RasterStatus::Unsupported
+                                     ? ReferenceFailure::OpticalPropagationCapacity
+                                     : (opticalStatus == rhi::RasterStatus::CapacityExceeded
+                                            ? ReferenceFailure::OpticalRegionCapacity
+                                            : ReferenceFailure::InvalidShadowSegment));
+    }
+    const float32 transmission = static_cast<float32>(field.Real * field.Real + field.Imaginary * field.Imaginary);
+    if (math::IsFinite(transmission) == false || transmission < 0)
+    {
+        return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidDirectContribution);
+    }
+    outTransmission = transmission;
+    return rhi::RasterStatus::Ready;
+}
+rhi::RasterStatus ResolveLightSegment(ReferenceCaptureInfo& inoutInfo,
+                                      const ReferencePath& path,
+                                      const ReferenceTriangle& triangle,
+                                      math::Vector3 point,
+                                      const ReferenceIncidentLight& proposal,
+                                      ReferenceLightSegment& outSegment) noexcept
+{
+    ReferenceLightSegment segment;
+    segment.StartWorld = Offset(point, triangle, proposal.DirectionWorld);
+    segment.DirectionWorld = proposal.DirectionWorld;
+    segment.EndWorld = proposal.PositionWorld;
+    segment.Distance = proposal.Distance;
+    if (proposal.HasFiniteEndpoint == true)
+    {
+        if (proposal.IsDelta == false &&
+            math::TryOffsetRayOrigin(
+                {proposal.PositionWorld, proposal.ErrorWorld, proposal.NormalWorld, -segment.DirectionWorld},
+                segment.EndWorld) != math::MathStatus::Success)
+        {
+            return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidShadowSegment);
+        }
+        const math::Vector3 delta = segment.EndWorld - segment.StartWorld;
+        segment.Distance = math::Length(delta);
+        if (segment.Distance <= 0 || math::IsFinite(segment.Distance) == false)
+        {
+            return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidShadowSegment);
+        }
+        segment.DirectionWorld = delta / segment.Distance;
+        // The target endpoint is excluded by one representable step.
+        // Light geometry must not occlude its own sampled emission.
+        segment.Distance = math::NextFloatDown(segment.Distance);
+    }
+    outSegment = segment;
+    return rhi::RasterStatus::Ready;
+}
 // Queue the visibility segment of one light contribution from `point` on `triangle`.
 rhi::RasterStatus QueueShadow(const ReferenceJob& job,
                               ReferenceCaptureInfo& inoutInfo,
@@ -451,91 +605,20 @@ rhi::RasterStatus QueueShadow(const ReferenceJob& job,
                               math::Vector3 contribution) noexcept
 {
     ReferencePath& path = inoutPath;
-    const math::Vector3 start = Offset(point, triangle, proposal.DirectionWorld);
-    math::Vector3 direction = proposal.DirectionWorld;
-    math::Vector3 endWorld = proposal.PositionWorld;
-    float32 distance = proposal.Distance;
-    if (proposal.HasFiniteEndpoint == true)
+    ReferenceLightSegment segment;
+    if (ResolveLightSegment(inoutInfo, path, triangle, point, proposal, segment) != rhi::RasterStatus::Ready)
     {
-        if (proposal.IsDelta == false &&
-            math::TryOffsetRayOrigin({proposal.PositionWorld, proposal.ErrorWorld, proposal.NormalWorld, -direction},
-                                     endWorld) != math::MathStatus::Success)
-        {
-            return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidShadowSegment);
-        }
-        const math::Vector3 delta = endWorld - start;
-        distance = math::Length(delta);
-        if (distance <= 0 || math::IsFinite(distance) == false)
-        {
-            return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidShadowSegment);
-        }
-        direction = delta / distance;
-        // The target endpoint is excluded by one representable step.
-        // Light geometry must not occlude its own sampled emission.
-        distance = math::NextFloatDown(distance);
+        return rhi::RasterStatus::Failed;
     }
+    const math::Vector3 start = segment.StartWorld;
+    const math::Vector3 direction = segment.DirectionWorld;
+    const float32 distance = segment.Distance;
     if (job.Description.OpticalWavelengthWorld > 0 && proposal.HasFiniteEndpoint == true)
     {
-        // Retain the robustly offset light endpoint; reconstructing it from a rounded direction can land on the
-        // emitter.
-        const math::Vector3 sourceWorld = endWorld;
-        WaveField field;
-        const math::Vector3d opticalSourceWorld{static_cast<float64>(sourceWorld.X),
-                                                static_cast<float64>(sourceWorld.Y),
-                                                static_cast<float64>(sourceWorld.Z)};
-        const math::Vector3d opticalReceiverWorld{static_cast<float64>(start.X),
-                                                  static_cast<float64>(start.Y),
-                                                  static_cast<float64>(start.Z)};
-        const math::Vector3d opticalDirectionWorld{-static_cast<float64>(direction.X),
-                                                   -static_cast<float64>(direction.Y),
-                                                   -static_cast<float64>(direction.Z)};
-        const ReferenceOpticalConnection connection = job.Description.OpticalConnection;
-        const float64 opticalWavelengthWorld = GetOpticalWavelengthWorld(job, path);
-        rhi::RasterStatus opticalStatus = rhi::RasterStatus::Ready;
-        if (connection == ReferenceOpticalConnection::UtdEdgeDiffraction)
+        float32 transmission = 0;
+        if (EvaluateOpticalLightConnection(job, inoutInfo, path, segment, transmission) != rhi::RasterStatus::Ready)
         {
-            opticalStatus = EvaluateUtdConnectionToReceiver(job.Scene,
-                                                            opticalSourceWorld,
-                                                            opticalReceiverWorld,
-                                                            opticalDirectionWorld,
-                                                            static_cast<float64>(distance),
-                                                            opticalWavelengthWorld,
-                                                            field);
-        }
-        else if (connection == ReferenceOpticalConnection::FraunhoferEdgeDiffraction)
-        {
-            opticalStatus = EvaluateFraunhoferConnectionToReceiver(job.Scene,
-                                                                   opticalSourceWorld,
-                                                                   opticalReceiverWorld,
-                                                                   opticalDirectionWorld,
-                                                                   static_cast<float64>(distance),
-                                                                   opticalWavelengthWorld,
-                                                                   field);
-        }
-        else
-        {
-            opticalStatus = EvaluateWaveConnectionToReceiver(job.Scene,
-                                                             opticalSourceWorld,
-                                                             opticalReceiverWorld,
-                                                             opticalDirectionWorld,
-                                                             static_cast<float64>(distance),
-                                                             opticalWavelengthWorld,
-                                                             field);
-        }
-        if (opticalStatus != rhi::RasterStatus::Ready)
-        {
-            return FailReferencePath(inoutInfo,
-                                     path,
-                                     opticalStatus == rhi::RasterStatus::Unsupported
-                                         ? ReferenceFailure::OpticalPropagationCapacity
-                                         : (opticalStatus == rhi::RasterStatus::CapacityExceeded
-                                                ? ReferenceFailure::OpticalRegionCapacity
-                                                : ReferenceFailure::InvalidShadowSegment));
-        }
-        const float32 transmission = static_cast<float32>(field.Real * field.Real + field.Imaginary * field.Imaginary);
-        if (math::IsFinite(transmission) == false || transmission < 0)
-        {
-            return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidDirectContribution);
+            return rhi::RasterStatus::Failed;
         }
         AddTransport(path, contribution * transmission, path.Depth, false);
         ++inoutInfo.VisibilityQueries;
@@ -563,8 +646,220 @@ rhi::RasterStatus QueueShadow(const ReferenceJob& job,
     path.DirectDepth = path.Depth;
     return rhi::RasterStatus::Ready;
 }
+// Thanks to Eric Veach, "Robust Monte Carlo Methods for Light Transport Simulation", PhD thesis, Stanford University
+// (1997), Chapters 9 and 10, and to Matt Pharr, Wenzel Jakob and Greg Humphreys, Physically Based Rendering, 3rd ed.,
+// section 16.3, https://pbr-book.org/3ed-2018/Light_Transport_III_Bidirectional_Methods/Bidirectional_Path_Tracing :
+// bidirectional strategies over one path space, combined by the power heuristic in a common area measure. Thanks to
+// Shlomi Steinberg and Matt Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics", CGF 45(2), e70322
+// (2026), Section 6.1, https://doi.org/10.1111/cgf.70322 , which traces source subpaths for wave tracing and notes that
+// optical occlusion can differ between connection strategies. Here the light segment (from the emitter to the first
+// rough vertex) keeps its optical connection in every strategy and later segments keep binary visibility, so both
+// strategies estimate one declared integral and the classical weights stay exact. The light-vertex strategy samples
+// the light segment with a light ray; next-event estimation at its rough vertex samples the same segment from the
+// receiver. This implementation is original (render-graph-authoring.md, "Bidirectional optical connections").
+bool IsBidirectional(const ReferenceJob& job) noexcept
+{
+    return job.Description.OpticalWavelengthWorld > 0 &&
+           job.Description.OpticalPathSampling == ReferenceOpticalPathSampling::Bidirectional;
+}
+// Dimension `slot` of the light subpath that the camera vertex at the path's depth draws.
+uint16 LightVertexDimension(const ReferencePath& path, uint32 slot) noexcept
+{
+    return static_cast<uint16>(LUDUS_REFERENCE_LIGHT_VERTEX_FIRST_DIMENSION +
+                               LUDUS_REFERENCE_LIGHT_VERTEX_DIMENSIONS * path.Depth + slot);
+}
+constexpr usize NO_REFERENCE_TRIANGLE = ~usize{0};
+// The start y0 of a light subpath: a point on an emissive triangle or the position of a finite analytic light.
+struct ReferenceLightEndpoint final
+{
+    math::Vector3 PositionWorld{};
+    /// Oriented geometric normal of an emissive triangle; unused for an analytic light.
+    math::Vector3 NormalWorld{};
+    /// Emissive triangle in job.Scene.Triangles, or NO_REFERENCE_TRIANGLE for an analytic light.
+    usize TriangleIndex = NO_REFERENCE_TRIANGLE;
+    bool IsTwoSided = false;
+    bool HasEndpoint = false;
+};
+// The endpoint of a next-event proposal that a light subpath could also start from. Directional lights and the
+// environment have none.
+ReferenceLightEndpoint MakeLightEndpoint(const ReferenceJob& job,
+                                         const ReferenceLightChoice& choice,
+                                         const ReferenceIncidentLight& proposal) noexcept
+{
+    ReferenceLightEndpoint result;
+    if (proposal.HasFiniteEndpoint == false)
+    {
+        return result;
+    }
+    if (choice.Kind == ReferenceLightChoiceKind::Triangle)
+    {
+        result.TriangleIndex = job.Scene.Emitters[choice.Index];
+        const ReferenceTriangle& triangle = job.Scene.Triangles[result.TriangleIndex];
+        result.IsTwoSided = job.Scene.Instances[triangle.Instance].Surface->IsEmissionTwoSided;
+        result.NormalWorld = proposal.NormalWorld;
+    }
+    else if (choice.Kind != ReferenceLightChoiceKind::Analytic ||
+             GetOrderedReferenceLight(job, choice.Index).Kind == LightKind::Directional)
+    {
+        return result;
+    }
+    result.PositionWorld = proposal.PositionWorld;
+    result.HasEndpoint = true;
+    return result;
+}
+// Density per steradian of the light subpath's direction from `endpoint`: cosine-weighted about an emissive
+// triangle's normal, on its emitting side (each side of a two-sided emitter with probability one half), and uniform
+// over the sphere for an analytic light.
+float32 EvaluateLightDirectionPdf(const ReferenceLightEndpoint& endpoint, math::Vector3 directionWorld) noexcept
+{
+    if (endpoint.TriangleIndex == NO_REFERENCE_TRIANGLE)
+    {
+        return 1 / (SPHERE_SOLID_ANGLE_FACTOR * math::kPiF);
+    }
+    const float32 cosine = math::Dot(endpoint.NormalWorld, directionWorld);
+    if (endpoint.IsTwoSided == true)
+    {
+        return math::Abs(cosine) / (2 * math::kPiF);
+    }
+    return cosine > 0 ? cosine / math::kPiF : 0;
+}
+// Area densities of the light segment's rough vertex y1 under the two strategies, the factors in which their path
+// densities differ: the camera's BSDF draw at x (density `bsdfPdf` per steradian), and the light ray from y0.
+struct ReferenceLightVertexDensities final
+{
+    float32 Camera = 0;
+    float32 Light = 0;
+};
+// The light segment's rough vertex y1 with its geometric normal, and the camera vertex x before it with the BSDF
+// density per steradian of the direction x -> y1.
+struct ReferenceLightVertexGeometry final
+{
+    math::Vector3 VertexWorld{};
+    math::Vector3 VertexNormalWorld{};
+    math::Vector3 CameraVertexWorld{};
+    float32 BsdfPdf = 0;
+};
+ReferenceLightVertexDensities EvaluateLightVertexDensities(const ReferenceLightEndpoint& endpoint,
+                                                           const ReferenceLightVertexGeometry& geometry) noexcept
+{
+    const math::Vector3 vertexWorld = geometry.VertexWorld;
+    const math::Vector3 vertexNormalWorld = geometry.VertexNormalWorld;
+    const math::Vector3 cameraVertexWorld = geometry.CameraVertexWorld;
+    const float32 bsdfPdf = geometry.BsdfPdf;
+    ReferenceLightVertexDensities result;
+    const math::Vector3 lightDeltaWorld = vertexWorld - endpoint.PositionWorld;
+    const math::Vector3 cameraDeltaWorld = vertexWorld - cameraVertexWorld;
+    const float32 lightDistanceSquared = math::Dot(lightDeltaWorld, lightDeltaWorld);
+    const float32 cameraDistanceSquared = math::Dot(cameraDeltaWorld, cameraDeltaWorld);
+    if (lightDistanceSquared <= 0 || cameraDistanceSquared <= 0 || math::IsFinite(lightDistanceSquared) == false ||
+        math::IsFinite(cameraDistanceSquared) == false)
+    {
+        return result;
+    }
+    const math::Vector3 lightDirectionWorld = lightDeltaWorld / math::Sqrt(lightDistanceSquared);
+    const math::Vector3 cameraDirectionWorld = cameraDeltaWorld / math::Sqrt(cameraDistanceSquared);
+    result.Light = EvaluateLightDirectionPdf(endpoint, lightDirectionWorld) *
+                   math::Abs(math::Dot(vertexNormalWorld, lightDirectionWorld)) / lightDistanceSquared;
+    result.Camera =
+        math::Max(bsdfPdf, 0.F) * math::Abs(math::Dot(vertexNormalWorld, cameraDirectionWorld)) / cameraDistanceSquared;
+    return result;
+}
+// Origin of the light ray from `endpoint` along `directionWorld`, past an emissive triangle's rounding error.
+math::Vector3 OffsetLightEndpoint(const ReferenceJob& job,
+                                  const ReferenceLightEndpoint& endpoint,
+                                  math::Vector3 directionWorld) noexcept
+{
+    return endpoint.TriangleIndex == NO_REFERENCE_TRIANGLE
+               ? endpoint.PositionWorld
+               : Offset(endpoint.PositionWorld, job.Scene.Triangles[endpoint.TriangleIndex], directionWorld);
+}
+// Trace the light ray from `endpoint` along `directionWorld` to its first surface.
+rhi::RasterStatus TraceLightRay(const ReferenceJob& job,
+                                ReferenceCaptureInfo& inoutInfo,
+                                const ReferencePath& path,
+                                const ReferenceLightEndpoint& endpoint,
+                                math::Vector3 directionWorld,
+                                rhi::RayResult& outHit) noexcept
+{
+    const math::Vector3 originWorld = OffsetLightEndpoint(job, endpoint, directionWorld);
+    if (math::IsFinite(originWorld) == false)
+    {
+        return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidRayOrigin);
+    }
+    ++inoutInfo.ClosestQueries;
+    if (TraceReferenceOracle(job.Scene,
+                             ReferenceRay(originWorld, directionWorld, job.Description.SecondaryDistance),
+                             outHit) != rhi::RasterStatus::Ready)
+    {
+        return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidHit);
+    }
+    return rhi::RasterStatus::Ready;
+}
+// The scene triangle of a closest hit, or NO_REFERENCE_TRIANGLE for a miss or an invalid hit.
+usize GetHitTriangle(const ReferenceJob& job, const rhi::RayResult& hit) noexcept
+{
+    if (hit.Hit != 1 || hit.Instance >= job.Scene.InstanceCount ||
+        hit.Primitive >= job.Scene.Instances[hit.Instance].TriangleCount)
+    {
+        return NO_REFERENCE_TRIANGLE;
+    }
+    return job.Scene.Instances[hit.Instance].FirstTriangle + hit.Primitive;
+}
+// Next-event weight at rough vertex `receiverWorld` on triangle `receiverTriangle` against the light-vertex strategy,
+// which the camera vertex before it (the path's previous point, sampled by its rough BSDF) could have connected
+// through. That strategy reaches this path only when the light ray from the endpoint towards the receiver lands on
+// its triangle first, which one closest-hit query decides.
+rhi::RasterStatus ComputeNextEventWeight(const ReferenceJob& job,
+                                         ReferenceCaptureInfo& inoutInfo,
+                                         const ReferencePath& path,
+                                         const ReferenceLightChoice& choice,
+                                         const ReferenceIncidentLight& proposal,
+                                         usize receiverTriangle,
+                                         math::Vector3 receiverWorld,
+                                         math::Vector3 receiverNormalWorld,
+                                         float32& outWeight) noexcept
+{
+    outWeight = 1;
+    if (IsBidirectional(job) == false || path.Depth == 0 || path.IsPreviousSpecular == true)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    const ReferenceLightEndpoint endpoint = MakeLightEndpoint(job, choice, proposal);
+    if (endpoint.HasEndpoint == false)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    const ReferenceLightVertexDensities densities =
+        EvaluateLightVertexDensities(endpoint,
+                                     {
+                                         .VertexWorld = receiverWorld,
+                                         .VertexNormalWorld = receiverNormalWorld,
+                                         .CameraVertexWorld = path.PreviousPoint,
+                                         .BsdfPdf = path.PreviousPdf,
+                                     });
+    if (densities.Light <= 0)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    rhi::RayResult hit;
+    if (TraceLightRay(job,
+                      inoutInfo,
+                      path,
+                      endpoint,
+                      ReferenceNormalize(receiverWorld - endpoint.PositionWorld),
+                      hit) != rhi::RasterStatus::Ready)
+    {
+        return rhi::RasterStatus::Failed;
+    }
+    if (GetHitTriangle(job, hit) == receiverTriangle)
+    {
+        outWeight = ReferencePowerWeight(densities.Camera, densities.Light);
+    }
+    return rhi::RasterStatus::Ready;
+}
 struct ReferenceDirectReceiver final
 {
+    usize TriangleIndex;
     math::Vector3 PositionWorld;
     math::Vector3 ScatteringNormalWorld;
     math::Vector3 ShadingNormalWorld;
@@ -576,6 +871,7 @@ rhi::RasterStatus QueueDirectContribution(const ReferenceJob& job,
                                           const ReferenceTriangle& triangle,
                                           const ReferenceBsdf& bsdf,
                                           const ReferenceDirectReceiver& receiver,
+                                          const ReferenceLightChoice& choice,
                                           const ReferenceIncidentLight& proposal,
                                           float32 lightProbability) noexcept
 {
@@ -598,7 +894,7 @@ rhi::RasterStatus QueueDirectContribution(const ReferenceJob& job,
     const float32 weight = proposal.IsDelta == true || job.Description.OpticalWavelengthWorld > 0
                                ? 1
                                : ReferencePowerWeight(lightProbability, evaluation.Pdf);
-    const math::Vector3 contribution =
+    math::Vector3 contribution =
         math::Hadamard(inoutPath.Throughput,
                        math::Hadamard(ProjectReferenceSpectrum(inoutPath, evaluation.Value),
                                       ProjectReferenceSpectrum(inoutPath, proposal.Radiance))) *
@@ -606,6 +902,23 @@ rhi::RasterStatus QueueDirectContribution(const ReferenceJob& job,
     if (ValidContribution(contribution) == false)
     {
         return FailReferencePath(inoutInfo, inoutPath, ReferenceFailure::InvalidDirectContribution);
+    }
+    if (Positive(contribution) == true && IsBidirectional(job) == true)
+    {
+        float32 nextEventWeight = 1;
+        if (ComputeNextEventWeight(job,
+                                   inoutInfo,
+                                   inoutPath,
+                                   choice,
+                                   proposal,
+                                   receiver.TriangleIndex,
+                                   receiver.PositionWorld,
+                                   receiver.ScatteringNormalWorld,
+                                   nextEventWeight) != rhi::RasterStatus::Ready)
+        {
+            return rhi::RasterStatus::Failed;
+        }
+        contribution = contribution * nextEventWeight;
     }
     return Positive(contribution) == true
                ? QueueShadow(job, inoutInfo, inoutPath, triangle, receiver.PositionWorld, proposal, contribution)
@@ -769,6 +1082,292 @@ rhi::RasterStatus AttenuateTracedSegment(const ReferenceJob& job,
         return FailReferencePath(inoutInfo, inoutPath, ReferenceFailure::InvalidMediumCrossing);
     }
     inoutPath.Throughput = math::Hadamard(inoutPath.Throughput, transmittance);
+    return rhi::RasterStatus::Ready;
+}
+// Material inputs of a surface point: the shading normal, mirrored to the viewer's side, and the BSDF of
+// PrepareReferenceVertex.
+struct ReferenceSurfacePoint final
+{
+    math::Vector3 ShadingNormalWorld{};
+    ReferenceBsdf Bsdf{};
+};
+// Prepare the shading normal and BSDF at `barycentric` on `triangle`, whose oriented geometric normal is
+// `geometricNormal`, for a viewer behind that normal when isBackFace. Failure records InvalidSurfaceParameters.
+rhi::RasterStatus PrepareReferenceSurface(const ReferenceJob& job,
+                                          ReferenceCaptureInfo& inoutInfo,
+                                          const ReferencePath& path,
+                                          const ReferenceInstance& instance,
+                                          const ReferenceTriangle& triangle,
+                                          math::Vector2 barycentric,
+                                          math::Vector3 geometricNormal,
+                                          bool isBackFace,
+                                          ReferenceSurfacePoint& outSurface) noexcept
+{
+    const ReferenceSurfaceData& surface = *instance.Surface;
+    const float32 u = barycentric.X;
+    const float32 v = barycentric.Y;
+    // Corner normals on both sides of the face can cancel; pbrt-v4 then shades with the geometric normal.
+    math::Vector3 normal = geometricNormal;
+    static_cast<void>(math::TryNormalize(InterpolateReferenceShadingNormal(triangle, u, v), normal));
+    math::Vector4 texel = SampleReferenceTexture(instance, Uv(triangle, u, v));
+    if (surface.AreAuthoredInputsEnabled == true)
+    {
+        const math::Vector4 color = InterpolateReferenceColor(triangle, u, v);
+        texel = math::Hadamard(texel, color);
+    }
+    ReferenceBsdf bsdf = surface.Bsdf;
+    bsdf.ProgramOrNull = &surface.Program;
+    bsdf.BaseColor = math::Hadamard({texel.X, texel.Y, texel.Z}, bsdf.BaseColor);
+    if (surface.HasSurfaceMap)
+    {
+        SurfaceParameters parameters;
+        if (DecodeSurfaceParameters(SampleReferenceSurfaceMap(instance, Uv(triangle, u, v)),
+                                    bsdf.Metallic,
+                                    bsdf.Roughness,
+                                    surface.NormalScale,
+                                    parameters) != rhi::RasterStatus::Ready)
+        {
+            return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidSurfaceParameters);
+        }
+        bsdf.Metallic = parameters.Metallic;
+        bsdf.Roughness = parameters.Roughness;
+        normal = ApplyReferenceNormal(triangle, surface, normal, parameters.NormalTangent, u, v);
+    }
+    if (isBackFace == true)
+    {
+        normal = -normal;
+    }
+    // A dielectric's medium lies behind its oriented front side; viewed from the back, the ray is inside.
+    bsdf.IsViewerInside = isBackFace;
+    // A spectral path refracts at its own wavelength's index; RGB transport (zero) uses n_d.
+    bsdf.WavelengthNanometers = path.WavelengthNanometers;
+    bsdf.Profile = job.Description.MaterialProfile;
+    outSurface.ShadingNormalWorld = normal;
+    outSurface.Bsdf = bsdf;
+    return rhi::RasterStatus::Ready;
+}
+// The light-vertex strategy at rough camera vertex `receiver`: a light subpath y0 -> y1 drawn from the light vertex
+// dimensions, its rough vertex y1 connected to the receiver by a binary visibility segment. The integrand is next-event
+// estimation's at y1, optical light connection included, so the contribution is that estimate's value divided by the
+// light ray's area density at y1 instead of the camera's, weighted against it by the power heuristic.
+rhi::RasterStatus ConnectLightVertex(const ReferenceJob& job,
+                                     ReferenceCaptureInfo& inoutInfo,
+                                     ReferencePath& inoutPath,
+                                     const ReferenceDirectReceiver& receiver,
+                                     const ReferenceBsdf& bsdf) noexcept
+{
+    ReferencePath& path = inoutPath;
+    const usize lights = GetReferenceLightCount(job);
+    const ReferenceLightChoice choice =
+        SelectReferenceLightAt(job,
+                               path,
+                               lights,
+                               {
+                                   .Selection = LightVertexDimension(path, LUDUS_REFERENCE_LIGHT_VERTEX_SELECTION_SLOT),
+                                   .Emitter = LightVertexDimension(path, LUDUS_REFERENCE_LIGHT_VERTEX_EMITTER_SLOT),
+                               });
+    if (choice.Kind == ReferenceLightChoiceKind::Invalid)
+    {
+        return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidLightSample);
+    }
+    ReferenceLightEndpoint endpoint;
+    math::Vector2 barycentric;
+    if (choice.Kind == ReferenceLightChoiceKind::Triangle)
+    {
+        endpoint.TriangleIndex = job.Scene.Emitters[choice.Index];
+        const ReferenceTriangle& emitter = job.Scene.Triangles[endpoint.TriangleIndex];
+        barycentric = SampleTriangleBarycentric(
+            ReferenceRandom(job, path, LightVertexDimension(path, LUDUS_REFERENCE_LIGHT_VERTEX_POSITION_FIRST_SLOT)),
+            ReferenceRandom(job, path, LightVertexDimension(path, LUDUS_REFERENCE_LIGHT_VERTEX_POSITION_SECOND_SLOT)));
+        endpoint.PositionWorld = Position(emitter, barycentric.X, barycentric.Y);
+        endpoint.NormalWorld = OrientReferenceGeometricNormal(emitter, barycentric.X, barycentric.Y);
+        endpoint.IsTwoSided = job.Scene.Instances[emitter.Instance].Surface->IsEmissionTwoSided;
+    }
+    else if (choice.Kind == ReferenceLightChoiceKind::Analytic &&
+             GetOrderedReferenceLight(job, choice.Index).Kind != LightKind::Directional)
+    {
+        endpoint.PositionWorld = GetOrderedReferenceLight(job, choice.Index).Position;
+    }
+    else
+    {
+        return rhi::RasterStatus::Ready; // The environment sources no light subpath.
+    }
+    // Cosine-weighted about the emitting side of a triangle, uniform over the sphere for an analytic light.
+    const float32 first =
+        ReferenceRandom(job, path, LightVertexDimension(path, LUDUS_REFERENCE_LIGHT_VERTEX_DIRECTION_FIRST_SLOT));
+    const float32 second =
+        ReferenceRandom(job, path, LightVertexDimension(path, LUDUS_REFERENCE_LIGHT_VERTEX_DIRECTION_SECOND_SLOT));
+    math::Vector3 axisWorld{0, 0, 1};
+    float32 axial = 1 - 2 * first;
+    if (endpoint.TriangleIndex != NO_REFERENCE_TRIANGLE)
+    {
+        const bool isBackSide =
+            endpoint.IsTwoSided == true &&
+            ReferenceRandom(job, path, LightVertexDimension(path, LUDUS_REFERENCE_LIGHT_VERTEX_SIDE_SLOT)) < 0.5F;
+        axisWorld = isBackSide == true ? -endpoint.NormalWorld : endpoint.NormalWorld;
+        axial = math::Sqrt(math::Max(0.F, 1 - first));
+    }
+    const float32 radial = math::Sqrt(math::Max(0.F, 1 - axial * axial));
+    const float32 angle = math::kTauF * second;
+    // The directional disk's frame: from the world Z axis unless the axis is nearly parallel to it.
+    const math::Vector3 tangentWorld = ReferenceNormalize(
+        math::Cross(math::Abs(axisWorld.Z) < DISK_FRAME_POLE_COSINE ? math::Vector3{0, 0, 1} : math::Vector3{0, 1, 0},
+                    axisWorld));
+    const math::Vector3 bitangentWorld = math::Cross(axisWorld, tangentWorld);
+    const math::Vector3 lightDirectionWorld = ReferenceNormalize(
+        tangentWorld * (radial * math::Cos(angle)) + bitangentWorld * (radial * math::Sin(angle)) + axisWorld * axial);
+    rhi::RayResult hit;
+    if (TraceLightRay(job, inoutInfo, path, endpoint, lightDirectionWorld, hit) != rhi::RasterStatus::Ready)
+    {
+        return rhi::RasterStatus::Failed;
+    }
+    if (hit.Hit == 0)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    const usize vertexTriangle = GetHitTriangle(job, hit);
+    if (vertexTriangle == NO_REFERENCE_TRIANGLE || math::IsFinite(hit.U) == false || math::IsFinite(hit.V) == false)
+    {
+        return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidHit);
+    }
+    // The light vertex y1, viewed from the camera vertex that it connects to.
+    const ReferenceInstance& instance = job.Scene.Instances[hit.Instance];
+    const ReferenceTriangle& triangle = job.Scene.Triangles[vertexTriangle];
+    const math::Vector3 vertexWorld = Position(triangle, hit.U, hit.V);
+    const math::Vector3 connectionDeltaWorld = vertexWorld - receiver.PositionWorld;
+    const float32 connectionDistance = math::Length(connectionDeltaWorld);
+    if (connectionDistance <= 0 || math::IsFinite(connectionDistance) == false)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    const math::Vector3 connectionWorld = connectionDeltaWorld / connectionDistance;
+    const float32 receiverCosine = math::Dot(receiver.ShadingNormalWorld, connectionWorld);
+    if (receiverCosine <= 0 || math::Dot(receiver.ScatteringNormalWorld, connectionWorld) <= 0)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    const math::Vector3 vertexViewWorld = -connectionWorld;
+    const math::Vector3 geometricNormal = OrientReferenceGeometricNormal(triangle, hit.U, hit.V);
+    const bool isBackFace = math::Dot(geometricNormal, vertexViewWorld) < 0;
+    const math::Vector3 scatteringNormal = isBackFace == true ? -geometricNormal : geometricNormal;
+    if (math::Dot(scatteringNormal, vertexViewWorld) <= 0)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    ReferenceSurfacePoint material;
+    if (PrepareReferenceSurface(job,
+                                inoutInfo,
+                                path,
+                                instance,
+                                triangle,
+                                {hit.U, hit.V},
+                                geometricNormal,
+                                isBackFace,
+                                material) != rhi::RasterStatus::Ready)
+    {
+        return rhi::RasterStatus::Failed;
+    }
+    if (IsReferenceDielectric(material.Bsdf.Scattering.Model) == true)
+    {
+        return rhi::RasterStatus::Ready; // Coherent relays through glass stay with the camera strategies.
+    }
+    // Next-event estimation's proposal at y1 for the same endpoint.
+    const ReferenceIncidentLight incident =
+        endpoint.TriangleIndex != NO_REFERENCE_TRIANGLE
+            ? EvaluateTriangleIncidentLight(job, choice.Index, barycentric, vertexWorld)
+            : EvaluateAnalyticIncidentLight(job, path, GetOrderedReferenceLight(job, choice.Index), vertexWorld);
+    const float32 lightProbability = EvaluateSampledLightProbability(job, choice, incident, vertexWorld, lights);
+    if (math::IsFinite(lightProbability) == false || lightProbability < 0 ||
+        ValidContribution(incident.Radiance) == false)
+    {
+        return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidLightSample);
+    }
+    const float32 vertexCosine = math::Dot(material.ShadingNormalWorld, incident.DirectionWorld);
+    if ((lightProbability > 0 && Positive(incident.Radiance) == true && vertexCosine > 0 &&
+         math::Dot(scatteringNormal, incident.DirectionWorld) > 0) == false)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    ReferenceBsdfEvaluation receiverEvaluation;
+    ReferenceBsdfEvaluation vertexEvaluation;
+    if (EvaluateReferenceBsdf(bsdf,
+                              receiver.ShadingNormalWorld,
+                              receiver.ViewDirectionWorld,
+                              connectionWorld,
+                              receiverEvaluation,
+                              MakeMaterialRandomContext(job, path)) != rhi::RasterStatus::Ready ||
+        EvaluateReferenceBsdf(material.Bsdf,
+                              material.ShadingNormalWorld,
+                              vertexViewWorld,
+                              incident.DirectionWorld,
+                              vertexEvaluation,
+                              {job.Key, {path.Pixel, path.Sample, static_cast<uint16>(path.Depth + 1)}}) !=
+            rhi::RasterStatus::Ready)
+    {
+        return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidBsdfEvaluation);
+    }
+    const ReferenceLightVertexDensities densities =
+        EvaluateLightVertexDensities(endpoint,
+                                     {
+                                         .VertexWorld = vertexWorld,
+                                         .VertexNormalWorld = scatteringNormal,
+                                         .CameraVertexWorld = receiver.PositionWorld,
+                                         .BsdfPdf = receiverEvaluation.Pdf,
+                                     });
+    if (densities.Light <= 0)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    // Next-event estimate at y1 times the camera's area-measure factor x -> y1, over the light ray's density at y1.
+    const float32 scale = receiverCosine * math::Abs(math::Dot(scatteringNormal, connectionWorld)) /
+                          (connectionDistance * connectionDistance) * vertexCosine / lightProbability /
+                          densities.Light * ReferencePowerWeight(densities.Light, densities.Camera);
+    const math::Vector3 contribution =
+        math::Hadamard(math::Hadamard(path.Throughput, ProjectReferenceSpectrum(path, receiverEvaluation.Value)),
+                       math::Hadamard(ProjectReferenceSpectrum(path, vertexEvaluation.Value),
+                                      ProjectReferenceSpectrum(path, incident.Radiance))) *
+        scale;
+    if (ValidContribution(contribution) == false)
+    {
+        return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidDirectContribution);
+    }
+    if (Positive(contribution) == false)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    // Binary visibility of the connection between the two rough vertices.
+    const math::Vector3 startWorld =
+        Offset(receiver.PositionWorld, job.Scene.Triangles[receiver.TriangleIndex], connectionWorld);
+    const math::Vector3 endWorld = Offset(vertexWorld, triangle, vertexViewWorld);
+    const math::Vector3 segmentWorld = endWorld - startWorld;
+    const float32 segmentDistance = math::Length(segmentWorld);
+    if (math::IsFinite(segmentDistance) == false || segmentDistance <= 0)
+    {
+        return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidShadowSegment);
+    }
+    rhi::RayInput shadow =
+        ReferenceRay(startWorld, segmentWorld / segmentDistance, math::NextFloatDown(segmentDistance));
+    shadow.VisibilityOnly = 1;
+    rhi::RayResult visibility;
+    ++inoutInfo.VisibilityQueries;
+    if (TraceReferenceOracle(job.Scene, shadow, visibility) != rhi::RasterStatus::Ready)
+    {
+        return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidShadowSegment);
+    }
+    if (visibility.Hit != 0)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    // The light segment's optical connection, evaluated as next-event estimation at y1 evaluates it.
+    ReferenceLightSegment segment;
+    float32 transmission = 0;
+    if (ResolveLightSegment(inoutInfo, path, triangle, vertexWorld, incident, segment) != rhi::RasterStatus::Ready ||
+        EvaluateOpticalLightConnection(job, inoutInfo, path, segment, transmission) != rhi::RasterStatus::Ready)
+    {
+        return rhi::RasterStatus::Failed;
+    }
+    ++inoutInfo.VisibilityQueries;
+    AddTransport(path, contribution * transmission, path.Depth + 1, false);
     return rhi::RasterStatus::Ready;
 }
 } // namespace
@@ -938,42 +1537,21 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                    ? rhi::RasterStatus::Ready
                    : FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidRadiance);
     }
-    // Corner normals on both sides of the face can cancel; pbrt-v4 then shades with the geometric normal.
-    math::Vector3 normal = geometricNormal;
-    static_cast<void>(math::TryNormalize(InterpolateReferenceShadingNormal(triangle, hit.U, hit.V), normal));
-    math::Vector4 texel = SampleReferenceTexture(instance, Uv(triangle, hit.U, hit.V));
-    if (surface.AreAuthoredInputsEnabled == true)
+    ReferenceSurfacePoint material;
+    if (PrepareReferenceSurface(job,
+                                inoutInfo,
+                                path,
+                                instance,
+                                triangle,
+                                {hit.U, hit.V},
+                                geometricNormal,
+                                isBackFace,
+                                material) != rhi::RasterStatus::Ready)
     {
-        const math::Vector4 color = InterpolateReferenceColor(triangle, hit.U, hit.V);
-        texel = math::Hadamard(texel, color);
+        return rhi::RasterStatus::Failed;
     }
-    ReferenceBsdf bsdf = surface.Bsdf;
-    bsdf.ProgramOrNull = &surface.Program;
-    bsdf.BaseColor = math::Hadamard({texel.X, texel.Y, texel.Z}, bsdf.BaseColor);
-    if (surface.HasSurfaceMap)
-    {
-        SurfaceParameters parameters;
-        if (DecodeSurfaceParameters(SampleReferenceSurfaceMap(instance, Uv(triangle, hit.U, hit.V)),
-                                    bsdf.Metallic,
-                                    bsdf.Roughness,
-                                    surface.NormalScale,
-                                    parameters) != rhi::RasterStatus::Ready)
-        {
-            return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidSurfaceParameters);
-        }
-        bsdf.Metallic = parameters.Metallic;
-        bsdf.Roughness = parameters.Roughness;
-        normal = ApplyReferenceNormal(triangle, surface, normal, parameters.NormalTangent, hit.U, hit.V);
-    }
-    if (isBackFace == true)
-    {
-        normal = -normal;
-    }
-    // A dielectric's medium lies behind its oriented front side; viewed from the back, the ray is inside.
-    bsdf.IsViewerInside = isBackFace;
-    // A spectral path refracts at its own wavelength's index; RGB transport (zero) uses n_d.
-    bsdf.WavelengthNanometers = path.WavelengthNanometers;
-    bsdf.Profile = job.Description.MaterialProfile;
+    const math::Vector3 normal = material.ShadingNormalWorld;
+    const ReferenceBsdf& bsdf = material.Bsdf;
     const bool isSpecular = IsReferenceDielectric(bsdf.Scattering.Model);
     // ResampledProjectedSolidAngle keeps the receiver for this vertex's light sample and its continuation's BSDF-hit
     // density; Z-hat is computed once, on first use.
@@ -1013,6 +1591,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     }
     const ReferenceDirectReceiver receiver
     {
+        .TriangleIndex = instance.FirstTriangle + hit.Primitive,
         .PositionWorld = point,
         .ScatteringNormalWorld = scatteringNormal,
         .ShadingNormalWorld = normal,
@@ -1033,6 +1612,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                                                                  triangle,
                                                                  bsdf,
                                                                  receiver,
+                                                                 directionalChoice,
                                                                  directional,
                                                                  directionalChoice.SelectionPmf);
         if (queued != rhi::RasterStatus::Ready)
@@ -1040,11 +1620,23 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
             return queued;
         }
     }
-    const rhi::RasterStatus queued =
-        QueueDirectContribution(job, inoutInfo, path, triangle, bsdf, receiver, proposal, lightProbability);
+    const rhi::RasterStatus queued = QueueDirectContribution(job,
+                                                             inoutInfo,
+                                                             path,
+                                                             triangle,
+                                                             bsdf,
+                                                             receiver,
+                                                             lightChoice,
+                                                             proposal,
+                                                             lightProbability);
     if (queued != rhi::RasterStatus::Ready)
     {
         return queued;
+    }
+    if (isSpecular == false && IsBidirectional(job) == true && path.Depth + 1 < job.Description.MaxDepth &&
+        ConnectLightVertex(job, inoutInfo, path, receiver, bsdf) != rhi::RasterStatus::Ready)
+    {
+        return rhi::RasterStatus::Failed;
     }
     ReferenceBsdfSample sample;
     if (SampleReferenceBsdf(bsdf,
