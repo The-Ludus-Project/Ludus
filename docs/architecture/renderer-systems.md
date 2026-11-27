@@ -3261,9 +3261,9 @@ variables after inlining every call, as Mesa does:
 | `TraceMain` kernel | SPIR-V assembly lines | Private memory | In arrays |
 | --- | ---: | ---: | ---: |
 | `79ae887c7`, before the UTD, Fraunhofer and glass-relay connections | 144,709 | 138 KiB | 53 KiB |
-| One kernel for both profiles (`3d165b1d2`) | 214,178 | 367 KiB | 125 KiB |
-| Geometric `renderer_reference` | 118,691 | 70 KiB | 26 KiB |
-| Optical `renderer_reference_optical` | 214,197 | 367 KiB | 125 KiB |
+| One kernel for both profiles (`e5b0ba580`, spectral) | 215,690 | 368 KiB | 125 KiB |
+| Geometric `renderer_reference` | 120,111 | 71 KiB | 26 KiB |
+| Optical `renderer_reference_optical` | 215,979 | 368 KiB | 125 KiB |
 
 Setup is the CPU oracle's: the same admitted geometry, materials, retained
 texture mip and binned-SAH BVH, packed once in the GPU preview's scene layout. Each
