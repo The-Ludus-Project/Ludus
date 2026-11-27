@@ -18,6 +18,8 @@
 #include "renderer_composite.h"
 
 #include <ludus/content/content.h>
+#include <ludus/content/render_graph_format/plan.h>
+#include <ludus/content/scene_format/luscn.h>
 #include <ludus/content/scene_format/material.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/array.hpp>
@@ -64,9 +66,18 @@ constexpr uint32 CAPTURE_HEIGHT = 1080;
 constexpr usize RGBA8_PIXEL_BYTES = 4;
 /// Largest cooked scene bundle the app admits, matching the assembly-profile bound.
 constexpr usize MAX_SCENE_BYTES = 576 * 1024 * 1024;
-/// Near and far planes of the capture camera, in metres (the bust is about 17 cm wide).
-constexpr float32 CAPTURE_NEAR_METRES = 0.02F;
-constexpr float32 CAPTURE_FAR_METRES = 2.0F;
+/// Near and far planes of the capture camera, in metres (the bust is about 17 cm wide). The Editor
+/// export test (`[.sdk-hair-skin-bust-export]`) builds its matched view with the same planes and records
+/// them in the export manifest; verify.py checks the two agree before comparing.
+/// The planes are kept in whole micrometres so capture.txt records them exactly.
+constexpr uint64 CAPTURE_NEAR_MICROMETRES = 20'000;
+constexpr uint64 CAPTURE_FAR_MICROMETRES = 2'000'000;
+constexpr float32 MICROMETRES_PER_METRE = 1'000'000;
+constexpr float32 CAPTURE_NEAR_METRES = static_cast<float32>(CAPTURE_NEAR_MICROMETRES) / MICROMETRES_PER_METRE;
+constexpr float32 CAPTURE_FAR_METRES = static_cast<float32>(CAPTURE_FAR_MICROMETRES) / MICROMETRES_PER_METRE;
+/// Row alignment of the RHI's readback staging (see RequestTextureReadback); a band of staged rows must
+/// fit the device's TransferBytes.
+constexpr usize STAGING_ROW_ALIGNMENT = 256;
 /// Startup probe extent; the real target is set from the capture extent before rendering.
 constexpr uint32 PROBE_WIDTH = 96;
 constexpr uint32 PROBE_HEIGHT = 64;
@@ -203,41 +214,59 @@ usize CountFeatureObjects(const resources::SceneDefinition& scene, Feature featu
     return count;
 }
 
-/// Translate a cooked SceneMaterial into the render graph's typed material. The hair opacity texture
-/// and skin scattering survive verbatim: the alpha mask and cutoff, and the HairCard/Skin Scattering.
+/// Borrow one cooked texture as render-graph CPU content; NO_TEXTURE yields empty content.
+rhi::TextureCpuContent GetTexture(const resources::SceneDefinition& scene, uint32 index) noexcept
+{
+    if (index == format::NO_TEXTURE)
+    {
+        return {};
+    }
+    const resources::SceneTexture& texture = scene.Textures[index];
+    return
+    {
+        .Bytes = texture.Pixels.GetData(),
+        .Size = texture.Pixels.GetSize(),
+        .RowPitch = usize{texture.Width} * RGBA8_PIXEL_BYTES,
+        .Width = texture.Width,
+        .Height = texture.Height,
+        .Format = texture.IsLinear == true ? rhi::RasterFormat::Rgba8Unorm : rhi::RasterFormat::Rgba8Srgb,
+    };
+}
+
+/// Translate a cooked SceneMaterial into the render graph's typed material, as the packaged
+/// first-person player and the Editor's World extraction do. The hair opacity texture and skin
+/// scattering survive verbatim: the alpha mask and cutoff, and the HairCard/Skin Scattering.
 void MakeShaderMaterial(const resources::SceneDefinition& scene,
                         const resources::SceneMaterial& source,
                         renderer::SceneShaderMaterial& outMaterial) noexcept
 {
-    outMaterial.BaseColor = source.Reflectance;
+    // A legacy untextured material without retained source reflectance draws black, as in the player.
+    outMaterial.BaseColor = source.Texture == format::NO_TEXTURE && source.HasSourceMaterial == false
+                                ? math::Vector3{}
+                                : source.Reflectance;
     outMaterial.Metallic = source.Metallic;
     outMaterial.Roughness = source.Roughness;
     outMaterial.Emission = source.Emission;
     outMaterial.IsEmissionTwoSided = source.IsEmissionTwoSided;
     outMaterial.Scattering = source.Scattering;
     outMaterial.Program = source.Program;
+    outMaterial.NormalScale = source.NormalScale;
     outMaterial.IsAlphaMasked = source.IsAlphaMasked;
     outMaterial.AlphaCutoff = source.AlphaCutoff;
-    if (source.Texture != ~uint32{0})
-    {
-        const resources::SceneTexture& texture = scene.Textures[source.Texture];
-        outMaterial.ColorTexture =
-        {
-            .Bytes = texture.Pixels.GetData(),
-            .Size = texture.Pixels.GetSize(),
-            .RowPitch = usize{texture.Width} * RGBA8_PIXEL_BYTES,
-            .Width = texture.Width,
-            .Height = texture.Height,
-            .Format = rhi::RasterFormat::Rgba8Srgb,
-        };
-    }
+    // LUSCN keeps one mip and no source sampler; the graph builds the chain and filters linearly.
+    outMaterial.Sampler.Filter = rhi::RasterFilter::Linear;
+    outMaterial.Sampler.U = source.Repeat == true ? rhi::RasterAddress::Repeat : rhi::RasterAddress::Clamp;
+    outMaterial.Sampler.V = outMaterial.Sampler.U;
+    outMaterial.ColorTexture = GetTexture(scene, source.Texture);
+    outMaterial.SurfaceTexture = GetTexture(scene, source.SurfaceTexture);
+    outMaterial.EmissionTexture = GetTexture(scene, source.EmissionTexture);
 }
 
 /// Convert a cooked analytic light into the renderer's DirectLight.
 renderer::DirectLight MakeDirectLight(const resources::SceneLight& source, uint64 sourceId) noexcept
 {
     renderer::DirectLight light;
-    light.SourceId = sourceId;
+    light.SourceId = source.SourceId != 0 ? source.SourceId : sourceId;
     light.Kind = source.Kind == resources::SceneLightKind::Directional ? renderer::LightKind::Directional
                  : source.Kind == resources::SceneLightKind::Spot      ? renderer::LightKind::Spot
                                                                        : renderer::LightKind::Point;
@@ -257,7 +286,9 @@ renderer::DirectLight MakeDirectLight(const resources::SceneLight& source, uint6
     return light;
 }
 
-/// Build the matched perspective camera from the cooked scene's authored view.
+/// Build the matched perspective camera from the cooked scene's saved view: a finite reverse-Z
+/// projection, as the packaged first-person player draws. The Editor export test builds its capture
+/// view with the same math, planes and extent.
 bool MakeCamera(const resources::SceneDefinition& scene,
                 uint32 width,
                 uint32 height,
@@ -266,15 +297,18 @@ bool MakeCamera(const resources::SceneDefinition& scene,
     const float32 aspect = static_cast<float32>(width) / static_cast<float32>(height);
     math::Matrix4 viewToClip;
     math::Matrix4 worldToView;
+    math::Vector3 forward;
     if (math::TryPerspectiveReverseZ(scene.VerticalFov, aspect, CAPTURE_NEAR_METRES, CAPTURE_FAR_METRES, viewToClip) !=
             math::MathStatus::Success ||
-        math::TryLookAt(scene.Eye, scene.Target, scene.Up, worldToView) != math::MathStatus::Success)
+        math::TryLookAt(scene.Eye, scene.Target, scene.Up, worldToView) != math::MathStatus::Success ||
+        math::TryNormalize(scene.Target - scene.Eye, forward) != math::MathStatus::Success)
     {
         return false;
     }
     outCamera.WorldToClip = viewToClip * worldToView;
     outCamera.Depth = renderer::DepthConvention::ReverseZ;
     outCamera.CameraPosition = scene.Eye;
+    outCamera.CameraForward = forward;
     return true;
 }
 
@@ -316,21 +350,21 @@ struct SceneBinding final
     Array<renderer::RenderGraphMesh> Meshes;
     Array<renderer::RenderGraphItem> Items;
     Array<renderer::SceneShaderMaterial> Materials;
-    Array<uint32> MaterialBindings; ///< One global material index per object, borrowed by its mesh.
+    Array<uint32> MaterialBindings; ///< One global material index per object, borrowed by its draw item.
     Array<renderer::DirectLight> Lights;
     renderer::SceneShaderInputs Inputs;
 };
 
-/// Translate the whole cooked scene into render-graph inputs: every mesh, its per-object material slot,
-/// the lights and the constant environment. Geometry and materials are borrowed from the scene, which
-/// must outlive the render.
+/// Translate the whole cooked scene into render-graph inputs, as the packaged first-person player and
+/// the Editor's World extraction do: every mesh with its tangents, one draw per object bound to its
+/// material slot, the enabled lights and the environment. Geometry and materials are borrowed from the
+/// scene, which must outlive the render.
 bool BuildSceneBinding(const resources::SceneDefinition& scene, SceneBinding& outBinding)
 {
     if (outBinding.Materials.TryResize(scene.Materials.GetSize()) == false ||
-        outBinding.Meshes.TryResize(scene.Objects.GetSize()) == false ||
+        outBinding.Meshes.TryResize(scene.Meshes.GetSize()) == false ||
         outBinding.Items.TryResize(scene.Objects.GetSize()) == false ||
-        outBinding.MaterialBindings.TryResize(scene.Objects.GetSize()) == false ||
-        outBinding.Lights.TryResize(scene.Lights.GetSize()) == false)
+        outBinding.MaterialBindings.TryResize(scene.Objects.GetSize()) == false)
     {
         return false;
     }
@@ -338,13 +372,9 @@ bool BuildSceneBinding(const resources::SceneDefinition& scene, SceneBinding& ou
     {
         MakeShaderMaterial(scene, scene.Materials[i], outBinding.Materials[i]);
     }
-    // One draw item per object. Each borrows its source mesh's geometry and binds the object's single
-    // material slot to the global material table.
-    for (usize i = 0; i < scene.Objects.GetSize(); ++i)
+    for (usize i = 0; i < scene.Meshes.GetSize(); ++i)
     {
-        const resources::SceneObject& object = scene.Objects[i];
-        const resources::SceneMesh& sourceMesh = scene.Meshes[object.Mesh];
-        outBinding.MaterialBindings[i] = object.Material;
+        const resources::SceneMesh& sourceMesh = scene.Meshes[i];
         renderer::RenderGraphMesh& mesh = outBinding.Meshes[i];
         mesh.Geometry.Positions = sourceMesh.Positions.GetData();
         mesh.Geometry.VertexCount = sourceMesh.Positions.GetSize();
@@ -352,21 +382,105 @@ bool BuildSceneBinding(const resources::SceneDefinition& scene, SceneBinding& ou
         mesh.Geometry.IndexCount = sourceMesh.Indices.GetSize();
         mesh.Geometry.Normals = sourceMesh.Normals.IsEmpty() == true ? nullptr : sourceMesh.Normals.GetData();
         mesh.Geometry.Texcoords = sourceMesh.Texcoords.IsEmpty() == true ? nullptr : sourceMesh.Texcoords.GetData();
-        mesh.MaterialBindings = {&outBinding.MaterialBindings[i], 1};
+        mesh.Geometry.Tangents = {sourceMesh.Tangents.GetData(), sourceMesh.Tangents.GetSize()};
+        mesh.Layout = renderer::RenderGraphLayout::Static;
+    }
+    // One draw item per object, bound to the object's single material slot in the global table. Draws
+    // keep the default opaque coverage: the masked hair card discards through its material's alpha mask
+    // and cutoff, which is how the Editor and the player classify it, and which the graphs' colour and
+    // depth roles cover.
+    for (usize i = 0; i < scene.Objects.GetSize(); ++i)
+    {
+        const resources::SceneObject& object = scene.Objects[i];
+        outBinding.MaterialBindings[i] = object.Material;
         renderer::RenderGraphItem& item = outBinding.Items[i];
         item.SourceId = i + 1;
-        item.MeshIndex = static_cast<uint32>(i);
+        item.MeshIndex = object.Mesh;
         item.MeshToWorld = object.Transform;
-        item.Coverage = scene.Materials[object.Material].IsAlphaMasked == true ? renderer::RenderGraphMaterial::Masked
-                                                                               : renderer::RenderGraphMaterial::Opaque;
+        item.MaterialOverrides = {&outBinding.MaterialBindings[i], 1};
     }
     for (usize i = 0; i < scene.Lights.GetSize(); ++i)
     {
-        outBinding.Lights[i] = MakeDirectLight(scene.Lights[i], i + 1);
+        if (scene.Lights[i].IsEnabled == true &&
+            outBinding.Lights.TryAdd(MakeDirectLight(scene.Lights[i], i + 1)) == false)
+        {
+            return false;
+        }
     }
     outBinding.Inputs.Materials = {outBinding.Materials.GetData(), outBinding.Materials.GetSize()};
     outBinding.Inputs.Lights = {outBinding.Lights.GetData(), outBinding.Lights.GetSize()};
     outBinding.Inputs.Environment = scene.Environment.Rgb;
+    outBinding.Inputs.EnvironmentWidth = scene.Environment.Width;
+    outBinding.Inputs.EnvironmentHeight = scene.Environment.Height;
+    outBinding.Inputs.EnvironmentPixels = {scene.Environment.Pixels.GetData(), scene.Environment.Pixels.GetSize()};
+    return true;
+}
+
+/// Find the first exported colour resource of the plan, which the Editor viewport and the player show.
+bool FindColorExport(const renderer::RenderGraphPlan& plan, uint32& outResource) noexcept
+{
+    for (usize i = 0; i < plan.Resources.GetSize(); ++i)
+    {
+        if (plan.Resources[i].IsExported != 0 &&
+            plan.Resources[i].Kind == ludus::content::render_graph_format::Aspect::Color)
+        {
+            outResource = static_cast<uint32>(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Read an RGBA8 colour texture back in row bands that fit the device's transfer budget, as the
+/// Editor's offscreen frame reader does; a full 1600x1080 frame exceeds one transfer.
+bool ReadTexture(rhi::DeviceHandle device, rhi::TextureHandle texture, Array<uint8>& outPixels)
+{
+    rhi::LifetimeCapabilities capabilities;
+    if (rhi::GetLifetimeCapabilities(device, capabilities) != Status::Ready)
+    {
+        return false;
+    }
+    const usize rowPitch = usize{CAPTURE_WIDTH} * RGBA8_PIXEL_BYTES;
+    const usize stagingRowBytes =
+        (rowPitch + STAGING_ROW_ALIGNMENT - 1) / STAGING_ROW_ALIGNMENT * STAGING_ROW_ALIGNMENT;
+    const usize rowsPerBand = capabilities.TransferBytes / stagingRowBytes;
+    if (rowsPerBand == 0 || outPixels.TryResize(rowPitch * CAPTURE_HEIGHT) == false)
+    {
+        LUDUS_LOG_ERROR(LOG_HAIR_SKIN,
+                        "The device transfer budget ({} bytes) cannot hold one {}-pixel capture row",
+                        capabilities.TransferBytes,
+                        CAPTURE_WIDTH);
+        return false;
+    }
+    for (uint32 row = 0; row < CAPTURE_HEIGHT;)
+    {
+        const uint32 rows = static_cast<uint32>(math::Min(rowsPerBand, usize{CAPTURE_HEIGHT - row}));
+        rhi::ReadbackTicket ticket;
+        const rhi::TextureRegion region{ .Mip = 0, .X = 0, .Y = row, .Width = CAPTURE_WIDTH, .Height = rows };
+        Status requested = Status::NotReady;
+        const bool isRequested = WaitFor(device, "readback request", [&]() {
+            requested = rhi::RequestTextureReadback(device, texture, region, rowPitch, ticket);
+            // A retiring staging slice reports NotReady or CapacityExceeded; retry until it frees.
+            return requested == Status::CapacityExceeded ? Status::NotReady
+                   : requested == Status::Pending        ? Status::Ready
+                                                         : requested;
+        });
+        if (isRequested == false)
+        {
+            LUDUS_LOG_ERROR(LOG_HAIR_SKIN, "Readback request rejected ({})", static_cast<uint32>(requested));
+            return false;
+        }
+        const bool hasBand =
+            WaitFor(device, "readback", [&]() { return rhi::GetStatus(device, ticket); }) == true &&
+            rhi::CopyReadback(device, ticket, outPixels.GetData() + usize{row} * rowPitch, usize{rows} * rowPitch) ==
+                Status::Ready;
+        const Status released = rhi::Release(device, ticket);
+        if (hasBand == false || released != Status::Ready)
+        {
+            return false;
+        }
+        row += rows;
+    }
     return true;
 }
 
@@ -428,6 +542,8 @@ void WriteProvenance(Profile profile,
     const bool isComplete = AppendCount(text, "backend=", static_cast<uint32>(information.Startup.SelectedBackend)) &&
                             AppendCount(text, "width=", CAPTURE_WIDTH) &&
                             AppendCount(text, "height=", CAPTURE_HEIGHT) &&
+                            AppendCount(text, "near_micrometres=", CAPTURE_NEAR_MICROMETRES) &&
+                            AppendCount(text, "far_micrometres=", CAPTURE_FAR_MICROMETRES) &&
                             AppendCount(text, "meshes=", scene.Meshes.GetSize()) &&
                             AppendCount(text, "materials=", scene.Materials.GetSize()) &&
                             AppendCount(text, "objects=", scene.Objects.GetSize()) &&
@@ -528,10 +644,15 @@ int Render(Profile profile, rhi::DeviceHandle device, rhi::SurfaceHandle surface
         LUDUS_LOG_ERROR(LOG_HAIR_SKIN, "The packaged graph {} has no passes", ProfilePackageFile(profile));
         return EXIT_FAILURE_CODE;
     }
+    // The packaged graphs size view-relative resources from the reference extent; without it they stay
+    // NotReady. Initialize at the capture extent, as the player does at its window size.
     const Status initialized = graph.Initialize(device,
                                                 plan,
                                                 package.GetPrograms(ludus::shaders::renderer_composite::Vertex(),
-                                                                    ludus::shaders::renderer_composite::Fragment()));
+                                                                    ludus::shaders::renderer_composite::Fragment()),
+                                                nullptr,
+                                                CAPTURE_WIDTH,
+                                                CAPTURE_HEIGHT);
     if ((initialized != Status::Ready && initialized != Status::Pending) ||
         WaitFor(device, "graph preparation", [&graph]() { return graph.Poll(); }) == false)
     {
@@ -562,8 +683,18 @@ int Render(Profile profile, rhi::DeviceHandle device, rhi::SurfaceHandle surface
                                         &binding.Inputs,
                                         0,
                                         revisions);
-    if ((updated != Status::Ready && updated != Status::Pending) ||
-        WaitFor(device, "scene upload", [&graph]() { return graph.Poll(); }) == false ||
+    if (updated != Status::Ready && updated != Status::Pending)
+    {
+        LUDUS_LOG_ERROR(LOG_HAIR_SKIN,
+                        "The packaged graph rejected the bust scene (raster status {}; {} covered, {} unsupported, "
+                        "{} conflicting draw roles)",
+                        static_cast<uint32>(updated),
+                        report.Covered,
+                        report.Unsupported,
+                        report.Conflicting);
+        return EXIT_FAILURE_CODE;
+    }
+    if (WaitFor(device, "scene upload", [&graph]() { return graph.Poll(); }) == false ||
         rhi::SetFrameTarget(device, surface, { .Width = CAPTURE_WIDTH, .Height = CAPTURE_HEIGHT }) !=
             rhi::DeviceStatus::Ready)
     {
@@ -578,8 +709,14 @@ int Render(Profile profile, rhi::DeviceHandle device, rhi::SurfaceHandle surface
         return EXIT_FAILURE_CODE;
     }
 
-    // Resolve the graph's final colour export (its last pass's colour resource) and read it back.
-    const uint32 output = plan.Passes[plan.Passes.GetSize() - 1].Color;
+    // Resolve the graph's first exported colour resource, the output the Editor viewport shows, and
+    // read it back.
+    uint32 output = 0;
+    if (FindColorExport(plan, output) == false)
+    {
+        LUDUS_LOG_ERROR(LOG_HAIR_SKIN, "The packaged graph {} exports no colour output", ProfilePackageFile(profile));
+        return EXIT_FAILURE_CODE;
+    }
     rhi::TextureHandle texture;
     rhi::TextureAspect aspect{};
     if (WaitFor(device, "export", [&]() { return graph.GetExport(output, texture, aspect); }) == false ||
@@ -590,23 +727,7 @@ int Render(Profile profile, rhi::DeviceHandle device, rhi::SurfaceHandle surface
     }
 
     Array<uint8> pixels;
-    const usize rowPitch = usize{CAPTURE_WIDTH} * RGBA8_PIXEL_BYTES;
-    if (pixels.TryResize(rowPitch * CAPTURE_HEIGHT) == false)
-    {
-        return EXIT_FAILURE_CODE;
-    }
-    rhi::ReadbackTicket ticket;
-    const rhi::TextureRegion region{ .Mip = 0, .X = 0, .Y = 0, .Width = CAPTURE_WIDTH, .Height = CAPTURE_HEIGHT };
-    const Status requested = rhi::RequestTextureReadback(device, texture, region, rowPitch, ticket);
-    if (requested != Status::Ready && requested != Status::Pending)
-    {
-        LUDUS_LOG_ERROR(LOG_HAIR_SKIN, "Readback request rejected ({})", static_cast<uint32>(requested));
-        return EXIT_FAILURE_CODE;
-    }
-    const bool hasPixels = WaitFor(device, "readback", [&]() { return rhi::GetStatus(device, ticket); }) == true &&
-                           rhi::CopyReadback(device, ticket, pixels.GetData(), pixels.GetSize()) == Status::Ready;
-    const Status released = rhi::Release(device, ticket);
-    if (hasPixels == false || released != Status::Ready)
+    if (ReadTexture(device, texture, pixels) == false)
     {
         LUDUS_LOG_ERROR(LOG_HAIR_SKIN, "Could not read back the rendered frame");
         return EXIT_FAILURE_CODE;

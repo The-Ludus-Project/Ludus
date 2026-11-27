@@ -7,6 +7,7 @@
 namespace ludus::editor
 {
 class WorldDocument;
+struct RenderScene;
 
 /// Prepare an applied built-in World on a worker with its own frozen document copy.
 /// Output is a compact UTF-8 manifest line followed by the exact, decoded LUSCN scene.
@@ -38,9 +39,12 @@ class WorldDocument;
 /// does not require a built-in schema, a Play spawn or entity ownership; it rejects an authored
 /// atmosphere error the same way Play does. All paths are native. @p sceneDestination must end in
 /// `.luscn`; @p manifestDestination in `.json`.
+/// @param outSceneOrNull When nonnull, receives the composed render scene whose bundle was written, so
+/// a caller can render exactly the exported packet; it is assigned only after both files are written.
 [[nodiscard]] bool ExportCookedWorldScene(const QString& root,
                                           const WorldDocument& world,
                                           const QString& sceneDestination,
                                           const QString& manifestDestination,
-                                          QString& outError);
+                                          QString& outError,
+                                          RenderScene* outSceneOrNull = nullptr);
 } // namespace ludus::editor

@@ -3026,27 +3026,30 @@ TEST_CASE("The World viewport draws the character bust through light edits, orbi
 }
 
 // Same-World source of truth for the standalone hair/skin SDK qualification (#1400). Unlike the
-// behavioural test above, this imports the bust, assigns the slot, SAVES the World, EXPORTS its cooked
-// scene.luscn (the exact bytes the SDK app's SceneDefinition::Decode consumes) and a manifest with the
-// World and cooked-scene hashes, then captures ONE reference image at the SAVED camera and a fixed
-// extent, with no orbit, light-off or resize. verify.py sets the output paths through the environment
-// and compares this capture with the SDK app rendering the same scene.luscn and the same graph.
-TEST_CASE("The character bust World exports its cooked scene and a matched capture", "[.sdk-hair-skin-bust-export]")
+// behavioural test above, this imports the bust, assigns both slots, SAVES the World and EXPORTS its
+// cooked scene.luscn (the exact bytes the SDK app's SceneDefinition::Decode consumes) ONCE, with a
+// manifest of the World and cooked-scene hashes. It then renders that exported composition through
+// both packaged profiles with the Editor's offscreen raster capture (the Reference comparison's
+// ViewportRasterCapture) at the saved camera and a fixed extent: forward-lit for hair, the
+// clustered-deferred default for skin. verify.py sets LUDUS_BUST_EXPORT_DIRECTORY and compares these
+// captures with the SDK app drawing the same scene.luscn. The capture view uses the SDK app's camera
+// math, planes and extent (tests/sdk_consumer/hair_skin_bust/capture.cpp), recorded in the manifest.
+TEST_CASE("The character bust World exports its cooked scene and matched captures", "[.sdk-hair-skin-bust-export]")
 {
     namespace format = ludus::content::scene_format;
-    // One saved World carries BOTH slots: Hair gets a hair card, Skin gets skin. The export writes one
-    // scene.luscn the SDK app consumes; the per-feature capture selects the matching graph.
-    const bool shouldCaptureHair = qEnvironmentVariable("LUDUS_BUST_EXPORT_FEATURE") == QStringLiteral("hair");
-    const QString scenePath = qEnvironmentVariable("LUDUS_BUST_EXPORT_SCENE");
-    const QString manifestPath = qEnvironmentVariable("LUDUS_BUST_EXPORT_MANIFEST");
-    const QString capturePath = qEnvironmentVariable("LUDUS_BUST_EXPORT_CAPTURE");
-    REQUIRE(scenePath.isEmpty() == false);
-    REQUIRE(manifestPath.isEmpty() == false);
-    REQUIRE(capturePath.isEmpty() == false);
-    // The SDK app renders a fixed 1600x1080 reverse-Z view; match it here.
+    const QString exportPath = qEnvironmentVariable("LUDUS_BUST_EXPORT_DIRECTORY");
+    REQUIRE(exportPath.isEmpty() == false);
+    const QDir output(exportPath);
+    REQUIRE(QDir().mkpath(output.path()) == true);
+    const QString scenePath = output.filePath(QStringLiteral("scene.luscn"));
+    const QString manifestPath = output.filePath(QStringLiteral("scene.manifest.json"));
+    // The SDK app renders a fixed 1600x1080 finite reverse-Z view with these planes; match it here.
     constexpr int32 CAPTURE_WIDTH = 1600;
     constexpr int32 CAPTURE_HEIGHT = 1080;
-    constexpr int32 TIMEOUT_MILLISECONDS = 60000;
+    constexpr uint64 CAPTURE_NEAR_MICROMETRES = 20'000;
+    constexpr uint64 CAPTURE_FAR_MICROMETRES = 2'000'000;
+    constexpr float32 MICROMETRES_PER_METRE = 1'000'000;
+    constexpr int32 TIMEOUT_MILLISECONDS = 120000;
     rhi::Shutdown();
     QTemporaryDir project;
     REQUIRE(project.isValid() == true);
@@ -3059,124 +3062,219 @@ TEST_CASE("The character bust World exports its cooked scene and a matched captu
     {
         REQUIRE(QFile::copy(bust.filePath(file), copy.filePath(file)) == true);
     }
-    RendererWorkspace workspace({});
-    WorldWorkspace world;
-    world.UseProjectGraph(workspace);
-    workspace.SetPreviewSource(&world.GetRenderPreview());
-    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+    RenderScene exported;
+    QByteArray savedWorld;
+    {
+        RendererWorkspace workspace({});
+        WorldWorkspace world;
+        world.UseProjectGraph(workspace);
         workspace.SetPreviewSource(&world.GetRenderPreview());
-    });
-    workspace.EnableWorldRendering();
-    workspace.SetProject(root.path(), 1);
-    world.SetProject(root.path(), 1);
-    world.resize(1000, 700);
-    world.show();
-    const QString worldPath = root.filePath(QStringLiteral("bust.world.json"));
-    REQUIRE(world.Create(worldPath) == true);
-    // infinite-head-hair.gltf carries both the Skin and Hair material slots under a key and fill light.
-    REQUIRE(world.ImportScene(copy.filePath(QStringLiteral("infinite-head-hair.gltf"))) == true);
-    const auto waitFor = [&](const auto& isReady) {
+        QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+            workspace.SetPreviewSource(&world.GetRenderPreview());
+        });
+        workspace.EnableWorldRendering();
+        workspace.SetProject(root.path(), 1);
+        world.SetProject(root.path(), 1);
+        world.resize(1000, 700);
+        world.show();
+        const QString worldPath = root.filePath(QStringLiteral("bust.world.json"));
+        REQUIRE(world.Create(worldPath) == true);
+        // infinite-head-hair.gltf carries both the Skin and Hair material slots under a key and fill light.
+        REQUIRE(world.ImportScene(copy.filePath(QStringLiteral("infinite-head-hair.gltf"))) == true);
+        const auto waitFor = [&](const auto& isReady) {
+            QElapsedTimer timer;
+            timer.start();
+            while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+            {
+                QTest::qWait(1);
+                workspace.ServicePreview();
+            }
+            return isReady();
+        };
+        const auto source = [&world]() -> RenderPreview& { return world.GetRenderPreview(); };
+        REQUIRE(waitFor([&]() { return world.CanSave() == true; }) == true);
+        world.ResumePreview();
+        REQUIRE(waitFor([&]() { return source().Scene().Objects.isEmpty() == false; }) == true);
+        const auto findSlot = [&](std::string_view name) {
+            QString slot;
+            for (const PreviewObject& object : source().Scene().Objects)
+            {
+                const ludus::resources::SceneMaterial* materialOrNull =
+                    GetSceneObjectMaterialOrNull(source().Scene(), object.Id);
+                if (materialOrNull != nullptr && materialOrNull->Name.View() == name)
+                {
+                    slot = object.Id;
+                }
+            }
+            return slot;
+        };
+        const QString hairSlot = findSlot("Hair");
+        const QString skinSlot = findSlot("Skin");
+        REQUIRE(hairSlot.isEmpty() == false);
+        REQUIRE(skinSlot.isEmpty() == false);
+        // Assign both typed materials, exactly as Make Hair Card / Make Skin do. Selecting an entity does
+        // not move the camera, so the saved start view stays the imported one.
+        const auto assignSlot = [&](const QString& slot, const QString& button, format::MaterialModel expected) {
+            REQUIRE(world.SelectEntity(slot) == true);
+            QPushButton* assignOrNull = world.findChild<QPushButton*>(button);
+            REQUIRE(assignOrNull != nullptr);
+            assignOrNull->click();
+            REQUIRE(waitFor([&]() {
+                        const ludus::resources::SceneMaterial* materialOrNull =
+                            GetSceneObjectMaterialOrNull(source().Scene(), slot);
+                        return materialOrNull != nullptr && materialOrNull->Scattering.Model == expected;
+                    }) == true);
+        };
+        assignSlot(skinSlot, QStringLiteral("worldAssignSkin"), format::MaterialModel::Skin);
+        assignSlot(hairSlot, QStringLiteral("worldAssignHairCard"), format::MaterialModel::HairCard);
+
+        // The imported start view looks at the bust's back, away from the key and fill lights. Store the lit
+        // face as the start view through the View menu, as a user would: Front, back to Perspective, then
+        // Set start view from this view.
+        LevelWorkspace* levelOrNull = world.findChild<LevelWorkspace*>();
+        REQUIRE(levelOrNull != nullptr);
+        RenderPreview& level = levelOrNull->GetRenderPreview();
+        level.SetAxisView(EditorAxisView::Front);
+        level.SetOrthographic(false);
+        PreviewStartView front;
+        REQUIRE(level.TryDescribeStartView(front) == true);
+        REQUIRE(front.EyeWorld.Z > front.TargetWorld.Z);
+        QAction& saveStartView = levelOrNull->GetViewport().GetStartViewSaveAction();
+        REQUIRE(waitFor([&]() { return saveStartView.isVisible() == true && saveStartView.isEnabled() == true; }) ==
+                true);
+        saveStartView.trigger();
+        REQUIRE(waitFor([&]() {
+                    PreviewStartView stored;
+                    return TryParseStartView(world.Document().SceneLevel().value(QStringLiteral("camera")).toObject(),
+                                             stored) == true &&
+                           stored.EyeWorld.Z > stored.TargetWorld.Z && world.CanSave() == true;
+                }) == true);
+
+        // Save the World once and export its cooked scene (one scene.luscn with both slots) for the SDK app.
+        // A World with a scene level validates assets on a worker first, so Save returns pending; pump
+        // until the document is no longer dirty (the write completed).
+        REQUIRE(world.Save() == true);
+        REQUIRE(waitFor([&]() { return world.Dirty() == false; }) == true);
+        QString exportError;
+        const bool isExported =
+            ExportCookedWorldScene(root.path(), world.Document(), scenePath, manifestPath, exportError, &exported);
+        INFO(exportError.toStdString());
+        REQUIRE(isExported == true);
+        QFile saved(worldPath);
+        REQUIRE(saved.open(QIODevice::ReadOnly) == true);
+        savedWorld = saved.readAll();
+        world.StopPreview();
+        workspace.SetPreviewSource(nullptr);
+        rhi::Shutdown();
+    }
+
+    // Identities: the exported packet and the saved World file are the ones the manifest names.
+    QFile manifestFile(manifestPath);
+    REQUIRE(manifestFile.open(QIODevice::ReadOnly) == true);
+    QJsonObject manifest = QJsonDocument::fromJson(manifestFile.readAll()).object();
+    manifestFile.close();
+    QFile sceneFile(scenePath);
+    REQUIRE(sceneFile.open(QIODevice::ReadOnly) == true);
+    const QString sceneDigest =
+        QString::fromLatin1(QCryptographicHash::hash(sceneFile.readAll(), QCryptographicHash::Sha256).toHex());
+    CHECK(sceneDigest == manifest.value(QStringLiteral("sceneSha256")).toString());
+    QSaveFile worldCopy(output.filePath(QStringLiteral("bust.world.json")));
+    REQUIRE(worldCopy.open(QIODevice::WriteOnly) == true);
+    REQUIRE(worldCopy.write(savedWorld) == savedWorld.size());
+    REQUIRE(worldCopy.commit() == true);
+    manifest.insert(QStringLiteral("savedWorldSha256"),
+                    QString::fromLatin1(QCryptographicHash::hash(savedWorld, QCryptographicHash::Sha256).toHex()));
+    REQUIRE(exported.Definition != nullptr);
+
+    // The capture view: the SDK app's MakeCamera at the exported packet's saved camera.
+    const ludus::resources::SceneDefinition& definition = *exported.Definition;
+    renderer::ViewDescription view;
+    math::Matrix4 viewToClip;
+    math::Matrix4 worldToView;
+    math::Vector3 forward;
+    REQUIRE(math::TryPerspectiveReverseZ(definition.VerticalFov,
+                                         static_cast<float32>(CAPTURE_WIDTH) / static_cast<float32>(CAPTURE_HEIGHT),
+                                         static_cast<float32>(CAPTURE_NEAR_MICROMETRES) / MICROMETRES_PER_METRE,
+                                         static_cast<float32>(CAPTURE_FAR_MICROMETRES) / MICROMETRES_PER_METRE,
+                                         viewToClip) == math::MathStatus::Success);
+    REQUIRE(math::TryLookAt(definition.Eye, definition.Target, definition.Up, worldToView) ==
+            math::MathStatus::Success);
+    REQUIRE(math::TryNormalize(definition.Target - definition.Eye, forward) == math::MathStatus::Success);
+    view.WorldToClip = viewToClip * worldToView;
+    view.Depth = renderer::DepthConvention::ReverseZ;
+    view.CameraPosition = definition.Eye;
+    view.CameraForward = forward;
+    manifest.insert(QStringLiteral("captureView"),
+                    QJsonObject{{QStringLiteral("width"), CAPTURE_WIDTH},
+                                {QStringLiteral("height"), CAPTURE_HEIGHT},
+                                {QStringLiteral("nearMicrometres"), static_cast<qint64>(CAPTURE_NEAR_MICROMETRES)},
+                                {QStringLiteral("farMicrometres"), static_cast<qint64>(CAPTURE_FAR_MICROMETRES)},
+                                {QStringLiteral("depth"), QStringLiteral("reverse-z")}});
+
+    // Render the one exported composition through each packaged profile on a fresh viewport device.
+    DeviceFixture device(MakeViewportDeviceDescription().Storage);
+    REQUIRE(device.IsAvailable == true);
+    struct ProfileCapture final
+    {
+        const char* Feature;
+        QString PackagePath;
+    };
+    const ProfileCapture profiles[] = {
+        {"hair", QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE)},
+        {"skin", GetDefaultRenderGraphRuntime()},
+    };
+    QJsonObject captures;
+    for (const ProfileCapture& profile : profiles)
+    {
+        INFO(profile.Feature);
+        ViewportRasterSource rasterSource;
+        rasterSource.PackagePath = profile.PackagePath;
+        ViewportRasterCapture capture;
+        QSize extent;
+        QString error;
+        const bool isLoaded = capture.Load(device.Device,
+                                           device.Surface,
+                                           rasterSource,
+                                           QSize(CAPTURE_WIDTH, CAPTURE_HEIGHT),
+                                           extent,
+                                           error);
+        INFO(error.toStdString());
+        REQUIRE(isLoaded == true);
+        REQUIRE(extent == QSize(CAPTURE_WIDTH, CAPTURE_HEIGHT));
+        REQUIRE(capture.Begin(exported, view, error) == true);
         QElapsedTimer timer;
         timer.start();
-        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        ViewportRasterPhase phase = capture.GetPhase();
+        while (phase == ViewportRasterPhase::Rendering && timer.elapsed() < TIMEOUT_MILLISECONDS)
         {
             QTest::qWait(1);
-            workspace.ServicePreview();
+            phase = capture.Service();
         }
-        return isReady();
-    };
-    const auto source = [&world]() -> RenderPreview& { return world.GetRenderPreview(); };
-    REQUIRE(waitFor([&]() { return world.CanSave() == true; }) == true);
-    world.ResumePreview();
-    REQUIRE(waitFor([&]() { return source().Scene().Objects.isEmpty() == false; }) == true);
-    const auto findSlot = [&](std::string_view name) {
-        QString slot;
-        for (const PreviewObject& object : source().Scene().Objects)
-        {
-            const ludus::resources::SceneMaterial* materialOrNull =
-                GetSceneObjectMaterialOrNull(source().Scene(), object.Id);
-            if (materialOrNull != nullptr && materialOrNull->Name.View() == name)
-            {
-                slot = object.Id;
-            }
-        }
-        return slot;
-    };
-    const QString hairSlot = findSlot("Hair");
-    const QString skinSlot = findSlot("Skin");
-    REQUIRE(hairSlot.isEmpty() == false);
-    REQUIRE(skinSlot.isEmpty() == false);
-    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
-    REQUIRE(viewport != nullptr);
-    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
-    REQUIRE(graphView != nullptr);
-    RenderGraphPreview* previewOrNull = workspace.GetPreviewOrNull();
-    REQUIRE(previewOrNull != nullptr);
-    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
-
-    // Assign both typed materials, exactly as Make Hair Card / Make Skin do.
-    const auto assignSlot = [&](const QString& slot, const QString& button, format::MaterialModel expected) {
-        REQUIRE(source().FrameEntity(slot) == true);
-        REQUIRE(waitFor([&]() { return previewOrNull->HasPendingWork() == false; }) == true);
-        REQUIRE(world.SelectEntity(slot) == true);
-        QPushButton* assignOrNull = world.findChild<QPushButton*>(button);
-        REQUIRE(assignOrNull != nullptr);
-        assignOrNull->click();
-        REQUIRE(waitFor([&]() {
-                    const ludus::resources::SceneMaterial* materialOrNull =
-                        GetSceneObjectMaterialOrNull(source().Scene(), slot);
-                    return materialOrNull != nullptr && materialOrNull->Scattering.Model == expected;
-                }) == true);
-        REQUIRE(waitFor([&]() { return previewOrNull->HasPendingWork() == false; }) == true);
-    };
-    assignSlot(skinSlot, QStringLiteral("worldAssignSkin"), format::MaterialModel::Skin);
-    assignSlot(hairSlot, QStringLiteral("worldAssignHairCard"), format::MaterialModel::HairCard);
-    INFO(workspace.GetRenderProblem().toStdString());
-    CHECK(workspace.GetRenderProblem().isEmpty() == true);
-
-    // Save the World and export its cooked scene (one scene.luscn with both slots) for the SDK app.
-    // A World with a scene level validates assets on a worker first, so Save returns pending; pump
-    // until the document is no longer dirty (the write completed).
-    REQUIRE(world.Save() == true);
-    REQUIRE(waitFor([&]() { return world.Dirty() == false; }) == true);
-    QString exportError;
-    REQUIRE(ExportCookedWorldScene(root.path(), world.Document(), scenePath, manifestPath, exportError) == true);
-    INFO(exportError.toStdString());
-
-    // Select the graph the captured feature uses: forward-lit for hair, the clustered-deferred default
-    // for skin. These are the SDK app's two packaged graphs.
-    if (shouldCaptureHair == true)
-    {
-        const QString forward = QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE);
-        REQUIRE(previewOrNull->Load(forward, GetDefaultRenderGraphRuntime()) == RenderGraphPreviewLoad::Staged);
-        REQUIRE(waitFor([&]() {
-                    return previewOrNull->GetActivePackagePath() == forward && graphView->GetImage().isNull() == false;
-                }) == true);
+        INFO(capture.GetError().toStdString());
+        REQUIRE(phase == ViewportRasterPhase::Complete);
+        CHECK(capture.GetRenderedPackagePath() == profile.PackagePath);
+        CHECK(capture.WasStillAccumulating() == false);
+        const QImage image = capture.GetImage().convertToFormat(QImage::Format_RGBA8888);
+        REQUIRE(image.size() == QSize(CAPTURE_WIDTH, CAPTURE_HEIGHT));
+        const QString name = QStringLiteral("editor-%1.png").arg(QLatin1StringView(profile.Feature));
+        REQUIRE(image.save(output.filePath(name)) == true);
+        QFile package(profile.PackagePath);
+        REQUIRE(package.open(QIODevice::ReadOnly) == true);
+        captures.insert(
+            QLatin1StringView(profile.Feature),
+            QJsonObject{
+                {QStringLiteral("image"), name},
+                {QStringLiteral("package"), QFileInfo(profile.PackagePath).fileName()},
+                {QStringLiteral("packageSha256"),
+                 QString::fromLatin1(QCryptographicHash::hash(package.readAll(), QCryptographicHash::Sha256).toHex())},
+                {QStringLiteral("frames"), static_cast<qint64>(capture.GetFrameCount())}});
     }
-
-    // Capture one matched frame at the SAVED camera and the fixed extent, with no orbit/resize/light edit.
-    renderer::ViewDescription view;
-    QString viewError;
-    REQUIRE(source().DescribeGraphView(CAPTURE_WIDTH, CAPTURE_HEIGHT, view, viewError) == true);
-    INFO(viewError.toStdString());
-    previewOrNull->SetReferenceSize(QSize(CAPTURE_WIDTH, CAPTURE_HEIGHT));
-    const uint64 revision = previewOrNull->GetPresentedRevision();
-    previewOrNull->SetCamera(view, revision + 1);
-    REQUIRE(waitFor([&]() {
-                return previewOrNull->GetPresentedRevision() > revision && previewOrNull->HasPendingWork() == false &&
-                       graphView->GetImage().isNull() == false &&
-                       graphView->GetImage().size() == QSize(CAPTURE_WIDTH, CAPTURE_HEIGHT);
-            }) == true);
-    INFO(workspace.GetRenderProblem().toStdString());
-    CHECK(workspace.GetRenderProblem().isEmpty() == true);
-    if (shouldCaptureHair == true)
-    {
-        CHECK(previewOrNull->GetActivePackagePath() == QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE));
-    }
-    REQUIRE(graphView->GetImage().save(capturePath) == true);
-    world.StopPreview();
-    workspace.SetPreviewSource(nullptr);
-    rhi::Shutdown();
+    manifest.insert(QStringLiteral("captures"), captures);
+    QSaveFile updated(manifestPath);
+    REQUIRE(updated.open(QIODevice::WriteOnly) == true);
+    const QByteArray manifestBytes = QJsonDocument(manifest).toJson(QJsonDocument::Indented);
+    REQUIRE(updated.write(manifestBytes) == manifestBytes.size());
+    REQUIRE(updated.commit() == true);
 }
 
 TEST_CASE("Graph output menu offers built-in debug views drawn by the World preview",
