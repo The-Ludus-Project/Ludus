@@ -1040,7 +1040,12 @@ if(EMSCRIPTEN)
         renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
 endif()
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
-    target_sources(ludus_editor_application PRIVATE src/reference_power_view.cpp src/internal/reference_power_view.h)
+    target_sources(ludus_editor_application PRIVATE
+        src/reference_power_view.cpp
+        src/world_power_budget.cpp
+        src/world_power_budget_view.cpp
+        src/internal/reference_power_view.h
+        src/internal/world_power_budget.h)
     target_compile_definitions(ludus_editor_application PUBLIC LUDUS_EDITOR_NATIVE_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
     target_sources(ludus_editor_application PRIVATE
         src/celestial_time_lapse_window.cpp

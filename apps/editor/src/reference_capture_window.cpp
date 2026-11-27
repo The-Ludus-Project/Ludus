@@ -21,6 +21,7 @@
 #    include "internal/renderer_workspace.h"
 #    include "internal/viewport_graph_capture.h"
 #    include "internal/viewport_raster_capture.h"
+#    include "internal/world_power_budget.h"
 #endif
 
 #include <ludus/foundation/containers/array.hpp>
@@ -371,6 +372,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mImages->addTab(mDifferenceView, QStringLiteral("Difference"));
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mImages->addTab(new ReferencePowerView(mImages), QStringLiteral("Power budget"));
+    mImages->addTab(CreateWorldPowerBudgetView(preview, mImages), QStringLiteral("World power"));
 #endif
 
     mImages->setMinimumSize(PREVIEW_MINIMUM_WIDTH, PREVIEW_MINIMUM_HEIGHT);

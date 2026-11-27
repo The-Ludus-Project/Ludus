@@ -3703,6 +3703,38 @@ The audit covers the declared forward fixture. A scene with reflections, other
 absorbers or illumination from the environment needs a budget that measures
 those paths as well.
 
+#### Measure the World power budget
+
+In the native World viewport, open **Reference… → World power** and select
+**Measure World power**. The tool snapshots the World loaded in the viewport.
+It runs without a camera capture or GPU readback. Measure again after editing
+the World.
+
+This budget covers up to 256 nondegenerate triangles with untextured, opaque
+**Diffuse** materials, one- or two-sided emissive meshes, and a black
+environment. Use a small fixture and disable analytic lights, panel luminaires,
+atmosphere, and absorbing media. The geometric surface normal defines the
+diffuse hemispheres. Each side receives and reflects light independently.
+
+The tool integrates mesh emission over placed area and direction, using
+\(\pi A L_e\) for each emitting side. It estimates which surface each
+outgoing direction reaches or whether it escapes, then applies the receiving
+surface's RGB reflectance to split absorbed and reflected flux. The readout
+shows scene-linear Rec. 709-weighted flux and percentages of emission.
+
+**Remaining in transport** is flux carried past the final simulated bounce.
+**Accounting residual** is emitted minus absorbed, escaped and remaining
+flux. This checks the budget's internal accounting. **Largest sampling shift**
+reports the largest change across RGB channels and buckets between two
+independent visibility sample sets. Large shifts indicate sensitivity to
+sampling. Surface reflectance is assumed uniform and flux is redistributed
+uniformly across each triangle after a hit, so small sampling shifts can
+still accompany spatial discretization error.
+
+This is an independent diffuse transport estimate for the authored World.
+[Capture and compare](#compare-with-the-viewports-render-graph) to test a
+particular renderer's output against a reference.
+
 #### Compare with the viewport's render graph
 
 In the native editor, **Compare with the render graph** is on by default. Each

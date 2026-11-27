@@ -2,6 +2,7 @@
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/captured_image_view.h"
 #    include "internal/celestial_time_lapse_window.h"
+#    include "internal/world_power_budget.h"
 #    include <ludus/content/render_graph_format/capture.h>
 #endif
 #include "internal/light_switches.h"
@@ -1066,6 +1067,164 @@ TEST_CASE("Reference capture window explains a missing viewport device without s
 }
 
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+namespace
+{
+RenderScene MakePowerFixture()
+{
+    RenderScene scene;
+    scene.Identity = QByteArrayLiteral("power-fixture");
+    PreviewSurface emitter;
+    emitter.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    emitter.Emission = {1, 1, 1};
+    scene.Surfaces.append(emitter);
+    PreviewMesh mesh;
+    mesh.Positions = {{-0.25F, -0.25F, 0}, {0.25F, -0.25F, 0}, {-0.25F, 0.25F, 0}};
+    mesh.Indices = {0, 1, 2};
+    scene.Meshes.append(mesh);
+    PreviewObject object;
+    object.Id = QStringLiteral("emitter");
+    object.Surface = 0;
+    scene.Objects.append(object);
+    return scene;
+}
+
+void AddPowerFixtureEnclosure(RenderScene& inoutScene, math::Vector4 reflectance)
+{
+    PreviewSurface wall;
+    wall.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    wall.Tint = reflectance;
+    PreviewMesh cube;
+    cube.Positions =
+        {{-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1}, {-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}};
+    cube.Indices = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4,
+                    1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7};
+    PreviewObject object;
+    object.Id = QStringLiteral("enclosure");
+    object.Mesh = 1;
+    object.Surface = 1;
+    inoutScene.Meshes.append(cube);
+    inoutScene.Surfaces.append(wall);
+    inoutScene.Objects.append(object);
+}
+} // namespace
+
+TEST_CASE("World power classifies emission, escape, absorption and trapped transport", "[editor][world-power]")
+{
+    RenderScene scene = MakePowerFixture();
+    const float64 expected = math::kPi * 0.125;
+
+    SECTION("an unobstructed emitter escapes from both sides with transformed area")
+    {
+        scene.Objects[0].Transform.Columns[0].X = 2;
+        scene.Surfaces[0].IsEmissionTwoSided = true;
+        const WorldPowerBudget budget = MeasureWorldPower(scene);
+        REQUIRE(budget.Error.isEmpty() == true);
+        CHECK(budget.Flux.Emitted.X == Catch::Approx(4 * expected));
+        CHECK(budget.Flux.Escaped == budget.Flux.Emitted);
+        CHECK(budget.Flux.Absorbed == math::Vector3d{});
+        CHECK(budget.Flux.Unresolved == math::Vector3d{});
+        CHECK(budget.SamplingChange == 0);
+    }
+    SECTION("a closed opaque enclosure absorbs emission and its diffuse interreflection")
+    {
+        AddPowerFixtureEnclosure(scene, {0.5F, 0, 0, 1});
+        const WorldPowerBudget budget = MeasureWorldPower(scene);
+        REQUIRE(budget.Error.isEmpty() == true);
+        CHECK(budget.Flux.Emitted.X == Catch::Approx(expected));
+        CHECK(budget.Flux.Absorbed.Y == Catch::Approx(expected));
+        CHECK(budget.Flux.Absorbed.X < expected);
+        CHECK(budget.Flux.Absorbed.X > 0.9999 * expected);
+        CHECK(budget.Flux.Unresolved.X > 0);
+        CHECK(budget.Flux.Absorbed.X + budget.Flux.Unresolved.X == Catch::Approx(expected));
+        CHECK(budget.Flux.Escaped == math::Vector3d{});
+    }
+    SECTION("a closed lossless enclosure retains unresolved flux")
+    {
+        AddPowerFixtureEnclosure(scene, {1, 1, 1, 1});
+        const WorldPowerBudget budget = MeasureWorldPower(scene);
+        REQUIRE(budget.Error.isEmpty() == true);
+        CHECK(budget.Flux.Absorbed == math::Vector3d{});
+        CHECK(budget.Flux.Escaped == math::Vector3d{});
+        CHECK(budget.Flux.Unresolved.X == Catch::Approx(expected));
+    }
+    SECTION("a power-authored emitter integrates to its authored flux")
+    {
+        scene.Surfaces[0].HasEmissionPower = true;
+        scene.Surfaces[0].IsEmissionTwoSided = true;
+        scene.Surfaces[0].EmissionPower = 25;
+        const WorldPowerBudget budget = MeasureWorldPower(scene);
+        REQUIRE(budget.Error.isEmpty() == true);
+        CHECK(budget.Flux.Emitted.X == Catch::Approx(25));
+        CHECK(budget.Flux.Escaped.X == Catch::Approx(25));
+    }
+    SECTION("a flux-authored emitter needs nonzero area")
+    {
+        scene.Meshes[0].Positions[2] = scene.Meshes[0].Positions[1];
+        scene.Surfaces[0].HasEmissionPower = true;
+        scene.Surfaces[0].EmissionPower = 25;
+        CHECK(MeasureWorldPower(scene).Error.contains(QStringLiteral("nonzero world-space area")) == true);
+    }
+    SECTION("directional and other analytic lights require repair")
+    {
+        scene.AuthoredLights.Count = 1;
+        CHECK(MeasureWorldPower(scene).Error.contains(QStringLiteral("Disable analytic lights")) == true);
+    }
+    SECTION("non-diffuse transport requires repair")
+    {
+        scene.Surfaces[0].Scattering.Model = ludus::content::scene_format::MaterialModel::Dielectric;
+        CHECK(MeasureWorldPower(scene).Error.contains(QStringLiteral("emitter")) == true);
+    }
+}
+
+TEST_CASE("The World power tab measures the loaded scene and clears stale results", "[editor][world-power]")
+{
+    QTemporaryDir root;
+    REQUIRE(root.isValid() == true);
+    RenderScene scene;
+    tests::MakeLitScene(root.path(), scene);
+    REQUIRE(scene.Objects.isEmpty() == false);
+    scene.Objects.resize(1);
+    scene.AuthoredLights = {};
+    PreviewObject& object = scene.Objects[0];
+    object.Texture = -1;
+    PreviewSurface& surface = scene.Surfaces[object.Surface];
+    surface = {};
+    surface.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    surface.Emission = {1, 1, 1};
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    ReferenceCaptureWindow window(&preview);
+    QTabWidget* tabsOrNull = window.findChild<QTabWidget*>(QStringLiteral("referenceImages"));
+    REQUIRE(tabsOrNull != nullptr);
+    QWidget* tabOrNull = tabsOrNull->findChild<QWidget*>(QStringLiteral("worldPowerBudgetTab"));
+    REQUIRE(tabOrNull != nullptr);
+    tabsOrNull->setCurrentWidget(tabOrNull);
+    QPushButton* measureOrNull = tabOrNull->findChild<QPushButton*>(QStringLiteral("measureWorldPower"));
+    QLabel* statusOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("worldPowerStatus"));
+    QLabel* escapedOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("worldPowerEscaped"));
+    REQUIRE(measureOrNull != nullptr);
+    REQUIRE(statusOrNull != nullptr);
+    REQUIRE(escapedOrNull != nullptr);
+    REQUIRE(measureOrNull->isEnabled() == true);
+    measureOrNull->click();
+    constexpr int32 WAIT_MILLISECONDS = 5000;
+    REQUIRE(QTest::qWaitFor([measureOrNull]() { return measureOrNull->isEnabled(); }, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text() == QStringLiteral("Measured the loaded World."));
+    CHECK(escapedOrNull->text().contains(QStringLiteral("100.0000%")) == true);
+
+    measureOrNull->click();
+    scene.Identity = QByteArrayLiteral("world-power-edited");
+    scene.AuthoredLights.Count = 1;
+    REQUIRE(preview.SetScene(scene) == true);
+    REQUIRE(QTest::qWaitFor([measureOrNull]() { return measureOrNull->isEnabled(); }, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text() == QStringLiteral("Measure the currently loaded World."));
+    CHECK(escapedOrNull->isVisibleTo(tabOrNull) == false);
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor([measureOrNull]() { return measureOrNull->isEnabled(); }, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text().contains(QStringLiteral("Disable analytic lights")) == true);
+    CHECK(escapedOrNull->isVisibleTo(tabOrNull) == false);
+}
+
 TEST_CASE("Reference capture shows a saved power budget and its signed heatmap", "[editor][reference-power]")
 {
     namespace format = ludus::content::render_graph_format;
