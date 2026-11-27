@@ -1659,6 +1659,16 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             MANIFEST "${polygonal_light_staged}/main.lushader.json" RUNTIME_PACKAGE)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_POLYGONAL_LIGHT_FIXTURE=\"${editor_polygonal_light_RUNTIME_PACKAGE}\"")
+        # The compute ray-tracing template is the general graph of the project-material provider World (#1310): it
+        # renders the built-in control and the project's Oren-Nayar program with unchanged source.
+        set(compute_ray_source "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/compute_ray_tracing")
+        set(compute_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/compute-ray-tracing-inputs")
+        ludus_stage_render_graph_fixture("${compute_ray_source}" "${compute_ray_staged}")
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_compute_ray_tracing
+            MANIFEST "${compute_ray_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_COMPUTE_RAY_GRAPH_FIXTURE=\"${editor_compute_ray_tracing_RUNTIME_PACKAGE}\"")
+        target_sources(ludus_editor_tests PRIVATE tests/project_material_provider_tests.cpp)
         # The same sources' frame capture profile, as `render-graph capture-profile` cooks it.
         ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_progressive_ray_capture
             MANIFEST "${progressive_staged}/main.lushader.json" CAPTURE_PROFILE_PACKAGE)

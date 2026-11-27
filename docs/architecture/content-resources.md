@@ -620,8 +620,12 @@ using the v7 record width. For its tag, the two three-float vectors hold the
 lobe weights and powers. The coating-thickness field holds the declared
 fixed-dimension reflection flag as zero or one. A World or level slot can
 carry a `project_brdf` binding with the project material resource ID
-(`material`) and optional perceptual `roughness`. It takes precedence over
+(`material`) and optional perceptual `roughness`. The material is a version-1
+project BRDF or a closure program. It takes precedence over
 the inherited material and preserves the original binding and coating.
+Assembly checks every binding before it visits dependencies. A binding whose
+material is missing from the catalog, or is no longer a project material,
+fails with the material, the slot and the repair.
 Slots with the same material resource and effective roughness share a cooked
 record, including explicit roughness equal to the imported default.
 

@@ -12,6 +12,7 @@
 
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_format/luscn.h>
+#include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -2089,6 +2090,15 @@ void WriteSourceMaterialExtension(QDataStream& inoutStream, const resources::Sce
     }
     inoutStream << material.Scattering.AlphaU << material.Scattering.AlphaV << material.Scattering.CoatingEta
                 << material.Scattering.CoatingThickness;
+    // LUSCN v11 follows a program material's extension with its fixed-width program record. The bundle version
+    // already admits programs (GetMaterialModelBundleVersion), so omitting the record breaks the decode.
+    if (material.Scattering.Model == content::scene_format::MaterialModel::Program)
+    {
+        content::scene_format::MaterialProgramBytes program{};
+        content::scene_format::EncodeMaterialProgram(material.Program, program);
+        inoutStream.writeRawData(reinterpret_cast<const char*>(program.GetData()),
+                                 static_cast<int32>(program.GetSize()));
+    }
 }
 } // namespace
 

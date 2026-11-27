@@ -725,6 +725,37 @@ QString GetWorldIntroduction()
                           "Projects may supply authoring/world.schema.json for gameplay fields. Runtime binding "
                           "belongs to the game.");
 }
+/// Name the project materials that a failed scene operation identifies only by resource ID. A missing provider no
+/// longer has a catalog record to read its name from, so take the name from the last presented World, whose slots
+/// still draw that material.
+QString NameProjectMaterials(const QString& message, const QJsonObject& presentedLevel, const RenderScene& presented)
+{
+    const QString prefix = QStringLiteral("The project material ");
+    if (message.contains(prefix + QStringLiteral("material/")) == false)
+    {
+        return message;
+    }
+    QString named = message;
+    for (const QJsonValue value : presentedLevel.value(QStringLiteral("objects")).toArray())
+    {
+        const QJsonObject object = value.toObject();
+        const QString resource =
+            object.value(QStringLiteral("project_brdf")).toObject().value(QStringLiteral("material")).toString();
+        const resources::SceneMaterial* materialOrNull =
+            resource.isEmpty() == true || named.contains(prefix + resource) == false
+                ? nullptr
+                : GetSceneObjectMaterialOrNull(presented, object.value(QStringLiteral("id")).toString());
+        if (materialOrNull == nullptr)
+        {
+            continue;
+        }
+        const std::string_view name = materialOrNull->Name.View();
+        named.replace(prefix + resource,
+                      QStringLiteral("%1'%2' (%3)")
+                          .arg(prefix, QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size())), resource));
+    }
+    return named;
+}
 } // namespace
 WorldWorkspace::WorldWorkspace(QWidget* parent) : WorldWorkspace(ToolingPaths{}, parent) {}
 WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
@@ -2100,7 +2131,8 @@ void WorldWorkspace::placementValidationFinished(PlacementValidationResult resul
         }
         else
         {
-            SceneError_ = Scene_->StatusText();
+            SceneError_ =
+                NameProjectMaterials(Scene_->StatusText(), Scene_->GetPresentedLevel(), Scene_->GetPresentedScene());
             message = SceneError_;
         }
     }
@@ -2150,7 +2182,8 @@ void WorldWorkspace::SceneCompleted(bool accepted)
     const bool isConverting = conversionSource.isEmpty() == false;
     if (accepted == false)
     {
-        SceneError_ = Scene_->StatusText();
+        SceneError_ =
+            NameProjectMaterials(Scene_->StatusText(), Scene_->GetPresentedLevel(), Scene_->GetPresentedScene());
         Render();
         if (isConverting == true)
         {
@@ -3226,26 +3259,34 @@ void WorldWorkspace::addProjectBrdfControls(QFormLayout& inoutRows,
         const QJsonObject slot = entity.value(QStringLiteral("scene")).toObject();
         if (slot.isEmpty() == false)
         {
-            bindings.insert(entity.value(QStringLiteral("id")).toString(), Document_.GetMaterialResourceId(slot));
+            // A default World keys entities by UUID; GetEntityKey matches the presented object IDs either way.
+            bindings.insert(Document_.GetEntityKey(entity), Document_.GetMaterialResourceId(slot));
         }
     }
     QComboBox* choices = new QComboBox(group);
     choices->setObjectName(QStringLiteral("worldProjectBrdfChoice"));
     choices->setAccessibleName(QStringLiteral("Project BRDF"));
     const QString current = Document_.GetMaterialResourceId(placement);
+    // A project material is project-owned reflection data: a version-1 project BRDF or a closure program, such as
+    // an Oren-Nayar lobe, imported from the project's provider scene.
+    const auto isProjectMaterial = [](MaterialModel model) {
+        return model == MaterialModel::ProjectBrdf || model == MaterialModel::Program;
+    };
+    const bool isAssignedProjectMaterial =
+        materialOrNull != nullptr && isProjectMaterial(materialOrNull->Scattering.Model) == true;
     QSet<QString> listed;
     for (const PreviewObject& object : scene.Objects)
     {
         const QString identity = bindings.value(object.Id);
         if (identity.isEmpty() == true || listed.contains(identity) == true ||
-            (isProjectBrdf == true && current == identity) || object.Surface < 0 ||
+            (isAssignedProjectMaterial == true && current == identity) || object.Surface < 0 ||
             static_cast<foundation::usize>(object.Surface) >= scene.Definition->Materials.GetSize())
         {
             continue;
         }
         const resources::SceneMaterial& material =
             scene.Definition->Materials[static_cast<foundation::usize>(object.Surface)];
-        if (material.Scattering.Model != MaterialModel::ProjectBrdf)
+        if (isProjectMaterial(material.Scattering.Model) == false)
         {
             continue;
         }

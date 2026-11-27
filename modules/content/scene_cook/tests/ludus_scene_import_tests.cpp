@@ -506,6 +506,45 @@ TEST_CASE("Ludus scene import cooks the engine's grain-mix test scene", "[scene_
     CHECK(programs == 1);
 }
 
+TEST_CASE("Ludus scene import cooks the engine's Oren-Nayar provider and two-board test scenes",
+          "[scene_cook][ludus-scene][program][oren-nayar]")
+{
+    namespace format = ludus::content::scene_format;
+    BestEffortResult provider;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(GetTestScene("materials/oren-nayar-provider.luscene.json"), {}, provider, error) ==
+            true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(provider.Bundle.GetData(), provider.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Materials.GetSize() == 1);
+    const ludus::resources::SceneMaterial& material = decoded.Materials[0];
+    // The project's material keeps its project name, so World lists it under Assign Project BRDF.
+    CHECK(material.Name.View() == "project/oren-nayar");
+    CHECK(material.Scattering.Model == format::MaterialModel::Program);
+    REQUIRE(material.Program.LobeCount == 1);
+    CHECK(material.Program.Lobes[0].Operation == format::MaterialLobeOperation::OrenNayar);
+    CHECK(format::SupportsFixedDimensionReflection(material.Scattering, material.Program) == true);
+
+    BestEffortResult boards;
+    REQUIRE(
+        ImportSceneBestEffort(GetTestScene("materials/oren-nayar-two-light-boards.luscene.json"), {}, boards, error) ==
+        true);
+    ludus::resources::SceneDefinition decodedBoards;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(boards.Bundle.GetData(),
+                                                      boards.Bundle.GetSize(),
+                                                      decodedBoards) == ludus::resources::Status::Ok);
+    // Each board has its own equal built-in Diffuse material, so the cook keeps two slots; World assigns the project
+    // material to one of them.
+    CHECK(decodedBoards.Objects.GetSize() == 2);
+    REQUIRE(decodedBoards.Materials.GetSize() == 2);
+    for (const ludus::resources::SceneMaterial& board : decodedBoards.Materials)
+    {
+        CHECK(board.Scattering.Model == format::MaterialModel::Diffuse);
+        CHECK(board.Reflectance == material.Reflectance);
+    }
+}
+
 TEST_CASE("Ludus scene import cooks the engine's varnished-wood layered test scene",
           "[scene_cook][ludus-scene][program]")
 {

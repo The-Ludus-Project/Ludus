@@ -441,6 +441,10 @@ QString MaterialModelName(content::scene_format::MaterialModel model)
             return QStringLiteral("metallic_roughness");
         case content::scene_format::MaterialModel::Diffuse:
             return QStringLiteral("diffuse");
+        case content::scene_format::MaterialModel::ProjectBrdf:
+            return QStringLiteral("project_brdf");
+        case content::scene_format::MaterialModel::Program:
+            return QStringLiteral("program");
         default:
             return QStringLiteral("other");
     }

@@ -8193,6 +8193,32 @@ TEST_CASE("The grain mix test scene file compiles to the renderer's grain mix pr
     CHECK(programCount == 1);
 }
 
+TEST_CASE("The Oren-Nayar provider test scene file compiles to the renderer's Oren-Nayar program",
+          "[render-graph][scene-source][program][oren-nayar]")
+{
+    namespace format = ludus::content::scene_format;
+    scene_source::SceneSource scene;
+    ReadTestScene("materials/oren-nayar-provider.luscene.json", scene);
+    REQUIRE(scene.Materials.GetSize() == 1);
+    const scene_source::SourceMaterial& material = scene.Materials[0];
+    REQUIRE(material.Model == scene_source::SourceMaterialModel::Program);
+    // The provider World of the Editor and the standalone app draws this record; the renderer's two-light
+    // reference test qualifies the same record, so both claims are about one program.
+    format::MaterialProgramBytes compiled{};
+    format::MaterialProgramBytes expected{};
+    format::EncodeMaterialProgram(material.Program, compiled);
+    format::EncodeMaterialProgram(
+        ludus::renderer_tests::MakeOrenNayarProgram(ludus::renderer_tests::OREN_NAYAR_SIGMA_RADIANS),
+        expected);
+    usize mismatch = 0;
+    while (mismatch < compiled.GetSize() && compiled[mismatch] == expected[mismatch])
+    {
+        ++mismatch;
+    }
+    CAPTURE(mismatch);
+    CHECK(mismatch == compiled.GetSize());
+}
+
 TEST_CASE("The many-emitter test scene file matches its room",
           "[render-graph][scene-source][ris-projected-solid-angle][polygonal-light-sampling]")
 {

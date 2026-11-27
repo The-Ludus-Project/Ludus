@@ -566,6 +566,88 @@ The generated presets read `$env{LUDUS_SDK_PREFIX}`. `find_package(Ludus CONFIG
 REQUIRED)` resolves the bundled dependency metadata relative to the SDK prefix and
 performs the usual CMake version/variant compatibility checks.
 
+## Qualify a project BRDF provider
+
+A game can own a reflection model as material data: a
+[closure program](../architecture/scene-source-format.md#closure-program) in a
+scene source of its own, the **provider**. The engine's fixture is
+`tests/scenes/materials/oren-nayar-provider.luscene.json`, whose
+`project/oren-nayar` material is one qualitative
+[Oren–Nayar lobe](../architecture/renderer-systems.md#project-oren-nayar-lobe-under-renderer-owned-lights)
+with σ = 0.5 radians. Registration and cooking use the ordinary World path:
+
+1. Add the provider scene to the project and import it into the World. The
+   import registers its material in the project catalog
+   (`assets/catalog.json`).
+2. Select the slot to draw with it and choose the material by its project name
+   under **Project BRDF** in the **Material** group, then **Assign Project
+   BRDF**. The level stores a `project_brdf` binding with the material's
+   resource ID; other slots keep their own materials.
+3. Save the World. Play and the cooked-scene export cook the binding into the
+   same LUSCN record as the provider's material. A standalone app loads that
+   record and draws it through an installed graph template with unchanged
+   source, beside the engine's built-in materials.
+
+If the provider's catalog record is gone, for example because its cooked assets
+were not checked in, the World names the project material, by its project name
+and resource ID, and the slot. It tells you to import the provider scene again,
+which restores the material under the same resource ID, or to choose **Use
+Inherited Material** on the slot. The World keeps the last drawable view
+visible until a repaired World prepares. See
+[assign and edit a project BRDF](editor-workspace.md#assign-and-edit-a-project-brdf).
+
+### Run the standalone qualification
+
+The fixture is
+[`tests/sdk_consumer/project_brdf_world`](https://github.com/The-Ludus-Project/Ludus/tree/develop/tests/sdk_consumer/project_brdf_world).
+Its `verify.py` is the reproducible driver on macOS arm64 with Metal and a
+Development SDK:
+
+```bash
+out/host-tools/venv/bin/python tests/sdk_consumer/project_brdf_world/verify.py \
+    --tools "$PWD" \
+    --sdk out/install/macos-clang-development \
+    --editor out/build/macos-clang-development/apps/editor/ludus_editor_tests \
+    --evidence out/project-brdf-world
+```
+
+Add `--plan` to print the ordered commands without running them. The driver
+does the following:
+
+1. It runs the hidden Editor test `[.sdk-project-brdf-export]`. The test
+   imports `oren-nayar-two-light-boards.luscene.json`, two boards of the
+   built-in Diffuse control, and the provider. It assigns `project/oren-nayar`
+   to the **Project board** and adds two World directional lights, because
+   scene sources cannot author lights. It saves the World, reopens it and
+   exports its cooked `scene.luscn` with `ExportCookedWorldScene`. It also
+   writes the capture view (`view.bin`) and the board pixels (`labels.bin`).
+   For the first light, the second light and both together, it captures the
+   reopened World three ways at 64 × 32 and 128 samples: the CPU oracle and
+   the GPU reference, as raw linear `.luhdr` files with one scattering event
+   and centred rays, and the World graph capture through the compute
+   ray-tracing template, as `.lurgcap`. `expectations.json` holds each board's
+   mean in every capture and in the analytic direct response.
+2. It relocates the SDK with its bundled dependencies. It then builds the
+   Qt-free `project_brdf_capture` app against it, which cooks the installed
+   `compute_ray_tracing` template unchanged, and installs the app to a clean
+   package.
+3. It stages `scene.luscn` and `view.bin` beside the app. It checks that the
+   app depends on no Qt, Homebrew or checkout path and that
+   `--check-materials` finds the project material and the built-in control.
+4. It launches `./bin/project_brdf_capture --lights <mask> sdk-<set>.lurgcap`
+   from the package once per light set. Each board's mean must be within
+   3% of the analytic response and of the Editor's CPU, GPU and graph
+   captures, and both lights together must be the sum of each alone.
+5. It records the commit, SDK identity, World, scene and graph SHA-256 in
+   `provenance.json` and the comparisons in `comparison.json`. It also checks
+   that a missing `view.bin` exits with code 4 and names the file.
+
+The app links no Qt. It reads the cooked scene through `Ludus::Resources` and
+renders through `Ludus::GraphicsRenderer`'s `RenderGraphCapture`, as the
+Editor's World graph capture does. A cooked scene without the project
+material makes `--check-materials` exit with code 5 and say how to assign and
+export it again.
+
 ## Recovery and failure modes
 
 - Unresolved lock + no override → build stops with an actionable message (install
