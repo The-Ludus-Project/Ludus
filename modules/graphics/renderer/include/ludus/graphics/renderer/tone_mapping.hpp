@@ -7,7 +7,7 @@
 namespace ludus::graphics::renderer
 {
 /// Display curve applied to exposed scene-linear colour before sRGB encoding. The numeric values are the
-/// ones renderer_output.slang reads, so they are part of that shader's contract.
+/// ones renderer_output.lusl reads, so they are part of that shader's contract.
 enum class ToneCurve : ludus::foundation::uint8
 {
     /// Per-channel x / (1 + x). Simple and monotone, but shifts hue and desaturates bright saturated colours.

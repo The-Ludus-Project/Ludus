@@ -431,8 +431,8 @@ compressed-content quality require separate qualification.
 ## Implemented L4: bounded forward lighting
 
 L4 adds [lighting.hpp](../../modules/graphics/renderer/include/ludus/graphics/renderer/lighting.hpp)
-and three installed Slang sources: `renderer_lit.slang`, `renderer_shadow.slang`,
-and `renderer_output.slang`. It preserves L0–L3 callers and immutable version
+and three installed shader sources: `renderer_lit.slang`, `renderer_shadow.lusl`,
+and `renderer_output.lusl`. It preserves L0–L3 callers and immutable version
 publication. Calls are serialized on the renderer/device owner thread; prepare,
 prewarm and poll between acquired frames, then draw only ready resources.
 Failure preserves caller outputs unless a documented accepted candidate is pending

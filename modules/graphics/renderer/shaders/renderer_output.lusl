@@ -1,0 +1,323 @@
+// Explicit scene-linear -> display-linear tone curve (Reinhard or Khronos PBR Neutral) -> optional sRGB encoding.
+// Parameters.Output: exposure, curve (0 none, 1 Reinhard, 2 PBR Neutral; ToneCurve in tone_mapping.hpp),
+// sRGB encode flag, flags: bit 0 is the backdrop, the bits above it the SpatialAntialiasing mode (lighting.hpp):
+// 0 off, 1 Fast, 2 Balanced. flags = backdrop + 2 * mode, a small integer that a float holds exactly.
+// With the backdrop bit the scene must have been cleared to alpha zero: every pixel the scene left uncovered shows a
+// vertical gradient under the premultiplied scene colour, in display space, so the tokens appear exactly.
+// UI blends into a linear display intermediate before the final encode-only pass.
+// Port of renderer_output.slang (LUSL L5d wave 2); the forward profile's output wrapper calls VertexMain and
+// FragmentMain with its Input and Varying.
+#include "math.luslh"
+
+extern slang "display_tone_mapping.slang"
+{
+    static const uint32 DISPLAY_CURVE_REINHARD;
+    static const float32 PBR_NEUTRAL_FRESNEL;
+    static const float32 PBR_NEUTRAL_START;
+    float32x3 ApplyDisplayCurve(in float32x3 sceneColor, in float32 exposure, in uint32 curve);
+    float32x3 EncodeSrgb(in float32x3 color);
+};
+
+struct Parameters
+{
+    float32x4 Output;
+};
+
+ConstantBuffer<Parameters> parameters;
+Texture2D<float32x4> image;
+SamplerState imageSampler;
+
+// Backdrop endpoints in sRGB, the surface.viewportTop and surface.viewport token colours (config/design-tokens.json;
+// scripts/python/test_design_tokens.py keeps them equal).
+static const float32x3 BACKDROP_TOP_SRGB = float32x3(15.0, 21.0, 27.0) / 255.0;
+static const float32x3 BACKDROP_BOTTOM_SRGB = float32x3(9.0, 12.0, 15.0) / 255.0;
+static const float32 SRGB_LINEAR_THRESHOLD = 0.04045;
+static const float32 SRGB_LINEAR_SLOPE = 12.92;
+static const float32 SRGB_OFFSET = 0.055;
+static const float32 SRGB_GAMMA = 2.4;
+
+float32x3 SrgbToLinear(in float32x3 color)
+{
+    return float32x3(color.x <= SRGB_LINEAR_THRESHOLD ? color.x / SRGB_LINEAR_SLOPE
+                     : pow((color.x + SRGB_OFFSET) / (1.0 + SRGB_OFFSET), SRGB_GAMMA),
+                     color.y <= SRGB_LINEAR_THRESHOLD ? color.y / SRGB_LINEAR_SLOPE
+                     : pow((color.y + SRGB_OFFSET) / (1.0 + SRGB_OFFSET), SRGB_GAMMA),
+                     color.z <= SRGB_LINEAR_THRESHOLD ? color.z / SRGB_LINEAR_SLOPE
+                     : pow((color.z + SRGB_OFFSET) / (1.0 + SRGB_OFFSET), SRGB_GAMMA));
+}
+
+struct Input
+{
+    float32x4 PositionUvClip;
+};
+
+struct Varying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x2 TexcoordUv;
+};
+
+static const float32x3 LUMA_WEIGHTS = float32x3(0.299, 0.587, 0.114);
+static const int32 ANTIALIASING_FAST = 1;
+static const int32 ANTIALIASING_BALANCED = 2;
+static const float32 FLAG_ROUNDING = 0.5;
+// Edge search distances along the edge, in pixels, nearest first. Fast walks the first FAST_SEARCH_STEPS of them.
+static const int32 SEARCH_STEP_COUNT = 8;
+static const int32 FAST_SEARCH_STEPS = 4;
+
+// The search distance of step `index`: 1, 2, 3, 4, 6, 8, 12 and 16 pixels. LUSL has no constant array initializer,
+// so the table is a switch.
+int32 GetSearchOffset(in int32 index)
+{
+    switch (index)
+    {
+        case 0:
+            return 1;
+        case 1:
+            return 2;
+        case 2:
+            return 3;
+        case 3:
+            return 4;
+        case 4:
+            return 6;
+        case 5:
+            return 8;
+        case 6:
+            return 12;
+        default:
+            return 16;
+    }
+}
+// FXAA 3.11 tuning (Timothy Lottes, NVIDIA): a pixel is an edge when its local contrast exceeds
+// max(MINIMUM, THRESHOLD * brightest neighbour); SUBPIXEL scales how far isolated bright pixels blend away.
+static const float32 FAST_EDGE_THRESHOLD = 1.0 / 6.0;
+static const float32 FAST_EDGE_MINIMUM = 1.0 / 12.0;
+static const float32 FAST_SUBPIXEL = 0.5;
+static const float32 BALANCED_EDGE_THRESHOLD = 1.0 / 8.0;
+static const float32 BALANCED_EDGE_MINIMUM = 1.0 / 32.0;
+static const float32 BALANCED_SUBPIXEL = 0.75;
+static const float32 SUBPIXEL_AVERAGE_WEIGHT = 1.0 / 12.0;
+static const float32 GRADIENT_SCALE = 0.25;
+
+// Exposure and tone curve of a scene colour; saturated when the output encodes to sRGB.
+float32x3 ToneMapColor(in float32x3 sceneColor)
+{
+    float32x3 color =
+        ApplyDisplayCurve(sceneColor, parameters.Output.x, uint32(parameters.Output.y + FLAG_ROUNDING));
+    return parameters.Output.z > 0.5 ? saturate(color) : color;
+}
+
+float32x3 EncodeColor(in float32x3 color)
+{
+    return parameters.Output.z > 0.5 ? EncodeSrgb(color) : color;
+}
+
+float32x3 GetBackdrop(in float32 uvY)
+{
+    float32x3 backdrop = lerp(BACKDROP_TOP_SRGB, BACKDROP_BOTTOM_SRGB, uvY);
+    return parameters.Output.z > 0.5 ? backdrop : SrgbToLinear(backdrop);
+}
+
+// The display helpers' inlining, as raster_bindings.slang's LUDUS_SHADER_NOINLINE_WHEN_SUPPORTED gives the Slang
+// original: [noinline] everywhere but Direct3D 12, whose DXC SM 6.0 validator rejects vector IR left across noinline
+// call boundaries in an entry-point shader. SPIR-V keeps it as DontInline. The Metal build restores [noinline] only
+// where the source line spells it (compile_shader.py, restore_metal_noinline), so behind this macro the Metal
+// compiler inlines these helpers into the edge search, as it does for the original.
+#if LUDUS_DXIL == 0
+#    define DISPLAY_HELPER_NOINLINE [noinline]
+#else
+#    define DISPLAY_HELPER_NOINLINE
+#endif
+// Display colour of one scene texel under the output parameters, with the backdrop composited when it is on.
+DISPLAY_HELPER_NOINLINE float32x3 DisplayColor(in float32x4 scene, in float32 uvY, in bool hasBackdrop)
+{
+    float32x3 color = EncodeColor(ToneMapColor(scene.xyz));
+    if (hasBackdrop == true)
+    {
+        color += GetBackdrop(uvY) * (1.0 - saturate(scene.w));
+    }
+    return color;
+}
+
+// The tone curve applied to a grey value: ApplyPbrNeutral and the Reinhard branch of ToneMapColor for r = g = b, in
+// one scalar. Edge detection only needs the display brightness, so it skips the three-channel curve.
+DISPLAY_HELPER_NOINLINE float32 ToneMapGrey(in float32 grey)
+{
+    float32 value = grey * parameters.Output.x;
+    bool isFinite = IsFiniteBits(value);
+    float32 finiteValue = select(isFinite == true, value, 0.0);
+    float32 shadow = min(finiteValue, 2.0 * PBR_NEUTRAL_FRESNEL);
+    float32 neutral = finiteValue - (shadow - shadow * shadow / (4.0 * PBR_NEUTRAL_FRESNEL));
+    float32 headroom = 1.0 - PBR_NEUTRAL_START;
+    // Evaluate the toe and shoulder without branch regions inside the repeated edge-search samples.
+    neutral =
+        min(neutral, 1.0 - headroom * headroom / (max(neutral, PBR_NEUTRAL_START) + 1.0 - 2.0 * PBR_NEUTRAL_START));
+    neutral = select(isFinite == true, neutral, 1.0);
+    float32 reinhard = value / (1.0 + value);
+    float32 result = select(parameters.Output.y > float32(DISPLAY_CURVE_REINHARD) + FLAG_ROUNDING,
+                            neutral,
+                            select(parameters.Output.y > FLAG_ROUNDING, reinhard, value));
+    return select(parameters.Output.z > FLAG_ROUNDING, saturate(result), result);
+}
+
+// Perceptual brightness for edge detection: the tone-mapped scene brightness on a square-root curve in place of the
+// sRGB encode, so the five-load rejection test of a flat pixel costs no powers. The backdrop is already encoded.
+float32 ApproximateLuma(in float32x4 scene, in float32 uvY, in bool hasBackdrop)
+{
+    float32 luma = sqrt(max(ToneMapGrey(dot(max(scene.xyz, float32x3(0.0)), LUMA_WEIGHTS)), 0.0));
+    if (hasBackdrop == true)
+    {
+        luma += dot(lerp(BACKDROP_TOP_SRGB, BACKDROP_BOTTOM_SRGB, uvY), LUMA_WEIGHTS) * (1.0 - saturate(scene.w));
+    }
+    return luma;
+}
+
+int32x2 ClampPixel(in int32x2 pixel, in int32x2 size)
+{
+    return clamp(pixel, int32x2(0), size - 1);
+}
+
+DISPLAY_HELPER_NOINLINE float32 LoadLuma(in int32x2 pixel, in int32x2 size, in bool hasBackdrop)
+{
+    int32x2 clamped = ClampPixel(pixel, size);
+    return ApproximateLuma(
+        image.Load(int32x3(clamped, 0)), (float32(clamped.y) + 0.5) / float32(size.y), hasBackdrop);
+}
+
+float32x3 LoadColor(in int32x2 pixel, in int32x2 size, in bool hasBackdrop)
+{
+    int32x2 clamped = ClampPixel(pixel, size);
+    return DisplayColor(image.Load(int32x3(clamped, 0)), (float32(clamped.y) + 0.5) / float32(size.y), hasBackdrop);
+}
+
+// FXAA 3.11 on the display colour: edge detection on the centre and its four neighbours, then the corners for the
+// edge's orientation, a walk along the edge to both ends, and a blend toward the neighbour across the edge. The
+// taps are exact texel loads, so the pair average that FXAA reads with a half-pixel bilinear tap is two loads.
+float32x3 AntialiasedColor(in int32x2 pixel, in int32x2 size, in bool hasBackdrop, in int32 mode)
+{
+    bool isBalanced = mode == ANTIALIASING_BALANCED;
+    float32 edgeThreshold = isBalanced == true ? BALANCED_EDGE_THRESHOLD : FAST_EDGE_THRESHOLD;
+    float32 edgeMinimum = isBalanced == true ? BALANCED_EDGE_MINIMUM : FAST_EDGE_MINIMUM;
+    float32 subpixel = isBalanced == true ? BALANCED_SUBPIXEL : FAST_SUBPIXEL;
+    int32 stepCount = isBalanced == true ? SEARCH_STEP_COUNT : FAST_SEARCH_STEPS;
+    float32x4 sceneCentre = image.Load(int32x3(pixel, 0));
+    float32 uvCentreY = (float32(pixel.y) + 0.5) / float32(size.y);
+    float32 lumaCentre = ApproximateLuma(sceneCentre, uvCentreY, hasBackdrop);
+    float32 lumaNorth = LoadLuma(pixel + int32x2(0, -1), size, hasBackdrop);
+    float32 lumaSouth = LoadLuma(pixel + int32x2(0, 1), size, hasBackdrop);
+    float32 lumaWest = LoadLuma(pixel + int32x2(-1, 0), size, hasBackdrop);
+    float32 lumaEast = LoadLuma(pixel + int32x2(1, 0), size, hasBackdrop);
+    float32 lumaMinimum = min(lumaCentre, min(min(lumaNorth, lumaSouth), min(lumaWest, lumaEast)));
+    float32 lumaMaximum = max(lumaCentre, max(max(lumaNorth, lumaSouth), max(lumaWest, lumaEast)));
+    float32 lumaRange = lumaMaximum - lumaMinimum;
+    if (lumaRange < max(edgeMinimum, lumaMaximum * edgeThreshold))
+    {
+        return DisplayColor(sceneCentre, uvCentreY, hasBackdrop);
+    }
+    float32 lumaNorthWest = LoadLuma(pixel + int32x2(-1, -1), size, hasBackdrop);
+    float32 lumaNorthEast = LoadLuma(pixel + int32x2(1, -1), size, hasBackdrop);
+    float32 lumaSouthWest = LoadLuma(pixel + int32x2(-1, 1), size, hasBackdrop);
+    float32 lumaSouthEast = LoadLuma(pixel + int32x2(1, 1), size, hasBackdrop);
+    float32 lumaNorthSouth = lumaNorth + lumaSouth;
+    float32 lumaWestEast = lumaWest + lumaEast;
+    float32 lumaWestCorners = lumaNorthWest + lumaSouthWest;
+    float32 lumaEastCorners = lumaNorthEast + lumaSouthEast;
+    float32 lumaNorthCorners = lumaNorthWest + lumaNorthEast;
+    float32 lumaSouthCorners = lumaSouthWest + lumaSouthEast;
+    float32 edgeHorizontal = abs(lumaWestCorners - 2.0 * lumaWest) + abs(lumaNorthSouth - 2.0 * lumaCentre) * 2.0 +
+        abs(lumaEastCorners - 2.0 * lumaEast);
+    float32 edgeVertical = abs(lumaNorthCorners - 2.0 * lumaNorth) + abs(lumaWestEast - 2.0 * lumaCentre) * 2.0 +
+        abs(lumaSouthCorners - 2.0 * lumaSouth);
+    bool isHorizontal = edgeHorizontal >= edgeVertical;
+    // The two neighbours across the edge, and the direction that walks along it.
+    float32 lumaBefore = isHorizontal == true ? lumaNorth : lumaWest;
+    float32 lumaAfter = isHorizontal == true ? lumaSouth : lumaEast;
+    int32x2 alongEdge = isHorizontal == true ? int32x2(1, 0) : int32x2(0, 1);
+    float32 gradientBefore = lumaBefore - lumaCentre;
+    float32 gradientAfter = lumaAfter - lumaCentre;
+    bool isBeforeSteeper = abs(gradientBefore) >= abs(gradientAfter);
+    float32 gradientScaled = max(abs(gradientBefore), abs(gradientAfter)) * GRADIENT_SCALE;
+    float32 lumaAcross = isBeforeSteeper == true ? lumaBefore : lumaAfter;
+    int32 acrossSign = isBeforeSteeper == true ? -1 : 1;
+    int32x2 acrossEdge = isHorizontal == true ? int32x2(0, acrossSign) : int32x2(acrossSign, 0);
+    float32 lumaPairAverage = 0.5 * (lumaAcross + lumaCentre);
+    bool isCentreBelowAverage = lumaCentre - lumaPairAverage < 0.0;
+    // Walk both ways along the edge until the pair's average departs from the first pair's by a quarter gradient.
+    float32 distanceBefore = float32(GetSearchOffset(stepCount - 1));
+    float32 distanceAfter = distanceBefore;
+    float32 lumaEndBefore = 0.0;
+    float32 lumaEndAfter = 0.0;
+    bool isBeforeDone = false;
+    bool isAfterDone = false;
+    for (int32 searchIndex = 0; searchIndex < stepCount; ++searchIndex)
+    {
+        int32x2 offset = alongEdge * GetSearchOffset(searchIndex);
+        if (isBeforeDone == false)
+        {
+            int32x2 pixelBefore = pixel - offset;
+            lumaEndBefore = 0.5 * (LoadLuma(pixelBefore, size, hasBackdrop) +
+                                   LoadLuma(pixelBefore + acrossEdge, size, hasBackdrop)) -
+                lumaPairAverage;
+            isBeforeDone = abs(lumaEndBefore) >= gradientScaled;
+            distanceBefore = isBeforeDone == true ? float32(GetSearchOffset(searchIndex)) : distanceBefore;
+        }
+        if (isAfterDone == false)
+        {
+            int32x2 pixelAfter = pixel + offset;
+            lumaEndAfter = 0.5 * (LoadLuma(pixelAfter, size, hasBackdrop) +
+                                  LoadLuma(pixelAfter + acrossEdge, size, hasBackdrop)) -
+                lumaPairAverage;
+            isAfterDone = abs(lumaEndAfter) >= gradientScaled;
+            distanceAfter = isAfterDone == true ? float32(GetSearchOffset(searchIndex)) : distanceAfter;
+        }
+        if (isBeforeDone == true && isAfterDone == true)
+        {
+            break;
+        }
+    }
+    bool isBeforeNearer = distanceBefore < distanceAfter;
+    float32 lumaEnd = isBeforeNearer == true ? lumaEndBefore : lumaEndAfter;
+    float32 nearerDistance = isBeforeNearer == true ? distanceBefore : distanceAfter;
+    float32 spanLength = distanceBefore + distanceAfter;
+    // A span whose nearer end does not step to the other side of the pair average is not a real edge end.
+    bool isEndValid = (isCentreBelowAverage == (lumaEnd < 0.0)) == false;
+    float32 edgeBlend = isEndValid == true ? 0.5 - nearerDistance / spanLength : 0.0;
+    // Isolated bright or dark pixels have no edge to walk and blend by how far they depart from their ring.
+    float32 lumaRing = (lumaNorthSouth + lumaWestEast) * 2.0 + lumaWestCorners + lumaEastCorners;
+    float32 subpixelContrast = saturate(abs(lumaRing * SUBPIXEL_AVERAGE_WEIGHT - lumaCentre) / lumaRange);
+    float32 subpixelBlend = (3.0 - 2.0 * subpixelContrast) * subpixelContrast * subpixelContrast;
+    subpixelBlend = subpixelBlend * subpixelBlend * subpixel;
+    float32 blend = saturate(max(edgeBlend, subpixelBlend));
+    return lerp(DisplayColor(sceneCentre, uvCentreY, hasBackdrop),
+                LoadColor(pixel + acrossEdge, size, hasBackdrop),
+                blend);
+}
+
+[stage(vertex)]
+Varying VertexMain(in Input input)
+{
+    Varying output =
+    {
+        .PositionClip = float32x4(input.PositionUvClip.xy, 0.0, 1.0),
+        .TexcoordUv = input.PositionUvClip.zw,
+    };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in Varying input)
+{
+    int32 flags = int32(parameters.Output.w + FLAG_ROUNDING);
+    bool hasBackdrop = (flags & 1) != 0;
+    int32 antialiasing = flags >> 1;
+    if (antialiasing == ANTIALIASING_FAST || antialiasing == ANTIALIASING_BALANCED)
+    {
+        uint32x2 dimensions = image.GetDimensions();
+        int32x2 size = int32x2(int32(dimensions.x), int32(dimensions.y));
+        int32x2 pixel = clamp(int32x2(input.TexcoordUv * float32x2(size)), int32x2(0), size - 1);
+        return float32x4(AntialiasedColor(pixel, size, hasBackdrop, antialiasing), 1.0);
+    }
+    float32x4 scene = image.SampleLevel(imageSampler, input.TexcoordUv, 0.0);
+    return float32x4(DisplayColor(scene, input.TexcoordUv.y, hasBackdrop), 1.0);
+}

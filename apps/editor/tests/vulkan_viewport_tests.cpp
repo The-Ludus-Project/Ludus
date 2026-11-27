@@ -433,9 +433,9 @@ TEST_CASE("Live shader errors draw inside the shared Qt Quick viewport",
     toggle->click();
     REQUIRE(QTest::qWaitFor([&reload]() { return reload->GetState() == PreviewShaderReloadState::Idle; },
                             SHADER_TIMEOUT_MILLISECONDS) == true);
-    const QString flat = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_flat.slang"));
+    const QString flat = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_flat.lusl"));
     const QByteArray original = tests::ReadText(flat);
-    tests::WriteText(flat, original + "\nfloat4 BrokenLiveShader() { return undefinedLiveShaderName; }\n");
+    tests::WriteText(flat, original + "\nfloat32x4 BrokenLiveShader()\n{\n    return undefinedLiveShaderName;\n}\n");
     REQUIRE(QTest::qWaitFor([&reload]() { return reload->HasError() == true; }, SHADER_TIMEOUT_MILLISECONDS) == true);
     INFO(reload->GetStatusText().toStdString());
     CHECK(reload->GetStatusText().contains(QDir::toNativeSeparators(flat) + QLatin1Char(':')) == true);

@@ -1,0 +1,19 @@
+// Preserve an authored prepass's exact depth in the G-buffer's private depth attachment. RHI attachment ownership
+// forbids sampling a bound color owner. Port of renderer_deferred_depth.slang (LUSL L5d wave 2).
+#include "renderer_deferred_fullscreen.luslh"
+
+Texture2D<float32> sourceDepthTexture;
+
+struct DeferredDepthOutput
+{
+    float32 Depth : Depth;
+};
+
+// Selected by the recipe's explicit entry and stage, like most renderer recipes. Graph builds call it from their
+// generated rgEntry; with a [stage(fragment)] attribute here as well, the shader worker's Slang 2026.1.2 never
+// finished its entry-point parameter transform for that stage.
+DeferredDepthOutput DeferredDepthMain(in DeferredVarying value)
+{
+    DeferredDepthOutput output = { .Depth = sourceDepthTexture.Load(int32x3(int32x2(value.PositionClip.xy), 0)) };
+    return output;
+}

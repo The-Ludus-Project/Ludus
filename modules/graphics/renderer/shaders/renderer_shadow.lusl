@@ -1,0 +1,50 @@
+// Portable shadow depth storage: 16-bit depth encoded in linear RGBA8 (renderer_shadow_depth.slang). This avoids
+// assuming sampled depth/comparison-sampler support in the R1 profile. Port of renderer_shadow.slang (LUSL L5d
+// wave 2); the forward profile's flat shadow wrapper calls FragmentMain with its Varying.
+extern slang "renderer_shadow_depth.slang"
+{
+    float32 SelectShadowDepth(in float32 rasterizedDepth, in float32 depthTag, in float32 linearDepth);
+    float32 LinearizeShadowDepth(in float32 rasterizedDepth, in float32x2 nearRange);
+    float32x4 EncodeShadowDepth(in float32 depth);
+};
+
+struct Input
+{
+    float32x3 PositionMesh;
+    float32x4 MeshToClipRow0;
+    float32x4 MeshToClipRow1;
+    float32x4 MeshToClipRow2;
+    float32x4 MeshToClipRow3;
+    float32x4 Color;
+};
+
+// The renderer pairs this fragment with its flat vertex shader (renderer_flat.lusl), so the varyings match its
+// position and instance colour.
+struct Varying
+{
+    float32x4 PositionClip : ClipPosition;
+    // The instance colour: a mesh-light cube face's depth tag, near distance and range (SelectShadowDepth).
+    float32x4 Color;
+};
+
+[stage(vertex)]
+Varying VertexMain(in Input input)
+{
+    float32x4 positionMesh = float32x4(input.PositionMesh, 1.0);
+    Varying output =
+    {
+        .PositionClip = float32x4(dot(input.MeshToClipRow0, positionMesh),
+                                  dot(input.MeshToClipRow1, positionMesh),
+                                  dot(input.MeshToClipRow2, positionMesh),
+                                  dot(input.MeshToClipRow3, positionMesh)),
+        .Color = input.Color,
+    };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in Varying input)
+{
+    float32 depth = input.PositionClip.z;
+    return EncodeShadowDepth(SelectShadowDepth(depth, input.Color.x, LinearizeShadowDepth(depth, input.Color.yz)));
+}

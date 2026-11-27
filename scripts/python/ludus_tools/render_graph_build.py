@@ -1358,7 +1358,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                 closures[program_identity] = ray.capture_program_closure(programs[program_identity], snapshot,
                                                                         sys.modules[__name__])
     has_surface_charts = any(operation.get('baked_lighting', False) for plan in plans for operation in plan['passes'])
-    programs = forward.expand(programs, techniques, snapshot, helper, sys.modules[__name__], has_surface_charts)
+    programs = forward.expand(programs, techniques, snapshot, helper, sys.modules[__name__], has_surface_charts,
+                              luslc=luslc, lusl_style=lusl_style)
     for program_identity, program in programs.items():
         if 'forward_wrapper' in program:
             closures[program_identity] = forward.capture_closure(program, snapshot)

@@ -2643,7 +2643,7 @@ TEST_CASE("Native World-demo World renders its game extraction in the shared vie
     QPoint playerPixel;
     REQUIRE(locate(before, playerPixel));
     // The player's linear colour through the Renderer's display transform: an 8-bit linear target,
-    // the viewport's tone curve (PBR Neutral), then sRGB (renderer_output.slang). The player presents the same codes.
+    // the viewport's tone curve (PBR Neutral), then sRGB (renderer_output.lusl). The player presents the same codes.
     const QColor drawn = before.pixelColor(playerPixel);
     math::Vector4 playerColor{};
     for (const PreviewObject& object : preview.Scene().Objects)

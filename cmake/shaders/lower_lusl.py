@@ -6,13 +6,13 @@ Slang source. The LUSL compiler assigns binding slots and vertex input locations
 C++ constants in <name>_slots.h, so host code never spells a slot number. It also writes a
 depfile of every file the lowering may read, found by the same lexical scan luslc uses.
 
-compile_shader.py defines LUDUS_GLSL_ES=1 only for the GLSL ES (WebGL 2) artifact. A LUSL
-preprocessor reads that macro before Slang sees it, so a source that tests it is lowered once with
-LUDUS_GLSL_ES=0 and once with =1; the module selects the lowering by the macro's value. Both
-lowerings must assign the same slots and locations, because host code binds one slot table.
-ludus_compile_shader forwards its DEFINES as --define, so the LUSL preprocessor sees them as
-compile_shader.py's Slang preprocessor sees them for a Slang source. LUDUS_GLSL_ES is the target's
-macro and cannot be defined.
+compile_shader.py defines LUDUS_GLSL_ES=1 only for the GLSL ES (WebGL 2) artifact and LUDUS_DXIL=1 only
+for the Direct3D 12 artifacts. A LUSL preprocessor reads those macros before Slang sees them, so a source that
+tests one is lowered once with the macro 0 and once with 1, for every combination of the macros it tests; the
+module selects the lowering by the macros' values. Every lowering must assign the same slots and locations,
+because host code binds one slot table. ludus_compile_shader forwards its DEFINES as --define, so the LUSL
+preprocessor sees them as compile_shader.py's Slang preprocessor sees them for a Slang source. The target macros
+belong to the driver and cannot be defined.
 See docs/modules/tooling/shader-language.md, "Standalone shaders".
 """
 import argparse
@@ -29,8 +29,10 @@ TIMEOUT_SECONDS = 120
 # Paths LUSL names: `#include "x"` and `extern slang "x"`. The scan is lexical and conservative.
 NAMED_PATH = re.compile(r'(?:#[ \t]*include|\bextern[ \t\r\n]+slang)[ \t\r\n]*"([^"\n]+)"')
 LANGUAGE_FILES = ('.lusl', '.luslh')
-# Target macros that compile_shader.py defines for one artifact only (its GLSL ES variant).
+# Target macros that compile_shader.py defines for some artifacts only: its GLSL ES variant and its DXIL stages.
 GLSL_ES_MACRO = 'LUDUS_GLSL_ES'
+DXIL_MACRO = 'LUDUS_DXIL'
+TARGET_MACROS = (GLSL_ES_MACRO, DXIL_MACRO)
 IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_.]*\Z')
 MACRO_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
 
@@ -173,16 +175,16 @@ def combine_variants(default, variant, macro):
 def parse_defines(values):
     """ludus_compile_shader DEFINES as luslc `--define NAME=VALUE` arguments.
 
-    A bare NAME means NAME=1, as Slang's -D gives it for a Slang source. LUDUS_GLSL_ES belongs to
-    the driver, which defines it for the GLSL ES artifact only.
+    A bare NAME means NAME=1, as Slang's -D gives it for a Slang source. The target macros belong to
+    the driver, which defines each for some artifacts only.
     """
     defines = []
     for define in values:
         macro, separator, value = define.partition('=')
         if MACRO_NAME.match(macro) is None:
             fail(f"DEFINES entry '{define}' is not NAME or NAME=VALUE")
-        if macro == GLSL_ES_MACRO:
-            fail(f'{GLSL_ES_MACRO} is defined by the shader driver for the GLSL ES artifact only; '
+        if macro in TARGET_MACROS:
+            fail(f'{macro} is defined by the shader driver for its target\'s artifacts only; '
                  'remove it from DEFINES')
         defines.append(f'{macro}={value}' if separator else f'{macro}=1')
     return defines
@@ -226,21 +228,27 @@ def main():
     with tempfile.TemporaryDirectory(prefix='ludus-lusl-') as directory:
         snapshot = Path(directory) / 'snapshot'
         directories, files = stage_snapshot(root, args.source, args.include_directory, snapshot)
-        variants = [defines]
-        if references_macro(files, GLSL_ES_MACRO):
-            variants = [[*defines, f'{GLSL_ES_MACRO}=0'], [*defines, f'{GLSL_ES_MACRO}=1']]
-        lowered = []
-        for index, variant in enumerate(variants):
-            work = Path(directory) / f'variant{index}'
-            work.mkdir()
-            text, report = lower(args.luslc, snapshot, directories, args.source, args.style, variant, work)
-            lowered.append((text, slot_header(args.name, report)))
-        generated, slots = lowered[0]
-        if len(lowered) > 1:
-            if lowered[1][1] != slots:
-                fail(f'{args.source}: {GLSL_ES_MACRO} changes the binding slots or vertex input locations; '
-                     f'keep resource and input declarations outside #if {GLSL_ES_MACRO}')
-            generated = combine_variants(generated, lowered[1][0], GLSL_ES_MACRO)
+        macros = [macro for macro in TARGET_MACROS if references_macro(files, macro)]
+        variants = []
+
+        def lower_variants(variant_defines, remaining):
+            """The module for every value of `remaining` macros, and its slot table."""
+            if not remaining:
+                work = Path(directory) / f'variant{len(variants)}'
+                work.mkdir()
+                variants.append(work)
+                text, report = lower(args.luslc, snapshot, directories, args.source, args.style, variant_defines,
+                                     work)
+                return text, slot_header(args.name, report)
+            macro = remaining[0]
+            default, slots = lower_variants([*variant_defines, f'{macro}=0'], remaining[1:])
+            variant, variant_slots = lower_variants([*variant_defines, f'{macro}=1'], remaining[1:])
+            if variant_slots != slots:
+                fail(f'{args.source}: {macro} changes the binding slots or vertex input locations; '
+                     f'keep resource and input declarations outside #if {macro}')
+            return combine_variants(default, variant, macro), slots
+
+        generated, slots = lower_variants(defines, macros)
         generated = remap_slang_includes(generated, files, Path(args.output).parent)
     publish(Path(args.slots), slots)
     inputs = ' '.join(depfile_path(path) for path in sorted(set(files.values())))

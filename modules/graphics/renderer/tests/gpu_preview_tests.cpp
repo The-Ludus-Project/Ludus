@@ -1,4 +1,8 @@
+#include "baseline_renderer_flat.h"
+#include "baseline_renderer_output.h"
+#include "baseline_renderer_shadow.h"
 #include "l6_scene.h"
+#include "recipe_ab_timing.h"
 #include "renderer_authored.h"
 #include "renderer_authored_shadow.h"
 #include "renderer_clustered_surface.h"
@@ -1483,4 +1487,251 @@ TEST_CASE("Opaque ray optimization preserves masked candidates in mixed scenes",
     CHECK(pixel[2] == 0);
     REQUIRE(renderer.Release(frame) == S::Ready);
     REQUIRE(renderer.Release(preview) == S::Ready);
+}
+
+namespace
+{
+using namespace ludus::graphics::renderer::testing;
+/// The flat, output and shadow programs a renderer initializes with: the LUSL recipes or their Slang originals.
+struct OutputPrograms final
+{
+    rhi::RasterShaderDescription FlatVertex{};
+    rhi::RasterShaderDescription FlatFragment{};
+    rhi::RasterShaderDescription OutputVertex{};
+    rhi::RasterShaderDescription OutputFragment{};
+    rhi::RasterShaderDescription ShadowFragment{};
+};
+
+OutputPrograms GetLuslOutputPrograms() noexcept
+{
+    return {shaders::renderer_flat::Vertex(),
+            shaders::renderer_flat::Fragment(),
+            shaders::renderer_output::Vertex(),
+            shaders::renderer_output::Fragment(),
+            shaders::renderer_shadow::Fragment()};
+}
+
+OutputPrograms GetSlangOutputPrograms() noexcept
+{
+    return {shaders::baseline_renderer_flat::Vertex(),
+            shaders::baseline_renderer_flat::Fragment(),
+            shaders::baseline_renderer_output::Vertex(),
+            shaders::baseline_renderer_output::Fragment(),
+            shaders::baseline_renderer_shadow::Fragment()};
+}
+
+void InitializeOutputRenderer(rr::Renderer& outRenderer, rhi::DeviceHandle device, const OutputPrograms& programs)
+{
+    REQUIRE(outRenderer.Initialize(device, programs.FlatVertex, programs.FlatFragment) == S::Ready);
+    REQUIRE(outRenderer.InitializeViews(shaders::renderer_composite::Vertex(),
+                                        shaders::renderer_composite::Fragment()) == S::Ready);
+    REQUIRE(outRenderer.InitializeLighting(programs.OutputVertex, programs.OutputFragment, programs.ShadowFragment) ==
+            S::Ready);
+}
+
+/// A white triangle whose hypotenuse crosses the image diagonally, over an uncovered backdrop.
+struct EdgeScene final
+{
+    rr::Mesh Mesh{};
+    rr::Snapshot World{};
+};
+
+void BuildEdgeScene(rr::Renderer& inoutRenderer, EdgeScene& outScene)
+{
+    constexpr float32 TRIANGLE_DEPTH = .5F;
+    const math::Vector3 positions[]{{-1, -1, TRIANGLE_DEPTH}, {1, -1, TRIANGLE_DEPTH}, {-1, 1, TRIANGLE_DEPTH}};
+    const uint32 indices[]{0, 1, 2};
+    REQUIRE(inoutRenderer.CreateMesh({positions, 3, indices, 3}, outScene.Mesh) == S::Ready);
+    rr::SceneItem item;
+    item.Geometry = outScene.Mesh;
+    item.SourceId = 1;
+    // Above one, so the tone curves and the sRGB encode each change the covered pixels.
+    item.Material.Color = {1, .6F, .3F, 1};
+    REQUIRE(inoutRenderer.CreateSnapshot(&item, 1, outScene.World) == S::Ready);
+}
+
+/// The display options one parity image is drawn with.
+struct OutputOptions final
+{
+    rr::SpatialAntialiasing Antialiasing = rr::SpatialAntialiasing::Off;
+    rr::ToneCurve Curve = rr::ToneCurve::Reinhard;
+    rr::ViewportColorMode ColorMode = rr::ViewportColorMode::Linear8;
+    bool HasBackdrop = false;
+};
+
+constexpr uint32 OUTPUT_EXTENT = 32;
+constexpr usize OUTPUT_CHANNELS = 4;
+constexpr usize OUTPUT_IMAGE_BYTES = usize{OUTPUT_EXTENT} * OUTPUT_EXTENT * OUTPUT_CHANNELS;
+constexpr float32 OUTPUT_EXPOSURE = 2;
+
+void RenderEdgeScene(rr::Renderer& inoutRenderer,
+                     rhi::DeviceHandle device,
+                     rhi::SurfaceHandle surface,
+                     const EdgeScene& scene,
+                     const OutputOptions& options,
+                     uint8 (&outPixels)[OUTPUT_IMAGE_BYTES])
+{
+    rr::RasterViewport viewport;
+    REQUIRE(viewport.Initialize(inoutRenderer,
+                                device,
+                                OUTPUT_EXTENT,
+                                OUTPUT_EXTENT,
+                                OUTPUT_EXPOSURE,
+                                options.ColorMode,
+                                false,
+                                options.Curve,
+                                options.HasBackdrop,
+                                options.Antialiasing) == S::Ready);
+    rr::ViewDescription camera;
+    rr::ViewReport report;
+    REQUIRE(viewport.Update(scene.World, camera, report) == S::Ready);
+    rhi::SubmissionToken producer;
+    REQUIRE(viewport.Render(surface, producer) == S::Ready);
+    rr::ViewportFrame frame;
+    rr::ViewportImage image;
+    const uint64 timeout = time::NowTicks();
+    S status = S::Pending;
+    do
+    {
+        status = viewport.Acquire(frame, image);
+    } while (status == S::Pending && time::NowTicks() - timeout < 10 * time::NANOSECONDS_PER_SECOND);
+    REQUIRE(status == S::Ready);
+    ReadImage(device, {image.Texture, image.Producer, OUTPUT_EXTENT, OUTPUT_EXTENT, 0}, outPixels, OUTPUT_IMAGE_BYTES);
+    REQUIRE(viewport.Release(frame) == S::Ready);
+    viewport.Reset();
+}
+} // namespace
+
+TEST_CASE("The LUSL output recipe renders its Slang original's pixels", "[renderer][gpu][viewport][lusl]")
+{
+    // LUSL L5d wave 2: the viewport's display pass drawn by renderer_output (with renderer_flat) and by their Slang
+    // originals (shaders/renderer_output.slang, renderer_flat.slang) on one device, for every antialiasing mode, tone
+    // curve, colour mode and backdrop; every byte must match. With LUDUS_RENDERER_BENCHMARK set it also times the two
+    // programs A/B in 1080p Balanced frames.
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.EnableGpuTiming = IsRecipeBenchmark();
+    const uint32 extent = IsRecipeBenchmark() == true ? 1920 : OUTPUT_EXTENT;
+    const uint32 height = IsRecipeBenchmark() == true ? 1080 : OUTPUT_EXTENT;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = extent, .Height = height }, description, device, surface);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rr::Renderer lusl;
+    rr::Renderer slang;
+    InitializeOutputRenderer(lusl, device, GetLuslOutputPrograms());
+    InitializeOutputRenderer(slang, device, GetSlangOutputPrograms());
+    EdgeScene luslScene;
+    EdgeScene slangScene;
+    BuildEdgeScene(lusl, luslScene);
+    BuildEdgeScene(slang, slangScene);
+    usize cases = 0;
+    usize distinctFromOff = 0;
+    for (const rr::SpatialAntialiasing antialiasing :
+         {rr::SpatialAntialiasing::Off, rr::SpatialAntialiasing::Fast, rr::SpatialAntialiasing::Balanced})
+    {
+        for (const rr::ToneCurve curve : {rr::ToneCurve::Reinhard, rr::ToneCurve::PbrNeutral})
+        {
+            for (const rr::ViewportColorMode mode : {rr::ViewportColorMode::Linear8, rr::ViewportColorMode::PreferHdr})
+            {
+                for (const bool hasBackdrop : {false, true})
+                {
+                    const OutputOptions options
+                    {
+                        .Antialiasing = antialiasing,
+                        .Curve = curve,
+                        .ColorMode = mode,
+                        .HasBackdrop = hasBackdrop,
+                    };
+                    CAPTURE(static_cast<uint32>(antialiasing),
+                            static_cast<uint32>(curve),
+                            static_cast<uint32>(mode),
+                            hasBackdrop);
+                    uint8 luslPixels[OUTPUT_IMAGE_BYTES];
+                    uint8 slangPixels[OUTPUT_IMAGE_BYTES];
+                    RenderEdgeScene(lusl, device, surface, luslScene, options, luslPixels);
+                    RenderEdgeScene(slang, device, surface, slangScene, options, slangPixels);
+                    CHECK(std::memcmp(luslPixels, slangPixels, OUTPUT_IMAGE_BYTES) == 0);
+                    // Equality is not vacuous: the covered corner and, with the backdrop, the uncovered one are lit.
+                    CHECK(luslPixels[(usize{OUTPUT_EXTENT - 2} * OUTPUT_EXTENT + 1) * OUTPUT_CHANNELS] > 0);
+                    if (hasBackdrop == true)
+                    {
+                        CHECK(luslPixels[(usize{1} * OUTPUT_EXTENT + OUTPUT_EXTENT - 2) * OUTPUT_CHANNELS] > 0);
+                    }
+                    if (antialiasing != rr::SpatialAntialiasing::Off)
+                    {
+                        uint8 offPixels[OUTPUT_IMAGE_BYTES];
+                        OutputOptions off = options;
+                        off.Antialiasing = rr::SpatialAntialiasing::Off;
+                        RenderEdgeScene(lusl, device, surface, luslScene, off, offPixels);
+                        distinctFromOff += std::memcmp(luslPixels, offPixels, OUTPUT_IMAGE_BYTES) != 0 ? 1 : 0;
+                    }
+                    ++cases;
+                }
+            }
+        }
+    }
+    // The antialiased cases reach the edge search, so the port's FXAA path is compared too.
+    CHECK(cases == 24);
+    CHECK(distinctFromOff == 16);
+
+    if (IsRecipeBenchmark() == false)
+    {
+        return;
+    }
+    StaticArray<rr::RasterViewport, RECIPE_AB_VARIANTS> viewports;
+    StaticArray<rr::Renderer*, RECIPE_AB_VARIANTS> renderers{};
+    StaticArray<const EdgeScene*, RECIPE_AB_VARIANTS> scenes{};
+    renderers[RECIPE_AB_SLANG] = &slang;
+    renderers[RECIPE_AB_LUSL] = &lusl;
+    scenes[RECIPE_AB_SLANG] = &slangScene;
+    scenes[RECIPE_AB_LUSL] = &luslScene;
+    for (usize variant = 0; variant < RECIPE_AB_VARIANTS; ++variant)
+    {
+        REQUIRE(viewports[variant].Initialize(*renderers[variant],
+                                              device,
+                                              extent,
+                                              height,
+                                              OUTPUT_EXPOSURE,
+                                              rr::ViewportColorMode::Linear8,
+                                              false,
+                                              rr::ToneCurve::PbrNeutral,
+                                              true,
+                                              rr::SpatialAntialiasing::Balanced) == S::Ready);
+        rr::ViewDescription camera;
+        rr::ViewReport report;
+        REQUIRE(viewports[variant].Update(scenes[variant]->World, camera, report) == S::Ready);
+    }
+    RunRecipeAbTiming(device, "output_balanced", extent, height, [&](usize variant) {
+        rhi::SubmissionToken producer;
+        REQUIRE(viewports[variant].Render(surface, producer) == S::Ready);
+        rr::ViewportFrame frame;
+        rr::ViewportImage image;
+        S status = S::Pending;
+        while (status == S::Pending)
+        {
+            status = viewports[variant].Acquire(frame, image);
+        }
+        REQUIRE(status == S::Ready);
+        REQUIRE(viewports[variant].Release(frame) == S::Ready);
+    });
+    for (rr::RasterViewport& viewport : viewports)
+    {
+        viewport.Reset();
+    }
 }

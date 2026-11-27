@@ -207,7 +207,7 @@ constexpr float32 MAX_DEBUG_DEPTH_DISTANCE = 10000000.0F;
 /// Accepted scene lighting exposure multiplier.
 constexpr float32 MIN_EXPOSURE = 0.000001F;
 constexpr float32 MAX_EXPOSURE = 1000;
-/// The output pass's flags word is backdrop + ANTIALIASING_FLAG_SCALE * mode (renderer_output.slang).
+/// The output pass's flags word is backdrop + ANTIALIASING_FLAG_SCALE * mode (renderer_output.lusl).
 constexpr float32 ANTIALIASING_FLAG_SCALE = 2;
 /// The output flags as the shader reads them: bit 0 the backdrop, the bits above the antialiasing mode.
 float32 GetOutputFlags(const LightingOutput& lighting) noexcept

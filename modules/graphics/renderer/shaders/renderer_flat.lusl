@@ -1,0 +1,39 @@
+// Flat/unlit L0 ABI: position, four world-to-clip rows and premultiplied color. No uniforms or textures; CPU setup
+// bakes the fixed view/object transform. Port of renderer_flat.slang (LUSL L5d wave 2); the forward profile's setup
+// wrapper calls VertexMain and FragmentMain with its Input and Varying.
+struct Input
+{
+    float32x3 PositionMesh;
+    float32x4 MeshToClipRow0;
+    float32x4 MeshToClipRow1;
+    float32x4 MeshToClipRow2;
+    float32x4 MeshToClipRow3;
+    float32x4 Color;
+};
+
+struct Varying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x4 Color;
+};
+
+[stage(vertex)]
+Varying VertexMain(in Input input)
+{
+    float32x4 positionMesh = float32x4(input.PositionMesh, 1.0);
+    Varying output =
+    {
+        .PositionClip = float32x4(dot(input.MeshToClipRow0, positionMesh),
+                                  dot(input.MeshToClipRow1, positionMesh),
+                                  dot(input.MeshToClipRow2, positionMesh),
+                                  dot(input.MeshToClipRow3, positionMesh)),
+        .Color = input.Color,
+    };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in Varying input)
+{
+    return input.Color;
+}

@@ -247,7 +247,7 @@ usize CollectReferenceLights(const renderer::LightSelection& selection, Referenc
 
 math::Vector3 EncodeReferenceDisplayColor(math::Vector3 radiance, const ViewportDisplayTransform& display) noexcept
 {
-    // Matches renderer_output.slang and the clustered deferred ToneMap: exposure, the tone curve, saturate, sRGB.
+    // Matches renderer_output.lusl and the clustered deferred ToneMap: exposure, the tone curve, saturate, sRGB.
     const float32 exposure = display.Exposure;
     if (math::IsFinite(exposure) == false || exposure <= 0)
     {

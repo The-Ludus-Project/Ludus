@@ -913,6 +913,17 @@ ludus_compile_shader(TARGET my_game NAME composite
   outside the condition. A source that does not name the macro is lowered once.
   Without the helper, `luslc lower` needs an explicit `--define LUDUS_GLSL_ES=0`
   or `=1`; an undefined macro in `#if` is `LUSL0219`.
+- **The Direct3D 12 variant.** The driver defines `LUDUS_DXIL=1` only for the
+  DXIL artifacts, and the render-graph stage compiler for the `dxil` profile. The
+  helper treats it like `LUDUS_GLSL_ES`: a source that names it is lowered with
+  `=0` and `=1`, for every combination with the other target macro.
+  `renderer_output.lusl` drops its display helpers' `[noinline]` on Direct3D 12
+  this way, as `LUDUS_SHADER_NOINLINE_WHEN_SUPPORTED` does for Slang.
+- **`[noinline]` on Metal.** Slang's Metal backend drops `[noinline]`, and the
+  build restores it only on functions whose source line spells `[noinline]`
+  (`compile_shader.py`, `restore_metal_noinline`). A literal LUSL `[noinline]` is
+  therefore out of line on Metal, while one spelled through a macro is inlined
+  there, as the Slang originals' macro-spelled helpers are.
 - **`DEFINES` reach the LUSL preprocessor.** The helper passes each entry to
   every lowering as `luslc lower --define`, so `#if` and `#ifndef` in the LUSL
   source see the values a Slang source would see through `-D`. A bare `NAME`
@@ -921,8 +932,8 @@ ludus_compile_shader(TARGET my_game NAME composite
   tests a name with `#if`, `#ifdef` or `#ifndef` needs it in every build's
   `DEFINES` (otherwise `LUSL0219` or `LUSL0220`). A Slang
   `#ifndef NAME / #define NAME <default>` becomes a value every consumer passes,
-  or a constant. `LUDUS_GLSL_ES` belongs to the driver; naming it in `DEFINES`
-  fails the build.
+  or a constant. `LUDUS_GLSL_ES` and `LUDUS_DXIL` belong to the driver; naming
+  either in `DEFINES` fails the build.
 - `<NAME>_slots.h` is generated beside `<NAME>.h`. Host code binds by these
   constants, never by a literal:
 
@@ -1638,6 +1649,13 @@ float32x3 ShadeMiss(in Ray ray)
   from `_ludus_ray`, where ray builds stage engine helpers. The generated module
   joins the snapshot at `<source>.slang`, and the program names it from then on,
   so wrappers, closures, caches and diagnostics treat it as authored Slang.
+- **Engine recipes.** A forward-profile wrapper (`render_graph_forward.py`)
+  includes a renderer recipe whose `recipes.json` source is `.lusl` through its
+  generated module: the build captures the recipe and every file it names, lowers
+  it once (with `LUDUS_DXIL` at `0` and `1` when it names the macro), and
+  suffixes its generated `_lusl` helpers per recipe, so a wrapper can also
+  include a lowered authored program. Every forward-profile graph then needs
+  `luslc`, which the installed SDK provides.
   Slang diagnostics name LUSL lines through `#line`.
 - **Finding `luslc`.**
   - Build-tree graphs use the `luslc` target.

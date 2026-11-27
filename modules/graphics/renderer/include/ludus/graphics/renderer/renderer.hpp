@@ -462,7 +462,7 @@ public:
     Renderer(const Renderer&) = delete;
     /// Renderer identity and owner thread cannot be assigned.
     Renderer& operator=(const Renderer&) = delete;
-    /// Initialize on a ready portable-raster device using the shipped renderer_flat.slang program
+    /// Initialize on a ready portable-raster device using the shipped renderer_flat.lusl program
     /// or an authored program with the same six-location interface.
     /// Ready/Pending publishes renderer ownership; failures leave it uninitialized.
     /// Shader inputs must match six shipped locations. Bindings, when present, must be
@@ -754,7 +754,7 @@ public:
     /// Detach material ownership; earlier snapshot/view/GPU uses retain the exact version.
     [[nodiscard]] rhi::RasterStatus Release(MaterialVersion& handle) noexcept;
     /// Enable linear lighting output and opaque shadow rendering after InitializeViews is Ready.
-    /// Uses renderer_output.slang and renderer_shadow.slang; Ready/Pending owns setup resources.
+    /// Uses renderer_output.lusl and renderer_shadow.lusl; Ready/Pending owns setup resources.
     /// HdrColor enables prewarmed RGBA16F flat pipelines; RGBA8 remains the authored fallback.
     /// Failures preserve earlier profiles; a failed published setup requires Reset.
     [[nodiscard]] rhi::RasterStatus InitializeLighting(const rhi::RasterShaderDescription& outputVertex,
