@@ -13,12 +13,13 @@ using namespace foundation;
 namespace math = foundation::math;
 namespace
 {
+/// One lobe as spectral_sensor_layout.h spells it; EvaluateLobe narrows it to the shader's binary32.
 struct CieLobe final
 {
-    float32 Weight = 0;
-    float32 MeanNanometers = 0;
-    float32 LowerDeviationNanometers = 1;
-    float32 UpperDeviationNanometers = 1;
+    float64 Weight = 0;
+    float64 MeanNanometers = 0;
+    float64 LowerDeviationNanometers = 1;
+    float64 UpperDeviationNanometers = 1;
 };
 constexpr float32 GAUSSIAN_EXPONENT_SCALE = -0.5F;
 constexpr float32 GREEN_BAND_MINIMUM_NANOMETERS = static_cast<float32>(LUDUS_SPECTRUM_GREEN_BAND_MINIMUM_NANOMETERS);
@@ -64,10 +65,12 @@ constexpr StaticArray<CieLobe, Z_LOBE_COUNT> Z_LOBES{{
 }};
 float32 EvaluateLobe(const CieLobe& lobe, float32 wavelengthNanometers) noexcept
 {
-    const float32 deviation =
-        wavelengthNanometers < lobe.MeanNanometers ? lobe.LowerDeviationNanometers : lobe.UpperDeviationNanometers;
-    const float32 t = (wavelengthNanometers - lobe.MeanNanometers) / deviation;
-    return lobe.Weight * static_cast<float32>(math::Exp(static_cast<float64>(GAUSSIAN_EXPONENT_SCALE * t * t)));
+    const float32 mean = static_cast<float32>(lobe.MeanNanometers);
+    const float32 deviation = static_cast<float32>(wavelengthNanometers < mean ? lobe.LowerDeviationNanometers
+                                                                               : lobe.UpperDeviationNanometers);
+    const float32 t = (wavelengthNanometers - mean) / deviation;
+    return static_cast<float32>(lobe.Weight) *
+           static_cast<float32>(math::Exp(static_cast<float64>(GAUSSIAN_EXPONENT_SCALE * t * t)));
 }
 template <usize COUNT>
 float32 EvaluateLobes(const StaticArray<CieLobe, COUNT>& lobes, float32 wavelengthNanometers) noexcept
