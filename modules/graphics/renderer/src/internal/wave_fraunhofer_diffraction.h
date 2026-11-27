@@ -29,10 +29,10 @@ struct FraunhoferEdge final
 };
 /// Field that one boundary edge adds at the receiver, relative to the unobstructed beam: the edge's Kirchhoff
 /// boundary-diffraction wave, evaluated over graded segments as angle-weighted Fraunhofer edge waves. The edge is
-/// clipped to the beam's envelope radius. isAxisBlocked decides the edge's half-turn when it passes exactly
-/// through the axis. Returns Unsupported when a side needs more than LUDUS_WAVE_FRAUNHOFER_SIDE_SEGMENTS segments
-/// and InvalidDescription for a nonpositive beam, a depth outside (0, DistanceWorld) or a non-finite field;
-/// failure preserves outField.
+/// clipped to the radius of the beam's envelope cone (MakeWaveEnvelope) at the edge's deeper end. isAxisBlocked decides
+/// the edge's half-turn when it passes exactly through the axis. Returns Unsupported when a side needs more than
+/// LUDUS_WAVE_FRAUNHOFER_SIDE_SEGMENTS segments and InvalidDescription for a nonpositive beam, a depth outside (0,
+/// DistanceWorld) or a non-finite field; failure preserves outField.
 [[nodiscard]] rhi::RasterStatus EvaluateFraunhoferEdgeField(const FraunhoferEdge& edge,
                                                             const FraunhoferBeam& beam,
                                                             bool isAxisBlocked,

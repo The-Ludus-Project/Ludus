@@ -588,9 +588,12 @@ void CheckEdgeConnectionParity(uint32 tag)
         REQUIRE(scene.Triangles.TryAdd(triangle) == true);
     };
     constexpr float32 HALF_HEIGHT_WORLD = 2;
-    const auto addRectangle = [&addTriangle](float32 left, float32 right) {
-        addTriangle({left, -HALF_HEIGHT_WORLD, 0}, {right, -HALF_HEIGHT_WORLD, 0}, {right, HALF_HEIGHT_WORLD, 0});
-        addTriangle({left, -HALF_HEIGHT_WORLD, 0}, {right, HALF_HEIGHT_WORLD, 0}, {left, HALF_HEIGHT_WORLD, 0});
+    const auto addRectangleAtDepth = [&addTriangle](float32 left, float32 right, float32 z) {
+        addTriangle({left, -HALF_HEIGHT_WORLD, z}, {right, -HALF_HEIGHT_WORLD, z}, {right, HALF_HEIGHT_WORLD, z});
+        addTriangle({left, -HALF_HEIGHT_WORLD, z}, {right, HALF_HEIGHT_WORLD, z}, {left, HALF_HEIGHT_WORLD, z});
+    };
+    const auto addRectangle = [&addRectangleAtDepth](float32 left, float32 right) {
+        addRectangleAtDepth(left, right, 0);
     };
     float64 wavelengthWorld = 0.005;
     math::Vector3d sourceWorld{0, 0, 0.5};
@@ -620,6 +623,16 @@ void CheckEdgeConnectionParity(uint32 tag)
         isSpectralSweep = true;
         receiverFirstX = 0.12;
         receiverStepX = 0;
+    }
+    SECTION("Design wavelength edges either side of the growing envelope cone")
+    {
+        // The envelope cone grows from 10.4 cm at the source to 20.7 cm at the receiver (wave_edge_diffraction_tests,
+        // [wave-cone]). The edge 0.165 m off the axis near the receiver is inside it and diffracts; the edge 0.135 m
+        // off the axis near the source is outside it, although the old 14.7 cm cylinder held both.
+        addRectangleAtDepth(0.165F, 2, -0.7F);
+        addRectangleAtDepth(-2, -0.135F, 0.2F);
+        receiverFirstX = -0.02;
+        receiverStepX = 0.04 / static_cast<float64>(CASE_COUNT - 1);
     }
     SECTION("Design wavelength wedge")
     {

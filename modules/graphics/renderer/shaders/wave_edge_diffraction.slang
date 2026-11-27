@@ -172,7 +172,10 @@ struct WaveEdgeConnection
     float DistanceWorld;
     float WavelengthWorld;
     float SigmaWorldSquared;
+    /// Envelope cone radius at SourceWorld and its growth per metre of depth (WaveEdgeConnection in
+    /// wave_edge_diffraction.h).
     float EnvelopeRadiusWorld;
+    float EnvelopeSlope;
     float EndpointEscapeWorld;
     float RoundoffWorld;
     bool IsBallisticBlocked;
@@ -300,8 +303,9 @@ WaveQuery AddUtdRegionEdgeFields(SceneContext scene,
             float3 pointOffsetWorld = diffracted.PointWorld - connection.SourceWorld;
             float axialWorld = dot(pointOffsetWorld, connection.DirectionWorld);
             float3 radialWorld = pointOffsetWorld - connection.DirectionWorld * axialWorld;
+            float envelopeRadiusWorld = connection.EnvelopeRadiusWorld + connection.EnvelopeSlope * axialWorld;
             if (axialWorld < region.Frustum.NearWorld || axialWorld > region.Frustum.FarWorld ||
-                dot(radialWorld, radialWorld) > connection.EnvelopeRadiusWorld * connection.EnvelopeRadiusWorld)
+                dot(radialWorld, radialWorld) > envelopeRadiusWorld * envelopeRadiusWorld)
                 continue;
             float edgeCoordinate = dot(diffracted.PointWorld - beginWorld, tangent) / lengthWorld;
             UtdEdge covered = edge;

@@ -210,8 +210,10 @@ WaveQuery AddFraunhoferRegionFields(SceneContext scene,
                 faceSides[face] = side > 0 ? WaveEdgeSide::ObstacleLeft
                                            : (side < 0 ? WaveEdgeSide::ObstacleRight : WaveEdgeSide::None);
             }
-            float chordSquaredWorld =
-                connection.EnvelopeRadiusWorld * connection.EnvelopeRadiusWorld - line.OffsetWorld * line.OffsetWorld;
+            // Clip to the envelope cone's radius at the edge's deeper end, its largest over the edge.
+            float envelopeRadiusWorld = connection.EnvelopeRadiusWorld +
+                                        connection.EnvelopeSlope * max(line.BeginDepthWorld, line.EndDepthWorld);
+            float chordSquaredWorld = envelopeRadiusWorld * envelopeRadiusWorld - line.OffsetWorld * line.OffsetWorld;
             if (chordSquaredWorld <= 0)
                 continue;
             float chordWorld = sqrt(chordSquaredWorld);

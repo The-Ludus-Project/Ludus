@@ -4,9 +4,11 @@
 
 // Thanks to Shlomi Steinberg and Matt Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics",
 // CGF45(2), e70322 (2026), Sections3.1 and4.2, https://doi.org/10.1111/cgf.70322, for coherent field sums
-// and scene-derived interaction frusta. This scalar connection specialization uses a periodic paraxial
-// angular-spectrum lattice instead of their analytic Fraunhofer/UTD operators and bidirectional cone paths;
-// wave_edge_diffraction.cpp implements the selectable UTD operator.
+// and scene-derived interaction frusta, and Section 5.1 (Eq. 12) for the free-space elliptical cone whose footprint
+// grows with its opening angle: MakeWaveEnvelope declares that cone for the connection's Gaussian mode. This scalar
+// connection specialization uses a periodic paraxial angular-spectrum lattice instead of their analytic beam
+// operators and bidirectional cone paths; wave_edge_diffraction.cpp and wave_fraunhofer_diffraction.cpp implement
+// the selectable edge operators.
 namespace ludus::graphics::renderer::internal
 {
 namespace
@@ -336,6 +338,26 @@ rhi::RasterStatus EscapeWaveOrigin(const ReferenceSceneData& scene,
     return rhi::RasterStatus::Unsupported;
 }
 
+WaveEnvelope MakeWaveEnvelope(const WaveMode& mode) noexcept
+{
+    // Footprint D * w0 at the waist and slope D * w0 / L, the mode's diffraction-limited spread 1 / (k w0).
+    const float64 sourceRadiusWorld = LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * math::Sqrt(mode.SigmaWorldSquared);
+    return { .SourceRadiusWorld = sourceRadiusWorld, .Slope = sourceRadiusWorld / mode.DistanceWorld };
+}
+math::EllipticalCone MakeWaveLegEnvelopeCone(const WaveEnvelope& envelope,
+                                             const WaveConnectionLeg& leg,
+                                             math::Vector3d axisXWorld,
+                                             float64 legStartReducedWorld) noexcept
+{
+    math::EllipticalCone cone;
+    cone.OriginWorld = leg.BeginWorld;
+    cone.DirectionWorld = leg.DirectionWorld;
+    cone.AxisXWorld = axisXWorld;
+    cone.RadiusWorld = ComputeWaveEnvelopeRadius(envelope, legStartReducedWorld);
+    cone.Slope = envelope.Slope / leg.RefractiveIndex;
+    cone.MinorToMajor = 1;
+    return cone;
+}
 bool TryAppendWaveConnectionLeg(WaveConnectionChain& inoutChain,
                                 math::Vector3d beginWorld,
                                 math::Vector3d endWorld,
@@ -529,8 +551,12 @@ rhi::RasterStatus EvaluateWaveChainConnection(const ReferenceSceneData& scene,
     }
     const float64 wavenumber = 2 * math::kPi / wavelengthWorld;
     const float64 sigmaWorldSquared = distanceWorld / wavenumber;
-    const float64 sigmaWorld = math::Sqrt(sigmaWorldSquared);
-    const float64 halfWidthWorld = LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * math::Sqrt(2.0) * sigmaWorld;
+    const WaveEnvelope envelope =
+        MakeWaveEnvelope({ .SigmaWorldSquared = sigmaWorldSquared, .DistanceWorld = distanceWorld });
+    // The periodic lattice holds the mode where it is widest, at the receiver: the same number of amplitude radii,
+    // w(L) = sqrt(2) * w0. Its window is narrower than the envelope cone there; geometry outside it is not sampled.
+    const float64 halfWidthWorld =
+        LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * math::Sqrt(2.0) * math::Sqrt(sigmaWorldSquared);
     const float64 coordinateScaleWorld = math::Max(geometricLengthWorld, coordinateMagnitudeWorld);
     const float64 endpointEscapeWorld = math::Max(LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld,
                                                   LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld);
@@ -555,13 +581,9 @@ rhi::RasterStatus EvaluateWaveChainConnection(const ReferenceSceneData& scene,
             // Inside both endpoint escapes: no interaction region is resolvable on this leg.
             continue;
         }
-        math::EllipticalCone cone;
-        cone.OriginWorld = leg.BeginWorld;
-        cone.DirectionWorld = leg.DirectionWorld;
-        cone.AxisXWorld = frames.AxisXWorld[index];
-        // The cylinder encloses the propagated Gaussian at every z in this finite connection, with margin
-        // beyond the three-sigma intensity ellipse. The same window bounds the periodic propagation lattice.
-        cone.RadiusWorld = halfWidthWorld;
+        // The envelope cone encloses the propagated Gaussian along this leg (MakeWaveEnvelope).
+        math::EllipticalCone cone =
+            MakeWaveLegEnvelopeCone(envelope, leg, frames.AxisXWorld[index], legStartReducedWorld);
         cone.NearWorld = endpointEscapeWorld;
         cone.FarWorld = leg.LengthWorld - cone.NearWorld;
         WaveOriginEscape escapeResult;
@@ -580,9 +602,12 @@ rhi::RasterStatus EvaluateWaveChainConnection(const ReferenceSceneData& scene,
         {
             continue;
         }
+        // The cone narrows towards the source, so the receiver's probe uses a cylinder of the leg's far radius.
         math::EllipticalCone reverse = cone;
         reverse.OriginWorld = leg.EndWorld;
         reverse.DirectionWorld = -leg.DirectionWorld;
+        reverse.RadiusWorld = cone.RadiusWorld + cone.Slope * leg.LengthWorld;
+        reverse.Slope = 0;
         escapeStatus = EscapeWaveOrigin(scene, reverse, wavelengthWorld, true, escapeResult);
         const float64 receiverEscapeWorld = escapeResult.DistanceWorld;
         if (escapeStatus != rhi::RasterStatus::Ready)
@@ -618,12 +643,13 @@ rhi::RasterStatus EvaluateWaveChainConnection(const ReferenceSceneData& scene,
             if (chain.LegCount > 1)
             {
                 // A relay projects each region onto the midpoint of its slab in reduced depth, as the unfolded
-                // straight connection would: twice the envelope radius from the nearest intersection, clipped at the
+                // straight connection would: twice the envelope radius at the nearest intersection, clipped at the
                 // chain's far end rather than at the end of the leg.
                 const float64 nearReducedWorld = legStartReducedWorld + region.Frustum.NearWorld / leg.RefractiveIndex;
                 const float64 farReducedWorld =
                     math::Max(nearReducedWorld,
-                              math::Min(distanceWorld - endpointEscapeWorld, nearReducedWorld + 2 * halfWidthWorld));
+                              math::Min(distanceWorld - endpointEscapeWorld,
+                                        nearReducedWorld + 2 * ComputeWaveEnvelopeRadius(envelope, nearReducedWorld)));
                 screenDistanceWorld = nearReducedWorld * 0.5 + farReducedWorld * 0.5;
             }
             StaticArray<float64, CELLS> transmission;
@@ -712,6 +738,7 @@ rhi::RasterStatus EvaluateWaveChainConnection(const ReferenceSceneData& scene,
             {
                 math::EllipticalCone escape = cone;
                 escape.OriginWorld = leg.BeginWorld + leg.DirectionWorld * cone.NearWorld;
+                escape.RadiusWorld = cone.RadiusWorld + cone.Slope * cone.NearWorld;
                 escape.FarWorld = cone.FarWorld - cone.NearWorld;
                 escape.NearWorld = math::Min(escape.FarWorld, endpointEscapeWorld);
                 const rhi::RasterStatus escaped = EscapeWaveOrigin(scene, escape, wavelengthWorld, true, escapeResult);

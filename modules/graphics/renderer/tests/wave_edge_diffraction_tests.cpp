@@ -369,3 +369,136 @@ TEST_CASE("Scene UTD connections take screen edges from their envelope", "[rende
         CHECK(field.Imaginary == 8);
     }
 }
+
+namespace
+{
+/// The envelope cone of a straight connection, from its declaration (Steinberg and Pharr, Section 5.1, Eq. 12):
+/// footprint 3 * w0 at the source and slope 3 * w0 / L, with w0 = sqrt(L * wavelength / (2 pi)). Computed here
+/// independently of MakeWaveEnvelope.
+float64 ComputeConeRadius(float64 distanceWorld, float64 depthWorld)
+{
+    constexpr float64 TAIL_DEVIATIONS = 3;
+    const float64 waistWorld = math::Sqrt(distanceWorld * DESIGN_WAVELENGTH_WORLD / (2 * math::kPi));
+    return TAIL_DEVIATIONS * waistWorld * (1 + depthWorld / distanceWorld);
+}
+/// The cylinder the profile used before: the same number of amplitude radii at the receiver, sqrt(2) * w0.
+float64 ComputeCylinderRadius(float64 distanceWorld)
+{
+    return ComputeConeRadius(distanceWorld, 0) * math::Sqrt(2.0);
+}
+/// A screen at depth z that covers x from left to right, as two triangles sharing a flat diagonal.
+void AddScreenRectangleAtDepth(internal::ReferenceSceneData& inoutScene, float32 left, float32 right, float32 z)
+{
+    constexpr float32 HALF_HEIGHT_WORLD = 2;
+    AddTriangle(inoutScene,
+                {left, -HALF_HEIGHT_WORLD, z},
+                {right, -HALF_HEIGHT_WORLD, z},
+                {right, HALF_HEIGHT_WORLD, z});
+    AddTriangle(inoutScene, {left, -HALF_HEIGHT_WORLD, z}, {right, HALF_HEIGHT_WORLD, z}, {left, HALF_HEIGHT_WORLD, z});
+}
+/// Where the connection from the centred source to receiverWorld crosses depth screenZ, and its length.
+struct ConnectionCrossing final
+{
+    float64 DistanceWorld = 0;
+    float64 DepthWorld = 0;
+    float64 AxisX = 0;
+};
+ConnectionCrossing CrossConnection(math::Vector3d receiverWorld, float32 screenZ)
+{
+    const float64 z = static_cast<float64>(screenZ);
+    const math::Vector3d deltaWorld = receiverWorld - CENTRED_SOURCE_WORLD;
+    const float64 fraction = (CENTRED_SOURCE_WORLD.Z - z) / (CENTRED_SOURCE_WORLD.Z - receiverWorld.Z);
+    const float64 distanceWorld = math::Sqrt(math::Dot(deltaWorld, deltaWorld));
+    return
+    {
+        .DistanceWorld = distanceWorld,
+        .DepthWorld = fraction * distanceWorld,
+        .AxisX = CENTRED_SOURCE_WORLD.X + fraction * deltaWorld.X,
+    };
+}
+} // namespace
+
+TEST_CASE("UTD connections see edges inside an envelope cone that grows along the connection",
+          "[renderer][wave-utd][wave-cone]")
+{
+    // At 5 mm over 1.5 m the waist is w0 = 3.45 cm: the cone's radius grows from 10.4 cm at the source to 20.7 cm at
+    // the receiver, through the old cylinder's 14.7 cm at 41% of the way. Receivers stay within 2 cm of the axis so
+    // that each edge's Keller point stays on one side of both radii.
+    constexpr int32 RECEIVER_HALF_STEPS = 2;
+    // Smallest change of the power that the envelope makes, against the field without the edge: measurable with
+    // respect to every tolerance of the analytic fixtures above.
+    constexpr float64 MEASURABLE_POWER_CHANGE = 0.02;
+    SECTION("An edge near the receiver lies inside the grown cone, outside the cylinder")
+    {
+        constexpr float32 EDGE_X_WORLD = 0.165F;
+        constexpr float32 SCREEN_Z_WORLD = -0.7F;
+        internal::ReferenceSceneData scene;
+        AddScreenRectangleAtDepth(scene, EDGE_X_WORLD, 2, SCREEN_Z_WORLD);
+        REQUIRE(internal::BuildReferenceBvh(scene) == rhi::RasterStatus::Ready);
+        internal::UtdEdge edge;
+        edge.BeginWorld = {static_cast<float64>(EDGE_X_WORLD), -1, static_cast<float64>(SCREEN_Z_WORLD)};
+        edge.EndWorld = {static_cast<float64>(EDGE_X_WORLD), 1, static_cast<float64>(SCREEN_Z_WORLD)};
+        edge.FaceDirectionsWorld[0] = {1, 0, 0};
+        edge.FaceCount = 1;
+        float64 largestChange = 0;
+        for (int32 step = -RECEIVER_HALF_STEPS; step <= RECEIVER_HALF_STEPS; ++step)
+        {
+            const float64 receiverX = static_cast<float64>(step) * RECEIVER_STEP_WORLD;
+            const ConnectionCrossing crossing = CrossConnection({receiverX, 0, RECEIVER_PLANE_WORLD}, SCREEN_Z_WORLD);
+            const float64 radialWorld = static_cast<float64>(EDGE_X_WORLD) - crossing.AxisX;
+            CAPTURE(receiverX, radialWorld);
+            REQUIRE(radialWorld > ComputeCylinderRadius(crossing.DistanceWorld));
+            REQUIRE(radialWorld < ComputeConeRadius(crossing.DistanceWorld, crossing.DepthWorld));
+            const WaveField actual = EvaluateSceneConnection(scene, receiverX);
+            const internal::UtdEdgeField diffracted =
+                internal::EvaluateUtdEdgeField(edge,
+                                               CENTRED_SOURCE_WORLD,
+                                               {receiverX, 0, RECEIVER_PLANE_WORLD},
+                                               DESIGN_WAVELENGTH_WORLD);
+            REQUIRE(diffracted.IsDiffracting == true);
+            const WaveField expected = AddFields({1, 0}, diffracted.Field);
+            CHECK(math::Abs(actual.Real - expected.Real) < RECIPROCITY_TOLERANCE);
+            CHECK(math::Abs(actual.Imaginary - expected.Imaginary) < RECIPROCITY_TOLERANCE);
+            largestChange = math::Max(largestChange, math::Abs(MeasurePower(actual) - 1));
+        }
+        CAPTURE(largestChange);
+        CHECK(largestChange > MEASURABLE_POWER_CHANGE);
+    }
+    SECTION("An edge near the source lies outside the narrow cone, inside the cylinder")
+    {
+        constexpr float32 EDGE_X_WORLD = -0.135F;
+        constexpr float32 SCREEN_Z_WORLD = 0.2F;
+        internal::ReferenceSceneData scene;
+        AddScreenRectangleAtDepth(scene, -2, EDGE_X_WORLD, SCREEN_Z_WORLD);
+        REQUIRE(internal::BuildReferenceBvh(scene) == rhi::RasterStatus::Ready);
+        internal::UtdEdge edge;
+        edge.BeginWorld = {static_cast<float64>(EDGE_X_WORLD), -1, static_cast<float64>(SCREEN_Z_WORLD)};
+        edge.EndWorld = {static_cast<float64>(EDGE_X_WORLD), 1, static_cast<float64>(SCREEN_Z_WORLD)};
+        edge.FaceDirectionsWorld[0] = {-1, 0, 0};
+        edge.FaceCount = 1;
+        float64 largestCylinderChange = 0;
+        for (int32 step = -RECEIVER_HALF_STEPS; step <= RECEIVER_HALF_STEPS; ++step)
+        {
+            const float64 receiverX = static_cast<float64>(step) * RECEIVER_STEP_WORLD;
+            const ConnectionCrossing crossing = CrossConnection({receiverX, 0, RECEIVER_PLANE_WORLD}, SCREEN_Z_WORLD);
+            const float64 radialWorld = crossing.AxisX - static_cast<float64>(EDGE_X_WORLD);
+            CAPTURE(receiverX, radialWorld);
+            REQUIRE(radialWorld < ComputeCylinderRadius(crossing.DistanceWorld));
+            REQUIRE(radialWorld > ComputeConeRadius(crossing.DistanceWorld, crossing.DepthWorld));
+            const WaveField actual = EvaluateSceneConnection(scene, receiverX);
+            CHECK(actual.Real == 1);
+            CHECK(actual.Imaginary == 0);
+            // The field the cylinder admitted for the same edge.
+            const internal::UtdEdgeField diffracted =
+                internal::EvaluateUtdEdgeField(edge,
+                                               CENTRED_SOURCE_WORLD,
+                                               {receiverX, 0, RECEIVER_PLANE_WORLD},
+                                               DESIGN_WAVELENGTH_WORLD);
+            REQUIRE(diffracted.IsDiffracting == true);
+            largestCylinderChange =
+                math::Max(largestCylinderChange, math::Abs(MeasurePower(AddFields({1, 0}, diffracted.Field)) - 1));
+        }
+        CAPTURE(largestCylinderChange);
+        CHECK(largestCylinderChange > MEASURABLE_POWER_CHANGE);
+    }
+}

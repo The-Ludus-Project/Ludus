@@ -11547,8 +11547,9 @@ is selected.
 The design adopts scene interaction regions and coherent field sums from Shlomi
 Steinberg and Matt Pharr,
 [Wave Tracing: Generalizing The Path Integral To Wave Optics](https://doi.org/10.1111/cgf.70322),
-Computer Graphics Forum 45(2), e70322 (2026), Sections 3.1 and 4.2, and its UTD-based
-and Fraunhofer edge-based free-space diffraction from Section 5.2.2. Thank you to the
+Computer Graphics Forum 45(2), e70322 (2026), Sections 3.1 and 4.2, the free-space
+elliptical cone of Section 5.1 (Eq. 12), and its UTD-based and Fraunhofer edge-based
+free-space diffraction from Section 5.2.2. Thank you to the
 authors; to Shlomi Steinberg, Ravi Ramamoorthi, Benedikt Bitterli, Arshiya
 Mollazainali, Eugene d'Eon and Matt Pharr,
 [A Free-Space Diffraction BSDF](https://doi.org/10.1145/3658166), ACM Transactions on
@@ -11602,6 +11603,12 @@ normal maps, diffuse, rough conductor, coated diffuse and glass inputs. Infinite
 and the environment use ordinary geometric visibility. Finite point, spot and
 mesh-light connections use the optical operator. A scene lit only by an infinite
 environment therefore does not gain free-space diffraction from this profile.
+The connection's mode and [envelope cone](#declared-scalar-connection-integral)
+are defined by the finite length `L` from the light to the receiver, which an
+infinite light does not have; Section 4.2's emission operator sources a bounded
+initial region. Admitting distant and environment emission is tracked by
+[issue 2283](https://github.com/The-Ludus-Project/Ludus/issues/2283), with the
+light subpaths of a bidirectional estimator.
 
 ### Declared scalar connection integral
 
@@ -11619,10 +11626,37 @@ unobstructed analytic field. Its power is the squared magnitude of this ratio.
 Distinct light/path samples add powers; open parts of one connection add complex
 fields before squaring, preserving cross-opening interference.
 
-A finite cylindrical envelope (a supported elliptical-cone special case)
-encloses the mode over the connection. BVH traversal finds the nearest axial
-intersection, then gathers every intersecting triangle in a frustum of depth
-twice the envelope's major radius. Distances have working-precision axial padding
+An elliptical cone of Section 5.1's free-space form (Eq. 12) encloses the mode
+over the connection. The mode's amplitude radius at depth `z` is
+`w(z) = w0*sqrt(1 + (z/L)^2)`, with waist `w0 = sqrt(Sigma)` (the Rayleigh range
+is `L`). The cone's footprint and opening angle are declared from it:
+
+```text
+radius(z) = 3*w0 + z*tan(alpha),    tan(alpha) = 3*w0/L = 3/(k*w0)
+w0        = sqrt(L*lambda/(2*pi))
+```
+
+The footprint is three amplitude radii of the waist, and the opening slope is three
+times the mode's far-field divergence `1/(k*w0)`, the diffraction-limited spread of
+that waist. Because `sqrt(1 + t*t) <= 1 + t`, the cone holds three amplitude radii
+at every depth, where the mode's amplitude is at most `exp(-4.5)` (about 1.1%) of
+its axis value. The footprint grows from `3*w0` at the light to `6*w0` at the
+receiver, so it scales with `sqrt(lambda*L)` and its slope with
+`sqrt(lambda/L)`; each path's wavelength sets both
+([spectral connections](#spectral-optical-connections)). The cone stays circular,
+because the scalar mode is circular, and its major axis is the connection's
+transverse frame. A [relay](#relayed-connections-through-glass) continues the cone
+across each glass event. The profile previously used a cylinder of radius
+`3*sqrt(2)*w0`: it was wider than the cone over the first 41% of the connection
+and narrower beyond. The staircase2 and glass-sphere CPU/GPU differences quoted
+in the evidence below were measured with that cylinder. Their tests pass with the
+cone, within the same bounds.
+
+BVH traversal of the cone (Emre, Kanak and Steinberg's cone/triangle formulation)
+finds the nearest axial intersection, then gathers every intersecting triangle in a
+frustum of depth twice the cone's radius at that intersection. Probes from the
+receiver end use a cylinder of the cone's receiver radius, which encloses the
+narrowing cone. Distances have working-precision axial padding
 so a second gather cannot lose the triangle that established the nearest hit.
 Each region projects its triangle union along propagation onto its midpoint
 plane. Coverage is evaluated directly in transverse coordinates, avoiding
@@ -11630,7 +11664,9 @@ reconstruction of tiny samples in large world coordinates; fixed-mip texture and
 multiply the complex field, with propagation between them.
 
 The propagation lattice has 16 by 16 complex samples over a half-width of
-`3*sqrt(2*Sigma)`, with four coverage samples per cell. Separable FFTs apply the
+`3*sqrt(2)*w0`, three amplitude radii of the mode where it is widest (at the
+receiver), with four coverage samples per cell. The window is narrower than the
+cone near the receiver; geometry outside it is not sampled. Separable FFTs apply the
 paraxial angular-spectrum transfer function
 `exp(-i*pi*lambda*dz*(fx*fx + fy*fy))`. The finite periodic window and spatial
 sampling are part of the declared approximation. More camera samples do not
@@ -11693,11 +11729,13 @@ polarizations then share the same coefficient, and near the shadow boundary the
 result reduces to Fresnel knife-edge diffraction. Edges are admitted per
 connection:
 
-- Edges come from the triangles that the connection's Gaussian envelope gathers in
-  each interaction region. That is the same envelope, with radius
-  `3*sqrt(2*Sigma)`, as the lattice operator. A diffraction point must lie inside
-  the envelope and its region. Diffraction from farther edges is omitted; it is at
-  least about 26 dB below the unobstructed field at the region midpoint.
+- Edges come from the triangles that the connection's envelope cone gathers in
+  each interaction region. That is the same cone as the lattice operator's. A
+  diffraction point must lie inside its region and inside the cone at the point's
+  own depth. Diffraction from farther edges is omitted. Near the light the cone is
+  narrower than the earlier cylinder (`3*w0` against `4.24*w0` at the light), so
+  edges between those radii there no longer diffract. Near the receiver it is wider
+  and admits edges up to `6*w0` off the axis.
 - Triangles share an edge when their corner positions are bit-for-bit equal. One
   face makes a thin half-plane (`n = 2`), and two faces make a wedge whose exterior
   is the angular sector holding the source. An edge with three or more faces is not
@@ -11725,6 +11763,14 @@ the lattice operator.
 
 Evidence for the UTD connection, on an Apple M5 with Metal:
 
+- `wave_edge_diffraction_tests.cpp` (`[wave-cone]`) checks that the envelope cone's
+  growth changes UTD connections measurably. At 5 mm over 1.5 m, a knife edge
+  0.165 m off the axis, 80% of the way to the receiver, lies inside the cone
+  (radius 0.187 m) and outside the earlier cylinder (0.147 m). It diffracts and
+  changes the power by more than 0.02, matching the synthetic edge's UTD field
+  within `1e-12`. An edge 0.135 m off the axis, 20% of the way, lies outside the
+  cone (0.124 m) and inside the cylinder. Its connection is exactly the ballistic
+  field, where the cylinder's would have differed by more than 0.02.
 - `wave_edge_diffraction_tests.cpp` (`[wave-utd]`, CPU only) checks the transition
   function against an independent quadrature (within `1e-8`). It checks the knife
   edge against Fresnel–Kirchhoff diffraction: within 1.5% of the power from 3.5
@@ -11786,7 +11832,7 @@ segment average of `dot(rho, m)/dot(rho, rho)`, the angle the segment subtends a
 the axis divided by its length. Segments start at `0.2/sqrt(|beta|)` at the edge's
 stationary point, its closest point to the axis. They lengthen by a tenth of their
 distance from that point, with at most 160 segments on each side. Edges are clipped
-to the envelope radius `3*sqrt(2*Sigma)`.
+to the envelope cone's radius at the edge's deeper end, its largest along the edge.
 
 This connection departs from the BSDF paper in two ways:
 
@@ -11890,6 +11936,9 @@ emitter, through the glass events in reverse, to the receiver:
 - Each leg of geometric length `l` in a medium of index `n` propagates paraxially as
   `l/n` in vacuum at the vacuum wavelength (its reduced length). One Gaussian mode
   with `Sigma = L/k` spans the chain, where `L` is the sum of the reduced lengths.
+  So does its envelope cone, as a function of reduced depth. On a leg of index `n`
+  the cone's radius grows by `tan(alpha)/n` per metre of geometric length, and the
+  edge operators' virtual connection sees the same cone at apparent depth.
   Transverse coordinates are unchanged at an interface, following Section 5.2's rule
   that an interaction keeps the beam's solid angle and eccentricity. The anamorphic
   beam compression of oblique refraction (`cos(theta_t)/cos(theta_i)` in the plane
