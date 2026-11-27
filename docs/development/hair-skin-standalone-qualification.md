@@ -10,8 +10,10 @@ and reuses the [independent project and SDK workflow](project-sdk-workflow.md) a
 [release packaging](game-packaging-publishing.md).
 
 The fixture is [`tests/sdk_consumer/hair_skin_bust`](https://github.com/The-Ludus-Project/Ludus/tree/develop/tests/sdk_consumer/hair_skin_bust);
-its `verify.py` is the reproducible driver and the macOS Metal CI step is
-[`.github/actions/hair-skin-bust`](https://github.com/The-Ludus-Project/Ludus/tree/develop/.github/actions/hair-skin-bust).
+its `verify.py` is the reproducible driver. Every batch runs it as the
+`hair-skin-bust` check of the **macOS native backends and diagnostics** job
+([`scripts/ci/macos_native.py`](https://github.com/The-Ludus-Project/Ludus/tree/develop/scripts/ci/macos_native.py);
+see [batch job check plans](continuous-integration.md#batch-job-check-plans)).
 
 ## Target and raster profile
 
@@ -206,5 +208,20 @@ commit `6de09ba51` with an SDK installed from the `macos-clang-development`
   the file; removing `libOpenImageDenoise.2.dylib` from `lib/` stops the launch
   in the loader. The extracted app resolves no Qt or Homebrew library.
 
-No CI workflow calls `.github/actions/hair-skin-bust` yet, so this evidence comes
-from a local run of the same driver. Rerun `verify.py` to refresh it.
+This table records that local run. CI now produces the same evidence: the
+`hair-skin-bust` check of the macOS native batch job runs `verify.py` after the
+`sdk-install` check, against `out/install/macos-clang-development` and the
+job's `ludus_editor_tests`, in its own virtual environment with pinned NumPy
+and Pillow. A failure fails the batch, so a promoted `main` has passed it. The
+job uploads `out/hair-skin-bust/` (the Editor and SDK captures, the comparison
+pages, `provenance.json`, the negative-check results and every log) as the
+`hair-skin-bust-metal` artifact, kept for 14 days. To read a batch's evidence,
+open the batch run's **macOS native backends and diagnostics** job: the job
+summary lists the `hair-skin-bust` result, its log group holds the driver
+output, and the artifact holds the files.
+
+Run the check alone on a Mac with the build and SDK install in place:
+
+```bash
+out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_native.py --only hair-skin-bust
+```

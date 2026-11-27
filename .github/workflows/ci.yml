@@ -246,6 +246,15 @@ jobs:
             out/shadow-worlds/
             out/build/macos-clang-development/modules/graphics/renderer/ludus-graphs/ludus_renderer_render_tests/rg2_clustered_Default/rg2_clustered_Default.lurgrt
           if-no-files-found: warn
+      # The hair-skin-bust check's captures, comparisons, provenance and logs (issue 1400).
+      - name: Retain hair and skin qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hair-skin-bust-metal
+          path: out/hair-skin-bust/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Preserve native Behavior evidence
         if: ${{ !cancelled() && steps.checks.outputs.behavior-provider == 'success' }}
         uses: actions/upload-artifact@v4

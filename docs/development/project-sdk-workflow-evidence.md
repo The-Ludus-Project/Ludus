@@ -766,10 +766,10 @@ comparison **cannot run here** and are deferred to the macOS Metal lane.
   `ludus_compile_render_graph` cook of both graphs, SDK relocation + dependency
   bundling, the clean-extraction launches, the no-Qt dependency assertion, the
   runtime-dependency-removal check, the Editor `[skin][hair-card]` reference
-  capture and the `scripts/compare-render` comparison. The macOS CI step
-  `.github/actions/hair-skin-bust` runs `verify.py` end to end there; it is not
-  wired into the live `ci.yml` macOS job here, since a workflow edit reaches
-  batches only after promotion and the develop-health gate owns that change.
+  capture and the `scripts/compare-render` comparison. `verify.py` runs end to
+  end on that lane; the macOS native batch plan now runs it as the
+  `hair-skin-bust` check (see the
+  [qualification guide](hair-skin-standalone-qualification.md#status-and-acceptance)).
 
 ### Native-findings follow-up: Editor-saved World (after #2256)
 
@@ -806,4 +806,4 @@ found three gaps, now fixed:
 
 Still **authored, not run** in this sandbox; the native build, Editor export,
 launch and the Metal visual comparison remain deferred to the macOS lane via
-`verify.py` and `.github/actions/hair-skin-bust`.
+`verify.py`, which the macOS native batch plan's `hair-skin-bust` check runs.
