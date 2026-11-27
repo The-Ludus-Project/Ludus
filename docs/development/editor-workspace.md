@@ -3287,7 +3287,7 @@ file starts a background build after 250 ms without further changes. The build
 runs `ludus-shader-worker` for each recipe stage whose files changed; other
 stages reuse their last output. Each build sends the worker only the recipe
 sources and the files their quoted `#include` directives reach, in any
-preprocessor branch. Other helpers under the roots are watched but not sent, so
+preprocessor branch. A LUSL recipe compiles with its manifest `defines`. Other helpers under the roots are watched but not sent, so
 they don't count against the compiler's snapshot limit (`MAX_SOURCE_FILES` and
 `MAX_SOURCE_BYTES` in `ludus/tooling/shader_compiler/compiler.hpp`). The UI
 thread never compiles. Once every stage

@@ -1,0 +1,1259 @@
+// Lit material kernels (MaterialDescription with a lighting profile): the forward and clustered PBR fragment, its
+// shadow-map coverage and the clustered opaque depth prepass. Port of renderer_lit.slang (LUSL L5d wave 2), whose
+// variant files become configurations: every recipe sets each macro below to 0 or 1 (recipes.json "defines"), and the
+// render-graph forward profile sets LUDUS_GRAPH_REALTIME or LUDUS_GRAPH_SURFACE_CHART for its fragments
+// (render_graph_forward.py).
+// - LUDUS_CLUSTERED: the clustered light list (CLUSTERED_LIGHT_COUNT lights in an 8x8x8 grid).
+// - LUDUS_SURFACE_FIDELITY: the packed surface texture (metallic, roughness and tangent-space normal).
+// - LUDUS_AUTHORED_INPUTS: authored vertex inputs, environment lighting, emission maps, hair cards and skin profiles.
+// - LUDUS_DEBUG_VIEW: the material debug views (MATERIAL_DEBUG_VIEW_*).
+// - LUDUS_GRAPH_REALTIME: no baked lighting; the bake texture binding is omitted.
+// - LUDUS_GRAPH_SURFACE_CHART: every fragment reads its surface chart's baked diffuse.
+// The deferred resolve (renderer_deferred_lighting.slang) and G-buffer (renderer_deferred_material.slang) still
+// include renderer_lit.slang, which keeps their LUDUS_DEFERRED_MESH_LIGHTS, LUDUS_ATMOSPHERE_SURFACE and
+// LUDUS_OPAQUE_COVERAGE configurations.
+#include "lighting_layout.luslh"
+#include "math.luslh"
+#include "probe_volume_layout.luslh"
+#include "renderer_environment_layout.luslh"
+
+extern slang "material_scattering.slang"
+{
+    float32 ComputeGgxNormalDistribution(in float32x3 normalWorld, in float32x3 halfWorld, in float32 alphaSquared);
+};
+
+extern slang "renderer_shadow_depth.slang"
+{
+    static const float32 SHADOW_DEPTH_CODE_MAXIMUM;
+    static const float32 SHADOW_SLOPE_CODE_RADIUS;
+    float32 SelectShadowDepth(in float32 rasterizedDepth, in float32 depthTag, in float32 linearDepth);
+    float32x4 EncodeShadowDepth(in float32 depth);
+    float32 DecodeShadowDepth(in float32x2 code);
+    float32x2 DecodeShadowSlope(in float32x2 code);
+};
+
+extern slang "shading_normal.slang"
+{
+    float32x3 ClipShadingNormalToOutgoingHemisphere(in float32x3 normalWorld, in float32x3 outgoingDirectionWorld);
+};
+
+#if LUDUS_SURFACE_FIDELITY != 0
+extern slang "renderer_surface_functions.slang"
+{
+    struct SurfaceParameters
+    {
+        float32x3 NormalTangent;
+        float32 Metallic;
+        float32 Roughness;
+    };
+    SurfaceParameters DecodeSurfaceParameters(in float32x4 texel,
+                                              in float32 metallic,
+                                              in float32 roughness,
+                                              in float32 normalScale);
+};
+#endif
+
+#if LUDUS_DEBUG_VIEW != 0
+// Khronos PBR Neutral constants, shared with renderer_output.lusl.
+extern slang "display_tone_mapping.slang"
+{
+    static const float32 PBR_NEUTRAL_START;
+    static const float32 PBR_NEUTRAL_DESATURATION;
+    static const float32 PBR_NEUTRAL_FRESNEL;
+};
+#endif
+
+extern slang "renderer_lit_bindings.slang"
+{
+    Texture2D<float32x4> colorTexture;
+    SamplerState colorSampler;
+#if LUDUS_GRAPH_REALTIME == 0
+    Texture2D<float32x4> bakeTexture;
+#endif
+    Texture2D<float32x4> shadowTexture;
+    SamplerState shadowSampler;
+#if LUDUS_CLUSTERED != 0
+    Texture2D<float32x4> clusterTexture;
+#    if LUDUS_SURFACE_FIDELITY == 0
+    SamplerState clusterSampler;
+#    endif
+#endif
+#if LUDUS_SURFACE_FIDELITY != 0
+    Texture2D<float32x4> surfaceTexture;
+#endif
+#if LUDUS_AUTHORED_INPUTS != 0
+    Texture2D<float32x4> environmentTexture;
+    SamplerState environmentSampler;
+    Texture2D<float32x4> emissionTexture;
+#endif
+};
+
+#if LUDUS_CLUSTERED != 0
+static const uint32 LIGHT_WORDS = CLUSTERED_LIGHT_COUNT * FORWARD_LIGHT_WORDS;
+#else
+static const uint32 LIGHT_WORDS = FORWARD_LIGHT_COUNT * FORWARD_LIGHT_WORDS;
+#endif
+static const uint32 ENVIRONMENT_SH_COEFFICIENTS = LUDUS_ENVIRONMENT_SH_COEFFICIENTS;
+
+// Thanks to Google/Filament authors, Physically Based Rendering in Filament,
+// sections 4.4 and 5.2.2, https://google.github.io/filament/main/filament.html.
+// GGX + correlated Smith + Schlick, Fresnel-weighted Lambert, single scattering.
+// Constant environment is a declared Fresnel approximation, not a DFG/LUT integrator.
+struct Parameters
+{
+    float32x4 Tint;
+    float32x4 UvTransform;
+    float32x4 Options;
+    float32x4 Pbr;
+    float32x4 Emission;
+    float32x4 EnvironmentIrradiance;
+    float32x4 EnvironmentRadiance;
+    float32x4 BakeScale;
+    float32x4 BakeUv;
+    float32x4 Lights[LIGHT_WORDS];
+    float32x4 ShadowData[SHADOW_DATA_WORDS];
+#if LUDUS_CLUSTERED != 0
+    float32x4 GridRows[CLUSTERED_GRID_ROWS];
+    float32x4 GridMinimum;
+    float32x4 GridScale;
+#endif
+#if LUDUS_SURFACE_FIDELITY != 0
+    float32x4 SurfaceMap;
+#endif
+#if LUDUS_AUTHORED_INPUTS != 0
+    float32x4 Authored;
+    float32x4 IrradianceSh[ENVIRONMENT_SH_COEFFICIENTS];
+    // X: one for a hair card. Y: strand direction, radians from the tangent toward the bitangent.
+    // Z, W: primary and secondary highlight shifts in radians toward the card normal.
+    float32x4 HairStrand;
+    // X, Y: primary and base-colour-tinted secondary highlight weights.
+    float32x4 HairHighlights;
+    // XYZ: a skin material's linear RGB scattering distance in metres. W: its one-based skin profile slot
+    // (DEFERRED_MAX_SKIN_PROFILES), or zero for every other material.
+    float32x4 SkinScattering;
+#endif
+};
+ConstantBuffer<Parameters> material;
+struct Input
+{
+    float32x3 PositionMesh;
+    float32x4 MeshToClipRow0;
+    float32x4 MeshToClipRow1;
+    float32x4 MeshToClipRow2;
+    float32x4 MeshToClipRow3;
+    float32x4 Color;
+    float32x2 TexcoordUv;
+    float32x3 NormalMesh;
+    float32x4 MeshToWorldRow0;
+    float32x4 MeshToWorldRow1;
+    float32x4 MeshToWorldRow2;
+#if LUDUS_AUTHORED_INPUTS != 0
+    float32x4 TangentMesh;
+    float32x4 ColorVertex;
+    float32x2 MaterialUv1;
+#else
+    float32x4 NormalMeshToWorldRow0;
+    float32x4 NormalMeshToWorldRow1;
+    float32x4 NormalMeshToWorldRow2;
+#endif
+    float32x4 EyeWorld;
+    float32x2 BakeUv;
+};
+struct Varying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x2 TexcoordUv;
+    float32x3 PositionWorld;
+    float32x3 NormalWorld;
+    float32x4 EyeWorld;
+    float32x2 BakeUv;
+    float32 IsBakeValid;
+    // LUSL numbers varyings in declaration order, and renderer_lit.slang declares the same members in semantic order,
+    // so this clustered authored vertex pairs with the deferred G-buffer fragment, which still includes the original,
+    // on every backend: SPIR-V matches varyings by location and Metal by semantic.
+#if LUDUS_CLUSTERED != 0
+    float32 IsDirectReference;
+#endif
+#if LUDUS_AUTHORED_INPUTS != 0
+    float32x4 TangentWorld;
+    float32x4 ColorVertex;
+    float32x2 MaterialUv1;
+#endif
+#if LUDUS_DEBUG_VIEW != 0
+    // Last member, so ordinary shadow fragments still match the earlier varying locations.
+    float32x2 DebugDepthRange;
+#endif
+};
+
+[stage(vertex)]
+Varying VertexMain(in Input input)
+{
+    Varying output = void;
+    float32x4 p = float32x4(input.PositionMesh, 1);
+    output.PositionClip = float32x4(dot(input.MeshToClipRow0, p),
+                                    dot(input.MeshToClipRow1, p),
+                                    dot(input.MeshToClipRow2, p),
+                                    dot(input.MeshToClipRow3, p));
+    output.PositionWorld =
+        float32x3(dot(input.MeshToWorldRow0, p), dot(input.MeshToWorldRow1, p), dot(input.MeshToWorldRow2, p));
+#if LUDUS_AUTHORED_INPUTS != 0
+    float32x3 column0World = float32x3(input.MeshToWorldRow0.x, input.MeshToWorldRow1.x, input.MeshToWorldRow2.x);
+    float32x3 column1World = float32x3(input.MeshToWorldRow0.y, input.MeshToWorldRow1.y, input.MeshToWorldRow2.y);
+    float32x3 column2World = float32x3(input.MeshToWorldRow0.z, input.MeshToWorldRow1.z, input.MeshToWorldRow2.z);
+    // Positive common rescaling keeps cross/determinant products finite without
+    // changing normal direction or mirrored handedness.
+    float32 magnitude = max(max(max(abs(column0World.x), abs(column0World.y)), abs(column0World.z)),
+                            max(max(max(abs(column1World.x), abs(column1World.y)), abs(column1World.z)),
+                                max(max(abs(column2World.x), abs(column2World.y)), abs(column2World.z))));
+    column0World /= magnitude;
+    column1World /= magnitude;
+    column2World /= magnitude;
+    float32 determinant = dot(column0World, cross(column1World, column2World));
+    output.NormalWorld = NormalizeOrZero((cross(column1World, column2World) * input.NormalMesh.x +
+                                          cross(column2World, column0World) * input.NormalMesh.y +
+                                          cross(column0World, column1World) * input.NormalMesh.z) /
+                                         determinant);
+    float32x3 tangentWorld =
+        column0World * input.TangentMesh.x + column1World * input.TangentMesh.y + column2World * input.TangentMesh.z;
+    output.TangentWorld = float32x4(tangentWorld, input.TangentMesh.w * (determinant < 0 ? -1 : 1));
+    output.ColorVertex = input.ColorVertex;
+    output.MaterialUv1 = input.MaterialUv1;
+#else
+    output.NormalWorld = NormalizeOrZero(float32x3(dot(input.NormalMeshToWorldRow0.xyz, input.NormalMesh),
+                                                   dot(input.NormalMeshToWorldRow1.xyz, input.NormalMesh),
+                                                   dot(input.NormalMeshToWorldRow2.xyz, input.NormalMesh)));
+#endif
+    output.TexcoordUv = input.TexcoordUv;
+    output.EyeWorld = input.EyeWorld;
+    output.BakeUv = input.BakeUv;
+    output.IsBakeValid = input.Color.x;
+#if LUDUS_CLUSTERED != 0
+    output.IsDirectReference = input.Color.y;
+#endif
+#if LUDUS_DEBUG_VIEW != 0
+    output.DebugDepthRange = input.Color.zw;
+#endif
+    return output;
+}
+float32 ComputeFifth(float32 x)
+{
+    float32 square = x * x;
+    return square * square * x;
+}
+float32x3 EvaluateBrdf(float32x3 baseColor,
+                       float32x3 normalWorld,
+                       float32x3 viewDirectionWorld,
+                       float32x3 lightDirectionWorld,
+                       float32 metallic,
+                       float32 roughness,
+                       bool isBakedDiffuse)
+{
+    float32 nv = max(dot(normalWorld, viewDirectionWorld), 0);
+    float32 nl = max(dot(normalWorld, lightDirectionWorld), 0);
+    float32x3 halfSumWorld = viewDirectionWorld + lightDirectionWorld;
+    if (nv <= 0 || nl <= 0 || dot(halfSumWorld, halfSumWorld) < 1e-12)
+        return float32x3(0);
+    float32x3 halfDirectionWorld = NormalizeOrZero(halfSumWorld);
+    float32 lh = saturate(dot(lightDirectionWorld, halfDirectionWorld));
+    float32 a = roughness * roughness;
+    float32 a2 = a * a;
+    float32 distribution = ComputeGgxNormalDistribution(normalWorld, halfDirectionWorld, a2);
+    float32 visibility = 0.5 / max(nl * sqrt(nv * nv * (1 - a2) + a2) + nv * sqrt(nl * nl * (1 - a2) + a2), 1e-6);
+    float32x3 f0 = lerp(float32x3(0.04), baseColor, metallic);
+    float32x3 fresnel = f0 + (1 - f0) * ComputeFifth(1 - lh);
+    return nl * (distribution * visibility * fresnel +
+                 baseColor * (1 - metallic) * (1 - fresnel) * (isBakedDiffuse == true ? 0 : 1) / PI);
+}
+// EvaluateBrdf's two lobes apart: returns the specular lobe and writes the diffuse one, for a skin resolve that
+// spreads only diffuse lighting (renderer_deferred_lighting.slang).
+float32x3 EvaluateBrdfLobes(float32x3 baseColor,
+                            float32x3 normalWorld,
+                            float32x3 viewDirectionWorld,
+                            float32x3 lightDirectionWorld,
+                            float32 metallic,
+                            float32 roughness,
+                            bool isBakedDiffuse,
+                            out float32x3 outDiffuse)
+{
+    outDiffuse = float32x3(0);
+    float32 nv = max(dot(normalWorld, viewDirectionWorld), 0);
+    float32 nl = max(dot(normalWorld, lightDirectionWorld), 0);
+    float32x3 halfSumWorld = viewDirectionWorld + lightDirectionWorld;
+    if (nv <= 0 || nl <= 0 || dot(halfSumWorld, halfSumWorld) < 1e-12)
+        return float32x3(0);
+    float32x3 halfDirectionWorld = NormalizeOrZero(halfSumWorld);
+    float32 lh = saturate(dot(lightDirectionWorld, halfDirectionWorld));
+    float32 a = roughness * roughness;
+    float32 a2 = a * a;
+    float32 distribution = ComputeGgxNormalDistribution(normalWorld, halfDirectionWorld, a2);
+    float32 visibility = 0.5 / max(nl * sqrt(nv * nv * (1 - a2) + a2) + nv * sqrt(nl * nl * (1 - a2) + a2), 1e-6);
+    float32x3 f0 = lerp(float32x3(0.04), baseColor, metallic);
+    float32x3 fresnel = f0 + (1 - f0) * ComputeFifth(1 - lh);
+    outDiffuse = nl * baseColor * (1 - metallic) * (1 - fresnel) * (isBakedDiffuse == true ? 0 : 1) / PI;
+    return nl * distribution * visibility * fresnel;
+}
+#if LUDUS_AUTHORED_INPUTS != 0
+// Raster hair cards (content::scene_format::MaterialModel::HairCard). hair_card.cpp mirrors every operation for
+// tests; keep the two together. Thanks to James T. Kajiya and Timothy L. Kay, "Rendering Fur with Three Dimensional
+// Textures", SIGGRAPH '89, pp. 271-280, "The specular component", Fig. 8, for the highlight on a cone around the fibre
+// tangent. Ludus evaluates it around a card's strand, tilted by two authored shifts, with a (p + 2) / (2 pi)
+// normalization and card-side gating; see hair_card.hpp.
+static const float32 HAIR_CARD_MIN_EXPONENT = 1; // MIN_HAIR_CARD_EXPONENT
+static const float32 HAIR_CARD_MAX_EXPONENT = 65536; // MAX_HAIR_CARD_EXPONENT
+// Squared length below which a hair-card direction is treated as vanishing.
+static const float32 HAIR_CARD_MIN_DIRECTION_LENGTH_SQUARED = 1e-12;
+// Sine between the normal and +Y below which the fallback tangent uses +Z instead.
+static const float32 HAIR_CARD_MIN_TANGENT_SINE = 1e-3;
+bool IsHairCard()
+{
+    return material.HairStrand.x > .5;
+}
+float32x3 NormalizeHairCardDirection(in float32x3 value)
+{
+    float32 lengthSquared = dot(value, value);
+    return lengthSquared > HAIR_CARD_MIN_DIRECTION_LENGTH_SQUARED ? value * rsqrt(lengthSquared) : float32x3(0);
+}
+float32 ComputeHairCardExponent(float32 roughness)
+{
+    float32 alpha = roughness * roughness;
+    float32 alphaSquared = alpha * alpha;
+    return alphaSquared > 0 ? clamp(2 / alphaSquared - 2, HAIR_CARD_MIN_EXPONENT, HAIR_CARD_MAX_EXPONENT)
+        : HAIR_CARD_MIN_EXPONENT;
+}
+float32x3 ComputeHairCardFallbackTangent(in float32x3 normalWorld)
+{
+    float32x3 horizontal = cross(float32x3(0, 1, 0), normalWorld);
+    if (dot(horizontal, horizontal) > HAIR_CARD_MIN_TANGENT_SINE * HAIR_CARD_MIN_TANGENT_SINE)
+        return NormalizeHairCardDirection(horizontal);
+    return NormalizeHairCardDirection(cross(normalWorld, float32x3(0, 0, 1)));
+}
+float32x3 ComputeHairCardStrand(in float32x3 normalWorld, in float32x3 tangentWorld, float32 handedness, float32 strandRadians)
+{
+    float32x3 planarTangentWorld = NormalizeHairCardDirection(tangentWorld - normalWorld * dot(normalWorld, tangentWorld));
+    float32 sign = handedness < 0 ? -1 : 1;
+    if (dot(planarTangentWorld, planarTangentWorld) == 0)
+    {
+        planarTangentWorld = ComputeHairCardFallbackTangent(normalWorld);
+        sign = 1;
+    }
+    float32x3 bitangentWorld = cross(normalWorld, planarTangentWorld) * sign;
+    return NormalizeHairCardDirection(planarTangentWorld * cos(strandRadians) + bitangentWorld * sin(strandRadians));
+}
+float32 EvaluateHairCardHighlight(in float32x3 strandWorld,
+                                  in float32x3 facingNormalWorld,
+                                  in float32x3 halfDirectionWorld,
+                                  float32 shiftRadians,
+                                  float32 exponent)
+{
+    float32x3 shiftedStrandWorld =
+        NormalizeHairCardDirection(strandWorld * cos(shiftRadians) + facingNormalWorld * sin(shiftRadians));
+    float32 cosine = dot(shiftedStrandWorld, halfDirectionWorld);
+    float32 sine = sqrt(max(0, 1 - cosine * cosine));
+    // Render stages compile with fast math: keep pow away from log2(0).
+    return sine > 0 ? (exponent + 2) / (2 * PI) * pow(sine, exponent) : 0;
+}
+float32x3 EvaluateHairCard(in float32x3 baseColor,
+                           float32 roughness,
+                           in float32x3 facingNormalWorld,
+                           in float32x3 strandWorld,
+                           in float32x3 viewDirectionWorld,
+                           in float32x3 lightDirectionWorld,
+                           bool isBakedDiffuse)
+{
+    float32 nl = dot(facingNormalWorld, lightDirectionWorld);
+    float32 nv = dot(facingNormalWorld, viewDirectionWorld);
+    if (nl <= 0 || nv <= 0)
+        return float32x3(0);
+    float32x3 result = isBakedDiffuse == true ? float32x3(0) : baseColor / PI;
+    float32x3 halfDirectionWorld = NormalizeHairCardDirection(viewDirectionWorld + lightDirectionWorld);
+    if (dot(halfDirectionWorld, halfDirectionWorld) > 0)
+    {
+        float32 exponent = ComputeHairCardExponent(roughness);
+        float32 primary = material.HairHighlights.x * EvaluateHairCardHighlight(strandWorld,
+                                                                                facingNormalWorld,
+                                                                                halfDirectionWorld,
+                                                                                material.HairStrand.z,
+                                                                                exponent);
+        float32 secondary = material.HairHighlights.y * EvaluateHairCardHighlight(strandWorld,
+                                                                                  facingNormalWorld,
+                                                                                  halfDirectionWorld,
+                                                                                  material.HairStrand.w,
+                                                                                  exponent);
+        result += float32x3(primary) + baseColor * secondary;
+    }
+    return result * nl;
+}
+#endif
+// Instance flags in EyeWorld.w: bit 0 receives shadows, bit 1 orthographic eye. The value is
+// constant per instance but reaches the fragment through a perspective-interpolated varying,
+// so it may arrive as 0.9999...; round instead of truncating or whole pixel rows lose a flag.
+int32 GetEyeFlags(Varying input)
+{
+    return int32(input.EyeWorld.w + 0.5);
+}
+// The encoded depth and slope a shadow map stores at uv: the mesh-light atlas in the deferred resolve.
+float32x4 ReadShadowCode(float32x2 uv)
+{
+    return shadowTexture.SampleLevel(shadowSampler, uv, 0);
+}
+// One shadow region lookup: the receiver's place in the map and how far its position may be off its surface.
+struct ShadowLookup
+{
+    float32x4 Rectangle;
+    float32x4 Settings;
+    float32x2 ReceiverTexel;
+    float32 ReceiverDepth;
+    float32x2 UncertaintyTexel;
+    float32 UncertaintyDepth;
+    bool IsNearCascade;
+};
+// The depth the caster stored at sampleUv has at the receiver's location, and the tolerance its comparison allows.
+float32 ProjectShadowCaster(in ShadowLookup lookup, float32x2 sampleUv, out float32 outTolerance, out float32 outStored)
+{
+    float32x4 code = ReadShadowCode(sampleUv);
+    float32x2 centerTexel = sampleUv / lookup.Settings.zw;
+    // Thanks to Microsoft, "Cascaded Shadow Maps", Depth Bias,
+    // https://learn.microsoft.com/en-us/windows/win32/dxtecharts/cascaded-shadow-maps,
+    // for comparing depths at matching locations across a PCF filter.
+    // Light projections map planes to planes, so each caster plane is projected to the receiver's
+    // location from the slope stored at the sampled texel. A fixed bias alone cannot cover the depth
+    // a grazing light spans across one texel: Sun-lit floors then shadowed themselves in texel stripes
+    // that aliased into blotches moving with the camera.
+    float32x2 slope = DecodeShadowSlope(code.ba);
+    outStored = DecodeShadowDepth(code.rg);
+    // The displaced receiver changes its own depth and where it meets the caster's plane. Allow both,
+    // or a surface lit at a grazing angle shadows itself wherever the depth buffer rounds unfavourably.
+    outTolerance = lookup.Settings.x + lookup.UncertaintyDepth + dot(abs(slope), lookup.UncertaintyTexel);
+    float32x2 offsetTexels = lookup.ReceiverTexel - centerTexel;
+    if (lookup.IsNearCascade == true)
+    {
+        // Each signed square-root slope rounded to an 8-bit code. Bound its squared endpoint
+        // error before extrapolating the caster plane to the receiver.
+        float32 halfStep = 0.5 / SHADOW_SLOPE_CODE_RADIUS;
+        float32x2 slopeError = halfStep * (2 * sqrt(abs(slope)) + halfStep);
+        outTolerance += dot(abs(offsetTexels), slopeError);
+    }
+    return outStored + dot(slope, offsetTexels);
+}
+// Visibility of the receiver against the four map texels nearest sampleTexel, bilinearly weighted.
+static const int32 SHADOW_FILTER_TAP_COUNT = 4;
+float32 CompareShadowTexels(in ShadowLookup lookup, float32x2 sampleTexel)
+{
+    float32x2 lowerTexel = floor(sampleTexel - 0.5) + 0.5;
+    float32x2 fraction = sampleTexel - lowerTexel;
+    float32 visible = 0;
+    for (int32 tap = 0; tap < SHADOW_FILTER_TAP_COUNT; ++tap)
+    {
+        float32x2 corner = float32x2(float32(tap & 1), float32((tap >> 1) & 1));
+        float32x2 sampleUv = clamp((lowerTexel + corner) * lookup.Settings.zw, lookup.Rectangle.xy, lookup.Rectangle.zw);
+        float32 tolerance;
+        float32 stored;
+        float32 projected = ProjectShadowCaster(lookup, sampleUv, out tolerance, out stored);
+        float32x2 weights = lerp(1 - fraction, fraction, corner);
+        float32 weight = weights.x * weights.y;
+        visible += lookup.ReceiverDepth - tolerance <= projected ? weight : 0;
+    }
+    return visible;
+}
+// Directional penumbrae (DirectLight::AngularRadiusRadians). Thanks to Randima Fernando, "Percentage-Closer Soft
+// Shadows", ACM SIGGRAPH 2005 Sketches, p. 35, https://doi.org/10.1145/1187112.1187153, for estimating the penumbra
+// from the average blocker depth and widening the comparison filter by it, and to Helmut Vogel, "A better way to
+// construct the sunflower head", Mathematical Biosciences 44(3-4), 1979, pp. 179-189,
+// https://doi.org/10.1016/0025-5564(79)90080-4, for the evenly spread golden-angle disk of taps. A disk of angular
+// radius r casts a penumbra of radius tan(r) times the distance from the blocker to the receiver along the light; the
+// orthographic map turns depth and texel offsets into metres through its projection rows. The filter radius is
+// clamped to DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS, which bounds the cost and keeps wider penumbrae soft but too narrow.
+static const int32 DIRECTIONAL_PENUMBRA_TAP_COUNT = 16;
+static const float32 DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS = 32;
+// Golden-angle disk tap `tap` of DIRECTIONAL_PENUMBRA_TAP_COUNT, inside the unit disk.
+float32x2 GetDirectionalPenumbraTap(int32 tap)
+{
+    float32 radius = sqrt((float32(tap) + 0.5) / float32(DIRECTIONAL_PENUMBRA_TAP_COUNT));
+    float32 angle = float32(tap) * GOLDEN_ANGLE_RADIANS;
+    return radius * float32x2(cos(angle), sin(angle));
+}
+// Visibility of the receiver from a directional light's disk whose angular radius has tangent diskTangent.
+// texelsPerDepth converts a map depth difference into map texels of penumbra radius per unit disk tangent.
+float32 FilterDirectionalPenumbra(in ShadowLookup lookup, float32 diskTangent, float32x2 texelsPerDepth)
+{
+    // Nothing nearer than the map's near plane can block: it bounds the widest penumbra the receiver can be in.
+    float32x2 searchTexels = clamp(diskTangent * lookup.ReceiverDepth * texelsPerDepth,
+                                   float32x2(1),
+                                   float32x2(DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS));
+    float32 blockerSum = 0;
+    float32 blockerCount = 0;
+    for (int32 tap = 0; tap < DIRECTIONAL_PENUMBRA_TAP_COUNT; ++tap)
+    {
+        float32x2 sampleTexel = floor(lookup.ReceiverTexel + GetDirectionalPenumbraTap(tap) * searchTexels) + 0.5;
+        float32x2 sampleUv = clamp(sampleTexel * lookup.Settings.zw, lookup.Rectangle.xy, lookup.Rectangle.zw);
+        float32 tolerance;
+        float32 stored;
+        float32 projected = ProjectShadowCaster(lookup, sampleUv, out tolerance, out stored);
+        if (lookup.ReceiverDepth - tolerance > projected)
+        {
+            blockerSum += stored;
+            blockerCount += 1;
+        }
+    }
+    if (blockerCount == 0)
+        return CompareShadowTexels(lookup, lookup.ReceiverTexel);
+    float32 blockerDepth = blockerSum / blockerCount;
+    float32x2 radiusTexels = min(diskTangent * max(lookup.ReceiverDepth - blockerDepth, 0) * texelsPerDepth,
+                                 float32x2(DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS));
+    // A penumbra narrower than a texel is the bilinear comparison's own transition.
+    if (max(radiusTexels.x, radiusTexels.y) < 1)
+        return CompareShadowTexels(lookup, lookup.ReceiverTexel);
+    float32 visible = 0;
+    for (int32 tap = 0; tap < DIRECTIONAL_PENUMBRA_TAP_COUNT; ++tap)
+        visible += CompareShadowTexels(lookup, lookup.ReceiverTexel + GetDirectionalPenumbraTap(tap) * radiusTexels);
+    return visible / float32(DIRECTIONAL_PENUMBRA_TAP_COUNT);
+}
+// Nonnegative indices address material regions. A negative index encodes the near table word offset.
+float32x4 ReadShadowWord(int32 region, int32 word)
+{
+    return material.ShadowData[region * int32(SHADOW_REGION_WORDS) + word];
+}
+// Visibility of positionWorld in shadow region region, bilinearly filtered over its four nearest texels, or over a
+// directional light's penumbra when its disk has a positive angular radius.
+// outIsInside is false, and the result one, when the position falls outside the region's projection.
+float32 SampleShadowRegion(int32 region, int32 light, float32x3 positionWorld, Varying input, out bool outIsInside)
+{
+    outIsInside = false;
+    float32x4 settings = ReadShadowWord(region, 5);
+    float32x4 p = float32x4(positionWorld, 1);
+    float32x4 clip = float32x4(dot(ReadShadowWord(region, 0), p),
+                               dot(ReadShadowWord(region, 1), p),
+                               dot(ReadShadowWord(region, 2), p),
+                               dot(ReadShadowWord(region, 3), p));
+    if (clip.w <= 1e-6)
+        return 1;
+    float32x3 ndc = clip.xyz / clip.w;
+    if (abs(ndc.x) > 1 || abs(ndc.y) > 1 || ndc.z < 0 || ndc.z > 1)
+        return 1;
+    outIsInside = true;
+    ShadowLookup lookup = void;
+    lookup.Rectangle = ReadShadowWord(region, 4);
+    lookup.Settings = settings;
+    lookup.IsNearCascade = region < 0;
+    float32x4 rect = lookup.Rectangle;
+    float32x2 projectedUv = float32x2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    // Every region is drawn with its interior as the viewport, so the projection maps clip edges to viewport
+    // edges. The atlas rectangle supplied by the host bounds legal texel centres.
+    float32x2 uv = lerp(rect.xy - settings.zw * 0.5, rect.zw + settings.zw * 0.5, projectedUv);
+    lookup.ReceiverTexel = uv / settings.zw;
+    lookup.ReceiverDepth = ndc.z;
+    // Map texels per unit of normalized device coordinates.
+    float32x2 texelsPerNdc = 0.5 * (rect.zw - rect.xy + settings.zw) / settings.zw;
+    // Forward passes interpolate the receiver's exact position.
+    lookup.UncertaintyTexel = float32x2(0);
+    lookup.UncertaintyDepth = 0;
+    float32 diskTangent = material.Lights[light * 4 + 3].z;
+    // Only an orthographic directional region has a disk: its projection's last row is (0, 0, 0, 1).
+    if (diskTangent > 0 && material.Lights[light * 4].w == 0 &&
+        dot(ReadShadowWord(region, 3).xyz, ReadShadowWord(region, 3).xyz) == 0)
+    {
+        // Orthographic rows are the light basis scaled by NDC units per metre: a depth difference spans
+        // 1 / |depth row| metres, and one metre across spans |row| NDC units.
+        float32 metresPerDepth = 1 / length(ReadShadowWord(region, 2).xyz);
+        float32x2 texelsPerMetre =
+            texelsPerNdc * float32x2(length(ReadShadowWord(region, 0).xyz), length(ReadShadowWord(region, 1).xyz));
+        return FilterDirectionalPenumbra(lookup, diskTangent, metresPerDepth * texelsPerMetre);
+    }
+    return CompareShadowTexels(lookup, lookup.ReceiverTexel);
+}
+// Shadow-map coverage of a light at a receiver, for the shadow coverage debug view.
+static const int32 SHADOW_COVERAGE_NONE = 0; // The light has no map.
+static const int32 SHADOW_COVERAGE_INSIDE = 1; // A map of the light covers the receiver.
+static const int32 SHADOW_COVERAGE_OUTSIDE = 2; // The light has maps, but none covers the receiver.
+float32 ComputeShadowCoverage(int32 light, Varying input, out int32 outCoverage)
+{
+    outCoverage = SHADOW_COVERAGE_NONE;
+    if ((GetEyeFlags(input) & 1) == 0)
+        return 1;
+    bool hasLocalShadowCoverage = false;
+    for (int32 region = 0; region < int32(SHADOW_REGION_CAPACITY); ++region)
+    {
+        if (region >= int32(material.Pbr.w))
+            break;
+        float32x4 settings = material.ShadowData[region * int32(SHADOW_REGION_WORDS) + 5];
+        if (int32(settings.y) != light)
+            continue;
+        hasLocalShadowCoverage = hasLocalShadowCoverage == true || material.Lights[light * 4].w >= 1;
+        outCoverage = SHADOW_COVERAGE_OUTSIDE;
+        bool isInside;
+        float32 visible = SampleShadowRegion(region, light, input.PositionWorld, input, out isInside);
+        if (isInside == true)
+        {
+            outCoverage = SHADOW_COVERAGE_INSIDE;
+            return visible;
+        }
+    }
+    return hasLocalShadowCoverage == true
+        ? 0
+        : 1; // Local coverage gaps conservatively occlude; directional cascade contract stays explicit.
+}
+float32 ComputeShadowVisibility(int32 light, Varying input)
+{
+    int32 coverage;
+    return ComputeShadowCoverage(light, input, out coverage);
+}
+float32x4 SampleBaseTexel(Varying input)
+{
+    float32x2 materialUv = input.TexcoordUv;
+#if LUDUS_AUTHORED_INPUTS != 0
+    if (material.Authored.y > .5)
+        materialUv = input.MaterialUv1;
+#endif
+    float32x2 uv = materialUv * material.UvTransform.xy + material.UvTransform.zw;
+    float32x4 texel = material.Options.y < 0 ? colorTexture.Sample(colorSampler, uv)
+        : colorTexture.SampleLevel(colorSampler, uv, material.Options.y);
+    float32x4 baseColor = texel * material.Tint;
+#if LUDUS_AUTHORED_INPUTS != 0
+    if (material.Authored.x > .5)
+        baseColor *= input.ColorVertex;
+#endif
+    if (material.Options.z == 1 && baseColor.a < material.Options.x)
+        discard;
+    return baseColor;
+}
+#if LUDUS_AUTHORED_INPUTS != 0
+// Thanks to Guy/Agopian, Filament sections 5.3 and 9.6 (URL above): SH diffuse
+// and prefiltered GGX split-sum IBL. DFG uses Lazarov's fit documented by Filament.
+float32x2 ComputeEnvironmentUv(in float32x3 directionWorld)
+{
+    float32 longitude = atan2(directionWorld.z, directionWorld.x) / TAU;
+    return float32x2(longitude - floor(longitude), atan2(length(directionWorld.xz), directionWorld.y) / PI);
+}
+// Real spherical-harmonic basis function `coefficient` (bands 0 to 2) at normalWorld; LUSL has no array initializer.
+float32 EvaluateShBasis(in int32 coefficient, in float32x3 normalWorld)
+{
+    switch (coefficient)
+    {
+        case 0:
+            return .2820947918;
+        case 1:
+            return .4886025119 * normalWorld.y;
+        case 2:
+            return .4886025119 * normalWorld.z;
+        case 3:
+            return .4886025119 * normalWorld.x;
+        case 4:
+            return 1.0925484306 * normalWorld.x * normalWorld.y;
+        case 5:
+            return 1.0925484306 * normalWorld.y * normalWorld.z;
+        case 6:
+            return .3153915653 * (3 * normalWorld.z * normalWorld.z - 1);
+        case 7:
+            return 1.0925484306 * normalWorld.x * normalWorld.z;
+        default:
+            return .5462742153 * (normalWorld.x * normalWorld.x - normalWorld.y * normalWorld.y);
+    }
+}
+float32x3 EvaluateEnvironmentIrradiance(in float32x3 normalWorld)
+{
+    float32x3 irradiance = float32x3(0);
+    for (int32 coefficient = 0; coefficient < LUDUS_ENVIRONMENT_SH_COEFFICIENTS; ++coefficient)
+        irradiance += material.IrradianceSh[coefficient].rgb * EvaluateShBasis(coefficient, normalWorld);
+    return max(irradiance, float32x3(0));
+}
+#    if LUDUS_GRAPH_REALTIME == 0 && LUDUS_GRAPH_SURFACE_CHART == 0
+float32x4 ReadGiProbeTexel(int32 probe, int32 texel)
+{
+    int32 index = probe * LUDUS_GI_PROBE_TEXELS + texel;
+    return bakeTexture.Load(int32x3(index % LUDUS_GI_PROBE_ATLAS_WIDTH, index / LUDUS_GI_PROBE_ATLAS_WIDTH, 0));
+}
+
+// Thanks to Majercik, Guertin, Nowrouzezahrai and McGuire, "Dynamic Diffuse Global
+// Illumination with Ray-Traced Irradiance Fields", JCGT 8(2), 2019, section 5,
+// https://jcgt.org/published/0008/02/01/, for visibility-aware probe weighting.
+// Compare each stored axial distance before filtering to preserve depth discontinuities.
+float32 ComputeGiProbeVisibility(int32 probe, in float32x3 offsetWorldInCells)
+{
+    float32x3 magnitude = abs(offsetWorldInCells);
+    int32 axis = magnitude.x >= magnitude.y && magnitude.x >= magnitude.z ? 0 : (magnitude.y >= magnitude.z ? 1 : 2);
+    float32 distanceInCells = magnitude[axis];
+    if (distanceInCells == 0)
+        return 1;
+    static const int32 AXIS_COUNT = 3;
+    int32 face = 2 * axis + (offsetWorldInCells[axis] < 0 ? 1 : 0);
+    float32x2 directionUv =
+        float32x2(offsetWorldInCells[(axis + 1) % AXIS_COUNT], offsetWorldInCells[(axis + 2) % AXIS_COUNT]);
+    float32x2 footprintTexel = clamp((directionUv / distanceInCells * 0.5 + 0.5) * LUDUS_GI_PROBE_FACE_WIDTH - 0.5,
+                                     0,
+                                     LUDUS_GI_PROBE_FACE_WIDTH - 1);
+    int32x2 texel = int32x2(footprintTexel);
+    float32x2 fraction = footprintTexel - float32x2(texel);
+    int32 faceTexel = face * LUDUS_GI_PROBE_FACE_TEXELS + texel.y * LUDUS_GI_PROBE_FACE_WIDTH + texel.x;
+    float32x4 depthsInCells = ReadGiProbeTexel(probe, LUDUS_GI_PROBE_FACES + faceTexel) * LUDUS_GI_PROBE_DEPTH_CELLS;
+    float32x4 visibleTaps = step(distanceInCells - LUDUS_GI_PROBE_DEPTH_BIAS_CELLS, depthsInCells);
+    float32x2 rows = lerp(visibleTaps.xz, visibleTaps.yw, fraction.x);
+    float32 coverage = lerp(rows.x, rows.y, fraction.y);
+    return saturate((coverage - LUDUS_GI_PROBE_MIN_VISIBLE_COVERAGE) / (1 - LUDUS_GI_PROBE_MIN_VISIBLE_COVERAGE));
+}
+
+float32x3 EvaluateGiProbeIrradiance(in float32x3 positionWorld, in float32x3 normalWorld)
+{
+    int32x3 counts = int32x3(material.BakeUv.xyz);
+    float32x3 positionInGrid = (positionWorld - material.BakeScale.xyz) * -material.BakeScale.w;
+    if (any(positionInGrid < float32x3(0)) == true || any(positionInGrid > float32x3(counts - 1)) == true)
+        return float32x3(0);
+    int32x3 first = min(int32x3(positionInGrid), counts - 2);
+    float32x3 fraction = positionInGrid - float32x3(first);
+    float32x3 cosineSquared = normalWorld * normalWorld;
+    int32x3 faces = int32x3(normalWorld.x < 0 ? 1 : 0, normalWorld.y < 0 ? 3 : 2, normalWorld.z < 0 ? 5 : 4);
+    float32x3 sum = float32x3(0);
+    float32 totalWeight = 0;
+    for (int32 z = 0; z < 2; ++z)
+        for (int32 y = 0; y < 2; ++y)
+        for (int32 x = 0; x < 2; ++x)
+    {
+        int32x3 offset = int32x3(x, y, z);
+        int32x3 cell = first + offset;
+        int32 probe = cell.x + counts.x * (cell.y + counts.y * cell.z);
+        float32x3 weights = lerp(1 - fraction, fraction, float32x3(offset));
+        float32 weight = weights.x * weights.y * weights.z;
+        if (weight <= 0)
+            continue;
+        float32x4 irradianceX = ReadGiProbeTexel(probe, faces.x);
+        if (irradianceX.a == 0)
+            continue;
+        weight *= ComputeGiProbeVisibility(probe, positionInGrid - float32x3(cell));
+        if (weight > 0)
+        {
+            sum += weight *
+                (irradianceX.rgb * cosineSquared.x + ReadGiProbeTexel(probe, faces.y).rgb * cosineSquared.y +
+                 ReadGiProbeTexel(probe, faces.z).rgb * cosineSquared.z);
+            totalWeight += weight;
+        }
+    }
+    return totalWeight > 0 ? sum * (material.BakeUv.w / totalWeight) : float32x3(0);
+}
+#    endif
+float32x2 EvaluateEnvironmentDfg(float32 roughness, float32 cosineView)
+{
+    float32x4 coefficients = roughness * float32x4(-1, -.0275, -.572, .022) + float32x4(1, .0425, 1.04, -.04);
+    float32 approximation =
+        min(coefficients.x * coefficients.x, exp2(-9.28 * cosineView)) * coefficients.x + coefficients.y;
+    return float32x2(-1.04, 1.04) * approximation + coefficients.zw;
+}
+#endif
+#if LUDUS_DEBUG_VIEW != 0
+// Largest display-linear value the inverse reproduces (about 0.998 sRGB); mirrors PBR_NEUTRAL_INVERSE_LIMIT.
+static const float32 DEBUG_DISPLAY_LINEAR_LIMIT = 0.995;
+// Display sRGB wireframe colour of edges on surfaces facing the camera.
+static const float32x3 DEBUG_WIREFRAME_COLOUR =
+    float32x3(float32(MATERIAL_DEBUG_WIREFRAME_RED), float32(MATERIAL_DEBUG_WIREFRAME_GREEN), float32(MATERIAL_DEBUG_WIREFRAME_BLUE)) /
+    255.0;
+// Fraction of that colour kept on surfaces seen exactly edge-on.
+static const float32 DEBUG_WIREFRAME_EDGE_ON_SHADE = float32(MATERIAL_DEBUG_WIREFRAME_EDGE_ON_PERCENT) / 100.0;
+// Scene-linear colour that renderer_output.lusl's PBR Neutral curve maps to a wanted display-linear colour;
+// mirrors InvertPbrNeutral in tone_mapping.hpp.
+float32x3 InvertPbrNeutral(float32x3 display)
+{
+    float32 peak = max(display.x, max(display.y, display.z));
+    float32x3 shifted = display;
+    if (peak > PBR_NEUTRAL_START)
+    {
+        float32 headroom = 1 - PBR_NEUTRAL_START;
+        float32 oldPeak = headroom * headroom / (1 - peak) - 1 + 2 * PBR_NEUTRAL_START;
+        float32 mixAmount = 1 / (PBR_NEUTRAL_DESATURATION * (oldPeak - peak) + 1);
+        float32 scale = peak / oldPeak * mixAmount;
+        shifted = max((display - peak * (1 - mixAmount)) / scale, float32x3(0));
+    }
+    float32 smallest = min(shifted.x, min(shifted.y, shifted.z));
+    float32 original =
+        smallest < PBR_NEUTRAL_FRESNEL ? 2 * sqrt(PBR_NEUTRAL_FRESNEL * smallest) : smallest + PBR_NEUTRAL_FRESNEL;
+    float32 offset = original <= 2 * PBR_NEUTRAL_FRESNEL ? original - original * original / (4 * PBR_NEUTRAL_FRESNEL)
+        : PBR_NEUTRAL_FRESNEL;
+    return shifted + offset;
+}
+// Inverts RasterViewport's presentation (renderer_output.lusl: PBR Neutral, then sRGB encode at
+// exposure one) so a diagnostic colour authored in display sRGB appears unchanged on screen.
+float32x3 EncodeDebugDisplay(float32x3 displaySrgb)
+{
+    float32x3 encoded = saturate(displaySrgb);
+    float32x3 linearColor = float32x3(encoded.x <= 0.04045 ? encoded.x / 12.92 : pow((encoded.x + 0.055) / 1.055, 2.4),
+                                      encoded.y <= 0.04045 ? encoded.y / 12.92 : pow((encoded.y + 0.055) / 1.055, 2.4),
+                                      encoded.z <= 0.04045 ? encoded.z / 12.92 : pow((encoded.z + 0.055) / 1.055, 2.4));
+    return InvertPbrNeutral(min(linearColor, float32x3(DEBUG_DISPLAY_LINEAR_LIMIT)));
+}
+// Perceptually uniform viridis ramp over t in [0,1], dark purple through teal to yellow, as display-space sRGB.
+// Thanks to Matt Zucker, "Viridis approximation" (Shadertoy WlfXRN), a degree-six polynomial fit of
+// matplotlib's viridis (Nathaniel Smith and Stefan van der Walt, CC0).
+float32x3 ComputeRampColour(float32 t)
+{
+    const float32x3 coefficient0 = float32x3(0.2777273272234177, 0.005407344544966578, 0.3340998053353061);
+    const float32x3 coefficient1 = float32x3(0.1050930431085774, 1.404613529898575, 1.384590162594685);
+    const float32x3 coefficient2 = float32x3(-0.3308618287255563, 0.214847559468213, 0.09509516302823659);
+    const float32x3 coefficient3 = float32x3(-4.634230498983486, -5.799100973351585, -19.33244095627987);
+    const float32x3 coefficient4 = float32x3(6.228269936347081, 14.17993336680509, 56.69055260068105);
+    const float32x3 coefficient5 = float32x3(4.776384997670288, -13.74514537774601, -65.35303263337234);
+    const float32x3 coefficient6 = float32x3(-5.435455855934631, 4.645852612178535, 26.3124352495832);
+    float32 x = saturate(t);
+    return saturate(
+        coefficient0 +
+        x * (coefficient1 +
+             x * (coefficient2 + x * (coefficient3 + x * (coefficient4 + x * (coefficient5 + x * coefficient6))))));
+}
+float32x3 ComputeDebugColour(int32 mode,
+                             Varying input,
+                             float32x3 normalWorld,
+                             float32 metallic,
+                             float32 roughness,
+                             int32 lightCount,
+                             float32x3 shaded)
+{
+    if (mode == int32(MATERIAL_DEBUG_VIEW_NORMAL_WORLD))
+        return normalWorld * 0.5 + 0.5;
+    if (mode == int32(MATERIAL_DEBUG_VIEW_LINEAR_DEPTH))
+    {
+        // Perspective: radial distance from the eye. Orthographic (eye flag bit 1): distance
+        // along the view direction; the renderer shifted the range into this frame.
+        float32 distance = (GetEyeFlags(input) & 2) != 0 ? -dot(input.PositionWorld, input.EyeWorld.xyz)
+            : length(input.PositionWorld - input.EyeWorld.xyz);
+        float32 span = input.DebugDepthRange.y - input.DebugDepthRange.x;
+        return ComputeRampColour(span > 0 ? (distance - input.DebugDepthRange.x) / span : 0);
+    }
+    if (mode == int32(MATERIAL_DEBUG_VIEW_ROUGHNESS))
+        return float32x3(roughness);
+    if (mode == int32(MATERIAL_DEBUG_VIEW_METALLIC))
+        return float32x3(metallic);
+    if (mode == int32(MATERIAL_DEBUG_VIEW_TEXCOORD_UV))
+        return float32x3(frac(input.TexcoordUv), 0);
+    if (mode == int32(MATERIAL_DEBUG_VIEW_LIGHT_COUNT))
+        return ComputeRampColour(float32(lightCount) / float32(MATERIAL_DEBUG_LIGHT_COUNT_SATURATION));
+    if (mode == int32(MATERIAL_DEBUG_VIEW_WIREFRAME))
+    {
+        // Edges of surfaces seen edge-on dim, so overlapping wire layers keep a sense of shape.
+        float32x3 viewDirectionWorld = (GetEyeFlags(input) & 2) != 0
+            ? NormalizeOrZero(input.EyeWorld.xyz)
+            : NormalizeOrZero(input.EyeWorld.xyz - input.PositionWorld);
+        float32 facing = abs(dot(normalWorld, viewDirectionWorld));
+        return DEBUG_WIREFRAME_COLOUR * lerp(DEBUG_WIREFRAME_EDGE_ON_SHADE, 1, facing);
+    }
+    return shaded;
+}
+#endif
+struct SurfaceSample
+{
+    float32x4 BaseColor;
+    float32x3 NormalWorld;
+    float32x3 ViewDirectionWorld;
+    float32 Metallic;
+    float32 Roughness;
+    float32x3 Emission;
+    float32 Alpha;
+    // Unit hair-card strand direction; zero for every other material.
+    float32x3 StrandWorld = float32x3(0);
+    // One-based skin profile slot of a skin material with a scattering distance; zero for every other material.
+    float32 SkinProfile = 0;
+};
+SurfaceSample SampleMaterial(in Varying input)
+{
+    // Thanks to the W3C GPU for the Web Working Group, WGSL, "Derivative Built-in Functions":
+    // https://www.w3.org/TR/WGSL/#derivative-builtin-functions
+    // Evaluate quad derivatives before alpha discard and the per-fragment tangent-frame choice.
+    float32x3 positionDerivativeXWorld = ddx(input.PositionWorld);
+    float32x3 positionDerivativeYWorld = ddy(input.PositionWorld);
+#if LUDUS_AUTHORED_INPUTS != 0
+    float32x2 hairUv = (material.Authored.y > .5 ? input.MaterialUv1 : input.TexcoordUv) * material.UvTransform.xy +
+        material.UvTransform.zw;
+    float32x2 hairUvDerivativeX = ddx(hairUv);
+    float32x2 hairUvDerivativeY = ddy(hairUv);
+#endif
+    float32x4 baseColor = SampleBaseTexel(input);
+    float32x3 normalWorld = NormalizeOrZero(input.NormalWorld);
+    float32x3 viewDirectionWorld = (GetEyeFlags(input) & 2) != 0
+        ? NormalizeOrZero(input.EyeWorld.xyz)
+        : NormalizeOrZero(input.EyeWorld.xyz - input.PositionWorld);
+    float32 metallic = material.Pbr.x;
+    float32 roughness = material.Pbr.y;
+#if LUDUS_SURFACE_FIDELITY != 0
+    if (material.SurfaceMap.y > .5)
+    {
+        float32x2 materialUv = input.TexcoordUv;
+#    if LUDUS_AUTHORED_INPUTS != 0
+        if (material.Authored.y > .5)
+            materialUv = input.MaterialUv1;
+#    endif
+        float32x2 uv = materialUv * material.UvTransform.xy + material.UvTransform.zw;
+        float32x4 texel = material.Options.y < 0 ? surfaceTexture.Sample(colorSampler, uv)
+            : surfaceTexture.SampleLevel(colorSampler, uv, material.Options.y);
+        SurfaceParameters parameters = DecodeSurfaceParameters(texel, metallic, roughness, material.SurfaceMap.x);
+        metallic = parameters.Metallic;
+        roughness = parameters.Roughness;
+        float32x2 uvDerivativeXMaterial = ddx(uv);
+        float32x2 uvDerivativeYMaterial = ddy(uv);
+#    if LUDUS_AUTHORED_INPUTS != 0
+        if (material.Authored.x > .5 && abs(input.TangentWorld.w) > .5)
+        {
+            float32x3 tangentWorld =
+                NormalizeOrZero(input.TangentWorld.xyz - normalWorld * dot(normalWorld, input.TangentWorld.xyz));
+            float32x3 bitangentWorld = cross(normalWorld, tangentWorld) * input.TangentWorld.w;
+            normalWorld =
+                NormalizeOrZero(tangentWorld * parameters.NormalTangent.x +
+                                bitangentWorld * parameters.NormalTangent.y + normalWorld * parameters.NormalTangent.z);
+        }
+        else
+#    endif
+            normalWorld = ApplyNormalWorld(normalWorld,
+                                           parameters.NormalTangent,
+                                           positionDerivativeXWorld,
+                                           positionDerivativeYWorld,
+                                           uvDerivativeXMaterial,
+                                           uvDerivativeYMaterial);
+    }
+#endif
+    float32x3 geometricNormalWorld = cross(positionDerivativeXWorld, positionDerivativeYWorld);
+    if (dot(geometricNormalWorld, input.NormalWorld) < 0)
+        geometricNormalWorld = -geometricNormalWorld;
+    bool isGeometricFront = dot(geometricNormalWorld, viewDirectionWorld) > 0;
+    if (isGeometricFront == true && dot(normalWorld, normalWorld) > 0)
+    {
+        // Smooth or mapped normals can turn past the camera on a visible face.
+        normalWorld = ClipShadingNormalToOutgoingHemisphere(normalWorld, viewDirectionWorld);
+    }
+#if LUDUS_AUTHORED_INPUTS != 0
+    float32x3 strandWorld = float32x3(0);
+    if (IsHairCard() == true && dot(normalWorld, normalWorld) > 0)
+    {
+        // The strand comes from the front-side frame, so both sides of a card share one physical direction.
+        // An authored tangent wins; otherwise the texture-coordinate derivatives give dP/du and the handedness,
+        // and a card without texture coordinates takes ComputeHairCardFallbackTangent's frame.
+        float32x3 tangentWorld = float32x3(0);
+        float32 handedness = 1;
+        if (abs(input.TangentWorld.w) > .5)
+        {
+            tangentWorld = input.TangentWorld.xyz;
+            handedness = input.TangentWorld.w;
+        }
+        else
+        {
+            float32 determinant = hairUvDerivativeX.x * hairUvDerivativeY.y - hairUvDerivativeX.y * hairUvDerivativeY.x;
+            // Only the directions matter, so multiply by the determinant's sign instead of dividing by it.
+            float32 orientation = determinant < 0 ? -1 : (determinant > 0 ? 1 : 0);
+            tangentWorld =
+                (positionDerivativeXWorld * hairUvDerivativeY.y - positionDerivativeYWorld * hairUvDerivativeX.y) *
+                orientation;
+            float32x3 bitangentWorld =
+                (positionDerivativeYWorld * hairUvDerivativeX.x - positionDerivativeXWorld * hairUvDerivativeY.x) *
+                orientation;
+            handedness = dot(cross(normalWorld, tangentWorld), bitangentWorld) < 0 ? -1 : 1;
+        }
+        strandWorld = ComputeHairCardStrand(normalWorld, tangentWorld, handedness, material.HairStrand.y);
+        // Two-sided: the back of a card faces the viewer with the opposite normal.
+        if (isGeometricFront == false)
+            normalWorld = ClipShadingNormalToOutgoingHemisphere(-normalWorld, viewDirectionWorld);
+    }
+#endif
+    float32x3 result = material.Emission.w > .5 || isGeometricFront == true ? material.Emission.rgb : float32x3(0);
+#if LUDUS_AUTHORED_INPUTS != 0
+    if (material.SurfaceMap.z > .5)
+    {
+        float32x2 emissionUv =
+            (material.Authored.y > .5 ? input.MaterialUv1 : input.TexcoordUv) * material.UvTransform.xy +
+            material.UvTransform.zw;
+        float32x3 emission = material.Options.y < 0
+            ? emissionTexture.Sample(colorSampler, emissionUv).rgb
+            : emissionTexture.SampleLevel(colorSampler, emissionUv, material.Options.y).rgb;
+        result *= emission;
+    }
+#endif
+    SurfaceSample output = 0;
+    output.BaseColor = baseColor;
+    output.NormalWorld = normalWorld;
+    output.ViewDirectionWorld = viewDirectionWorld;
+    output.Metallic = metallic;
+    output.Roughness = roughness;
+    output.Emission = result;
+    output.Alpha = material.Options.z == 2 ? baseColor.a : 1;
+#if LUDUS_AUTHORED_INPUTS != 0
+    output.StrandWorld = strandWorld;
+    output.SkinProfile = material.SkinScattering.w;
+#endif
+    return output;
+}
+
+// Separate lighting terms of one shaded surface, for the deferred resolve's lighting views.
+struct LightingTerms
+{
+    float32x3 SkyDiffuse;
+    float32x3 SkySpecular;
+    // Shadowed direct radiance of every analytic light, and of the isolated one.
+    float32x3 Direct;
+    float32x3 Isolated;
+    // Largest analytic light by luminance, or -1, and that luminance.
+    int32 DominantLight;
+    float32 DominantLuminance;
+    // Cosine-weighted sky visibility about the normal, or -1 without sky visibility maps.
+    float32 SkyVisibility;
+    // With shouldSeparateDiffuse: the sky and analytic-light diffuse radiance left out of the result, for a skin
+    // resolve that spreads it. Zero otherwise.
+    float32x3 Diffuse;
+};
+float32 ComputeLightingLuminance(in float32x3 radiance)
+{
+    return dot(radiance, float32x3(0.2126, 0.7152, 0.0722));
+}
+float32 ComputePunctualAttenuation(float32 distanceSquaredMetres, float32 rangeMetres)
+{
+    static const float32 MINIMUM_DISTANCE_SQUARED_METRES = 1e-4;
+    float32 ratio = distanceSquaredMetres / (rangeMetres * rangeMetres);
+    float32 edge = max(1 - ratio * ratio, 0);
+    return edge * edge / max(distanceSquaredMetres, MINIMUM_DISTANCE_SQUARED_METRES);
+}
+float32 ComputeSpotConeAttenuation(float32 directionCosine, float32 innerCosine, float32 outerCosine)
+{
+    static const float32 MINIMUM_SPOT_COSINE_DELTA = 1e-6;
+    float32 cone = saturate((directionCosine - outerCosine) / max(innerCosine - outerCosine, MINIMUM_SPOT_COSINE_DELTA));
+    return cone * cone;
+}
+// Shade the surface and report its lighting terms. With shouldSeparateDiffuse the diffuse terms go to outTerms.Diffuse
+// instead of the returned radiance; otherwise the radiance keeps the summation order of the combined path.
+float32x4 ShadeMaterialTerms(in SurfaceSample surface,
+                             in Varying input,
+                             int32 isolatedLight,
+                             bool shouldSeparateDiffuse,
+                             out LightingTerms outTerms)
+{
+    outTerms = { .DominantLight = -1, .SkyVisibility = -1 };
+    float32x4 baseColor = surface.BaseColor;
+    float32x3 normalWorld = surface.NormalWorld;
+    float32x3 viewDirectionWorld = surface.ViewDirectionWorld;
+    float32 metallic = surface.Metallic;
+    float32 roughness = surface.Roughness;
+    float32 nv = max(dot(normalWorld, viewDirectionWorld), 0);
+    float32x3 f0 = lerp(float32x3(0.04), baseColor.rgb, metallic);
+    float32x3 f = f0 + (1 - f0) * ComputeFifth(1 - nv);
+    // Hemispheric constant environment: sky irradiance above, scaled by w toward the ground (+Y is up).
+    float32x3 irradiance =
+        material.EnvironmentIrradiance.rgb * lerp(material.EnvironmentIrradiance.w, 1, normalWorld.y * 0.5 + 0.5);
+    float32x3 specularEnvironment = material.EnvironmentRadiance.rgb * f;
+#if LUDUS_AUTHORED_INPUTS != 0
+    if (material.Authored.z > .5)
+    {
+        irradiance = EvaluateEnvironmentIrradiance(normalWorld);
+        float32x3 reflectionWorld = reflect(-viewDirectionWorld, normalWorld);
+        float32x3 radiance =
+            environmentTexture
+            .SampleLevel(environmentSampler, ComputeEnvironmentUv(reflectionWorld), roughness * material.Authored.w)
+            .rgb *
+            material.IrradianceSh[0].w;
+        float32x2 dfg = EvaluateEnvironmentDfg(roughness, nv);
+        specularEnvironment = radiance * (f0 * dfg.x + dfg.y);
+    }
+#endif
+#if LUDUS_GRAPH_REALTIME == 0
+#    if LUDUS_GRAPH_SURFACE_CHART == 0
+    if (input.IsBakeValid > 0.5)
+#    endif
+    {
+        float32x3 bakedIrradiance =
+            bakeTexture.SampleLevel(colorSampler, saturate(input.BakeUv) * material.BakeUv.xy + material.BakeUv.zw, 0)
+            .rgb *
+            material.BakeScale.rgb;
+        irradiance = irradiance * material.BakeScale.w + bakedIrradiance;
+    }
+#    if LUDUS_AUTHORED_INPUTS != 0 && LUDUS_GRAPH_SURFACE_CHART == 0
+    else if (material.BakeScale.w < 0)
+    {
+        irradiance += EvaluateGiProbeIrradiance(input.PositionWorld, normalWorld);
+    }
+#    endif
+#endif
+    float32x3 result = surface.Emission;
+    if (nv > 0)
+    {
+        outTerms.SkyDiffuse = irradiance * baseColor.rgb * (1 - metallic) * (1 - f) / PI;
+        outTerms.SkySpecular = specularEnvironment;
+        if (shouldSeparateDiffuse == true)
+        {
+            outTerms.Diffuse += outTerms.SkyDiffuse;
+            result += outTerms.SkySpecular;
+        }
+        else
+        {
+            result += outTerms.SkyDiffuse + outTerms.SkySpecular;
+        }
+    }
+#if LUDUS_DEBUG_VIEW != 0
+    int32 lightCount = 0;
+#endif
+#if LUDUS_CLUSTERED != 0
+    float32x4 world = float32x4(input.PositionWorld, 1);
+    float32x3 grid =
+        (float32x3(dot(material.GridRows[0], world), dot(material.GridRows[1], world), dot(material.GridRows[2], world)) -
+         material.GridMinimum.xyz) *
+        material.GridScale.xyz;
+    bool isDirect = input.IsDirectReference > 0.5 || any(grid < float32x3(0)) == true || any(grid >= float32x3(8)) == true;
+    int32x3 cell = int32x3(clamp(grid, float32x3(0), float32x3(7)));
+    int32 start = (cell.x + cell.y * 8 + cell.z * 64) * 32;
+    float32x4 first = clusterTexture.SampleLevel(
+#    if LUDUS_SURFACE_FIDELITY != 0
+        shadowSampler,
+#    else
+        clusterSampler,
+#    endif
+        (float32x2(float32((start / 4) % 64), float32((start / 4) / 64)) + 0.5) / 64,
+        0);
+    isDirect = isDirect == true || int32(first.x * 255 + 0.5) == 255;
+    for (int32 slot = 0; slot < 128; ++slot)
+    {
+        int32 i = slot;
+        if (isDirect == true)
+        {
+            if (slot >= int32(material.Pbr.z))
+                break;
+        }
+        else
+        {
+            if (slot >= 32)
+                break;
+            int32 at = start + slot;
+            float32x4 packed = clusterTexture.SampleLevel(
+#    if LUDUS_SURFACE_FIDELITY != 0
+                shadowSampler,
+#    else
+                clusterSampler,
+#    endif
+                (float32x2(float32((at / 4) % 64), float32((at / 4) / 64)) + 0.5) / 64,
+                0);
+            i = int32(packed[at % 4] * 255 + 0.5) - 1;
+            if (i < 0)
+                break;
+        }
+#else
+        for (int32 i = 0; i < 8; ++i)
+        {
+            if (i >= int32(material.Pbr.z))
+                break;
+#endif
+            float32x4 color = material.Lights[i * 4];
+            float32x4 position = material.Lights[i * 4 + 1];
+            float32x4 direction = material.Lights[i * 4 + 2];
+            float32x4 extra = material.Lights[i * 4 + 3];
+            float32x3 lightDirectionWorld = -direction.xyz;
+            float32 attenuation = 1;
+            if (color.w != 0)
+            {
+                float32x3 deltaWorld = position.xyz - input.PositionWorld;
+                float32 distanceSquaredMetres = dot(deltaWorld, deltaWorld);
+                lightDirectionWorld = NormalizeOrZero(deltaWorld);
+                attenuation = ComputePunctualAttenuation(distanceSquaredMetres, position.w);
+                if (color.w == 2)
+                {
+                    attenuation *=
+                        ComputeSpotConeAttenuation(dot(-lightDirectionWorld, direction.xyz), extra.x, direction.w);
+                }
+                if (color.w == 3 || color.w == 4)
+                {
+                    float32 emitterCosine = dot(-lightDirectionWorld, direction.xyz);
+                    attenuation *= color.w == 4 ? abs(emitterCosine) : max(emitterCosine, 0);
+                }
+            }
+            float32x3 lightColor = color.rgb;
+#if LUDUS_GRAPH_REALTIME != 0
+            const bool shouldReplaceDiffuse = false;
+#elif LUDUS_GRAPH_SURFACE_CHART != 0
+            const bool shouldReplaceDiffuse = extra.y > 0.5;
+#else
+            const bool shouldReplaceDiffuse = input.IsBakeValid > 0.5 && extra.y > 0.5;
+#endif
+            float32x3 diffuseReflectance = float32x3(0);
+            float32x3 reflectance;
+            if (shouldSeparateDiffuse == true)
+            {
+                reflectance = EvaluateBrdfLobes(baseColor.rgb,
+                                                normalWorld,
+                                                viewDirectionWorld,
+                                                lightDirectionWorld,
+                                                metallic,
+                                                roughness,
+                                                shouldReplaceDiffuse,
+                                                out diffuseReflectance);
+            }
+            else
+            {
+#if LUDUS_AUTHORED_INPUTS != 0
+                reflectance = IsHairCard() == true ? EvaluateHairCard(baseColor.rgb,
+                                                                      roughness,
+                                                                      normalWorld,
+                                                                      surface.StrandWorld,
+                                                                      viewDirectionWorld,
+                                                                      lightDirectionWorld,
+                                                                      shouldReplaceDiffuse)
+                    : EvaluateBrdf(baseColor.rgb,
+                                   normalWorld,
+                                   viewDirectionWorld,
+                                   lightDirectionWorld,
+                                   metallic,
+                                   roughness,
+                                   shouldReplaceDiffuse);
+#else
+                reflectance = EvaluateBrdf(baseColor.rgb,
+                                           normalWorld,
+                                           viewDirectionWorld,
+                                           lightDirectionWorld,
+                                           metallic,
+                                           roughness,
+                                           shouldReplaceDiffuse);
+#endif
+            }
+            float32 shadowVisibility = ComputeShadowVisibility(i, input);
+            float32x3 contribution = reflectance * lightColor * attenuation * shadowVisibility;
+            outTerms.Diffuse += diffuseReflectance * lightColor * attenuation * shadowVisibility;
+            result += contribution;
+            outTerms.Direct += contribution;
+            if (i == isolatedLight)
+                outTerms.Isolated = contribution;
+            float32 luminance = ComputeLightingLuminance(contribution);
+            if (luminance > outTerms.DominantLuminance)
+            {
+                outTerms.DominantLight = i;
+                outTerms.DominantLuminance = luminance;
+            }
+#if LUDUS_DEBUG_VIEW != 0
+            lightCount += any(contribution > float32x3(0)) == true ? 1 : 0;
+#endif
+        }
+#if LUDUS_DEBUG_VIEW != 0
+        int32 debugView = int32(material.Options.w + 0.5);
+        if (debugView != int32(MATERIAL_DEBUG_VIEW_NONE))
+            return float32x4(EncodeDebugDisplay(
+                ComputeDebugColour(debugView, input, normalWorld, metallic, roughness, lightCount, result)),
+                             1);
+#endif
+        float32 alpha = surface.Alpha;
+        outTerms.Diffuse = min(max(outTerms.Diffuse, float32x3(0)), float32x3(65504)) * alpha;
+        return float32x4(min(max(result, float32x3(0)), float32x3(65504)) * alpha, alpha);
+    }
+    float32x4 ShadeMaterial(in SurfaceSample surface, in Varying input)
+    {
+        LightingTerms terms;
+        return ShadeMaterialTerms(surface, input, -1, false, out terms);
+    }
+    [stage(fragment)]
+    float32x4 FragmentMain(in Varying input)
+    {
+        return ShadeMaterial(SampleMaterial(input), input);
+    }
+    // Masked coverage for a shadow map. A mesh-light cube face's instance tags its colour red, which IsBakeValid carries,
+    // and gives in EyeWorld the world-space row of its face projection's clip z, the linear depth it stores
+    // (SelectShadowDepth); PositionWorld is exact at the fragment, so the row needs no further varying.
+    [stage(fragment)]
+    float32x4 ShadowMain(in Varying input)
+    {
+        float32 linearDepth = dot(input.PositionWorld, input.EyeWorld.xyz) + input.EyeWorld.w;
+        float32x4 encoded = EncodeShadowDepth(SelectShadowDepth(input.PositionClip.z, input.IsBakeValid, linearDepth));
+        SampleBaseTexel(input);
+        return encoded;
+    }
+
+#if LUDUS_CLUSTERED != 0
+    // The prepass retains the exact color vertex entry and evaluates no material terms.
+    // This profile accepts opaque coverage only; masked coverage needs its own qualified entry.
+    [stage(fragment)]
+    void OpaqueDepthMain(in Varying input)
+    {
+    }
+#endif

@@ -1054,7 +1054,7 @@ The IR is internal. It is the seam for direct backends later.
 | `groupshared T name = 0;` | Every compute entry point that reaches the variable, through any calls, clears it first: each thread zeroes a strided slice of its elements, then `GroupMemoryBarrierWithGroupSync()`. The entry point reuses its `GroupIndex` parameter, or gains a hidden `SV_GroupIndex` one. `= void` variables are not cleared |
 | Fields inside methods | `this.Field`, `this.Method(...)` |
 | `[stage(compute), threads(x, y, z)]` | `[shader("compute")]`, `[numthreads(x, y, z)]`; semantics become `SV_DispatchThreadID`, `SV_GroupThreadID`, `SV_GroupID` and `SV_GroupIndex` |
-| `extern slang "path"` | `#include` of the resolved snapshot file, relative to the generated module. The file is searched as `#include` searches: beside the declaring file, from the snapshot root, then below each include directory. Each file is included once; a missing file is `extern-slang-not-found`. `extern slang { ... }` writes nothing |
+| `extern slang "path"` | `#include` of the resolved snapshot file, relative to the generated module. The file is searched as `#include` searches: beside the declaring file, from the snapshot root, then below each include directory. Each file is included once; a missing file is `extern-slang-not-found`. Before the first include, the module defines each configuration value under `#ifndef`, so the included Slang sees the values LUSL lowered with. `extern slang { ... }` writes nothing |
 | `static_assert` | Nothing; the checker evaluated it |
 
 Declarations keep their LUSL names, so Slang code can include the generated
@@ -1652,9 +1652,12 @@ float32x3 ShadeMiss(in Ray ray)
 - **Engine recipes.** A forward-profile wrapper (`render_graph_forward.py`)
   includes a renderer recipe whose `recipes.json` source is `.lusl` through its
   generated module: the build captures the recipe and every file it names, lowers
-  it once (with `LUDUS_DXIL` at `0` and `1` when it names the macro), and
-  suffixes its generated `_lusl` helpers per recipe, so a wrapper can also
-  include a lowered authored program. Every forward-profile graph then needs
+  it once per configuration (with `LUDUS_DXIL` at `0` and `1` when it names the
+  macro), and suffixes its generated `_lusl` helpers per recipe, so a wrapper can
+  also include a lowered authored program. A configuration is the recipe's
+  `recipes.json` `defines` with the macros the wrapper selects
+  (`LUDUS_GRAPH_REALTIME`, `LUDUS_GRAPH_SURFACE_CHART`) set to `1`. Each one joins
+  the snapshot at `<source>.<digest>.slang`. Every forward-profile graph then needs
   `luslc`, which the installed SDK provides.
   Slang diagnostics name LUSL lines through `#line`.
 - **Finding `luslc`.**

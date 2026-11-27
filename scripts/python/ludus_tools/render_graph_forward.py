@@ -39,6 +39,8 @@ ROLE_KEYS = [('ForwardLit', 'vertex'), ('ForwardLit', 'fragment'), ('ForwardShad
              ('DeferredLighting', 'fragment'), ('DeferredDepthCopy', 'fragment'), ('DeferredOpaqueGBuffer', 'fragment'), ('ForwardSurfaceChart', 'fragment'),
              ('DeferredProbeGBuffer', 'fragment'), ('DeferredSurfaceChartGBuffer', 'fragment')]
 MEMBERS = ['ForwardVertex', 'ForwardFragment', 'ForwardShadow', 'LightingVertex', 'LightingFragment', 'LightingShadow', 'ForwardDepth', 'DeferredGBufferFragment', 'DeferredLightingVertex', 'DeferredLightingFragment', 'DeferredDepthCopyFragment', 'DeferredOpaqueGBufferFragment', 'ForwardSurfaceChartFragment', 'DeferredProbeGBufferFragment', 'DeferredSurfaceChartGBufferFragment']
+# The layout headers material_layout derives the forward material layout from.
+LAYOUT_OWNERS = ('lighting_layout.h', 'renderer_environment_layout.h')
 INPUTS = [{'location': i, 'format': 'Float3' if i in (0, 7) else 'Float2' if i in (6, 13, 15) else 'Float4'} for i in range(16)]
 
 
@@ -121,15 +123,23 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
         for child in pattern.findall(data.decode()):
             capture(child)
 
-    def include(recipe_name, recipe):
-        """Capture a recipe and return the snapshot path its wrappers include: the source, or a LUSL source's
-        generated module."""
+    def include(recipe_name, recipe, selected=None):
+        """Capture a recipe and return the snapshot path its wrappers include and the prefix they write before it:
+        the source after a `#define` of each `selected` macro, or a LUSL source's generated module for its manifest
+        `defines` with the `selected` macros set to one."""
+        selected = selected or ()
         capture(recipe['source'])
         relative = '_ludus_forward/' + recipe['source']
         if language.is_language_source(recipe['source']) is False:
-            return relative
+            return relative, ''.join('#define ' + macro + ' 1\n' for macro in selected)
+        configuration = {**recipe.get('defines', {}), **{macro: 1 for macro in selected}}
+        suffix = 'Forward' + ''.join(part.title() for part in recipe_name.split('_'))
         return language.lower_engine_recipe(snapshot, helper, build, relative, luslc=luslc, style=lusl_style,
-                                            suffix='Forward' + ''.join(part.title() for part in recipe_name.split('_')))
+                                            suffix=suffix, configuration=configuration), ''
+    # material_layout reads the host/shader layout owners, which the LUSL lit recipe reaches only through their
+    # generated LUSL views.
+    for owner in LAYOUT_OWNERS:
+        capture(owner)
     technique = selected[0]
     depth = techniques.get('DefaultStaticOpaque.DepthOnly')
     build.require(depth is None or (is_clustered_profile and depth['vertex'] == technique['vertex']), 'Capability', 'ClusteredForward',
@@ -150,20 +160,20 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
         if is_clustered_profile and group in ('ForwardLit', 'ForwardShadow'):
             recipe_name = 'renderer_clustered_authored' + ('_shadow' if group == 'ForwardShadow' else '')
         recipe = recipes[recipe_name]
-        recipe_path = include(recipe_name, recipe)
         for stage in stages:
             identity = support_program(techniques, group, stage)
             if group in BAKED_LIGHTING_GROUPS:
                 build.require(identity not in programs, 'Source', identity,
                               'The renderer reserves this support program ID. Rename the authored program and update its assignments.')
             original = programs.get(technique['fragment'] if group in (*GBUFFER_GROUPS, 'ForwardSurfaceChart') else identity)
-            source = '#define LUDUS_OPAQUE_COVERAGE 1\n' if group == 'DeferredOpaqueGBuffer' else ''
+            selected = ('LUDUS_OPAQUE_COVERAGE',) if group == 'DeferredOpaqueGBuffer' else ()
             if group in ('ForwardSurfaceChart', 'DeferredSurfaceChartGBuffer'):
-                source = '#define LUDUS_GRAPH_SURFACE_CHART 1\n'
+                selected = ('LUDUS_GRAPH_SURFACE_CHART',)
             elif group == 'DeferredProbeGBuffer':
-                source = '#define LUDUS_GRAPH_PROBE_GI 1\n'
+                selected = ('LUDUS_GRAPH_PROBE_GI',)
             elif group == 'ForwardLit' and stage == 'fragment' and not is_clustered_profile:
-                source = '#define LUDUS_GRAPH_REALTIME 1\n'
+                selected = ('LUDUS_GRAPH_REALTIME',)
+            recipe_path, source = include(recipe_name, recipe, selected)
             source += '#include "' + recipe_path + '"\n'
             if original is not None:
                 source += '#include "' + original['source'] + '"\n'
@@ -188,7 +198,7 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
                                 'forward_layout': material_layout(snapshot, build, is_clustered_profile) if group in ('ForwardLit', 'ForwardSurfaceChart', 'ForwardShadow', *GBUFFER_GROUPS, 'DeferredLighting') else None}
     # The existing flat pair initializes the renderer's shared mesh/view services.
     recipe = recipes['renderer_flat']
-    recipe_path = include('renderer_flat', recipe)
+    recipe_path, _ = include('renderer_flat', recipe)
     for stage in ('vertex', 'fragment'):
         identity = 'ForwardSetup' + stage.title()
         output, argument = ('Varying', 'Input') if stage == 'vertex' else ('float4', 'Varying')
@@ -254,9 +264,11 @@ def check_interface(program, result, build):
         if is_clustered_profile:
             kinds = kinds[:8] + ('Texture2D', 'Sampler', 'Texture2D')
         slots = [(slot, kind) for slot, kind in enumerate(kinds[:expected]) if not is_realtime or slot != 3]
-        build.require([(entry['binding'], entry['kind']) for entry in entries] == slots,
+        # The ABI fixes slots, not declaration order: renderer_lit.lusl declares its constant buffer after the
+        # manual texture slots of renderer_lit_bindings.slang.
+        build.require(sorted((entry['binding'], entry['kind']) for entry in entries) == slots,
                       'Layout', program['id'], 'forward resource slots/kinds differ from the owned ABI')
-        uniform = entries[0]
+        uniform = next(entry for entry in entries if entry['binding'] == 0)
         layout = program.get('forward_layout') or {'size': 16, 'offsets': {'Output': 0}, 'shapes': {'Output': 'Float4'}}
         build.require(all(uniform.get(field) == value for field, value in layout.items()),
                       'Layout', program['id'], 'forward uniform layout differs from the host/shader owner')

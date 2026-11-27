@@ -151,6 +151,42 @@
       "reason": "Shared diffusion code of the retained Slang originals renderer_skin_blur.slang and renderer_skin_composite.slang; renderer_skin_diffusion.luslh is its LUSL port (L5d wave 2)"
     },
     {
+      "path": "modules/graphics/renderer/shaders/renderer_lit.slang",
+      "reason": "Differential oracle of the LUSL lit recipes (renderer_lit.lusl, L5d wave 2), which renderer_deferred_material.slang and renderer_deferred_lighting.slang still include through renderer_clustered_authored.slang for their deferred configurations; the renderer GPU suites draw every lit configuration with both programs on one device and require identical pixels"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_clustered.slang",
+      "reason": "Differential oracle of the LUSL recipes renderer_clustered and renderer_clustered_shadow (renderer_lit.lusl with LUDUS_CLUSTERED, L5d wave 2)"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_surface.slang",
+      "reason": "Differential oracle of the LUSL recipes renderer_surface and renderer_surface_shadow (renderer_lit.lusl with LUDUS_SURFACE_FIDELITY, L5d wave 2)"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_clustered_surface.slang",
+      "reason": "Differential oracle of the LUSL recipes renderer_clustered_surface and renderer_clustered_surface_shadow (renderer_lit.lusl, L5d wave 2)"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_authored.slang",
+      "reason": "Differential oracle of the LUSL recipes renderer_authored and renderer_authored_shadow (renderer_lit.lusl with LUDUS_AUTHORED_INPUTS, L5d wave 2)"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_clustered_authored.slang",
+      "reason": "Differential oracle of the LUSL recipes renderer_clustered_authored, its shadow and its depth prepass (renderer_lit.lusl, L5d wave 2); renderer_deferred_material.slang and renderer_deferred_lighting.slang include it until the deferred recipes are ported"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_lit_debug.slang",
+      "reason": "Differential oracle of the LUSL recipes renderer_lit_debug and renderer_lit_debug_shadow (renderer_lit.lusl with LUDUS_DEBUG_VIEW, L5d wave 2)"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_clustered_authored_debug.slang",
+      "reason": "Differential oracle of the LUSL recipes renderer_clustered_authored_debug and its shadow (renderer_lit.lusl, L5d wave 2)"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_lit_bindings.slang",
+      "reason": "Manual texture and sampler bindings of the LUSL lit kernels (L5d wave 2): a slot's resource depends on the configuration (slot 7) and the realtime forward profile omits the bake texture at slot 3 while the later slots keep their numbers, which the renderer validates by number and LUSL bindings, numbered in declaration order, cannot express"
+    },
+    {
       "path": "scripts/python/fixtures",
       "reason": "Legacy-format render-graph template fixtures that the template update and capture warmup tests read"
     },

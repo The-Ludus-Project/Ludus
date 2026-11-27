@@ -12,6 +12,7 @@
 #include <QByteArray>
 #include <QHash>
 #include <QList>
+#include <QPair>
 #include <QString>
 #include <QStringList>
 
@@ -35,6 +36,8 @@ struct PreviewShaderRecipe final
     QString Source;           ///< Recipe source file name, relative to RecipeDirectory.
     QByteArray VertexEntry;   ///< Vertex entry point.
     QByteArray FragmentEntry; ///< Fragment entry point.
+    /// The recipe's `defines`, a LUSL recipe's configuration values, as NAME=VALUE pairs sorted by name.
+    QList<QPair<QByteArray, QByteArray>> Defines;
 };
 /// Every recipe the viewport draws with, indexed by PreviewShaderProgram.
 using PreviewShaderRecipes = foundation::StaticArray<PreviewShaderRecipe, PREVIEW_SHADER_PROGRAM_COUNT>;
@@ -169,6 +172,8 @@ private:
     struct Stage final
     {
         QString Source;
+        /// Configuration values of a LUSL Source; recipes sharing a source differ by them.
+        QList<QPair<QByteArray, QByteArray>> Defines;
         QByteArray Entry;
         PreviewShaderStage Kind = PreviewShaderStage::Vertex;
         bool HasOutput = false;
@@ -177,7 +182,8 @@ private:
         /// SHA-256 of each file the last successful compilation read, by name.
         QHash<QString, QByteArray> Reads;
     };
-    [[nodiscard]] qsizetype findStage(const QString& source, const QByteArray& entry, PreviewShaderStage kind);
+    [[nodiscard]] qsizetype
+    findStage(const PreviewShaderRecipe& recipe, const QByteArray& entry, PreviewShaderStage kind);
     [[nodiscard]] bool needsCompile(const Stage& stage, const QHash<QString, QByteArray>& hashes) const;
     [[nodiscard]] bool compileStage(Stage& inoutStage,
                                     const PreviewShaderSnapshot& snapshot,

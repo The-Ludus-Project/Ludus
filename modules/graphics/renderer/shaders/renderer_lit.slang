@@ -138,13 +138,16 @@ struct Varying
     float4 EyeWorld : TEXCOORD3;
     float2 BakeUv : TEXCOORD4;
     float IsBakeValid : TEXCOORD5;
+    // Declared in semantic order: SPIR-V numbers varyings in declaration order and Metal matches them by semantic, so
+    // the clustered authored vertex of renderer_lit.lusl (numbered in declaration order) pairs with the deferred
+    // G-buffer fragment here on every backend.
+#ifdef LUDUS_CLUSTERED
+    float IsDirectReference : TEXCOORD6;
+#endif
 #ifdef LUDUS_AUTHORED_INPUTS
     float4 TangentWorld : TEXCOORD7;
     float4 ColorVertex : TEXCOORD8;
     float2 MaterialUv1 : TEXCOORD9;
-#endif
-#ifdef LUDUS_CLUSTERED
-    float IsDirectReference : TEXCOORD6;
 #endif
 #ifdef LUDUS_DEFERRED_MESH_LIGHTS
     // How far PositionWorld may lie from the surface along the view ray, in metres. The resolve rebuilds the

@@ -22,6 +22,7 @@ extern slang "math.slang"
     static const float32 LOG10_E;
     static const float32 SQRT_2;
     static const float32 INV_SQRT_2;
+    static const float32 GOLDEN_ANGLE_RADIANS;
     static const float64 PI_F64;
     static const float64 TAU_F64;
     static const float64 HALF_PI_F64;

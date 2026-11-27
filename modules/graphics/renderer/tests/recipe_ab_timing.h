@@ -36,6 +36,13 @@ inline bool IsRecipeBenchmark() noexcept
     return std::getenv("LUDUS_RENDERER_BENCHMARK") != nullptr;
 }
 
+/// True when LUDUS_RENDERER_BENCHMARK_CONTROL is also set: a suite that supports it draws its Slang original as both
+/// variants, so the timing measures the A/B noise on this host. Parity checks then compare the original with itself.
+inline bool IsRecipeAbControl() noexcept
+{
+    return IsRecipeBenchmark() == true && std::getenv("LUDUS_RENDERER_BENCHMARK_CONTROL") != nullptr;
+}
+
 /// Median of `count` values, which it sorts in place.
 inline foundation::uint64 GetMedian(foundation::uint64* inoutValues, foundation::usize count) noexcept
 {
