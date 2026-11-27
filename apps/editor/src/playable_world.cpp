@@ -472,7 +472,8 @@ bool ExportCookedWorldScene(const QString& root,
                             const WorldDocument& world,
                             const QString& sceneDestination,
                             const QString& manifestDestination,
-                            QString& outError)
+                            QString& outError,
+                            RenderScene* outSceneOrNull)
 {
     if (sceneDestination.endsWith(".luscn"_L1) == false || manifestDestination.endsWith(".json"_L1) == false)
     {
@@ -556,6 +557,10 @@ bool ExportCookedWorldScene(const QString& root,
     {
         outError = QStringLiteral("Choose a writable manifest destination. %1").arg(manifestFile.errorString());
         return false;
+    }
+    if (outSceneOrNull != nullptr)
+    {
+        *outSceneOrNull = composed;
     }
     outError.clear();
     return true;

@@ -5,14 +5,16 @@ bust, assigns the Hair and Skin materials (Make Hair Card / Make Skin), SAVES on
 its cooked scene.luscn plus a manifest of the World/scene/graph hashes and the saved camera. This
 driver:
 
-  1. runs the Editor export test (per feature) to produce bust.world.json, scene.luscn, the manifest
-     and a matched reference capture at the SAVED camera and a fixed 1600x1080 reverse-Z view;
+  1. runs the Editor export test ONCE: it saves the World, exports one scene.luscn and its manifest,
+     and renders that exported composition through both packaged profiles with the Editor's offscreen
+     raster capture at the saved camera and a fixed 1600x1080 reverse-Z view;
   2. builds the Qt-free standalone app against a relocated installed SDK, which cooks both the
      forward-lit and clustered-deferred render graphs to .lurgrt;
   3. stages the Editor-exported scene.luscn and both graphs beside the app in a clean extraction with
      no engine-source or Editor paths, and launches each profile (forward-lit draws the hair,
      clustered-deferred the skin), so both hosts consume the SAME cooked scene;
-  4. converts each raw RGBA capture to PNG and compares it with the matched Editor capture;
+  4. checks the World, cooked-scene and capture-view identities, then converts each raw RGBA capture
+     to PNG and compares it with the matched Editor capture;
   5. records the commit, SDK version, target, profile, and the World, cooked-scene and graph hashes;
   6. asserts the extracted app depends on NO Homebrew Qt or checkout paths, and tests that removing a
      required packaged input (a bundled runtime library, and the cooked scene) fails with a diagnostic;
@@ -40,7 +42,7 @@ PROFILES = {"forward-lit": "hair", "clustered-deferred": "skin"}
 PROFILES_BY_FEATURE = {feature: profile for profile, feature in PROFILES.items()}
 PACKAGE_FILE = {"forward-lit": "forward_lit.lurgrt", "clustered-deferred": "clustered_deferred.lurgrt"}
 # The Catch2 test the Editor runs to export the cooked scene and the matched capture.
-EXPORT_TEST = "The character bust World exports its cooked scene and a matched capture"
+EXPORT_TEST = "The character bust World exports its cooked scene and matched captures"
 # Distinct exit codes the standalone app returns; they must match capture.cpp.
 EXIT_INCOMPATIBLE_PROFILE = 3
 EXIT_MISSING_DEPENDENCY = 4
@@ -65,35 +67,70 @@ def run(command, cwd, env=None, log=None, check=True, timeout=1800, capture=Fals
     return process
 
 
-def export_editor_scene(editor, feature, scene_out, manifest_out, capture_png, env, log):
-    """Run the Editor export test for one feature. It saves one bust World, exports its cooked
-    scene.luscn and manifest, and captures the matched reference image at the saved camera. The
-    exported scene.luscn is identical across features (same saved World), so staging it once is sound."""
+EXPORT_FILES = ("bust.world.json", "scene.luscn", "scene.manifest.json") + tuple(
+    f"editor-{feature}.png" for feature in PROFILES.values())
+
+
+def export_editor_scene(editor, directory, env, log):
+    """Run the Editor export test once. It saves one bust World, exports its cooked scene.luscn and
+    manifest, and renders that one exported composition through both profiles, so every capture and the
+    SDK app consume the same saved revision."""
     export_env = dict(env)
-    export_env.update({
-        "LUDUS_BUST_EXPORT_FEATURE": feature,
-        "LUDUS_BUST_EXPORT_SCENE": str(scene_out),
-        "LUDUS_BUST_EXPORT_MANIFEST": str(manifest_out),
-        "LUDUS_BUST_EXPORT_CAPTURE": str(capture_png),
-        "QT_QPA_PLATFORM": "offscreen",
-    })
-    run([editor, EXPORT_TEST], cwd=scene_out.parent, env=export_env, log=log)
-    for path in (scene_out, manifest_out, capture_png):
-        if not Path(path).is_file():
-            raise RuntimeError(f"The Editor export did not produce {path}")
+    export_env.update({"LUDUS_BUST_EXPORT_DIRECTORY": str(directory), "QT_QPA_PLATFORM": "offscreen"})
+    run([editor, EXPORT_TEST], cwd=directory, env=export_env, log=log)
+    for name in EXPORT_FILES:
+        if not (directory / name).is_file():
+            raise RuntimeError(f"The Editor export did not produce {directory / name}")
+    return json.loads((directory / "scene.manifest.json").read_text())
+
+
+def sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def check_export_identity(directory, manifest):
+    """The staged packet and the saved World must be the exact revision the manifest names."""
+    if sha256(directory / "scene.luscn") != manifest.get("sceneSha256"):
+        raise RuntimeError("scene.luscn does not match the export manifest's sceneSha256")
+    if sha256(directory / "bust.world.json") != manifest.get("savedWorldSha256"):
+        raise RuntimeError("bust.world.json does not match the export manifest's savedWorldSha256")
+    captures = manifest.get("captures", {})
+    for feature in PROFILES.values():
+        if captures.get(feature, {}).get("image") != f"editor-{feature}.png":
+            raise RuntimeError(f"The export manifest records no Editor {feature} capture")
+
+
+def read_capture_text(path):
+    """Parse the app's key=value capture.txt."""
+    return dict(line.split("=", 1) for line in Path(path).read_text().splitlines() if "=" in line)
+
+
+def check_capture_view(manifest, capture):
+    """The app must have drawn at the Editor capture's extent and planes."""
+    view = manifest.get("captureView", {})
+    expected = {"width": view.get("width"), "height": view.get("height"),
+                "near_micrometres": view.get("nearMicrometres"), "far_micrometres": view.get("farMicrometres")}
+    actual = {key: int(capture.get(key, "-1")) for key in expected}
+    if actual != expected:
+        raise RuntimeError(f"The SDK capture view {actual} differs from the Editor capture view {expected}")
 
 
 def build_commands(tools, sdk, consumer, build, package):
     """The exact, ordered configure/build/install commands, using only the relocated SDK."""
     toolsbin = Path(tools) / "out/host-tools/venv/bin"
+    configure = [toolsbin / "cmake", "-S", build.parent / "consumer", "-B", build, "-G", "Ninja",
+                 f"-DCMAKE_PREFIX_PATH={sdk}", "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+                 f"-DCMAKE_CXX_COMPILER={Path(tools) / 'out/host-tools/bin/clang++'}",
+                 f"-DCMAKE_MAKE_PROGRAM={toolsbin / 'ninja'}",
+                 f"-DLUDUS_SLANG_COMPILER={Path(tools) / 'out/shader-tools/slang/bin/slangc'}"]
+    # The pinned spirv-val is a Linux amd64 package; macOS shader tools have none, and the graph cook
+    # validates SPIR-V only when one is configured (as scripts/python/runtime_profile.py selects).
+    validator = Path(tools) / "out/shader-tools/spirv-tools/usr/bin/spirv-val"
+    if validator.is_file():
+        configure.append(f"-DLUDUS_SPIRV_VALIDATOR={validator}")
     return [
         ["cp", "-R", str(consumer), str(build.parent / "consumer")],
-        [toolsbin / "cmake", "-S", build.parent / "consumer", "-B", build, "-G", "Ninja",
-         f"-DCMAKE_PREFIX_PATH={sdk}", "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
-         f"-DCMAKE_CXX_COMPILER={Path(tools) / 'out/host-tools/bin/clang++'}",
-         f"-DCMAKE_MAKE_PROGRAM={toolsbin / 'ninja'}",
-         f"-DLUDUS_SLANG_COMPILER={Path(tools) / 'out/shader-tools/slang/bin/slangc'}",
-         f"-DLUDUS_SPIRV_VALIDATOR={Path(tools) / 'out/shader-tools/spirv-tools/usr/bin/spirv-val'}"],
+        configure,
         [toolsbin / "cmake", "--build", build],
         [toolsbin / "cmake", "--install", build, "--prefix", package],
     ]
@@ -186,10 +223,9 @@ def negative_checks(package, executable, env, evidence):
     (evidence / "negative-checks.json").write_text(json.dumps(results, indent=2) + "\n")
 
 
-def provenance(tools, sdk, scene_path, export_manifest, graph_hashes):
+def provenance(tools, sdk, scene_path, exported, graph_hashes):
     commit = subprocess.check_output(["git", "-C", str(tools), "rev-parse", "HEAD"], text=True).strip()
     manifest = json.loads((Path(sdk) / "share/Ludus/LudusSdkManifest.json").read_text())
-    exported = json.loads(Path(export_manifest).read_text())
     return {
         "issue": 1400,
         "commit": commit,
@@ -199,9 +235,12 @@ def provenance(tools, sdk, scene_path, export_manifest, graph_hashes):
         "build_flavor": manifest.get("build_flavor", "unknown"),
         "renderer_profiles": PROFILES,
         "world_sha256": exported.get("worldSha256"),
+        "saved_world_sha256": exported.get("savedWorldSha256"),
         "scene_sha256": exported.get("sceneSha256"),
-        "staged_scene_sha256": hashlib.sha256(Path(scene_path).read_bytes()).hexdigest(),
+        "staged_scene_sha256": sha256(scene_path),
         "graph_sha256": graph_hashes,
+        "editor_captures": exported.get("captures"),
+        "capture_view": exported.get("captureView"),
         "camera": exported.get("camera"),
         "material_slots": exported.get("materialSlots"),
         "extent": EXTENT,
@@ -211,11 +250,8 @@ def provenance(tools, sdk, scene_path, export_manifest, graph_hashes):
 
 def plan(editor, tools, sdk, consumer, build, package):
     print("# Reproducible hair/skin standalone qualification (#1400) — macOS arm64 / Metal")
-    print("# 1. Export ONE Editor-saved bust World: cooked scene.luscn + manifest + matched capture.")
-    for feature in PROFILES.values():
-        print(f"  LUDUS_BUST_EXPORT_FEATURE={feature} LUDUS_BUST_EXPORT_SCENE=<ws>/scene.luscn \\")
-        print(f"    LUDUS_BUST_EXPORT_MANIFEST=<ws>/scene.manifest.json LUDUS_BUST_EXPORT_CAPTURE=<ws>/editor-{feature}.png \\")
-        print(f"    QT_QPA_PLATFORM=offscreen {editor} \"{EXPORT_TEST}\"")
+    print("# 1. Export ONE Editor-saved bust World once: scene.luscn, manifest and both profile captures.")
+    print(f"  LUDUS_BUST_EXPORT_DIRECTORY=<ws>/export QT_QPA_PLATFORM=offscreen {editor} \"{EXPORT_TEST}\"")
     print("# 2. Build the Qt-free app against the relocated SDK (cooks both .lurgrt graphs):")
     for command in build_commands(tools, sdk, consumer, build, package):
         print("  " + " ".join(str(part) for part in command))
@@ -242,13 +278,14 @@ def verify(editor, tools, sdk, consumer, evidence):
              "bundle-sdk-dependencies", "macos-clang-development", "--prefix", relocated],
             cwd=tools, env=env, log=evidence / "bundle.log")
 
-        # 1. Export the one saved World per feature (same cooked scene; matched capture per feature).
-        scene_out = workspace / "scene.luscn"
-        export_manifest = workspace / "scene.manifest.json"
-        for feature in PROFILES.values():
-            export_editor_scene(editor, feature, scene_out, export_manifest,
-                                evidence / f"editor-{feature}.png", env, evidence / f"{feature}.log")
-        shutil.copyfile(export_manifest, evidence / "scene.manifest.json")
+        # 1. Export the one saved World once: the cooked scene and both profiles' Editor captures.
+        export = workspace / "export"
+        export.mkdir()
+        exported = export_editor_scene(editor, export, env, evidence / "editor-export.log")
+        check_export_identity(export, exported)
+        scene_out = export / "scene.luscn"
+        for name in EXPORT_FILES:
+            shutil.copyfile(export / name, evidence / name)
 
         # 2. Build the Qt-free app (cooks both graphs).
         for command in build_commands(tools, relocated, consumer, build, package):
@@ -263,7 +300,7 @@ def verify(editor, tools, sdk, consumer, evidence):
             graph_hashes[name] = hashlib.sha256((package / name).read_bytes()).hexdigest()
 
         (evidence / "provenance.json").write_text(
-            json.dumps(provenance(tools, relocated, scene_out, export_manifest, graph_hashes), indent=2) + "\n")
+            json.dumps(provenance(tools, relocated, package / "scene.luscn", exported, graph_hashes), indent=2) + "\n")
         assert_no_homebrew_qt(binary, tools, evidence)
 
         # 4+5. Launch each profile from the clean extraction and compare with the matched Editor capture.
@@ -272,6 +309,7 @@ def verify(editor, tools, sdk, consumer, evidence):
             rgba_to_png(package / "capture.rgba", evidence / f"sdk-{feature}.png", EXTENT)
             shutil.move(str(package / "capture.rgba"), str(evidence / f"sdk-{feature}.rgba"))
             shutil.move(str(package / "capture.txt"), str(evidence / f"sdk-{feature}.txt"))
+            check_capture_view(exported, read_capture_text(evidence / f"sdk-{feature}.txt"))
             run([sys.executable, ROOT / "scripts/compare-render",
                  evidence / f"editor-{feature}.png", evidence / f"sdk-{feature}.png",
                  "--max-rmse", "0.05", "-o", evidence / f"{feature}.html"],
