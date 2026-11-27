@@ -31,6 +31,7 @@
 #include "internal/world_material_creation.h"
 #include "internal/world_material_document.h"
 #include "internal/world_materials_panel.h"
+#include "internal/world_scatter_panel.h"
 #include "internal/world_terrain.h"
 
 #include <ludus/foundation/base/compiler.h>
@@ -1128,6 +1129,10 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     mWorldLists->addTab(mMaterialsPanel, QStringLiteral("Materials"));
     mEnvironmentPanel = new WorldEnvironmentPanel(mWorldLists);
     mWorldLists->addTab(mEnvironmentPanel, QStringLiteral("Environment"));
+    // Staged room scatter with author overrides; only World-demo Worlds generate scatter.
+    mScatterPanel = new WorldScatterPanel(mWorldLists);
+    mWorldLists->addTab(mScatterPanel, QStringLiteral("Scatter"));
+    mWorldLists->setTabVisible(mWorldLists->indexOf(mScatterPanel), false);
     connect(mEnvironmentPanel, &WorldEnvironmentPanel::ApplyRequested, this, &WorldWorkspace::applyClimateChange);
     connect(mEnvironmentPanel, &WorldEnvironmentPanel::DraftChanged, this, &WorldWorkspace::updateClimateOverlay);
     connect(mWorldLists, &QTabWidget::currentChanged, this, &WorldWorkspace::updateClimateOverlay);
@@ -2277,6 +2282,7 @@ void WorldWorkspace::Render()
                                            Document_.Loaded() == true && Document_.HasBuiltInSchema() == true,
                                            false);
     updateClimateOverlay();
+    renderScatter();
     RenderInspector();
     const bool scene = Document_.Draft().contains(QStringLiteral("scene"));
     Viewport_->setVisible(scene);
@@ -2293,6 +2299,67 @@ void WorldWorkspace::Render()
     mPlayModeBox->setVisible(isPlayable == true || canPlayBuiltIn == true);
     updateShownRenderPreview(scene);
     updateHierarchySectionSizes();
+}
+
+void WorldWorkspace::renderScatter()
+{
+    const bool isWorldDemo = Document_.Loaded() == true && IsWorldDemo(Document_) == true;
+    mWorldLists->setTabVisible(mWorldLists->indexOf(mScatterPanel), isWorldDemo == true);
+    if (isWorldDemo == false)
+    {
+        return;
+    }
+    bool isChanged = Document_.Draft() != mScatterDraft;
+    if (Path_ != mScatterRoomsPath)
+    {
+        // The other World-demo rooms beside the open World share its generation session, so a retry can reuse their
+        // cached layers. They are read once per opened World; the open room always comes from the draft.
+        mScatterRoomsPath = Path_;
+        isChanged = true;
+        QVector<world_demo::Level> siblings;
+        QStringList sources;
+        const QFileInfo open(Path_);
+        const QDir directory = open.absoluteDir();
+        for (const QFileInfo& file : directory.entryInfoList({QStringLiteral("*.world.json")}, QDir::Files, QDir::Name))
+        {
+            if (file.canonicalFilePath() == open.canonicalFilePath())
+            {
+                continue;
+            }
+            QFile source(file.filePath());
+            if (source.size() > static_cast<qint64>(world_demo::LEVEL_TEXT_CAPACITY_BYTES) ||
+                source.open(QIODevice::ReadOnly) == false)
+            {
+                continue;
+            }
+            const QByteArray bytes = source.readAll();
+            world_demo::Level level;
+            // A sibling that is not a valid World-demo room is not part of the session; it never blocks the open one.
+            if (world_demo::ReadLevel({bytes.constData(), static_cast<foundation::usize>(bytes.size())}, level).Error ==
+                    world_demo::LevelError::None &&
+                level.HasScatter == true)
+            {
+                siblings.append(level);
+                sources.append(file.fileName());
+            }
+        }
+        mScatterPanel->SetSiblingRooms(foundation::Move(siblings), foundation::Move(sources));
+    }
+    if (isChanged == false)
+    {
+        return;
+    }
+    mScatterDraft = Document_.Draft();
+    world_demo::Level level;
+    QString error;
+    if (ProjectWorldDemo(Document_, level, error) == false)
+    {
+        mScatterPanel->ShowRoomsUnavailable(
+            QStringLiteral("The open World's scatter cannot be generated: %1 The previous rooms are still shown.")
+                .arg(error));
+        return;
+    }
+    mScatterPanel->SetOpenRoom(level, QFileInfo(Path_).fileName());
 }
 
 void WorldWorkspace::resizeEvent(QResizeEvent* event)
