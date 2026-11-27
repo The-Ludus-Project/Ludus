@@ -227,8 +227,8 @@ from the decoded records and evolve its layout independently of the disk format.
 limits in `lufol.h` and `limits.h`. `Ludus::FoliagePages` encodes page sets
 for the cooker and validates and reads them for runtime consumers. Both
 targets depend only on Foundation modules. The [terrain cook](#terrain-cook)
-produces these records. Publication that keeps the previous generation after a
-failed replacement is later F0 and F1 work.
+produces these records. [Page set publication](#page-set-publication) keeps
+the previous generation after a failed replacement.
 
 A page set is one terrain domain's pages, tightly packed in little-endian
 order:
@@ -276,6 +276,36 @@ owners.
 The golden fixture in `modules/content/foliage_pages/tests` pins the encoded
 bytes. The WebAssembly math probe encodes and reads the same fixture, so
 native and browser builds must produce identical bytes.
+
+### Page set publication
+
+`FoliagePageSetPublication` (`foliage_page_publication.h` in
+`Ludus::FoliagePages`) owns the accepted page set of one terrain domain. It
+replaces that page set only with a validated candidate:
+
+1. `TryStage` reads the caller's bytes against the expected domain and terrain
+   revision and the publication's `FoliagePageLimits`. On success the
+   candidate takes the bytes and becomes **Ready**. It records the accepted
+   revision it was staged against. On failure it becomes **Failed** with the
+   read diagnostic, and the caller keeps the bytes to inspect.
+2. `TryPublish` accepts only a Ready candidate that this publication staged
+   against the current accepted revision. It then exchanges storage with the
+   candidate and advances the revision. Of several candidates staged from one
+   revision, only the first one published is accepted. Later ones report
+   `StaleCandidate`, so asynchronous cooks can finish in any order.
+3. After a successful publication, the candidate becomes **Retired** and holds
+   the previous page set. Views of the previous generation stay valid until
+   the caller clears that candidate. This lets consumers finish with them.
+
+Staging, failures and cleared candidates never change the accepted page set,
+its bytes or its views. Staging and publication neither allocate nor copy
+page bytes. The publication is single-owner. Readers may share the accepted
+view while no method runs. The pages tests cover malformed, over-budget and
+mismatched replacements, stale and foreign candidates, and retirement. The
+cook tests publish a dirty-halo recook only after a damaged copy and a copy
+bound to another terrain revision fail. The installed SDK consumer stages,
+publishes and rejects a corrupt replacement. F1 owns drawable uploads and GPU
+retirement for each accepted generation.
 
 Key reuse by the generator and format versions, seed, domain, layer, page
 address, rule and placement-affecting species revisions, and terrain and mask
