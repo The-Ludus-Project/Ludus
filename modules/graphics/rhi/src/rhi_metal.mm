@@ -1,6 +1,7 @@
 #include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/gpu_scope_backend.h"
+#include "internal/graphics_capture_metal.h"
 #include "internal/hosted_metal.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
@@ -588,6 +589,8 @@ StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 toke
         {
             return StartupError::RenderingUnavailable;
         }
+        // Capture enablement is read from the live session; tools are never discovered here.
+        RegisterMetalCaptureAdapter(GetMetal().Device);
         internal::Complete(token, StartupError::None, {MAX_DIMENSION, GetMetal().Device.maxBufferLength});
         return StartupError::None;
     }
@@ -693,6 +696,7 @@ void Shutdown() noexcept
 {
     @autoreleasepool
     {
+        ReleaseMetalCaptureAdapter();
         ReleaseFrameResources();
         DisconnectSurfaces();
         GetMetal().Queue = nil;

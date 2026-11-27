@@ -5,6 +5,7 @@
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/graph.h>
+#include <ludus/graphics/rhi/graphics_capture.h>
 #include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/measurement.h>
 #include <ludus/graphics/rhi/native_interop.h>
@@ -762,4 +763,292 @@ TEST_CASE("Metal keeps discard-only surface depth in tile memory", "[rhi][macos]
     CHECK(allocations.MemorylessBytes == 0);
     CHECK((allocations.PrivateBytes == 0) == hasMemorylessSupport);
     REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+}
+
+namespace
+{
+/// Room for the first capture in a process, whose native stop takes several seconds.
+constexpr uint64 CAPTURE_DEADLINE_MILLISECONDS = 120'000;
+constexpr uint32 CAPTURE_EXTENT = 16;
+constexpr char CAPTURE_TEXTURE[] = "Capture/SceneColor";
+constexpr char CAPTURE_VIEW[] = "Capture/View";
+constexpr char CAPTURE_PASS[] = "Capture/OffscreenPass";
+
+/// Whether MTL_CAPTURE_ENABLED inserted Apple's capture layer before Metal started.
+bool IsMetalCaptureEnabled()
+{
+    return [[MTLCaptureManager sharedCaptureManager] supportsDestination:MTLCaptureDestinationGPUTraceDocument] == YES;
+}
+/// A fresh, empty directory removed with its captures when the test ends.
+struct CaptureDirectory final
+{
+    NSString* Path = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[NSString stringWithFormat:@"ludus-metal-capture-%@", [NSUUID UUID].UUIDString]];
+    CaptureDirectory()
+    {
+        REQUIRE([[NSFileManager defaultManager] createDirectoryAtPath:Path
+                                          withIntermediateDirectories:YES
+                                                           attributes:nil
+                                                                error:nil] == YES);
+    }
+    ~CaptureDirectory()
+    {
+        [[NSFileManager defaultManager] removeItemAtPath:Path error:nil];
+    }
+    [[nodiscard]] rhi::GraphicsCaptureRequest MakeRequest() const
+    {
+        return
+        {
+            .Destination = {Path.UTF8String, std::strlen(Path.UTF8String)},
+            .DeadlineMilliseconds = CAPTURE_DEADLINE_MILLISECONDS,
+        };
+    }
+    [[nodiscard]] NSArray<NSString*>* GetEntries() const
+    {
+        return [[[NSFileManager defaultManager] contentsOfDirectoryAtPath:Path error:nil]
+            sortedArrayUsingSelector:@selector(compare:)];
+    }
+    [[nodiscard]] NSString* GetPath(const char* name) const
+    {
+        return [Path stringByAppendingPathComponent:[NSString stringWithUTF8String:name]];
+    }
+};
+rhi::GraphicsCaptureReport GetReport(rhi::GraphicsCaptureIdentity identity)
+{
+    rhi::GraphicsCaptureReport report;
+    REQUIRE(rhi::GetGraphicsCaptureReport(identity, report) == rhi::GraphicsCaptureError::None);
+    return report;
+}
+/// True when some file of the .gputrace bundle holds `text`; the trace records labels as UTF-8.
+bool DoesTraceContain(NSString* bundle, const char* text)
+{
+    NSData* needle = [NSData dataWithBytes:text length:std::strlen(text)];
+    for (NSString* entry in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundle error:nil])
+    {
+        NSData* bytes = [NSData dataWithContentsOfFile:[bundle stringByAppendingPathComponent:entry]];
+        if (bytes != nil &&
+            [bytes rangeOfData:needle options:0 range:NSMakeRange(0, bytes.length)].location != NSNotFound)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
+TEST_CASE("G2 Metal capture requires startup enablement and never writes without it",
+          "[rhi][macos][gpu][graphics-capture]")
+{
+    Guard guard;
+    rhi::DeviceDescription description;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (rhi::CreateDevice({}, { .Width = CAPTURE_EXTENT, .Height = CAPTURE_EXTENT }, description, device, surface) !=
+        rhi::DeviceStatus::Ready)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+    rhi::GraphicsCaptureCapabilities capabilities;
+    REQUIRE(rhi::GetGraphicsCaptureCapabilities(device, capabilities) == rhi::GraphicsCaptureError::None);
+    CHECK(capabilities.HasAdapter == true);
+    CHECK(capabilities.Tool == rhi::GraphicsCaptureTool::Metal);
+    CHECK(capabilities.CanCaptureOffscreen == true);
+    CHECK(capabilities.IsExternalCaptureActive == false);
+    if (IsMetalCaptureEnabled() == true)
+    {
+        CHECK(capabilities.CanCaptureFrame == true);
+        CHECK(capabilities.Unavailable == rhi::GraphicsCaptureError::None);
+        REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+        SKIP("MTL_CAPTURE_ENABLED is set; the capture cases below cover this process");
+    }
+    CHECK(capabilities.IsRestartRequired == true);
+    CHECK(capabilities.IsToolAttached == false);
+    CHECK(capabilities.CanCaptureFrame == false);
+    CHECK(capabilities.Unavailable == rhi::GraphicsCaptureError::RestartRequired);
+    const CaptureDirectory directory;
+    rhi::GraphicsCaptureIdentity identity{ .Session = 7, .Request = 9 };
+    CHECK(rhi::RequestGraphicsCapture(device, directory.MakeRequest(), identity) ==
+          rhi::GraphicsCaptureError::RestartRequired);
+    CHECK(identity == rhi::GraphicsCaptureIdentity{ .Session = 7, .Request = 9 });
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    CHECK(directory.GetEntries().count == 0);
+    REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+}
+
+TEST_CASE("G2 Metal captures named offscreen frames to verified .gputrace documents",
+          "[rhi][macos][gpu][graphics-capture]")
+{
+    if (IsMetalCaptureEnabled() == false)
+    {
+        SKIP("Run with MTL_CAPTURE_ENABLED=1 (ctest: ludus_rhi_metal_capture_tests)");
+    }
+    @autoreleasepool
+    {
+        Guard guard;
+        rhi::DeviceDescription description;
+        description.Required.PortableRaster = true;
+        rhi::DeviceHandle device;
+        rhi::SurfaceHandle surface;
+        REQUIRE(rhi::CreateDevice({},
+                                  {
+                                      .Width = CAPTURE_EXTENT,
+                                      .Height = CAPTURE_EXTENT,
+                                  },
+                                  description,
+                                  device,
+                                  surface) == rhi::DeviceStatus::Ready);
+        rhi::ShaderHandle vertex;
+        rhi::ShaderHandle fragment;
+        rhi::UniformHandle uniform;
+        rhi::PipelineHandle pipeline;
+        constexpr float32 COLOR[] = {0.25F, 0.5F, 0.75F, 1};
+        REQUIRE(rhi::CreateShader(device, Description(rhi::ShaderStage::Vertex, "vertexMain"), vertex) ==
+                rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::CreateShader(device,
+                                  Description(rhi::ShaderStage::Fragment, "fragmentMain", sizeof(COLOR)),
+                                  fragment) == rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::CreateUniform(device, sizeof(COLOR), uniform) == rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::CreatePipeline(device, {vertex, fragment, uniform}, pipeline) == rhi::ResourceStatus::Ready);
+        rhi::TextureHandle texture;
+        REQUIRE(rhi::CreateTexture(device,
+                                   { .Width = CAPTURE_EXTENT, .Height = CAPTURE_EXTENT, .Attachment = true },
+                                   {},
+                                   texture) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::SetDebugName(device, texture, {CAPTURE_TEXTURE, sizeof(CAPTURE_TEXTURE) - 1}) ==
+                rhi::RasterStatus::Ready);
+        rhi::GpuScopeDescription view;
+        rhi::GpuScopeDescription pass;
+        REQUIRE(rhi::MakeGpuScope(1, {CAPTURE_VIEW, sizeof(CAPTURE_VIEW) - 1}, view) == true);
+        REQUIRE(rhi::MakeGpuScope(2, {CAPTURE_PASS, sizeof(CAPTURE_PASS) - 1}, pass) == true);
+        // A frame holds either the legacy fullscreen draw or raster passes, so the two captures
+        // below cover one of each: shader source first, then the named texture and pass.
+        const auto renderFrame = [&](bool isRasterFrame) {
+            REQUIRE(rhi::SetFrameTarget(device, surface, { .Width = CAPTURE_EXTENT, .Height = CAPTURE_EXTENT }) ==
+                    rhi::DeviceStatus::Ready);
+            REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+            REQUIRE(rhi::BeginGpuScope(device, view) == rhi::RasterStatus::Ready);
+            if (isRasterFrame == true)
+            {
+                const rhi::GpuScope scope(device, pass);
+                REQUIRE(rhi::BeginRasterPass(device, { .Color = texture }) == rhi::RasterStatus::Ready);
+            }
+            else
+            {
+                REQUIRE(rhi::UpdateUniform(device, uniform, {reinterpret_cast<const uint8*>(COLOR), sizeof(COLOR)}) ==
+                        rhi::ResourceStatus::Ready);
+                REQUIRE(rhi::DrawFullscreen(device, pipeline) == rhi::ResourceStatus::Ready);
+            }
+            REQUIRE(rhi::EndGpuScope(device) == rhi::RasterStatus::Ready);
+            REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+        };
+        renderFrame(true);
+        const CaptureDirectory directory;
+        rhi::GraphicsCaptureIdentity first;
+        REQUIRE(rhi::RequestGraphicsCapture(device, directory.MakeRequest(), first) == rhi::GraphicsCaptureError::None);
+        // A zero-size frame neither starts nor consumes the request.
+        REQUIRE(rhi::SetFrameTarget(device, surface, {}) == rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Skipped);
+        CHECK(GetReport(first).State == rhi::GraphicsCaptureState::Armed);
+        CHECK(directory.GetEntries().count == 0);
+        renderFrame(false);
+        rhi::GraphicsCaptureReport report = GetReport(first);
+        CAPTURE(report.Diagnostic.GetData());
+        REQUIRE(report.State == rhi::GraphicsCaptureState::Complete);
+        CHECK(report.Tool == rhi::GraphicsCaptureTool::Metal);
+        CHECK(report.RequestedFrame == 1);
+        CHECK(report.CapturedFrame == 2);
+        CHECK(report.SkippedFrames == 1);
+        CHECK(report.IsManifestPublished == true);
+        CHECK(std::string_view{report.ToolVersion.GetData()}.starts_with("Metal ") == true);
+        CHECK(std::string_view{report.ShaderSource.GetData()}.starts_with("generated MSL") == true);
+        const std::string_view artifact{report.Artifact.GetData()};
+        CHECK(artifact.ends_with(".gputrace") == true);
+        NSString* bundle = directory.GetPath(report.Artifact.GetData());
+        BOOL isDirectory = NO;
+        REQUIRE([[NSFileManager defaultManager] fileExistsAtPath:bundle isDirectory:&isDirectory] == YES);
+        CHECK(isDirectory == YES);
+        // The trace holds the frame's command buffer, its scope and the drawn MSL source.
+        CHECK(DoesTraceContain(bundle, "Ludus/Frame") == true);
+        CHECK(DoesTraceContain(bundle, CAPTURE_VIEW) == true);
+        CHECK(DoesTraceContain(bundle, "fragmentMain") == true);
+        NSString* manifest = [NSString stringWithContentsOfFile:directory.GetPath(report.Manifest.GetData())
+                                                       encoding:NSUTF8StringEncoding
+                                                          error:nil];
+        REQUIRE(manifest != nil);
+        CHECK([manifest containsString:@"\"tool\": \"Metal\""] == YES);
+        CHECK([manifest containsString:@"\"backend\": \"Metal\""] == YES);
+        CHECK([manifest containsString:@"\"shaderSource\": \"generated MSL"] == YES);
+        // Later frames are not captured, and a repeated request writes a second document.
+        renderFrame(false);
+        CHECK(directory.GetEntries().count == 2);
+        rhi::GraphicsCaptureIdentity second;
+        REQUIRE(rhi::RequestGraphicsCapture(device, directory.MakeRequest(), second) ==
+                rhi::GraphicsCaptureError::None);
+        CHECK(second.Request > first.Request);
+        renderFrame(true);
+        report = GetReport(second);
+        REQUIRE(report.State == rhi::GraphicsCaptureState::Complete);
+        CHECK(directory.GetEntries().count == 4);
+        bundle = directory.GetPath(report.Artifact.GetData());
+        CHECK(DoesTraceContain(bundle, CAPTURE_VIEW) == true);
+        CHECK(DoesTraceContain(bundle, CAPTURE_PASS) == true);
+        CHECK(DoesTraceContain(bundle, CAPTURE_TEXTURE) == true);
+        // Destroying the device with an armed request ends it without writing anything.
+        rhi::GraphicsCaptureIdentity armed;
+        REQUIRE(rhi::RequestGraphicsCapture(device, directory.MakeRequest(), armed) == rhi::GraphicsCaptureError::None);
+        REQUIRE(rhi::Destroy(device, texture) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+        report = GetReport(armed);
+        CHECK(report.State == rhi::GraphicsCaptureState::Failed);
+        CHECK(report.Error == rhi::GraphicsCaptureError::SessionEnded);
+        CHECK(directory.GetEntries().count == 4);
+    }
+}
+
+TEST_CASE("G2 Metal discards the capture of a skipped Cocoa acquisition and stays armed",
+          "[rhi][macos][cocoa][gpu][graphics-capture]")
+{
+    if (std::getenv("LUDUS_TEST_COCOA") == nullptr || IsMetalCaptureEnabled() == false)
+    {
+        SKIP("Set LUDUS_TEST_COCOA=1 and MTL_CAPTURE_ENABLED=1 with a WindowServer session");
+    }
+    @autoreleasepool
+    {
+        Guard guard;
+        using namespace ludus::platform;
+        WindowManager manager;
+        REQUIRE(manager.Initialize({}));
+        UniquePtr<Window> window;
+        REQUIRE(manager.CreateWindow({ .Name = "Metal capture test", .Width = 160, .Height = 120 }, window));
+        Guard connectionGuard;
+        const auto native = window->GetNativeWindowInfo();
+        NSWindow* nativeWindow = (__bridge NSWindow*)native.CocoaWindow;
+        rhi::DeviceHandle device;
+        rhi::SurfaceHandle surface;
+        REQUIRE(rhi::CreateDevice({}, native, {}, device, surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::SetFrameTarget(device, surface, { .Width = native.Width, .Height = native.Height }) ==
+                rhi::DeviceStatus::Ready);
+        const CaptureDirectory directory;
+        rhi::GraphicsCaptureIdentity identity;
+        REQUIRE(rhi::RequestGraphicsCapture(device, directory.MakeRequest(), identity) ==
+                rhi::GraphicsCaptureError::None);
+        // A hidden window skips acquisition after the native capture started: the empty trace
+        // is removed so the re-armed request can reuse its reserved name.
+        [nativeWindow orderOut:nil];
+        REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Skipped);
+        rhi::GraphicsCaptureReport report = GetReport(identity);
+        CHECK(report.State == rhi::GraphicsCaptureState::Armed);
+        CHECK(report.SkippedFrames == 1);
+        CHECK(report.IsArtifactPreserved == false);
+        CHECK(directory.GetEntries().count == 0);
+        [nativeWindow orderFront:nil];
+        REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+        report = GetReport(identity);
+        CAPTURE(report.Diagnostic.GetData());
+        CHECK(report.State == rhi::GraphicsCaptureState::Complete);
+        CHECK(directory.GetEntries().count == 2);
+        REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+    }
 }
