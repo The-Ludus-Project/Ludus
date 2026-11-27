@@ -2115,7 +2115,6 @@ TEST_CASE("Steinberg PLT configuration imports its passes, shader closure and se
                                   QStringLiteral("steinberg_plt/main_shaders/shade.slang"),
                                   QStringLiteral("steinberg_plt/main_shaders/hit_record.slang"),
                                   QStringLiteral("steinberg_plt/main_shaders/grating.slang"),
-                                  QStringLiteral("steinberg_plt/main_shaders/spectrum.slang"),
                                   QStringLiteral("steinberg_plt/main_shaders/natural_light.slang")})
     {
         INFO(source.toStdString());
@@ -2195,6 +2194,7 @@ TEST_CASE("Wave tracing template is created from the editor picker with wave, ge
     CHECK(root.count("\"Export\"") == 3);
     CHECK(document.GetDraft(QStringLiteral("main_shaders/shade.slang")).contains("EvaluateWaveConnection") == true);
     CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("WT_WAVELENGTH_NANOMETERS") == true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("WT_SPECTRUM") == true);
     RequireValidation(workspace);
 }
 
@@ -2222,8 +2222,7 @@ TEST_CASE("Steinberg physical-optics configuration imports its passes, shader cl
     for (const QString& source : {QStringLiteral("steinberg_physical_optics/main_shaders/primary.slang"),
                                   QStringLiteral("steinberg_physical_optics/main_shaders/shade.slang"),
                                   QStringLiteral("steinberg_physical_optics/main_shaders/hit_record.slang"),
-                                  QStringLiteral("steinberg_physical_optics/main_shaders/wave_optics.slang"),
-                                  QStringLiteral("steinberg_physical_optics/main_shaders/spectrum.slang")})
+                                  QStringLiteral("steinberg_physical_optics/main_shaders/wave_optics.slang")})
     {
         INFO(source.toStdString());
         CHECK(document.GetDraft(source).isEmpty() == false);

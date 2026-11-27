@@ -4,7 +4,7 @@
 // renderer_reference.slang. The packed scene and Parameters block reuse the GPU
 // preview layout (renderer_gpu_preview_layout.h); strides count 16-byte words.
 // Update the kernel version when changing anything below.
-#define LUDUS_REFERENCE_KERNEL_VERSION 13
+#define LUDUS_REFERENCE_KERNEL_VERSION 14
 
 #define LUDUS_REFERENCE_PARAMETERS_BINDING 0
 #define LUDUS_REFERENCE_SCENE_BINDING 1
@@ -37,6 +37,8 @@
 #define LUDUS_REFERENCE_UTD_CONNECTION_FLAG 512
 // Parameters Sampling.z flag selecting ReferenceOpticalConnection::FraunhoferEdgeDiffraction for optical connections.
 #define LUDUS_REFERENCE_FRAUNHOFER_CONNECTION_FLAG 1024
+// Parameters Sampling.z flag selecting ReferenceOpticalSpectrum::Visible for optical captures.
+#define LUDUS_REFERENCE_VISIBLE_SPECTRUM_FLAG 2048
 
 // Sampler 4 keeps the version-1 addresses and reserves a separate dimension per
 // depth after all version-2/3 bounce dimensions. Tile.x carries the directional
@@ -50,6 +52,11 @@
 #define LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION                                                               \
     (LUDUS_REFERENCE_DIRECTIONAL_FIRST_DIMENSION + LUDUS_REFERENCE_MAX_DEPTH)
 #define LUDUS_REFERENCE_DIRECTIONAL_DISK_DIMENSIONS 2
+// ReferenceOpticalSpectrum::Visible draws each path's wavelength from this dimension, after every directional disk
+// dimension, in every sampling mode. Monochromatic captures draw none, so their addresses and output are unchanged.
+#define LUDUS_REFERENCE_WAVELENGTH_DIMENSION                                                                           \
+    (LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION +                                                                \
+     LUDUS_REFERENCE_MAX_DEPTH * LUDUS_REFERENCE_DIRECTIONAL_DISK_DIMENSIONS)
 
 // Sampler version 2 bounce slots (docs/architecture/many-area-light-sampling-reference-review.md, "Random layout,
 // sampler version 2"). Slots 0-7 keep their version-1 meanings, with slots 1-2 also holding the diffuse

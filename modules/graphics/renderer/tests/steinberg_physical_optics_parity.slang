@@ -4,6 +4,7 @@
 // (steinberg_physical_optics_oracle.cpp). steinberg_physical_optics_parity_layout.h owns the ABI.
 #include "math.slang"
 #include "raster_bindings.slang"
+#include "spectral_sensor.slang"
 #include "steinberg_physical_optics_parity_layout.h"
 #include "wave_optics.slang"
 

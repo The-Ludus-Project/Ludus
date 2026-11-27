@@ -204,6 +204,12 @@ void RunSceneWaveCapture(const WaveDevice& device,
 }
 /// Capture one exported pass of the receiver (and, for a nonzero screen, the screen) with one sample per pixel.
 /// @param materialOrNull The receiver's material, or null for the neutral default.
+/// Sum of a pixel's channels. The template renders spectrally: one sample at one wavelength can leave a channel dark
+/// where the camera's sensor does not respond, but the sum is positive wherever light reaches the camera.
+float32 SumChannels(math::Vector3 value) noexcept
+{
+    return value.X + value.Y + value.Z;
+}
 void CaptureSceneWavePass(const WaveDevice& device,
                           uint32 screen,
                           const renderer::SceneShaderMaterial* materialOrNull,
@@ -283,7 +289,7 @@ void RunSceneWaveGraph(uint32 screen,
             {
                 (*outGeometricOrNull)[index] = pixels[index];
             }
-            const float32 value = pixels[index].X;
+            const float32 value = SumChannels(pixels[index]);
             CAPTURE(pass, screen, index);
             REQUIRE(math::IsFinite(value) == true);
             if (screen == 1)
@@ -556,20 +562,30 @@ void CaptureGlassRelay(WaveConnection connection,
 void CheckGlassRelayGraph(WaveConnection connection)
 {
     // The thin pane transmits 1 - 0.0769 of each sample at normal incidence (two interfaces of index 1.5 and their
-    // internal reflections), so the geometric mean of 8 samples lies between 0.6 and 1 of the lamp's radiance.
+    // internal reflections), so the geometric export's mean over all pixels' samples lies between 0.6 and 1 of the
+    // lamp's white radiance in each channel. Each sample reads one wavelength, so single pixels are noisier than that.
     constexpr float32 LAMP_RADIANCE = 4;
     constexpr float32 MINIMUM_TRANSMITTED_FRACTION = 0.6F;
-    // Unobstructed, the relayed field equals the free beam's, so both exports agree to float32 rounding.
+    // Unobstructed, the relayed field equals the free beam's at every wavelength, so the exports, which sample the
+    // same wavelengths, agree to float32 rounding.
     constexpr float32 OPEN_RATIO_TOLERANCE = 0.01F;
     Array<math::Vector3> optical;
     Array<math::Vector3> geometric;
     CaptureGlassRelay(connection, false, optical, geometric);
+    math::Vector3 geometricMean{};
     for (usize index = 0; index < optical.GetSize(); ++index)
     {
-        CAPTURE(index, optical[index].X, geometric[index].X);
-        CHECK(geometric[index].X >= MINIMUM_TRANSMITTED_FRACTION * LAMP_RADIANCE);
-        CHECK(geometric[index].X <= LAMP_RADIANCE);
-        CHECK(math::Abs(optical[index].X - geometric[index].X) <= OPEN_RATIO_TOLERANCE * geometric[index].X);
+        CAPTURE(index, SumChannels(optical[index]), SumChannels(geometric[index]));
+        REQUIRE(SumChannels(geometric[index]) > 0);
+        CHECK(math::Abs(SumChannels(optical[index]) - SumChannels(geometric[index])) <=
+              OPEN_RATIO_TOLERANCE * SumChannels(geometric[index]));
+        geometricMean = geometricMean + geometric[index] / static_cast<float32>(geometric.GetSize());
+    }
+    CAPTURE(geometricMean.X, geometricMean.Y, geometricMean.Z);
+    for (const float32 channel : {geometricMean.X, geometricMean.Y, geometricMean.Z})
+    {
+        CHECK(channel >= MINIMUM_TRANSMITTED_FRACTION * LAMP_RADIANCE);
+        CHECK(channel <= LAMP_RADIANCE);
     }
     // Past the half screen, each lit pixel lies 0 to 0.7 Fresnel units from the edge's shadow boundary (the lamp is
     // 0.1 m below the screen and the camera 0.4 m above it). Fresnel knife-edge diffraction gives 0.25 to 0.65 of the
@@ -579,17 +595,18 @@ void CheckGlassRelayGraph(WaveConnection connection)
     CaptureGlassRelay(connection, true, optical, geometric);
     for (usize index = 0; index < optical.GetSize(); ++index)
     {
-        CAPTURE(index, optical[index].X, geometric[index].X);
-        REQUIRE(math::IsFinite(optical[index].X) == true);
+        CAPTURE(index, SumChannels(optical[index]), SumChannels(geometric[index]));
+        REQUIRE(math::IsFinite(SumChannels(optical[index])) == true);
         if (index % EXTENT < EXTENT / 2)
         {
             // The screen hides the lamp from these pixels' camera paths.
-            CHECK(geometric[index].X == 0);
-            CHECK(optical[index].X == 0);
+            CHECK(SumChannels(geometric[index]) == 0);
+            CHECK(SumChannels(optical[index]) == 0);
             continue;
         }
-        REQUIRE(geometric[index].X >= MINIMUM_TRANSMITTED_FRACTION * LAMP_RADIANCE);
-        const float32 ratio = optical[index].X / geometric[index].X;
+        REQUIRE(SumChannels(geometric[index]) > 0);
+        // Both exports sample the same wavelengths, so the ratio of their sums averages the relayed power over them.
+        const float32 ratio = SumChannels(optical[index]) / SumChannels(geometric[index]);
         CHECK(ratio >= BOUNDARY_POWER * (1 - OPEN_RATIO_TOLERANCE));
         CHECK(ratio <= LIT_MAXIMUM_POWER);
     }
@@ -633,8 +650,8 @@ TEST_CASE("Scene wave graph reaches an unobstructed receiver without Metal multi
     for (usize index = 0; index < pixels.GetSize(); ++index)
     {
         CAPTURE(index);
-        CHECK(math::IsFinite(pixels[index].X) == true);
-        CHECK(pixels[index].X > 0);
+        CHECK(math::IsFinite(SumChannels(pixels[index])) == true);
+        CHECK(SumChannels(pixels[index]) > 0);
     }
 }
 #endif
@@ -683,8 +700,8 @@ TEST_CASE("Scene wave graph repeats its wave and closure-program exports bit for
             {
                 CAPTURE(index, REPEATED_CAPTURE_EXTENT);
                 const math::Vector3& value = pixels[index];
-                REQUIRE(math::IsFinite(value.X) == true);
-                REQUIRE(value.X > 0);
+                REQUIRE(math::IsFinite(SumChannels(value)) == true);
+                REQUIRE(SumChannels(value) > 0);
             }
             REQUIRE(firstWave.TryResize(pixels.GetSize()) == true);
             for (usize index = 0; index < pixels.GetSize(); ++index)

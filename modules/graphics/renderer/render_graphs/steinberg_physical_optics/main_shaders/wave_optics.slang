@@ -1,5 +1,5 @@
 #pragma once
-#include "spectrum.slang"
+// The spectral camera (spectral_sensor.slang) arrives with the renderer's scene interface.
 // Physical-optics scattering of partially coherent, polarized light, following Shlomi Steinberg, Pradeep Sen and
 // Ling-Qi Yan, "Towards Practical Physical-Optics Rendering", ACM Transactions on Graphics 41(4), article 132,
 // SIGGRAPH 2022, https://doi.org/10.1145/3528223.3530119 , and its supplemental derivations. Scene-free: shade.slang
