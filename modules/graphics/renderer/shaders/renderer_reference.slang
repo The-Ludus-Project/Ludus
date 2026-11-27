@@ -371,6 +371,22 @@ bool IsBvhCandidateAccepted(uint triangle, float2 barycentric)
 #ifndef LUDUS_REFERENCE_PERMUTED_PIXELS
 #    define LUDUS_REFERENCE_PERMUTED_PIXELS 0
 #endif
+// The renderer_reference_optical recipe sets this to compile the optical connections of a positive
+// ReferenceCaptureDescription::OpticalWavelengthWorld (Options.y). Every other recipe compiles none of them: their
+// interaction regions, field lattices and relay chains would otherwise enlarge the private memory and code of every
+// geometric invocation. The renderer dispatches only the optical kernel for a positive wavelength.
+#ifndef LUDUS_REFERENCE_OPTICAL_CONNECTIONS
+#    define LUDUS_REFERENCE_OPTICAL_CONNECTIONS 0
+#endif
+/// True when this capture evaluates optical connections; always false in a geometric kernel.
+bool HasOpticalConnections()
+{
+#if LUDUS_REFERENCE_OPTICAL_CONNECTIONS != 0
+    return Options.y > 0;
+#else
+    return false;
+#endif
+}
 // The image width is below 2^31, so this shift yields zero, which the compiler cannot prove. Mixing it into a
 // repeated query keeps the query identical while preventing the compiler from merging it with the original.
 static const uint OPAQUE_ZERO_SHIFT = 31;
@@ -411,7 +427,9 @@ Hit TraceScene(Ray ray, bool isVisibility)
     return result;
 }
 
-#include "wave_reference_scene.slang"
+#if LUDUS_REFERENCE_OPTICAL_CONNECTIONS != 0
+#    include "wave_reference_scene.slang"
+#endif
 
 // --- Camera (CameraRay/GenerateReferencePrimary) -----------------------------
 bool GenerateCameraRay(uint pixel, uint sample, out Ray outRay)
@@ -1348,7 +1366,8 @@ bool TraceProposal(inout PathSample inoutPath,
     if (IsWithinWorld(shadow.OriginWorld) == false)
         return false;
     CountQuery(inoutPath, true);
-    if (Options.y > 0 && proposal.HasFiniteEndpoint == true)
+#if LUDUS_REFERENCE_OPTICAL_CONNECTIONS != 0
+    if (HasOpticalConnections() == true && proposal.HasFiniteEndpoint == true)
     {
         float2 field = float2(0);
         // ReferenceOpticalConnection::UtdEdgeDiffraction or FraunhoferEdgeDiffraction, else the angular-spectrum
@@ -1394,6 +1413,7 @@ bool TraceProposal(inout PathSample inoutPath,
         outTransmission = waveTransmission;
         return isfinite(waveTransmission) == true && waveTransmission >= 0;
     }
+#endif
     // The light endpoint's medium follows from the receiver's and the crossings between them.
     uint inside = inoutPath.MediumInside;
     float3 mediumTransmittance;
@@ -1450,7 +1470,8 @@ bool EvaluateDirectProposal(inout PathSample inoutPath,
         MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
         return false;
     }
-    float weight = proposal.IsDelta == true || Options.y > 0 ? 1 : PowerWeight(proposal.Pdf, evaluation.w);
+    float weight =
+        proposal.IsDelta == true || HasOpticalConnections() == true ? 1 : PowerWeight(proposal.Pdf, evaluation.w);
     outContribution = throughput * evaluation.xyz * proposal.Radiance * (cosine * weight / proposal.Pdf);
     if (IsValidContribution(outContribution) == false)
     {
@@ -2008,6 +2029,14 @@ PathSample TracePath(uint pixel, uint sample)
         MarkInvalid(path, 0, LUDUS_REFERENCE_FAILURE_INVALID_SCENE_LAYOUT);
         return path;
     }
+#if LUDUS_REFERENCE_OPTICAL_CONNECTIONS == 0
+    // A geometric kernel never estimates an optical capture's integral; the renderer dispatches the optical kernel.
+    if (Options.y != 0)
+    {
+        MarkInvalid(path, 0, LUDUS_REFERENCE_FAILURE_INVALID_SCENE_LAYOUT);
+        return path;
+    }
+#endif
     Ray ray;
     if (GenerateCameraRay(pixel, sample, ray) == false)
     {
@@ -2018,8 +2047,10 @@ PathSample TracePath(uint pixel, uint sample)
     float3 previousPositionWorld = 0;
     float previousPdf = 0;
     bool isPreviousSpecular = false;
+#if LUDUS_REFERENCE_OPTICAL_CONNECTIONS != 0
     // Glass events since the last rough vertex, for relayed optical connections (reference_path.cpp).
     WaveRelay relay = BeginWaveRelay(ray.OriginWorld);
+#endif
     uint lights = GetLightCount();
     // The resampled modes keep the previous vertex's receiver and Z-hat for the BSDF-hit density.
     bool isResampled = IsResampled();
@@ -2060,8 +2091,9 @@ PathSample TracePath(uint pixel, uint sample)
                 environment.xyz += EvaluateReferenceSky(Tile.w - 1, ray.DirectionWorld);
             }
             float lightPdf = ComputeEnvironmentLightPdf(environment.w, lights);
-            float weight =
-                depth == 0 || isPreviousSpecular == true ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, lightPdf));
+            float weight = depth == 0 || isPreviousSpecular == true
+                               ? 1
+                               : (HasOpticalConnections() == true ? 0 : PowerWeight(previousPdf, lightPdf));
             AddTransport(path, throughput * environment.xyz * weight, depth, true);
             if (HasValidTransport(path) == false)
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RADIANCE);
@@ -2106,9 +2138,11 @@ PathSample TracePath(uint pixel, uint sample)
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_EMITTER_PDF);
                 return path;
             }
-            float weight =
-                depth == 0 || isPreviousSpecular == true ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, pdf));
-            if (depth > 0 && isPreviousSpecular == true && Options.y > 0)
+            float weight = depth == 0 || isPreviousSpecular == true
+                               ? 1
+                               : (HasOpticalConnections() == true ? 0 : PowerWeight(previousPdf, pdf));
+#if LUDUS_REFERENCE_OPTICAL_CONNECTIONS != 0
+            if (depth > 0 && isPreviousSpecular == true && HasOpticalConnections() == true)
             {
                 // Relay the emitter's connection back through the glass events to the vertex that ended coherence.
                 CountQuery(path, true);
@@ -2152,6 +2186,7 @@ PathSample TracePath(uint pixel, uint sample)
                 }
                 weight *= transmission;
             }
+#endif
             AddTransport(path, throughput * SampleEmission(instance, uv) * weight, depth, true);
         }
         // pbrt-v4's reflection models scatter on the viewer's side of the surface (reference_path.cpp cites the
@@ -2374,7 +2409,8 @@ PathSample TracePath(uint pixel, uint sample)
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RAY_ORIGIN);
                 return path;
             }
-            if (Options.y > 0)
+#if LUDUS_REFERENCE_OPTICAL_CONNECTIONS != 0
+            if (HasOpticalConnections() == true)
             {
                 if (isSpecular == true)
                     AppendWaveRelayEvent(relay,
@@ -2386,6 +2422,7 @@ PathSample TracePath(uint pixel, uint sample)
                 else
                     relay = BeginWaveRelay(next.OriginWorld);
             }
+#endif
         }
         if (HasValidTransport(path) == false)
         {

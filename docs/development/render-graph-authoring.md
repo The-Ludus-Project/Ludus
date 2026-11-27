@@ -11976,6 +11976,10 @@ preserves the geometric reference profile. `ReferenceCaptureDescription::Optical
 selects `AngularSpectrum` (the default), `UtdEdgeDiffraction` or
 `FraunhoferEdgeDiffraction`; an edge operator without a wavelength is rejected. Select `CpuOracle` or `GpuCompute` and `UniformArea` light
 sampling; incompatible native-query or resampled requests reject explicitly.
+`GpuCompute` evaluates these connections only in the `renderer_reference_optical`
+kernel: cook it beside `renderer_reference` and pass it to the four-argument
+`EnableReferenceRendering`, or an optical capture reports `Unsupported`. See
+[GPU-compute reference](../architecture/renderer-systems.md#gpu-compute-reference).
 Changing the wavelength or operator resets progressive accumulation. Raw `LUHDR01`
 exports retain the wavelength at byte 92, optical flag 256 and, for UTD, flag 2048
 or, for Fraunhofer, flag 4096.
