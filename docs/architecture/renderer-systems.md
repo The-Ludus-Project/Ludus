@@ -3078,9 +3078,18 @@ capture each check the direct and total radiance against this expectation using
 The mean tolerance is 0.02 per channel, and matched CPU and GPU pixels must
 agree within an RGB distance of 0.001.
 Increasing scene path depth cannot recover scattering between microfacets.
+
 Thanks to Sébastien Lagarde for the lossless furnace setup and rough-surface
 comparisons. [*Physically-Based Materials: Where Are We?*, SIGGRAPH 2017,
 slides 36–37 and 76–77](https://openproblems.realtimerendering.com/s2017/02-PhysicallyBasedMaterialWhereAreWe.pdf#page=36)
+
+The same paired regression checks the probability of a null BSDF proposal.
+With unit GGX alpha and a normal view, the masking-only reflection density is
+uniform over the sphere. Half of the proposals go below the plane and remain
+null. Each traversal checks that fraction against 0.5 within 0.02 per seed and
+depth. This is the below-surface part of the weak white furnace, which checks
+first-bounce normalization over both hemispheres before microfacet shadowing.
+[Eric Heitz, *Understanding the Masking-Shadowing Function in Microfacet-Based BRDFs*, §3.4, Eq. 36](https://jcgt.org/published/0003/02/03/paper.pdf#page=18)
 
 The opt-in [multiple-scattering GGX profile](#multiple-scattering-ggx-profile)
 declares a compensated integral with its own furnace target of one. Before
