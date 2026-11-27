@@ -828,6 +828,18 @@ collision. Carving depends on the sample grid, so changing **Samples per side**
 moves the channels. The fields, routing and carving are described in
 [terrain fields, drainage, rivers and material rules](../modules/content/terrain.md).
 
+**Show cooked pages** inspects the terrain as a game reads it. The Editor cooks
+the ready view's final heights, after rivers and sculpt strokes, into a
+versioned revision of height pages. It then reads every page back from its own
+bytes and draws the page borders over the terrain at the decoded heights. The
+panel names the revision, the page grid, the height step and the largest
+difference from the source heights. A terrain with up to 64 samples per side
+uses at most four pages per axis. The revision is for inspection only; the World
+keeps its recipe. The cooked format needs square cells. When **Width** and
+**Depth** divide into cells of different sizes, the panel names the **Depth**
+that matches. See
+[inspect and read a cooked revision](../modules/content/terrain.md#inspect-and-read-a-cooked-revision).
+
 The editor extracts a single indexed mesh of at most 64 samples per side,
 including after reopening the World. The terrain uses the current viewport
 shading and authored lights. In an unlit World, the default raster graph

@@ -2,8 +2,8 @@
 # samples ContentTerrain's canonical quantized surface with exact fixed-point
 # arithmetic, thins addressed lattice candidates by ordered strata and writes
 # canonical LUFOL page sets through Ludus::FoliagePages. Foundation and content
-# only, so it builds for native and browser targets. In-tree only, like
-# ContentTerrain, until an SDK consumer needs it. The golden cook is shared with
+# only, so it builds for native and browser targets. In-tree only until an
+# SDK consumer needs it. The golden cook is shared with
 # the WebAssembly math probe.
 add_library(ludus_foliage_cook STATIC
     src/foliage_fixed_point.cpp

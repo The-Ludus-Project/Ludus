@@ -264,6 +264,21 @@ struct TerrainRecookSummary final
     usize ReusedPages = 0;
 };
 
+/// @brief Digest a complete elevation field, for a revision whose source is the field itself.
+///
+/// The digest is FoundationHash's StableFingerprint128 (XXH3-128) of Columns and Rows as little-endian unsigned
+/// 32-bit integers, SpacingXMetres and SpacingZMetres, then every elevation in row-major order, each binary32 value
+/// as its little-endian bits. Equal fields give equal digests on every host, so a caller that regenerates a field
+/// from the same recipe reproduces a revision's SourceDigest and its manifest bytes.
+/// @param grid The field's grid; valid, with at most terrain_format::MAX_DOMAIN_AXIS_CELLS cells per axis.
+/// @param elevationsMetres One elevation per grid sample, row-major. Values are hashed as stored, nonfinite included.
+/// @param outDigest Written only on Success.
+/// @return Success, InvalidArgument for an invalid grid, InvalidStorage for a view of the wrong size, LimitExceeded
+/// for a grid larger than a revision domain, or AllocationFailed.
+[[nodiscard]] TerrainCookStatus TryComputeTerrainFieldDigest(const TerrainFieldGrid& grid,
+                                                             foundation::BorrowedView<const float32> elevationsMetres,
+                                                             foundation::Fingerprint128& outDigest) noexcept;
+
 /// @brief Quantize one page of a complete domain field into a page blob and its record.
 ///
 /// The payload holds the page's core and its terrain_format::PAGE_HALO_SAMPLES halo, read from the same field, so
