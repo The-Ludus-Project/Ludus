@@ -3661,6 +3661,22 @@ when its capture needs bands. `scripts/reference-hdr` converts the file to PFM w
 as it does reference captures. See the
 [frame capture design](../architecture/render-graph-frame-capture.md).
 
+#### Inspect a diffraction power budget
+
+In the native **Reference capture** window, open the **Power budget** tab.
+Choose the measured render, an unobstructed control, and an independent
+expected diffraction pattern with the mask in place. Use completed linear
+`.luhdr` or `.lurgcap` captures from the same view and resolution, with a uniform
+Lambertian receiver on the world XY plane filling the image.
+
+Set **Receiver Z**, choose the channel, and enter the expected transmission and
+tolerance as percentages of open power. Select **Measure power**. The tab
+reports the integrated comparison and shows the area-weighted heatmap. Orange
+marks excess, blue marks deficits, and black marks a match. Right-click the
+heatmap to copy or save it at capture resolution. The expected pattern is
+scaled to the supplied transmission before comparison. See the
+[power budget setup](render-graph-authoring.md#check-a-diffraction-renders-power-budget).
+
 #### Compare with the viewport's render graph
 
 In the native editor, **Compare with the render graph** is on by default. Each

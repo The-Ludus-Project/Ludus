@@ -9,6 +9,7 @@
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/celestial_time_lapse_window.h"
 #    include "internal/graph_comparison_window.h"
+#    include "internal/reference_power_view.h"
 #    include "internal/render_graph_capture_profile.h"
 #    include "internal/render_graph_preview.h"
 #endif
@@ -368,6 +369,9 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mImages->addTab(mImageView, QStringLiteral("Reference"));
     mImages->addTab(mRasterView, QStringLiteral("Render graph"));
     mImages->addTab(mDifferenceView, QStringLiteral("Difference"));
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mImages->addTab(new ReferencePowerView(mImages), QStringLiteral("Power budget"));
+#endif
 
     mImages->setMinimumSize(PREVIEW_MINIMUM_WIDTH, PREVIEW_MINIMUM_HEIGHT);
 

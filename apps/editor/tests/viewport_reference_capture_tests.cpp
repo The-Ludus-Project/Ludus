@@ -1,6 +1,8 @@
 #include "internal/builtin_world.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/captured_image_view.h"
 #    include "internal/celestial_time_lapse_window.h"
+#    include <ludus/content/render_graph_format/capture.h>
 #endif
 #include "internal/light_switches.h"
 #include "internal/reference_capture_window.h"
@@ -50,6 +52,7 @@
 #include <QImage>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
@@ -69,6 +72,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 
 using namespace ludus::editor;
@@ -1059,6 +1063,99 @@ TEST_CASE("Reference capture window explains a missing viewport device without s
     REQUIRE(stop != nullptr);
     CHECK(stop->isEnabled() == false);
 }
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+TEST_CASE("Reference capture shows a saved power budget and its signed heatmap", "[editor][reference-power]")
+{
+    namespace format = ludus::content::render_graph_format;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    constexpr uint32 WIDTH = 2;
+    const auto writeCapture = [&directory](const QString& name, float32 left, float32 right) {
+        const QString path = directory.filePath(name);
+        QByteArray bytes(format::CAPTURE_HEADER_BYTES + WIDTH * format::CAPTURE_PIXEL_BYTES, '\0');
+        std::memcpy(bytes.data(), format::CAPTURE_MAGIC, format::CAPTURE_MAGIC_BYTES);
+        const auto writeWord = [&bytes](usize offset, uint32 value) { qToLittleEndian(value, bytes.data() + offset); };
+        writeWord(format::CAPTURE_VERSION_OFFSET, format::CAPTURE_VERSION);
+        writeWord(format::CAPTURE_HEADER_SIZE_OFFSET, format::CAPTURE_HEADER_BYTES);
+        writeWord(format::CAPTURE_PIXEL_SIZE_OFFSET, format::CAPTURE_PIXEL_BYTES);
+        writeWord(format::CAPTURE_WIDTH_OFFSET, WIDTH);
+        writeWord(format::CAPTURE_HEIGHT_OFFSET, 1);
+        writeWord(format::CAPTURE_TARGET_SAMPLES_OFFSET, 1);
+        writeWord(format::CAPTURE_SUBMITTED_SAMPLES_OFFSET, 1);
+        // Orthographic projection with a clip-depth offset so the plane at Z=-1 is visible.
+        constexpr StaticArray<float32, format::CAPTURE_MATRIX_VALUES> PROJECTION{
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            1.5F,
+            1,
+        };
+        for (usize i = 0; i < PROJECTION.GetSize(); ++i)
+        {
+            writeWord(format::CAPTURE_WORLD_TO_CLIP_OFFSET + i * sizeof(float32), std::bit_cast<uint32>(PROJECTION[i]));
+        }
+        writeWord(format::CAPTURE_HEADER_BYTES, std::bit_cast<uint32>(left));
+        writeWord(format::CAPTURE_HEADER_BYTES + LUHDR_SAMPLE_COUNT_OFFSET, 1);
+        writeWord(format::CAPTURE_HEADER_BYTES + format::CAPTURE_PIXEL_BYTES, std::bit_cast<uint32>(right));
+        writeWord(format::CAPTURE_HEADER_BYTES + format::CAPTURE_PIXEL_BYTES + LUHDR_SAMPLE_COUNT_OFFSET, 1);
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly) == true);
+        REQUIRE(file.write(bytes) == bytes.size());
+        return path;
+    };
+
+    ReferenceCaptureWindow window(nullptr);
+    QTabWidget* tabsOrNull = window.findChild<QTabWidget*>(QStringLiteral("referenceImages"));
+    REQUIRE(tabsOrNull != nullptr);
+    QWidget* tabOrNull = tabsOrNull->findChild<QWidget*>(QStringLiteral("referencePowerTab"));
+    REQUIRE(tabOrNull != nullptr);
+    tabsOrNull->setCurrentWidget(tabOrNull);
+    QLineEdit* measuredOrNull = tabOrNull->findChild<QLineEdit*>(QStringLiteral("powerMeasured"));
+    QLineEdit* openOrNull = tabOrNull->findChild<QLineEdit*>(QStringLiteral("powerOpen"));
+    QLineEdit* expectedOrNull = tabOrNull->findChild<QLineEdit*>(QStringLiteral("powerExpected"));
+    QPushButton* measureOrNull = tabOrNull->findChild<QPushButton*>(QStringLiteral("measureReferencePower"));
+    CapturedImageView* imageOrNull = tabOrNull->findChild<CapturedImageView*>(QStringLiteral("referencePowerImage"));
+    QLabel* statusOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("referencePowerStatus"));
+    REQUIRE(measuredOrNull != nullptr);
+    REQUIRE(openOrNull != nullptr);
+    REQUIRE(expectedOrNull != nullptr);
+    REQUIRE(measureOrNull != nullptr);
+    REQUIRE(imageOrNull != nullptr);
+    REQUIRE(statusOrNull != nullptr);
+
+    measuredOrNull->setText(writeCapture(QStringLiteral("measured.lurgcap"), 1, 0));
+    openOrNull->setText(writeCapture(QStringLiteral("open.lurgcap"), 1, 1));
+    expectedOrNull->setText(writeCapture(QStringLiteral("expected.lurgcap"), 0, 1));
+    measureOrNull->click();
+    constexpr int32 WAIT_MILLISECONDS = 5000;
+    REQUIRE(QTest::qWaitFor([imageOrNull]() { return imageOrNull->GetImage().isNull() == false; }, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text().contains(QStringLiteral("Within tolerance")) == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Excess 50.000%")) == true);
+    const QImage& image = imageOrNull->GetImage();
+    CHECK(qRed(image.pixel(0, 0)) > qBlue(image.pixel(0, 0)));
+    CHECK(qBlue(image.pixel(1, 0)) > qRed(image.pixel(1, 0)));
+
+    expectedOrNull->setText(directory.filePath(QStringLiteral("missing.lurgcap")));
+    CHECK(imageOrNull->GetImage().isNull() == true);
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor(
+        [statusOrNull]() { return statusOrNull->text().contains(QStringLiteral("Choose a readable raw capture")); },
+        WAIT_MILLISECONDS));
+    CHECK(imageOrNull->GetImage().isNull() == true);
+}
+#endif
 
 TEST_CASE("Reference capture releases viewport GPU admission on stop and completion", "[editor][reference-capture]")
 {
