@@ -207,7 +207,8 @@ The tests in `modules/content/foliage_cook/tests` check the following:
 - Holes, slope, wetness, masks and exclusion between strata.
 - Dormant suppressions, signed-limit cells, dirty recooks of terrain and
   suppression edits, and render-only edits.
-- Placement gaps against a maximal fill, described below.
+- Placement gaps against maximal fills and a randomized tiling comparator,
+  described below.
 
 The golden cook in `foliage_cook_golden.h` is shared with the WebAssembly math
 probe, so native and browser builds must produce the same pinned bytes.
@@ -218,47 +219,115 @@ Thinning removes a candidate whenever a higher-priority conflict exists, even
 if that conflict is itself removed. The cook therefore keeps the minimum
 spacing but leaves admissible area between placements. The tests in
 `foliage_gap_tests.cpp` measure the two properties separately and compare the
-cook with a maximal Poisson-disk fill:
+cook with maximal Poisson-disk fills:
 
 - **Fixture.** The page-cook fixture is flat, with one layer, one species, a
   64-unit radius (minimum distance d = 128 lattice units, 0.25 m) and density
   at capacity. A band of hole cells forms a keep-out beside a valid strip one
-  terrain cell (2d) wide. The pages are 2,048 units across, and the seam zone
-  lies within d of a page boundary.
+  terrain cell (2d) wide. The pages are 2,048 units across. The seam zone lies
+  within d of a boundary between two pages, and the junction zone within d of
+  a corner where four pages meet.
 - **Control.** Hierarchical dart throwing (Cline, White and Egbert, RT 2007)
   fills the same eligible roots until none is admissible, the coverage
-  objective of Dunbar and Humphreys (SIGGRAPH 2006). A cell is discarded only when one disk or the
-  keep-out covers all of it. The quadtree starts at 64-unit cells and ends at
-  single roots, which are decided exactly. The smallest explored cell is
-  therefore one root and the termination tolerance is zero.
+  objective of Dunbar and Humphreys (SIGGRAPH 2006). A cell is discarded only
+  when one disk or the keep-out covers all of it. The quadtree starts at
+  64-unit cells and ends at single roots, which are decided exactly. The
+  smallest explored cell is therefore one root and the termination tolerance
+  is zero.
 - **Probe.** An independent probe checks every eligible root with exact
   integer distances. It reports nearest-neighbour spacing and the roots that
-  no placement excludes, separately for the interior, the seam and the narrow
-  strip. It confirms that the control leaves no admissible root.
+  no placement excludes, separately for the interior, the seam, the junctions
+  and the narrow strip. It confirms that the control leaves no admissible root.
 
 The quick test checks spacing, eligibility, the control's maximality and the
 cook's gaps with sparse probes. The hidden `[.benchmark][gap]` case probes
-every root and reports the following. Times are from a release build on an
+every root and reports the following. Times are from release builds on an
 Apple M5 under load.
 
-| Point set | Interior placements | Seam placements | Strip placements | Admissible area left (interior, seam, strip) | Largest empty distance | Time |
-| --- | --- | --- | --- | --- | --- | --- |
-| Cook, cell 128, 1 slot | 928 | 269 | 45 | 15.8 %, 17.9 %, 16.2 % | 1.97 d | 1.9 ms |
-| Cook, cell 64, 1 slot | 830 | 249 | 41 | 20.7 %, 21.1 %, 21.2 % | 2.51 d | 4.3 ms |
-| Dart throwing control | 1,771 | 522 | 86 | 0 % in every zone | below d | 7.8–11.9 ms |
+| Point set | Interior | Seam | Junction | Strip | Admissible area left (interior, seam, junction, strip) | Largest empty distance | Time |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Cook, cell 128, 1 slot | 928 | 248 | 21 | 45 | 15.8 %, 18.1 %, 15.1 %, 16.2 % | 1.97 d | 1.9–2.0 ms |
+| Cook, cell 64, 1 slot | 830 | 231 | 18 | 41 | 20.7 %, 21.4 %, 17.4 %, 21.2 % | 2.51 d | 4.3–6.8 ms |
+| Dart throwing control | 1,771 | 489 | 33 | 86 | 0 % in every zone | below d | 7.8–11.9 ms |
 
 The cook keeps 47–52 % of the maximal fill's count. Its nearest-neighbour
 distances spread across [d, 2d), while 97 % of the control's lie in
-[d, 1.25 d). The seam and the narrow strip stay within about two percentage
-points of the interior, so page halos and keep-outs add no measurable gaps of
-their own. The finer lattice offers four times the candidates but places
-fewer, consistent with more candidates being removed by conflicts that are
-themselves removed. The control threw 24,036 darts and discarded 75,722
-covered cells. It held at most 13,184 active cells and 520,448 bytes.
-At about 10 ms, the control does not limit the study, so the conditional
-raster conflict-culling trial (PixelPie, HPG 2013) is not needed. These gaps are a property of the declared
-placement rule. Shuffled and isolated cooks of the fixture still produce
-identical pages, and the golden bytes remain the product contract.
+[d, 1.25 d). The seams, junctions and narrow strip stay within about three
+percentage points of the interior, so page halos and keep-outs add no
+measurable gaps of their own. The finer lattice offers four times the
+candidates but places fewer, consistent with more candidates being removed by
+conflicts that are themselves removed. The control threw 24,036 darts and
+discarded 75,722 covered cells. It held at most 13,184 active cells and
+520,448 bytes. At about 10 ms, the control does not limit the study, so the
+conditional raster conflict-culling trial (PixelPie, HPG 2013) is not needed.
+These gaps are a property of the declared placement rule. Shuffled and
+isolated cooks of the fixture still produce identical pages, and the golden
+bytes remain the product contract.
+
+#### Randomized tiling comparator
+
+Wang and Suda (HPG 2017) build a large maximal pattern from randomized
+clippings of one small pattern and repair conflicts and gaps at tile borders.
+`foliage_tiling.h` evaluates a deterministic version on the same fixture. Its
+clipping and repair rules are this comparator's own:
+
+- **Seed.** Dart throwing over an unobstructed square of 2,048 units (16 d)
+  gives 194 points; a 1,024-unit square gives 53.
+- **Clipping.** Tiles of 1,024 units align with the pages, so every page seam
+  and four-page junction is a tile border. Each tile copies a window of the
+  seed at an offset, optionally under one of the eight symmetries of the
+  square, drawn from Philox at the tile address. Tile addresses use floor
+  division, so negative coordinates follow the same rule.
+- **Repair.** A copied point is removed when it conflicts with a
+  higher-priority copied point from another tile. A row sweep with exact
+  integer chords then lists every eligible root that no kept point covers,
+  and these gap roots are filled greedily in priority order. Priorities
+  depend only on tile addresses, seed indices and roots. Visiting tiles and
+  rows in reverse therefore produces the same points, which the quick test
+  checks.
+- **Repetition.** A point's configuration is the set of integer displacements
+  to every neighbour closer than 2d. The benchmark counts configurations that
+  occur exactly at another point, as a translated copy or under a symmetry of
+  the square. Independent fills essentially never repeat a configuration of
+  three or more displacements.
+- **Isolation.** Each page is tiled alone in a window widened by a halo and
+  compared with the full tiling.
+
+The hidden `[.benchmark][tiling]` case reports the following from two release
+runs. Every tiling leaves no admissible root in any zone, and every zone keeps
+the minimum spacing.
+
+| Point set | Points | Repeated configurations (translated, any symmetry) | Gap roots filled | Time | Peak bytes |
+| --- | --- | --- | --- | --- | --- |
+| Cook, cell 64 | 1,120 | 0 %, 0 % | — | 4.3–6.8 ms | — |
+| Dart throwing control | 2,379 | 0 %, 0 % | — | 8–10 ms | 0.52 MB |
+| Tiles 1,024 from seed 2,048, translations | 2,460 | 19.7 %, 19.7 % | 934,749 | 0.42–1.28 s | 27.7 MB |
+| Tiles 1,024 from seed 2,048, symmetries | 2,459 | 10.1 %, 18.8 % | 722,203 | 0.28–0.63 s | 25.1 MB |
+| Tiles 512 from seed 1,024, symmetries | 2,442 | 0 %, 1.0 % | 1,659,188 | 0.84–0.89 s | 52.1 MB |
+
+| Halo around an isolated page | 0 | d | 2d | 4d, 8d and 16d |
+| --- | --- | --- | --- | --- |
+| Pages that differ from the full tiling, of 25 | 25 | 15–18 | 0–2 | 0 |
+| Points that differ | 441–481 | 39–41 | 0–2 | 0 |
+
+- **Coverage.** Every tiling fills the seams, junctions and narrow strip
+  completely and places 2.6–3.4 % more points than the control.
+- **Isolation.** A decision of the greedy fill can depend on a chain of
+  earlier decisions, so isolated pages need a halo. Here pages agree from 4d,
+  four times the cook's thinning halo of d. The sweep establishes this only
+  for this fixture, not as a bound.
+- **Repetition.** Symmetries halve the exact translated copies but leave the
+  copies under a symmetry, so they disguise the repetition rather than remove
+  it. The measure only finds neighbourhoods copied whole inside one clipping,
+  so it understates repetition for 512-unit tiles.
+- **Cost.** On the lattice, the repair visits every uncovered root: 0.7–1.7
+  million gap roots, each with its own priority draw. The comparator is
+  therefore 30 to more than 100 times slower than the whole-region control.
+
+The comparator does not justify a production change. Complete seams would
+cost a fourfold halo, seed-pattern repetition and more cook time, while the
+cook already keeps page isolation and traversal order at a halo of d. The cook
+remains the qualified placement rule.
 
 ## Cooked pages and publication
 

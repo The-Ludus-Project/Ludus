@@ -28,12 +28,6 @@ constexpr int64 SIXTEENTHS = 16;
 /// Search reach of nearest-neighbour and empty-distance histograms, in minimum distances.
 constexpr int64 HISTOGRAM_REACH = 3;
 
-int64 FloorDivide(int64 value, int64 divisor) noexcept
-{
-    const int64 quotient = value / divisor;
-    return (value % divisor != 0 && (value < 0) != (divisor < 0)) ? quotient - 1 : quotient;
-}
-
 int64 FloorModulo(int64 value, int64 divisor) noexcept
 {
     return value - FloorDivide(value, divisor) * divisor;
@@ -391,6 +385,10 @@ CoverageZone CombineAxes(uint8 rowKind, uint8 columnKind) noexcept
     {
         return CoverageZone::NarrowStrip;
     }
+    if ((rowKind & AXIS_SEAM) != 0 && (columnKind & AXIS_SEAM) != 0)
+    {
+        return CoverageZone::Junction;
+    }
     return ((rowKind | columnKind) & AXIS_SEAM) != 0 ? CoverageZone::Seam : CoverageZone::Interior;
 }
 
@@ -402,6 +400,8 @@ int64 GetZoneStride(const ProbeSpacing& spacing, CoverageZone zone) noexcept
             return spacing.Interior;
         case CoverageZone::Seam:
             return spacing.Seam;
+        case CoverageZone::Junction:
+            return spacing.Junction;
         case CoverageZone::NarrowStrip:
             return spacing.NarrowStrip;
     }
@@ -467,38 +467,19 @@ bool PointGrid::TryBuild(foundation::BorrowedView<const CoveragePoint> points,
 
 bool PointGrid::TryFindNearest(const NearestQuery& query, int64& outDistanceSquared) const noexcept
 {
-    const int64 x = query.Position.X;
-    const int64 z = query.Position.Z;
-    const int64 reach = query.Reach;
-    const int64 firstColumn = GetMaximum(FloorDivide(x - reach - mExtent.MinimumX, mCellSize), 0);
-    const int64 lastColumn = GetMinimum(FloorDivide(x + reach - mExtent.MinimumX, mCellSize), mColumns - 1);
-    const int64 firstRow = GetMaximum(FloorDivide(z - reach - mExtent.MinimumZ, mCellSize), 0);
-    const int64 lastRow = GetMinimum(FloorDivide(z + reach - mExtent.MinimumZ, mCellSize), mRows - 1);
     bool isFound = false;
     int64 nearest = 0;
-    for (int64 row = firstRow; row <= lastRow; ++row)
-    {
-        for (int64 column = firstColumn; column <= lastColumn; ++column)
+    static_cast<void>(VisitNear(query, [&](usize index) noexcept {
+        const int64 differenceX = mPoints[index].X - query.Position.X;
+        const int64 differenceZ = mPoints[index].Z - query.Position.Z;
+        const int64 distanceSquared = differenceX * differenceX + differenceZ * differenceZ;
+        if (isFound == false || distanceSquared < nearest)
         {
-            const usize cell = static_cast<usize>(row * mColumns + column);
-            for (uint32 entry = mFirst[cell]; entry < mFirst[cell + 1]; ++entry)
-            {
-                const usize index = mIndices[entry];
-                if (index == query.SkipIndex)
-                {
-                    continue;
-                }
-                const int64 differenceX = mPoints[index].X - x;
-                const int64 differenceZ = mPoints[index].Z - z;
-                const int64 distanceSquared = differenceX * differenceX + differenceZ * differenceZ;
-                if (isFound == false || distanceSquared < nearest)
-                {
-                    nearest = distanceSquared;
-                    isFound = true;
-                }
-            }
+            nearest = distanceSquared;
+            isFound = true;
         }
-    }
+        return false;
+    }));
     if (isFound == true)
     {
         outDistanceSquared = nearest;
@@ -555,7 +536,8 @@ bool TryMeasureCoverage(const EligibleRegion& region,
                         const ProbeSpacing& spacing,
                         CoverageMeasurement& outMeasurement) noexcept
 {
-    if (minimumDistance <= 0 || spacing.Interior <= 0 || spacing.Seam <= 0 || spacing.NarrowStrip <= 0)
+    if (minimumDistance <= 0 || spacing.Interior <= 0 || spacing.Seam <= 0 || spacing.Junction <= 0 ||
+        spacing.NarrowStrip <= 0)
     {
         return false;
     }
