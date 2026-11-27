@@ -1121,6 +1121,9 @@ and its original on one device and require identical bytes. The composite and sk
 the render-graph pixel suite, which also runs on Direct3D 12 (WARP). The others run in the
 Vulkan and Metal renderer suites. The grid, skin and Light Transformer cases have an in-process
 A/B timing mode (`LUDUS_RENDERER_BENCHMARK`), which alternates GPU-timed blocks of the two programs.
+The Light Transformer timing is a separate hidden case, because it has nothing to check without the
+variable and the Linux Vulkan validation step rejects a default run with skipped cases. Select it with
+`LUDUS_RENDERER_BENCHMARK=1 ludus_light_transformer_render_tests "[benchmark][light-transformer]"`.
 
 The skin recipes share `renderer_skin_diffusion.luslh`, the port of the originals'
 `renderer_skin_diffusion.slang`, and the fullscreen vertex stage

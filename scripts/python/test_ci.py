@@ -90,6 +90,39 @@ class RenderGraphVulkanEvidenceTests(unittest.TestCase):
                     offending.append(f"{path.name}: {name.strip()}")
         self.assertEqual(offending, [], "drop [render-graph] from native-query cases; ludus_renderer_pixels runs them")
 
+    def test_unfiltered_skip_gated_suites_have_no_environment_gated_cases(self):
+        # The light-transformer recipe benchmark skipped without LUDUS_RENDERER_BENCHMARK, which the
+        # skip-rejecting Vulkan validation of its whole suite failed (#2333's evidence run 45918880026).
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        gated = re.findall(r"out/build/linux-clang-development/[\w/]+/(ludus_\w+) 2>&1 \| tee (out/[\w.-]+\.log)\n"
+                           r"[^\n]*Path\(\"\2\"\)[^\n]*\"skipped\" not in text", workflow)
+        executables = sorted({name for name, _ in gated})
+        self.assertIn("ludus_light_transformer_render_tests", executables)
+        listing = re.compile(r"(?:add_executable|target_sources)\((ludus_\w+)\b([^)]*)\)")
+        sources = {}
+        for lists in sorted((self.ROOT / "modules").rglob("CMakeLists.txt")):
+            for target, listed in listing.findall(lists.read_text(encoding="utf-8")):
+                if target in executables:
+                    sources.setdefault(target, set()).update(
+                        lists.parent / name for name in re.findall(r"tests/[\w/]+\.cpp", listed))
+        self.assertEqual(sorted(sources), executables)
+        case = re.compile(r'TEST_CASE\(((?:\s*"(?:[^"\\]|\\.)*")+)\s*,\s*"([^"]*)"', re.S)
+        offending = []
+        for target in executables:
+            for path in sorted(sources[target]):
+                text = path.read_text(encoding="utf-8")
+                matches = list(case.finditer(text))
+                for index, match in enumerate(matches):
+                    end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+                    body = text[match.end():end]
+                    # A skip whose own condition reads the environment; device-capability skips stay.
+                    conditions = re.findall(r"\bif\s*\(([^{;]*)\)\s*\{\s*SKIP\(", body)
+                    is_environment_gated = any(re.search(r"\bgetenv\b|IsRecipeBenchmark\(", condition)
+                                               for condition in conditions)
+                    if is_environment_gated and "[." not in match.group(2):
+                        offending.append(f"{target}: {path.name}: {match.group(1).strip()}")
+        self.assertEqual(offending, [], "hide opt-in cases with a [.benchmark] tag; these suites run unfiltered")
+
 
 class GeneratedSourceCheckTests(unittest.TestCase):
     """Freshness checks of checked-in generated sources run on pull requests, not only in batches."""

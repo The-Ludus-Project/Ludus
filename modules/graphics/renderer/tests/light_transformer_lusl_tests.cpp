@@ -542,8 +542,10 @@ TEST_CASE("The LUSL Light Transformer encoder and encoded-query recipes return t
 }
 
 TEST_CASE("The LUSL Light Transformer encoder and encoded-query recipes time like their Slang originals",
-          "[renderer][gpu][light-transformer][lusl]")
+          "[.benchmark][renderer][gpu][light-transformer][lusl]")
 {
+    // Hidden: the Linux Vulkan validation step requires a default run without skipped cases. Run it with
+    // LUDUS_RENDERER_BENCHMARK=1 ludus_light_transformer_render_tests "[benchmark][light-transformer]".
     // In-process A/B GPU timing (LUDUS_RENDERER_BENCHMARK=1): the whole encoder workload, its hottest program, and
     // a batch of encoded queries, each Slang original against its LUSL recipe on one device.
     if (renderer::testing::IsRecipeBenchmark() == false)
