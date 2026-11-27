@@ -425,6 +425,32 @@ TEST_CASE("LUSL lowering includes extern slang files relative to the generated m
     CHECK(failed.Text.empty() == true);
 }
 
+TEST_CASE("LUSL lowering defines the configuration values for its extern slang files", "[shader-language][emitter]")
+{
+    Snapshot snapshot;
+    snapshot.AddFile("main.lusl",
+                     "extern slang \"bindings.slang\"\n{\n    float32 Read();\n};\n#if MODE == 1\nfloat32 Use()\n{\n"
+                     "    return Read();\n}\n#endif\n");
+    snapshot.AddFile("bindings.slang", "#if MODE == 1\nfloat Read() { return 1.0; }\n#endif\n");
+    snapshot.AddConfiguration("MODE", "1");
+    snapshot.AddConfiguration("EMPTY", "");
+    const Lowered lowered = LowerSnapshot(snapshot);
+    INFO(lowered.Diagnostics);
+    REQUIRE(lowered.Outcome == language::Status::Ready);
+    // Before the include, and only where the including Slang code has not defined the macro.
+    CHECK(Contains(lowered.Text,
+                   "#ifndef MODE\n#define MODE 1\n#endif\n#ifndef EMPTY\n#define EMPTY \n#endif\n"
+                   "#include \"bindings.slang\"\n"));
+
+    // A module that includes no Slang file writes no macros.
+    Snapshot plain;
+    plain.AddFile("main.lusl", "#if MODE == 1\nfloat32 Use()\n{\n    return 1.0;\n}\n#endif\n");
+    plain.AddConfiguration("MODE", "1");
+    const Lowered alone = LowerSnapshot(plain);
+    REQUIRE(alone.Outcome == language::Status::Ready);
+    CHECK(Contains(alone.Text, "#define MODE") == false);
+}
+
 TEST_CASE("LUSL lowering maps generated lines back to LUSL", "[shader-language][emitter]")
 {
     const Lowered lowered = Lower(R"(#define DECLARE(name) float32 name = x * 2.0;

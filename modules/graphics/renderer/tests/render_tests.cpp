@@ -1357,11 +1357,43 @@ TEST_CASE("L4 baked direct diffuse and immutable cascade/spot atlases survive ca
     }
 }
 
+#include "baseline_renderer_authored.h"
+#include "baseline_renderer_authored_shadow.h"
+#include "baseline_renderer_clustered.h"
+#include "baseline_renderer_clustered_authored.h"
+#include "baseline_renderer_clustered_authored_debug.h"
+#include "baseline_renderer_clustered_authored_debug_shadow.h"
+#include "baseline_renderer_clustered_authored_shadow.h"
+#include "baseline_renderer_clustered_shadow.h"
+#include "baseline_renderer_clustered_surface.h"
+#include "baseline_renderer_clustered_surface_shadow.h"
+#include "baseline_renderer_lit.h"
+#include "baseline_renderer_lit_debug.h"
+#include "baseline_renderer_lit_debug_shadow.h"
+#include "baseline_renderer_lit_shadow.h"
+#include "baseline_renderer_surface.h"
+#include "baseline_renderer_surface_shadow.h"
+#include "renderer_authored.h"
+#include "renderer_authored_shadow.h"
+#include "renderer_clustered_authored.h"
+#include "renderer_clustered_authored_debug.h"
+#include "renderer_clustered_authored_debug_shadow.h"
+#include "renderer_clustered_authored_shadow.h"
+#include "renderer_clustered_surface.h"
+#include "renderer_clustered_surface_shadow.h"
+#include "renderer_lit_debug.h"
+#include "renderer_lit_debug_shadow.h"
+#include "renderer_surface.h"
+#include "renderer_surface_shadow.h"
+#include <ludus/graphics/renderer/environment.hpp>
+#include <ludus/graphics/renderer/lighting_layout.h>
+
 TEST_CASE("The LUSL recipes of the L4 shadow scene render their Slang originals' pixels", "[renderer][l4][gpu][lusl]")
 {
     // LUSL L5d wave 2: the L4 baked, cascade and spot shadow scene, before and after its caster moves, drawn with
-    // renderer_flat, renderer_output and renderer_shadow and with their Slang originals (shaders/renderer_flat.slang,
-    // renderer_output.slang, renderer_shadow.slang) on one device; every byte must match.
+    // renderer_flat, renderer_output, renderer_shadow and renderer_lit (its forward configuration) and with their Slang
+    // originals (shaders/renderer_flat.slang, renderer_output.slang, renderer_shadow.slang, renderer_lit.slang) on one
+    // device; every byte must match.
     rhi::Shutdown();
     struct Guard
     {
@@ -1414,10 +1446,14 @@ TEST_CASE("The LUSL recipes of the L4 shadow scene render their Slang originals'
                                                     ? ludus::shaders::renderer_shadow::Fragment()
                                                     : ludus::shaders::baseline_renderer_shadow::Fragment()) ==
                     rhi::RasterStatus::Ready);
-            auto status = renderer.PrewarmLitProgram(ludus::shaders::renderer_lit::Vertex(),
-                                                     ludus::shaders::renderer_lit::Fragment(),
-                                                     ludus::shaders::renderer_lit_shadow::Fragment(),
-                                                     scene.Program);
+            rhi::RasterStatus status =
+                renderer.PrewarmLitProgram(isLusl == true ? ludus::shaders::renderer_lit::Vertex()
+                                                          : ludus::shaders::baseline_renderer_lit::Vertex(),
+                                           isLusl == true ? ludus::shaders::renderer_lit::Fragment()
+                                                          : ludus::shaders::baseline_renderer_lit::Fragment(),
+                                           isLusl == true ? ludus::shaders::renderer_lit_shadow::Fragment()
+                                                          : ludus::shaders::baseline_renderer_lit_shadow::Fragment(),
+                                           scene.Program);
             REQUIRE(ludus::qa::L4Scene::Accepted(status));
             for (usize i = 0; i < 100000; ++i)
             {
@@ -1458,6 +1494,521 @@ TEST_CASE("The LUSL recipes of the L4 shadow scene render their Slang originals'
         const usize shadowed = (usize{32} * 96 + 48) * 4;
         CHECK(images[0][0][shadowed] == 0);
         CHECK(images[0][1][shadowed] > 0);
+    }
+}
+
+namespace
+{
+/// The programs of one lit material configuration: its vertex, fragment and shadow-map fragment.
+struct LitPrograms final
+{
+    rhi::RasterShaderDescription Vertex{};
+    rhi::RasterShaderDescription Fragment{};
+    rhi::RasterShaderDescription ShadowFragment{};
+};
+
+/// One configuration of renderer_lit.lusl (its recipes.json defines), its Slang original, and the material inputs that
+/// configuration reads.
+struct LitParityCase final
+{
+    const char* Name = "";
+    LitPrograms Lusl{};
+    LitPrograms Slang{};
+    bool IsClustered = false;
+    bool HasSurfaceMap = false;
+    bool HasAuthoredInputs = false;
+    bool HasDebugViews = false;
+};
+
+constexpr uint32 LIT_PARITY_WIDTH = 96;
+constexpr uint32 LIT_PARITY_HEIGHT = 64;
+/// Receiver tiles in a four-by-two grid; a debug configuration gives each its own view.
+constexpr usize LIT_PARITY_TILES = 8;
+constexpr usize LIT_PARITY_LIGHTS = 3;
+constexpr uint32 LIT_PARITY_ATLAS_SIZE = 64;
+/// Shadow regions: the directional light and the spot light.
+constexpr usize LIT_PARITY_REGIONS = 2;
+constexpr uint32 LIT_PARITY_ENVIRONMENT_WIDTH = 8;
+constexpr uint32 LIT_PARITY_ENVIRONMENT_HEIGHT = 4;
+constexpr usize LIT_PARITY_ENVIRONMENT_PIXELS = usize{LIT_PARITY_ENVIRONMENT_WIDTH} * LIT_PARITY_ENVIRONMENT_HEIGHT;
+
+/// The debug view of receiver tile `tile`: every mode but the wireframe, which needs edge buffers, then ordinary
+/// shading.
+rr::MaterialDebugView GetLitParityDebugView(usize tile) noexcept
+{
+    constexpr rr::MaterialDebugView VIEWS[]{rr::MaterialDebugView::None,
+                                            rr::MaterialDebugView::NormalWorld,
+                                            rr::MaterialDebugView::LinearDepth,
+                                            rr::MaterialDebugView::Roughness,
+                                            rr::MaterialDebugView::Metallic,
+                                            rr::MaterialDebugView::TexcoordUv,
+                                            rr::MaterialDebugView::LightCount,
+                                            rr::MaterialDebugView::None};
+    static_assert(sizeof(VIEWS) / sizeof(VIEWS[0]) == LIT_PARITY_TILES);
+    return VIEWS[tile];
+}
+
+/// The lit parity scene drawn with one configuration's programs: textured, surface-mapped tiles under a directional,
+/// a point and a spot light, shadowed through an atlas whose casters include a masked lit tile; the receivers vary in
+/// metallic, roughness and emission. Prepare it once, then Draw presents a frame.
+class LitParityScene final
+{
+public:
+    void Prepare(rhi::DeviceHandle device,
+                 rhi::SurfaceHandle surface,
+                 const LitParityCase& parity,
+                 const LitPrograms& programs,
+                 uint32 width,
+                 uint32 height)
+    {
+        mDevice = device;
+        mSurface = surface;
+        rr::Limits limits;
+        limits.Materials = MATERIAL_CAPACITY;
+        REQUIRE(mRenderer.Initialize(device,
+                                     ludus::shaders::renderer_flat::Vertex(),
+                                     ludus::shaders::renderer_flat::Fragment(),
+                                     limits) == rhi::RasterStatus::Ready);
+        REQUIRE(mRenderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
+                                          ludus::shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+        REQUIRE(mRenderer.InitializeLighting(ludus::shaders::renderer_output::Vertex(),
+                                             ludus::shaders::renderer_output::Fragment(),
+                                             ludus::shaders::renderer_shadow::Fragment()) == rhi::RasterStatus::Ready);
+        REQUIRE(isAccepted(
+            mRenderer.PrewarmLitProgram(programs.Vertex, programs.Fragment, programs.ShadowFragment, mProgram)));
+        wait(mProgram);
+        createMesh(parity);
+        createTextures(parity);
+        createLights();
+        // The caster: a masked lit tile in front of the receivers, whose shadow-map fragment discards clear texels.
+        rr::LitMaterialDescription casterDescription = describe(parity, 0);
+        casterDescription.Surface.Alpha = rr::MaterialAlpha::Masked;
+        casterDescription.DebugView = rr::MaterialDebugView::None;
+        rr::LightSelection selected;
+        REQUIRE(isAccepted(mRenderer.CreateLitMaterial(mProgram, casterDescription, mCaster, selected)));
+        wait(mCaster);
+        for (usize tile = 0; tile < LIT_PARITY_TILES; ++tile)
+        {
+            REQUIRE(
+                isAccepted(mRenderer.CreateLitMaterial(mProgram, describe(parity, tile), mUnshadowed[tile], selected)));
+            wait(mUnshadowed[tile]);
+        }
+        rr::SceneItem items[LIT_PARITY_TILES + 1];
+        for (usize tile = 0; tile < LIT_PARITY_TILES; ++tile)
+        {
+            items[tile].Geometry = mMesh;
+            items[tile].Surface = mUnshadowed[tile];
+            items[tile].SourceId = tile + 1;
+            items[tile].Transform.Translation = {static_cast<float32>(tile % TILE_COLUMNS) * TILE_SPACING -
+                                                     TILE_ORIGIN_X,
+                                                 tile < TILE_COLUMNS ? TILE_ROW_Y : -TILE_ROW_Y,
+                                                 0};
+        }
+        items[LIT_PARITY_TILES].Geometry = mMesh;
+        items[LIT_PARITY_TILES].Surface = mCaster;
+        items[LIT_PARITY_TILES].SourceId = LIT_PARITY_TILES + 1;
+        items[LIT_PARITY_TILES].Transform.Translation = {-.1F, .05F, .3F};
+        REQUIRE(mRenderer.CreateSnapshot(items, LIT_PARITY_TILES + 1, mCasters) == rhi::RasterStatus::Ready);
+        rr::ShadowRegion regions[LIT_PARITY_REGIONS];
+        for (usize region = 0; region < LIT_PARITY_REGIONS; ++region)
+        {
+            regions[region].Light = mLights[region == 0 ? 0 : 2];
+            regions[region].WorldToClip = {{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, -1, 0}, {0, 0, 1, 1}}};
+            regions[region].Interior = {static_cast<uint32>(region) * REGION_STRIDE + 1,
+                                        1,
+                                        REGION_INTERIOR,
+                                        REGION_INTERIOR};
+        }
+        REQUIRE(isAccepted(
+            mRenderer.PrepareShadowAtlas(mCasters,
+                                         {LIT_PARITY_ATLAS_SIZE, LIT_PARITY_ATLAS_SIZE, regions, LIT_PARITY_REGIONS},
+                                         mAtlas)));
+        wait(mAtlas);
+        REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(mRenderer.DrawShadowAtlas(mAtlas) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken shadowCompletion;
+        REQUIRE(rhi::EndFrame(device, shadowCompletion) == rhi::RasterStatus::Ready);
+        for (usize tile = 0; tile < LIT_PARITY_TILES; ++tile)
+        {
+            rr::LitMaterialDescription material = describe(parity, tile);
+            material.Shadows = mAtlas;
+            REQUIRE(isAccepted(mRenderer.CreateLitMaterial(mProgram, material, mShadowed[tile], selected)));
+            wait(mShadowed[tile]);
+            items[tile].Surface = mShadowed[tile];
+        }
+        REQUIRE(mRenderer.CreateSnapshot(items, LIT_PARITY_TILES + 1, mCurrent) == rhi::RasterStatus::Ready);
+        rr::ViewDescription viewDescription;
+        // An oblique orthographic view, like the L4 scene's, which moves the caster away from its shadow.
+        viewDescription.WorldToClip = {{{1, 0, 0, 0}, {0, 1, 0, 0}, {-.5F, 0, -1, 0}, {.25F, 0, 1, 1}}};
+        viewDescription.OrthographicCamera = true;
+        viewDescription.CameraForward = {-.5F, 0, -1};
+        viewDescription.DebugDepthRange = {0, 2};
+        rr::ViewReport report;
+        REQUIRE(isAccepted(mRenderer.PrepareView(mCurrent, viewDescription, mView, report)));
+        wait(mView);
+        REQUIRE(rhi::CreateTexture(device, {width, height, rhi::RasterFormat::Rgba16Float, true}, {}, mTarget) ==
+                rhi::RasterStatus::Ready);
+        rr::ViewMapping mapping;
+        const float32 extentX = static_cast<float32>(width);
+        const float32 extentY = static_cast<float32>(height);
+        REQUIRE(rr::ResolveViewMapping({extentX, extentY}, {0, 0, width, height}, width, height, mapping) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(isAccepted(mRenderer.PrepareLightingPresentation(mTarget, mapping, {}, mOutput)));
+        wait(mOutput);
+    }
+
+    /// Draw and present one frame, waiting for it by reading its pixels into `outImage`.
+    void Draw(std::span<uint8> outImage)
+    {
+        REQUIRE(rhi::BeginFrame(mDevice, mSurface) == rhi::DeviceStatus::Ready);
+        rhi::RasterPassDescription pass;
+        pass.Color = mTarget;
+        REQUIRE(mRenderer.DrawView(mView, pass) == rhi::RasterStatus::Ready);
+        REQUIRE(mRenderer.DrawLightingPresentation(mOutput) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken completion;
+        REQUIRE(rhi::EndFrame(mDevice, completion) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(outImage));
+    }
+
+    void Release()
+    {
+        mRenderer.Reset();
+        mEnvironment.Reset();
+        REQUIRE(rhi::Destroy(mDevice, mTarget) == rhi::RasterStatus::Ready);
+        for (rhi::TextureHandle texture : mTextures)
+        {
+            REQUIRE(rhi::Destroy(mDevice, texture) == rhi::RasterStatus::Ready);
+        }
+    }
+
+private:
+    static constexpr uint32 MATERIAL_CAPACITY = 32;
+    static constexpr usize TILE_COLUMNS = 4;
+    static constexpr float32 TILE_SPACING = .5F;
+    static constexpr float32 TILE_ORIGIN_X = .75F;
+    static constexpr float32 TILE_ROW_Y = .25F;
+    static constexpr uint32 REGION_STRIDE = 32;
+    static constexpr uint32 REGION_INTERIOR = 30;
+    static constexpr usize TEXTURE_COUNT = 3;
+    static constexpr uint32 TEXTURE_EXTENT = 2;
+    static constexpr usize TEXTURE_BYTES = usize{TEXTURE_EXTENT} * TEXTURE_EXTENT * 4;
+    static constexpr usize VERTEX_COUNT = 4;
+
+    static bool isAccepted(rhi::RasterStatus status) noexcept
+    {
+        return status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending;
+    }
+
+    template <typename Handle>
+    void wait(const Handle& handle)
+    {
+        rhi::RasterStatus status = mRenderer.GetStatus(handle);
+        const uint64 start = timing::NowTicks();
+        while (status == rhi::RasterStatus::Pending && timing::NowTicks() - start < 30 * timing::NANOSECONDS_PER_SECOND)
+        {
+            threading::YieldThread();
+            status = mRenderer.GetStatus(handle);
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    }
+
+    void createMesh(const LitParityCase& parity)
+    {
+        const math::Vector3 positions[VERTEX_COUNT]{{-.22F, -.2F, .5F},
+                                                    {.22F, -.2F, .5F},
+                                                    {.22F, .2F, .5F},
+                                                    {-.22F, .2F, .5F}};
+        // Tilted normals, so the shading varies across each tile.
+        const math::Vector3 normals[VERTEX_COUNT]{{-.3F, -.2F, .93F},
+                                                  {.3F, -.2F, .93F},
+                                                  {.3F, .2F, .93F},
+                                                  {-.3F, .2F, .93F}};
+        const math::Vector2 uvs[VERTEX_COUNT]{{0, 1}, {1, 1}, {1, 0}, {0, 0}};
+        const math::Vector2 uvs1[VERTEX_COUNT]{{.5F, 1}, {1, 1}, {1, .5F}, {.5F, .5F}};
+        const math::Vector4 tangents[VERTEX_COUNT]{{1, 0, 0, 1}, {1, 0, 0, 1}, {1, .1F, 0, 1}, {1, .1F, 0, 1}};
+        const math::Vector4 colors[VERTEX_COUNT]{{1, .8F, .6F, 1}, {.6F, 1, .8F, 1}, {.8F, .6F, 1, 1}, {1, 1, 1, 1}};
+        const uint32 indices[]{0, 1, 2, 0, 2, 3};
+        rr::MeshDescription geometry{positions, VERTEX_COUNT, indices, sizeof(indices) / sizeof(indices[0])};
+        geometry.Normals = normals;
+        geometry.Texcoords = uvs;
+        if (parity.HasAuthoredInputs == true)
+        {
+            geometry.Tangents = {tangents, VERTEX_COUNT};
+            geometry.Colors = {colors, VERTEX_COUNT};
+            geometry.MaterialTexcoords1 = {uvs1, VERTEX_COUNT};
+        }
+        REQUIRE(mRenderer.CreateMesh(geometry, mMesh) == rhi::RasterStatus::Ready);
+    }
+
+    void createTextures(const LitParityCase& parity)
+    {
+        // Base colour (sRGB), packed surface map (normal xy, roughness, metallic) and emission map.
+        const uint8 bytes[TEXTURE_COUNT][TEXTURE_BYTES]{
+            {255, 200, 160, 255, 120, 220, 255, 255, 200, 255, 140, 96, 255, 255, 255, 255},
+            {200, 128, 160, 0, 128, 60, 255, 255, 90, 200, 96, 128, 128, 128, 200, 40},
+            {40, 0, 0, 255, 0, 40, 0, 255, 0, 0, 40, 255, 20, 20, 20, 255}};
+        for (usize texture = 0; texture < TEXTURE_COUNT; ++texture)
+        {
+            const rhi::RasterFormat format =
+                texture == 1 ? rhi::RasterFormat::Rgba8Unorm : rhi::RasterFormat::Rgba8Srgb;
+            REQUIRE(rhi::CreateTexture(mDevice,
+                                       {TEXTURE_EXTENT, TEXTURE_EXTENT, format},
+                                       {{bytes[texture], TEXTURE_BYTES}, usize{TEXTURE_EXTENT} * 4},
+                                       mTextures[texture]) == rhi::RasterStatus::Ready);
+        }
+        if (parity.HasAuthoredInputs == false)
+        {
+            return;
+        }
+        math::Vector4 pixels[LIT_PARITY_ENVIRONMENT_PIXELS];
+        for (usize i = 0; i < LIT_PARITY_ENVIRONMENT_PIXELS; ++i)
+        {
+            const usize rowIndex = i / LIT_PARITY_ENVIRONMENT_WIDTH;
+            const usize columnIndex = i % LIT_PARITY_ENVIRONMENT_WIDTH;
+            const float32 row = static_cast<float32>(rowIndex);
+            const float32 column = static_cast<float32>(columnIndex);
+            pixels[i] = {.2F + .1F * column, .3F + .2F * row, .6F - .1F * row, 1};
+        }
+        rr::EnvironmentDescription description;
+        description.PixelsOrNull = pixels;
+        description.Width = LIT_PARITY_ENVIRONMENT_WIDTH;
+        description.Height = LIT_PARITY_ENVIRONMENT_HEIGHT;
+        description.CpuByteBudget = usize{64} * 1024 * 1024;
+        REQUIRE(isAccepted(mEnvironment.Initialize(mDevice, description)));
+        const uint64 start = timing::NowTicks();
+        while (mEnvironment.GetStatus() == rhi::RasterStatus::Pending &&
+               timing::NowTicks() - start < 30 * timing::NANOSECONDS_PER_SECOND)
+        {
+            threading::YieldThread();
+        }
+        REQUIRE(mEnvironment.GetStatus() == rhi::RasterStatus::Ready);
+    }
+
+    void createLights()
+    {
+        mLights[0].SourceId = 1;
+        mLights[0].Direction = {.3F, .2F, -.93F};
+        mLights[0].Intensity = 2;
+        mLights[1].SourceId = 2;
+        mLights[1].Kind = rr::LightKind::Point;
+        mLights[1].Position = {.3F, .2F, 1.2F};
+        mLights[1].Intensity = 1.5F;
+        mLights[1].Range = 10;
+        mLights[2].SourceId = 3;
+        mLights[2].Kind = rr::LightKind::Spot;
+        mLights[2].Position = {-.4F, -.1F, 2};
+        mLights[2].Direction = {.1F, 0, -1};
+        mLights[2].Intensity = 3;
+        mLights[2].Range = 10;
+    }
+
+    [[nodiscard]] rr::LitMaterialDescription describe(const LitParityCase& parity, usize tile) const noexcept
+    {
+        rr::LitMaterialDescription material;
+        material.Surface.Texture = mTextures[0];
+        material.Surface.Sampler.Filter = rhi::RasterFilter::Linear;
+        material.Surface.Tint = {.9F, .85F, .8F, 1};
+        material.Metallic = static_cast<float32>(tile % 2) * .8F;
+        material.Roughness = .2F + .1F * static_cast<float32>(tile);
+        material.Lights = mLights;
+        material.LightCount = LIT_PARITY_LIGHTS;
+        material.EnvironmentIrradiance = {.05F, .06F, .08F};
+        material.EnvironmentRadiance = {.04F, .05F, .06F};
+        material.Emission = tile == 3 ? math::Vector3{.3F, .1F, 0} : math::Vector3{};
+        material.Clusters = parity.IsClustered == true ? &mCluster : nullptr;
+        if (parity.HasSurfaceMap == true)
+        {
+            material.SurfaceMap = mTextures[1];
+        }
+        if (parity.HasAuthoredInputs == true)
+        {
+            material.AreAuthoredInputsEnabled = true;
+            material.EmissionMap = mTextures[2];
+            material.Emission = {1, 1, 1};
+            material.MaterialUvSet = static_cast<uint32>(tile % 2);
+            material.EnvironmentOrNull = tile < LIT_PARITY_TILES / 2 ? &mEnvironment : nullptr;
+        }
+        if (parity.HasDebugViews == true)
+        {
+            material.DebugView = GetLitParityDebugView(tile);
+        }
+        return material;
+    }
+
+    rhi::DeviceHandle mDevice{};
+    rhi::SurfaceHandle mSurface{};
+    rr::Renderer mRenderer;
+    rr::MaterialProgram mProgram;
+    rr::Mesh mMesh;
+    rhi::TextureHandle mTextures[TEXTURE_COUNT]{};
+    rr::EnvironmentMap mEnvironment;
+    rr::DirectLight mLights[LIT_PARITY_LIGHTS]{};
+    rr::LightClusterDescription mCluster;
+    rr::MaterialVersion mCaster;
+    rr::MaterialVersion mUnshadowed[LIT_PARITY_TILES];
+    rr::MaterialVersion mShadowed[LIT_PARITY_TILES];
+    rr::Snapshot mCasters;
+    rr::Snapshot mCurrent;
+    rr::ShadowAtlas mAtlas;
+    rr::PreparedView mView;
+    rhi::TextureHandle mTarget{};
+    rr::Presentation mOutput;
+};
+} // namespace
+
+TEST_CASE("The LUSL lit configurations render their Slang originals' pixels", "[renderer][l4][gpu][lusl]")
+{
+    // LUSL L5d wave 2: each configuration of renderer_lit.lusl (recipes.json "defines") draws the lit parity scene
+    // beside its Slang original (renderer_lit.slang and its variant files renderer_clustered.slang,
+    // renderer_surface.slang,
+    // ...) on one device; every byte must match. LUDUS_RENDERER_BENCHMARK draws 1080p frames and times each pair A/B;
+    // LUDUS_RENDERER_BENCHMARK_CONTROL times the Slang original against itself.
+    using namespace ludus::graphics::renderer::testing;
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    const bool isBenchmark = IsRecipeBenchmark();
+    const uint32 width = isBenchmark == true ? 1920 : LIT_PARITY_WIDTH;
+    const uint32 height = isBenchmark == true ? 1080 : LIT_PARITY_HEIGHT;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::StartupInfo failure;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.RequiredProfile.Raster.MinBindings = rr::CLUSTERED_AUTHORED_BINDING_COUNT;
+    description.EnableGpuTiming = isBenchmark;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = width, .Height = height }, description, device, surface, &failure);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    namespace s = ludus::shaders;
+    const LitParityCase cases[]{
+        {"renderer_lit",
+         {s::renderer_lit::Vertex(), s::renderer_lit::Fragment(), s::renderer_lit_shadow::Fragment()},
+         {s::baseline_renderer_lit::Vertex(),
+          s::baseline_renderer_lit::Fragment(),
+          s::baseline_renderer_lit_shadow::Fragment()},
+         false,
+         false,
+         false,
+         false},
+        {"renderer_clustered",
+         {s::renderer_clustered::Vertex(), s::renderer_clustered::Fragment(), s::renderer_clustered_shadow::Fragment()},
+         {s::baseline_renderer_clustered::Vertex(),
+          s::baseline_renderer_clustered::Fragment(),
+          s::baseline_renderer_clustered_shadow::Fragment()},
+         true,
+         false,
+         false,
+         false},
+        {"renderer_surface",
+         {s::renderer_surface::Vertex(), s::renderer_surface::Fragment(), s::renderer_surface_shadow::Fragment()},
+         {s::baseline_renderer_surface::Vertex(),
+          s::baseline_renderer_surface::Fragment(),
+          s::baseline_renderer_surface_shadow::Fragment()},
+         false,
+         true,
+         false,
+         false},
+        {"renderer_clustered_surface",
+         {s::renderer_clustered_surface::Vertex(),
+          s::renderer_clustered_surface::Fragment(),
+          s::renderer_clustered_surface_shadow::Fragment()},
+         {s::baseline_renderer_clustered_surface::Vertex(),
+          s::baseline_renderer_clustered_surface::Fragment(),
+          s::baseline_renderer_clustered_surface_shadow::Fragment()},
+         true,
+         true,
+         false,
+         false},
+        {"renderer_authored",
+         {s::renderer_authored::Vertex(), s::renderer_authored::Fragment(), s::renderer_authored_shadow::Fragment()},
+         {s::baseline_renderer_authored::Vertex(),
+          s::baseline_renderer_authored::Fragment(),
+          s::baseline_renderer_authored_shadow::Fragment()},
+         false,
+         true,
+         true,
+         false},
+        {"renderer_clustered_authored",
+         {s::renderer_clustered_authored::Vertex(),
+          s::renderer_clustered_authored::Fragment(),
+          s::renderer_clustered_authored_shadow::Fragment()},
+         {s::baseline_renderer_clustered_authored::Vertex(),
+          s::baseline_renderer_clustered_authored::Fragment(),
+          s::baseline_renderer_clustered_authored_shadow::Fragment()},
+         true,
+         true,
+         true,
+         false},
+        {"renderer_lit_debug",
+         {s::renderer_lit_debug::Vertex(), s::renderer_lit_debug::Fragment(), s::renderer_lit_debug_shadow::Fragment()},
+         {s::baseline_renderer_lit_debug::Vertex(),
+          s::baseline_renderer_lit_debug::Fragment(),
+          s::baseline_renderer_lit_debug_shadow::Fragment()},
+         false,
+         false,
+         false,
+         true},
+        {"renderer_clustered_authored_debug",
+         {s::renderer_clustered_authored_debug::Vertex(),
+          s::renderer_clustered_authored_debug::Fragment(),
+          s::renderer_clustered_authored_debug_shadow::Fragment()},
+         {s::baseline_renderer_clustered_authored_debug::Vertex(),
+          s::baseline_renderer_clustered_authored_debug::Fragment(),
+          s::baseline_renderer_clustered_authored_debug_shadow::Fragment()},
+         true,
+         true,
+         true,
+         true},
+    };
+    const usize imageBytes = usize{width} * height * 4;
+    Array<uint8> images[RECIPE_AB_VARIANTS]{Array<uint8>(imageBytes), Array<uint8>(imageBytes)};
+    REQUIRE(images[RECIPE_AB_SLANG].GetSize() == imageBytes);
+    REQUIRE(images[RECIPE_AB_LUSL].GetSize() == imageBytes);
+    for (const LitParityCase& parity : cases)
+    {
+        CAPTURE(parity.Name);
+        LitParityScene scenes[RECIPE_AB_VARIANTS];
+        scenes[RECIPE_AB_SLANG].Prepare(device, surface, parity, parity.Slang, width, height);
+        scenes[RECIPE_AB_LUSL]
+            .Prepare(device, surface, parity, IsRecipeAbControl() == true ? parity.Slang : parity.Lusl, width, height);
+        for (usize variant = 0; variant < RECIPE_AB_VARIANTS; ++variant)
+        {
+            scenes[variant].Draw({images[variant].GetData(), imageBytes});
+        }
+        const uint8* slang = images[RECIPE_AB_SLANG].GetData();
+        const uint8* lusl = images[RECIPE_AB_LUSL].GetData();
+        usize differing = 0;
+        usize lit = 0;
+        for (usize i = 0; i < imageBytes; i += 4)
+        {
+            differing += std::memcmp(lusl + i, slang + i, 4) != 0 ? 1 : 0;
+            lit += lusl[i] + lusl[i + 1] + lusl[i + 2] > 0 ? 1 : 0;
+        }
+        CHECK(differing == 0);
+        // Equality is not vacuous: the eight tiles cover about a third of the image, less a debug view's black tiles.
+        CHECK(lit > imageBytes / 4 / 4);
+        if (isBenchmark == true)
+        {
+            RunRecipeAbTiming(device, parity.Name, width, height, [&](usize variant) {
+                scenes[variant].Draw({images[variant].GetData(), imageBytes});
+            });
+        }
+        for (LitParityScene& scene : scenes)
+        {
+            scene.Release();
+        }
     }
 }
 

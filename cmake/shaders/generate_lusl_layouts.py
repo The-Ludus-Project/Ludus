@@ -24,6 +24,8 @@ OWNERS = (
     (RENDERER_SHADERS / 'renderer_reference_sky_layout.h', ()),
     (RENDERER_SHADERS / 'ggx_albedo_table_layout.h', ()),
     (RENDERER_SHADERS / 'wave_connection_layout.h', ()),
+    (RENDERER_SHADERS / 'renderer_environment_layout.h', ()),
+    (RENDERER_SHADERS / 'probe_volume_layout.h', ()),
 )
 # The preview owner includes the scene failure reason count for C++ and Slang.
 # The generated view includes its LUSL counterpart through OWNERS.

@@ -13,6 +13,7 @@ See docs/modules/tooling/shader-language.md, "Render-graph programs".
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import posixpath
 import re
@@ -270,6 +271,8 @@ def _lower(files, build, tool, source, style, specialization_budget, include_dir
 # Target macros that the stage compiler defines for some profiles only: compile_graph_stage.py defines LUDUS_DXIL for
 # the dxil profile (as compile_shader.py does for a recipe's DXIL artifacts; cmake/shaders/lower_lusl.py).
 TARGET_MACROS = ('LUDUS_DXIL',)
+# Hexadecimal digest characters that name one configuration's lowering of an engine recipe.
+CONFIGURATION_DIGEST_CHARACTERS = 12
 # The generated helpers of one lowering (`_lusl` names are reserved for them), renamed per engine recipe so that a
 # wrapper can include a lowered recipe beside a lowered authored program.
 GENERATED_NAME = re.compile(rb'\b_lusl[A-Za-z0-9_]*')
@@ -285,14 +288,21 @@ def combine_target_variants(default, variant, macro):
             b' 0\n#endif\n#if ' + selector + b'\n' + ending(variant) + b'#else\n' + ending(default) + b'#endif\n')
 
 
-def lower_engine_recipe(snapshot, helper, build, source, *, luslc=None, style='strict', suffix=''):
-    """Lower the captured engine recipe `source` (a `.lusl` path in the snapshot) with no configuration values.
+def lower_engine_recipe(snapshot, helper, build, source, *, luslc=None, style='strict', suffix='', configuration=None):
+    """Lower the captured engine recipe `source` (a `.lusl` path in the snapshot) with `configuration` values.
 
-    For each target macro the recipe tests, it lowers with the macro 0 and 1 and selects the lowering by the macro, as
-    ludus_compile_shader does for the native recipe. The recipe's generated `_lusl` names take `suffix`. Returns the
-    snapshot path of the captured module, `<source>.slang`, which a wrapper includes in place of the recipe.
+    `configuration` maps macro names to values: the recipe's manifest `defines` and any a wrapper selects
+    (render_graph_forward.py). For each target macro the recipe tests, it lowers with the macro 0 and 1 and selects the
+    lowering by the macro, as ludus_compile_shader does for the native recipe. The recipe's generated `_lusl` names take
+    `suffix`. Returns the snapshot path of the captured module, which a wrapper includes in place of the recipe:
+    `<source>.slang` without configuration values, or `<source>.<configuration digest>.slang` for each distinct set.
     """
+    configuration = dict(sorted((configuration or {}).items()))
     generated = source + GENERATED_SUFFIX
+    if configuration:
+        identity = ';'.join(f'{name}={value}' for name, value in configuration.items()).encode('ascii')
+        generated = source + '.' + hashlib.sha256(identity).hexdigest()[:CONFIGURATION_DIGEST_CHARACTERS] + \
+            GENERATED_SUFFIX
     if generated in snapshot.files:
         return generated
     tool = find_luslc(helper, luslc)
@@ -311,7 +321,7 @@ def lower_engine_recipe(snapshot, helper, build, source, *, luslc=None, style='s
         return combine_target_variants(lower_variants({**configuration, macro: 0}, remaining[1:]),
                                        lower_variants({**configuration, macro: 1}, remaining[1:]), macro)
 
-    data = lower_variants({}, macros)
+    data = lower_variants(configuration, macros)
     if suffix:
         data = GENERATED_NAME.sub(lambda match: match.group(0) + suffix.encode('ascii'), data)
     snapshot.capture(generated, data, generated=True)

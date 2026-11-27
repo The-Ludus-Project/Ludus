@@ -242,7 +242,15 @@ public:
         {
             const PreviewShaderRecipe& recipe = mRecipes[program];
             const QByteArray entry = stage == PreviewShaderStage::Vertex ? recipe.VertexEntry : recipe.FragmentEntry;
-            if (recipe.Source.toUtf8() == source && entry == ToBytes(request.Entry))
+            // Recipes of one LUSL source differ by their configuration values.
+            bool isConfigurationEqual = request.Configuration.GetSize() == static_cast<usize>(recipe.Defines.size());
+            for (usize i = 0; isConfigurationEqual == true && i < request.Configuration.GetSize(); ++i)
+            {
+                const QPair<QByteArray, QByteArray>& define = recipe.Defines[static_cast<qsizetype>(i)];
+                isConfigurationEqual = ToBytes(request.Configuration[i].Name) == define.first &&
+                                       ToBytes(request.Configuration[i].Value) == define.second;
+            }
+            if (recipe.Source.toUtf8() == source && entry == ToBytes(request.Entry) && isConfigurationEqual == true)
             {
                 const PreviewShaderProgram match = static_cast<PreviewShaderProgram>(program);
                 code = stage == PreviewShaderStage::Fragment && (isTinted == true || isInterfaceChanged == true)
@@ -550,7 +558,7 @@ TEST_CASE("Live shader snapshots capture only the recipes' include closure", "[e
                      QByteArrayLiteral("#include \"sibling.h\"\n"));
     tests::WriteText(root.filePath(QStringLiteral("nested/sibling.h")), QByteArrayLiteral("// Nested.\n"));
     tests::WriteText(root.filePath(QStringLiteral("sibling.h")), QByteArrayLiteral("// Root.\n"));
-    const QString lit = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_lit.slang"));
+    const QString lit = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_lit.lusl"));
     const QByteArray original = tests::ReadText(lit);
     tests::WriteText(lit, QByteArrayLiteral("#include \"nested/inner.slang\"\n") + original);
     PreviewShaderSnapshot snapshot;
@@ -597,7 +605,7 @@ TEST_CASE("Shader builder reuses unchanged stages and keeps the last good output
     const PreviewShaderBuildResult again = builder.Build(compiler, cancel);
     CHECK(again.Status == PreviewShaderBuildStatus::Ready);
     CHECK(again.CompiledStages == 0);
-    const QString lit = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_lit.slang"));
+    const QString lit = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_lit.lusl"));
     const QByteArray original = tests::ReadText(lit);
     AppendLine(lit, QByteArrayLiteral("// ") + TINT_MARKER);
     const PreviewShaderBuildResult tinted = builder.Build(compiler, cancel);
@@ -642,7 +650,7 @@ TEST_CASE("Live shaders debounce edits, report errors and recover", "[editor][sh
     REQUIRE(reload.GetState() == PreviewShaderReloadState::Idle);
     CHECK(reload.GetStatusText().startsWith(QStringLiteral("Live shaders on")) == true);
     CHECK(reload.GetBuildCount() == 1);
-    const QString lit = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_lit.slang"));
+    const QString lit = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_lit.lusl"));
     CHECK(reload.GetWatchedPaths().contains(QFileInfo(lit).absoluteFilePath()) == true);
     CHECK(preview.GetShaders().HasArtifacts() == false);
     const QByteArray original = tests::ReadText(lit);
@@ -825,15 +833,17 @@ TEST_CASE("Live shaders rebuild through ludus-shader-worker and swap into the vi
     INFO("Replaced stages: " << DescribeReplacedStages(preview.GetShaders()).toStdString());
     CHECK(reload->GetStatusText().startsWith(QStringLiteral("Live shaders on")) == true);
     CHECK(preview.GetShaders().HasArtifacts() == false);
-    const QString lit = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_lit.slang"));
+    const QString lit = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_lit.lusl"));
     REQUIRE(reload->GetWatchedPaths().contains(lit) == true);
     const QByteArray original = tests::ReadText(lit);
 
     // Tint every lit surface red; the file watcher alone must notice the save.
-    const QByteArray finalReturn = "    return float4(min(max(result, float3(0)), float3(65504)) * alpha, alpha);";
+    const QByteArray finalReturn =
+        "    return float32x4(min(max(result, float32x3(0)), float32x3(65504)) * alpha, alpha);";
     REQUIRE(original.contains(finalReturn) == true);
     QByteArray tinted = original;
-    tinted.replace(finalReturn, "    result = result * float3(1, 0.25, 0.25) + float3(0.35, 0, 0);\n" + finalReturn);
+    tinted.replace(finalReturn,
+                   "    result = result * float32x3(1, 0.25, 0.25) + float32x3(0.35, 0, 0);\n" + finalReturn);
     tests::WriteText(lit, tinted);
     REQUIRE(
         QTest::qWaitFor([&reload]() { return reload->GetStatusText().startsWith(QStringLiteral("Shader reloaded")); },
@@ -855,7 +865,7 @@ TEST_CASE("Live shaders rebuild through ludus-shader-worker and swap into the vi
 
     // A typo keeps the tinted shaders and shows the compiler's location in the overlay.
     QByteArray broken = tinted;
-    broken.replace(finalReturn, "    float typo = undefinedLiveShaderName;\n" + finalReturn);
+    broken.replace(finalReturn, "    float32 typo = undefinedLiveShaderName;\n" + finalReturn);
     tests::WriteText(lit, broken);
     REQUIRE(QTest::qWaitFor([&reload]() { return reload->HasError() == true; }, WORKER_TIMEOUT_MILLISECONDS) == true);
     CHECK(reload->GetState() == PreviewShaderReloadState::Failed);
@@ -873,9 +883,8 @@ TEST_CASE("Live shaders rebuild through ludus-shader-worker and swap into the vi
 
     // A new resource needs new pipeline layouts: the editor asks for a restart instead.
     QByteArray extended = tinted;
-    extended.replace(finalReturn, "    result += liveExtraTexture.Load(int3(0, 0, 0)).rgb * 1e-6;\n" + finalReturn);
-    extended.replace("struct Input\n",
-                     "LUDUS_SHADER_BINDING(30) Texture2D<float4> liveExtraTexture : register(t30);\nstruct Input\n");
+    extended.replace(finalReturn, "    result += liveExtraTexture.Load(int32x3(0, 0, 0)).rgb * 1e-6;\n" + finalReturn);
+    extended.replace("struct Input\n", "Texture2D<float32x4> liveExtraTexture;\nstruct Input\n");
     tests::WriteText(lit, extended);
     REQUIRE(QTest::qWaitFor([&reload]() { return reload->HasError() == true; }, WORKER_TIMEOUT_MILLISECONDS) == true);
     CHECK(reload->GetState() == PreviewShaderReloadState::RestartRequired);

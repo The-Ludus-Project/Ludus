@@ -487,6 +487,23 @@ private:
         const usize slash = root.rfind('/');
         const std::string_view rootDirectory =
             slash == std::string_view::npos ? std::string_view{} : root.substr(0, slash);
+        // The configuration values reach the `extern slang` files as Slang macros, as -D gives them to a Slang
+        // source: a binding file can then select its declarations with the same values. A macro the including
+        // Slang code defines first keeps that definition.
+        if (mModule.Includes.IsEmpty() == false)
+        {
+            for (const ConfigurationValue& value : mInputs.Request.Configuration)
+            {
+                const std::string_view name = ViewText(value.Name);
+                write("#ifndef ");
+                write(name);
+                write("\n#define ");
+                write(name);
+                write(" ");
+                write(ViewText(value.Value));
+                write("\n#endif\n");
+            }
+        }
         for (const uint16 include : mModule.Includes)
         {
             write("#include \"");

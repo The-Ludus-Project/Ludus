@@ -432,6 +432,17 @@ bool ReadPreviewShaderRecipes(const PreviewShaderSources& sources, PreviewShader
         recipes[i].Source = recipe.value(QStringLiteral("source")).toString();
         recipes[i].VertexEntry = recipe.value(QStringLiteral("vertex")).toString().toUtf8();
         recipes[i].FragmentEntry = recipe.value(QStringLiteral("fragment")).toString().toUtf8();
+        // A LUSL recipe's configuration values; the CMake recipe helper passes the same DEFINES.
+        const QJsonObject defines = recipe.value(QStringLiteral("defines")).toObject();
+        QStringList names = defines.keys();
+        names.sort();
+        for (const QString& define : names)
+        {
+            const QJsonValue value = defines.value(define);
+            const QByteArray text =
+                value.isDouble() == true ? QByteArray::number(value.toInteger()) : value.toString().toUtf8();
+            recipes[i].Defines.append({define.toUtf8(), text});
+        }
         if (recipes[i].Source.isEmpty() == true || recipes[i].VertexEntry.isEmpty() == true ||
             recipes[i].FragmentEntry.isEmpty() == true)
         {
@@ -862,17 +873,20 @@ PreviewShaderBuilder::PreviewShaderBuilder(PreviewShaderSources sources, compile
 {
 }
 
-qsizetype PreviewShaderBuilder::findStage(const QString& source, const QByteArray& entry, PreviewShaderStage kind)
+qsizetype
+PreviewShaderBuilder::findStage(const PreviewShaderRecipe& recipe, const QByteArray& entry, PreviewShaderStage kind)
 {
     for (qsizetype i = 0; i < mStages.size(); ++i)
     {
-        if (mStages[i].Source == source && mStages[i].Entry == entry && mStages[i].Kind == kind)
+        if (mStages[i].Source == recipe.Source && mStages[i].Defines == recipe.Defines && mStages[i].Entry == entry &&
+            mStages[i].Kind == kind)
         {
             return i;
         }
     }
     Stage stage;
-    stage.Source = source;
+    stage.Source = recipe.Source;
+    stage.Defines = recipe.Defines;
     stage.Entry = entry;
     stage.Kind = kind;
     mStages.append(stage);
@@ -960,6 +974,19 @@ bool PreviewShaderBuilder::compileStage(Stage& inoutStage,
     request.Entry = ToView(inoutStage.Entry);
     request.OutputTarget = mTarget;
     request.EntryStage = ToCompilerStage(inoutStage.Kind);
+    Array<compiler::ConfigurationValue> configuration;
+    if (configuration.TryResize(static_cast<usize>(inoutStage.Defines.size())) == false)
+    {
+        inoutResult.Status = PreviewShaderBuildStatus::Unavailable;
+        inoutResult.Message = QStringLiteral("Out of memory while staging shader configuration values.");
+        return false;
+    }
+    for (qsizetype i = 0; i < inoutStage.Defines.size(); ++i)
+    {
+        configuration[static_cast<usize>(i)] = {ToView(inoutStage.Defines[i].first),
+                                                ToView(inoutStage.Defines[i].second)};
+    }
+    request.Configuration = {configuration.GetData(), configuration.GetSize()};
     compiler::Result result;
     const compiler::Status status = inoutCompiler.Compile(request, result, cancel);
     ++inoutResult.CompiledStages;
@@ -1065,10 +1092,9 @@ PreviewShaderBuildResult PreviewShaderBuilder::Build(PreviewShaderCompiler& inou
     for (usize program = 0; program < PREVIEW_SHADER_PROGRAM_COUNT; ++program)
     {
         const PreviewShaderRecipe& recipe = recipes[program];
-        slots[program * PREVIEW_SHADER_STAGE_COUNT] =
-            findStage(recipe.Source, recipe.VertexEntry, PreviewShaderStage::Vertex);
+        slots[program * PREVIEW_SHADER_STAGE_COUNT] = findStage(recipe, recipe.VertexEntry, PreviewShaderStage::Vertex);
         slots[program * PREVIEW_SHADER_STAGE_COUNT + 1] =
-            findStage(recipe.Source, recipe.FragmentEntry, PreviewShaderStage::Fragment);
+            findStage(recipe, recipe.FragmentEntry, PreviewShaderStage::Fragment);
     }
     QList<bool> isCompiled(mStages.size(), false);
     for (const qsizetype index : slots)

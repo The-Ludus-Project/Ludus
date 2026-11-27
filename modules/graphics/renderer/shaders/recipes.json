@@ -65,44 +65,108 @@
     "fragment": "FragmentMain"
   },
   "renderer_lit": {
-    "source": "renderer_lit.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "FragmentMain"
+    "fragment": "FragmentMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 0,
+      "LUDUS_SURFACE_FIDELITY": 0,
+      "LUDUS_AUTHORED_INPUTS": 0,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_lit_shadow": {
-    "source": "renderer_lit.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "ShadowMain"
+    "fragment": "ShadowMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 0,
+      "LUDUS_SURFACE_FIDELITY": 0,
+      "LUDUS_AUTHORED_INPUTS": 0,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_clustered": {
-    "source": "renderer_clustered.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "FragmentMain"
+    "fragment": "FragmentMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 1,
+      "LUDUS_SURFACE_FIDELITY": 0,
+      "LUDUS_AUTHORED_INPUTS": 0,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_clustered_shadow": {
-    "source": "renderer_clustered.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "ShadowMain"
+    "fragment": "ShadowMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 1,
+      "LUDUS_SURFACE_FIDELITY": 0,
+      "LUDUS_AUTHORED_INPUTS": 0,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_surface": {
-    "source": "renderer_surface.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "FragmentMain"
+    "fragment": "FragmentMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 0,
+      "LUDUS_SURFACE_FIDELITY": 1,
+      "LUDUS_AUTHORED_INPUTS": 0,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_surface_shadow": {
-    "source": "renderer_surface.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "ShadowMain"
+    "fragment": "ShadowMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 0,
+      "LUDUS_SURFACE_FIDELITY": 1,
+      "LUDUS_AUTHORED_INPUTS": 0,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_clustered_surface": {
-    "source": "renderer_clustered_surface.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "FragmentMain"
+    "fragment": "FragmentMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 1,
+      "LUDUS_SURFACE_FIDELITY": 1,
+      "LUDUS_AUTHORED_INPUTS": 0,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_clustered_surface_shadow": {
-    "source": "renderer_clustered_surface.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "ShadowMain"
+    "fragment": "ShadowMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 1,
+      "LUDUS_SURFACE_FIDELITY": 1,
+      "LUDUS_AUTHORED_INPUTS": 0,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_gpu_preview_image": {
     "source": "renderer_gpu_preview_image.slang",
@@ -145,44 +209,108 @@
     "compute": "TraceMain"
   },
   "renderer_authored": {
-    "source": "renderer_authored.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "FragmentMain"
+    "fragment": "FragmentMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 0,
+      "LUDUS_SURFACE_FIDELITY": 1,
+      "LUDUS_AUTHORED_INPUTS": 1,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_authored_shadow": {
-    "source": "renderer_authored.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "ShadowMain"
+    "fragment": "ShadowMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 0,
+      "LUDUS_SURFACE_FIDELITY": 1,
+      "LUDUS_AUTHORED_INPUTS": 1,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_clustered_authored": {
-    "source": "renderer_clustered_authored.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "FragmentMain"
+    "fragment": "FragmentMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 1,
+      "LUDUS_SURFACE_FIDELITY": 1,
+      "LUDUS_AUTHORED_INPUTS": 1,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_clustered_authored_shadow": {
-    "source": "renderer_clustered_authored.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "ShadowMain"
+    "fragment": "ShadowMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 1,
+      "LUDUS_SURFACE_FIDELITY": 1,
+      "LUDUS_AUTHORED_INPUTS": 1,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_lit_debug": {
-    "source": "renderer_lit_debug.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "FragmentMain"
+    "fragment": "FragmentMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 0,
+      "LUDUS_SURFACE_FIDELITY": 0,
+      "LUDUS_AUTHORED_INPUTS": 0,
+      "LUDUS_DEBUG_VIEW": 1,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_lit_debug_shadow": {
-    "source": "renderer_lit_debug.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "ShadowMain"
+    "fragment": "ShadowMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 0,
+      "LUDUS_SURFACE_FIDELITY": 0,
+      "LUDUS_AUTHORED_INPUTS": 0,
+      "LUDUS_DEBUG_VIEW": 1,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_clustered_authored_debug": {
-    "source": "renderer_clustered_authored_debug.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "FragmentMain"
+    "fragment": "FragmentMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 1,
+      "LUDUS_SURFACE_FIDELITY": 1,
+      "LUDUS_AUTHORED_INPUTS": 1,
+      "LUDUS_DEBUG_VIEW": 1,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_clustered_authored_debug_shadow": {
-    "source": "renderer_clustered_authored_debug.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "ShadowMain"
+    "fragment": "ShadowMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 1,
+      "LUDUS_SURFACE_FIDELITY": 1,
+      "LUDUS_AUTHORED_INPUTS": 1,
+      "LUDUS_DEBUG_VIEW": 1,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_gpu_preview_visibility_full": {
     "source": "renderer_gpu_preview_visibility_full.slang",
@@ -215,9 +343,17 @@
     "native_ray_queries": true
   },
   "renderer_clustered_authored_depth": {
-    "source": "renderer_clustered_authored.slang",
+    "source": "renderer_lit.lusl",
     "vertex": "VertexMain",
-    "fragment": "OpaqueDepthMain"
+    "fragment": "OpaqueDepthMain",
+    "defines": {
+      "LUDUS_CLUSTERED": 1,
+      "LUDUS_SURFACE_FIDELITY": 1,
+      "LUDUS_AUTHORED_INPUTS": 1,
+      "LUDUS_DEBUG_VIEW": 0,
+      "LUDUS_GRAPH_REALTIME": 0,
+      "LUDUS_GRAPH_SURFACE_CHART": 0
+    }
   },
   "renderer_deferred_material": {
     "source": "renderer_deferred_material.slang",

@@ -757,7 +757,9 @@ installed SDK consumers and reference-scene use the same recipes. Unknown or
 repeated recipes fail configure; changes to the manifest trigger reconfigure,
 and the offline compiler's depfile tracks included Slang sources. Custom shaders
 still use `ludus_compile_shader`; neither helper acquires tools or compiles at
-runtime. Recipes preserve artifact names and shader layouts, including
+runtime. A LUSL recipe may name `defines`, the configuration values it lowers
+with: `renderer_lit.lusl` serves the lit, clustered, surface, authored and debug
+recipes this way. Recipes preserve artifact names and shader layouts, including
 `VertexMain`/`ShadowMain` for clustered shadows. The installed SDK
 [scaling consumer](../../tests/sdk_consumer/renderer_scaling.cpp) demonstrates
 this sequence without private renderer access.

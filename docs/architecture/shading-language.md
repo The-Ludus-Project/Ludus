@@ -1228,9 +1228,36 @@ colour mode and backdrop with both programs. The L4 shadow scene draws its casca
 before and after its caster moves. Every byte matches. The default-graph pixel suites cook the default graph
 through the lowered recipes. The GPU preview kernel and its image pass stay Slang for now: `render_graph_ray.py` includes both sources in every generated ray wrapper, and
 `scene_shader.luslh.in` includes the kernel as the render-graph ray prelude. They migrate with the
-render-graph scene interface. The lit, deferred lighting and material and skin resolve
-programs take configuration macros from their wrappers and migrate in later changes, which lower a
-shared body header once per configuration. The renderer shader directory joins the migrated scope with the last of them.
+render-graph scene interface.
+
+The lit recipes share `renderer_lit.lusl`, the port of `renderer_lit.slang`. Its seven variant files
+(`renderer_clustered.slang`, `renderer_surface.slang`, `renderer_authored.slang` and so on) become
+configurations: each recipe names its values in `recipes.json` as `defines`, and every recipe sets all six macros
+(`LUDUS_CLUSTERED`, `LUDUS_SURFACE_FIDELITY`, `LUDUS_AUTHORED_INPUTS`, `LUDUS_DEBUG_VIEW`,
+`LUDUS_GRAPH_REALTIME`, `LUDUS_GRAPH_SURFACE_CHART`), because LUSL rejects a test of an undeclared name.
+`ludus_compile_renderer_shaders` passes them as `DEFINES`, the editor's live shaders as the request's configuration,
+and the forward profile lowers the recipe once per configuration, with the macro each wrapper used to `#define`
+(`LUDUS_GRAPH_REALTIME`, `LUDUS_GRAPH_SURFACE_CHART`) set to `1`. The textures and samplers keep the original's
+manual slots in `renderer_lit_bindings.slang`, because a slot's resource depends on the configuration (slot 7) and the
+realtime forward profile omits the bake texture at slot 3 while later slots keep their numbers. LUSL lowering now
+defines each configuration value before its `extern slang` includes, so that file sees the same values. The
+constant buffer is LUSL's, at slot 0, so the reflected bindings list it last; the renderer and the forward profile
+check slots, not order. `generate_lusl_layouts.py` also writes `renderer_environment_layout.luslh` and
+`probe_volume_layout.luslh`, and `math.luslh` declares `GOLDEN_ANGLE_RADIANS`. The port evaluates the spherical
+harmonic basis through a switch, because LUSL has no array initializer. The original declares the clustered
+`IsDirectReference` varying before the authored ones, matching its semantic index. SPIR-V numbers varyings in
+declaration order and Metal matches them by semantic, so the LUSL clustered authored vertex pairs with the deferred
+G-buffer fragment, which still includes `renderer_clustered_authored.slang`. The deferred G-buffer and resolve programs
+keep the original for their `LUDUS_DEFERRED_MESH_LIGHTS`, `LUDUS_ATMOSPHERE_SURFACE` and `LUDUS_OPAQUE_COVERAGE`
+configurations until they migrate. Every configuration draws a parity scene with both programs on one device: eight
+lit tiles under directional, point and spot lights with a shadow atlas and a masked caster, with surface maps,
+authored inputs, an environment map and the debug views where the configuration reads them. The L4 shadow scene
+draws the forward configuration with both. Every byte matches. In three 1080p in-process A/B runs on Metal, no
+configuration was slower in every run; on a quiet host every median difference was within 20 µs of a 2.6–3.9 ms
+frame, as was the original timed against itself (`LUDUS_RENDERER_BENCHMARK_CONTROL`).
+
+The deferred lighting and material and skin resolve programs migrate in a later change, which adds their deferred
+configurations to `renderer_lit.lusl`. The renderer shader directory joins the migrated scope with the last of them.
 
 ### Acceptance
 
