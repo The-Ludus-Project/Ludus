@@ -301,6 +301,7 @@ bool SaveExport(rhi::DeviceHandle device,
                                                          ticket);
     if (requested != Status::Ready && requested != Status::Pending)
     {
+        qCritical() << request.Id << "readback request failed" << static_cast<uint32>(requested);
         return false;
     }
     const bool hasPixels = WaitFor(device, "readback", [&]() {
@@ -309,6 +310,8 @@ bool SaveExport(rhi::DeviceHandle device,
     const Status released = rhi::Release(device, ticket);
     if (hasPixels == false || released != Status::Ready || image.save(request.Image) == false)
     {
+        qCritical() << request.Id << "readback, release" << static_cast<uint32>(released) << "or saving"
+                    << request.Image << "failed";
         return false;
     }
     qInfo() << "Raster" << request.Id << "resource" << request.Resource << image.size() << "saved as" << request.Image;
@@ -358,6 +361,8 @@ bool Capture(rhi::DeviceHandle device,
     if ((initialized != Status::Ready && initialized != Status::Pending) ||
         WaitFor(device, "graph preparation", [&graph]() { return graph.Poll(); }) == false)
     {
+        qCritical() << "Graph initialization" << static_cast<uint32>(initialized) << "failed at stage"
+                    << static_cast<uint32>(graph.GetLastFailureStage());
         return false;
     }
     renderer::RenderGraphMesh mesh;
@@ -373,10 +378,19 @@ bool Capture(rhi::DeviceHandle device,
                                         renderer::RenderGraphCoveragePolicy::RejectIncomplete,
                                         report);
     if ((updated != Status::Ready && updated != Status::Pending) ||
-        WaitFor(device, "scene upload", [&graph]() { return graph.Poll(); }) == false ||
-        rhi::SetFrameTarget(device, surface, { .Width = target.Width, .Height = target.Height }) !=
-            rhi::DeviceStatus::Ready)
+        WaitFor(device, "scene upload", [&graph]() { return graph.Poll(); }) == false)
     {
+        qCritical() << "Scene update" << static_cast<uint32>(updated) << "failed at stage"
+                    << static_cast<uint32>(graph.GetLastFailureStage()) << "rejection"
+                    << static_cast<uint32>(graph.GetLastRejection()) << "coverage: covered" << report.Covered
+                    << "unsupported" << report.Unsupported << "conflicting" << report.Conflicting;
+        return false;
+    }
+    const rhi::DeviceStatus framed =
+        rhi::SetFrameTarget(device, surface, { .Width = target.Width, .Height = target.Height });
+    if (framed != rhi::DeviceStatus::Ready)
+    {
+        qCritical() << "Frame target" << target.Width << target.Height << "failed" << static_cast<uint32>(framed);
         return false;
     }
     rhi::SubmissionToken completion;
