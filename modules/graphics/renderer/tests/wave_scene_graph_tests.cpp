@@ -414,6 +414,40 @@ TEST_CASE("Scene wave graph mixes two distinct lobes by a grain mask without a g
     }
 }
 
+TEST_CASE("Scene wave graph renders a project Oren-Nayar lobe without a graph edit",
+          "[renderer][gpu][wave-tracing][graph][program][oren-nayar]")
+{
+    namespace fixtures = ludus::renderer_tests;
+    // The orthographic camera sees a patch a fraction of a millimetre wide about the receiver's normal, under a point
+    // light on that normal. At normal incidence the qualitative model's retroreflection term vanishes, so each
+    // geometric-optics pixel is A times the Lambertian control's: equal at zero roughness, darker when rough.
+    renderer::SceneShaderMaterial diffuse;
+    diffuse.BaseColor = {0.8F, 0.7F, 0.6F};
+    diffuse.Scattering.Model = MaterialModel::Diffuse;
+    renderer::SceneShaderMaterial rough;
+    rough.BaseColor = diffuse.BaseColor;
+    rough.Scattering.Model = MaterialModel::Program;
+    ExportedPixels control{};
+    RunSceneWaveGraph(0, &diffuse, &control);
+    constexpr float32 RELATIVE_TOLERANCE = 1e-3F;
+    for (const float32 sigma : {0.0F, fixtures::OREN_NAYAR_SIGMA_RADIANS})
+    {
+        CAPTURE(sigma);
+        rough.Program = fixtures::MakeOrenNayarProgram(sigma);
+        ExportedPixels pixels{};
+        RunSceneWaveGraph(0, &rough, &pixels);
+        const math::Vector3 normalWorld{0, 0, 1};
+        const float32 a = static_cast<float32>(
+            fixtures::EvaluatePublishedOrenNayar(static_cast<float64>(sigma), normalWorld, normalWorld) * math::kPi);
+        for (usize index = 0; index < pixels.GetSize(); ++index)
+        {
+            CAPTURE(index, pixels[index].X, control[index].X);
+            const math::Vector3 expected = control[index] * a;
+            CHECK(math::Distance(pixels[index], expected) <= RELATIVE_TOLERANCE * (1 + math::Length(expected)));
+        }
+    }
+}
+
 TEST_CASE("Scene wave graph blocks an opaque screen from the current World", "[renderer][gpu][wave-tracing][graph]")
 {
     CheckSceneWaveGraph(1);

@@ -78,6 +78,8 @@ static const MaterialProgramTag LUDUS_MATERIAL_LOBE_DIFFUSE = 1;
 static const MaterialProgramTag LUDUS_MATERIAL_LOBE_CONDUCTOR = 2;
 /// Operation tag of MaterialLobeOperation::CosinePower.
 static const MaterialProgramTag LUDUS_MATERIAL_LOBE_COSINE_POWER = 3;
+/// Operation tag of MaterialLobeOperation::OrenNayar.
+static const MaterialProgramTag LUDUS_MATERIAL_LOBE_OREN_NAYAR = 4;
 /// Registers an instruction may write. Bounds the evaluator's per-thread state.
 static const MaterialProgramTag LUDUS_MATERIAL_PROGRAM_MAX_REGISTERS = 8;
 /// Constants an instruction may load.
@@ -91,8 +93,24 @@ static const MaterialProgramTag LUDUS_MATERIAL_PROGRAM_NO_REGISTER = 255;
 /// Largest constant and register magnitude; keeps every value of a bounded program finite in binary32.
 #ifdef __cplusplus
 inline constexpr MaterialScalar LUDUS_MATERIAL_PROGRAM_MAX_CONSTANT = 10000;
+/// Largest Oren-Nayar facet-slope standard deviation sigma, in radians; evaluators clamp sigma to [0, this].
+inline constexpr MaterialScalar LUDUS_MATERIAL_PROGRAM_MAX_OREN_NAYAR_SIGMA = 1;
+/// Oren-Nayar A = 1 - A_SCALE sigma^2 / (sigma^2 + A_OFFSET) in the qualitative model; the offset is in squared
+/// radians.
+inline constexpr MaterialScalar LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_A_SCALE = 0.5F;
+/// Squared-radian offset of the Oren-Nayar A coefficient.
+inline constexpr MaterialScalar LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_A_OFFSET = 0.33F;
+/// Oren-Nayar B = B_SCALE sigma^2 / (sigma^2 + B_OFFSET) in the qualitative model; the offset is in squared radians.
+inline constexpr MaterialScalar LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_B_SCALE = 0.45F;
+/// Squared-radian offset of the Oren-Nayar B coefficient.
+inline constexpr MaterialScalar LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_B_OFFSET = 0.09F;
 #else
 static const MaterialScalar LUDUS_MATERIAL_PROGRAM_MAX_CONSTANT = 10000;
+static const MaterialScalar LUDUS_MATERIAL_PROGRAM_MAX_OREN_NAYAR_SIGMA = 1;
+static const MaterialScalar LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_A_SCALE = .5;
+static const MaterialScalar LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_A_OFFSET = .33;
+static const MaterialScalar LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_B_SCALE = .45;
+static const MaterialScalar LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_B_OFFSET = .09;
 #endif
 
 #ifdef __cplusplus
@@ -110,6 +128,8 @@ inline constexpr foundation::usize MAX_MATERIAL_PROGRAM_LOBES = LUDUS_MATERIAL_P
 inline constexpr foundation::usize MATERIAL_PROGRAM_COMPONENTS = 4;
 /// Largest constant magnitude, LUDUS_MATERIAL_PROGRAM_MAX_CONSTANT.
 inline constexpr foundation::float32 MAX_MATERIAL_PROGRAM_CONSTANT = LUDUS_MATERIAL_PROGRAM_MAX_CONSTANT;
+/// Largest Oren-Nayar sigma in radians, LUDUS_MATERIAL_PROGRAM_MAX_OREN_NAYAR_SIGMA.
+inline constexpr foundation::float32 MAX_OREN_NAYAR_SIGMA_RADIANS = LUDUS_MATERIAL_PROGRAM_MAX_OREN_NAYAR_SIGMA;
 /// Register operand value of a lobe that reads no roughness register.
 inline constexpr foundation::uint8 NO_MATERIAL_PROGRAM_REGISTER = LUDUS_MATERIAL_PROGRAM_NO_REGISTER;
 /// One-byte fields of an instruction: opcode, destination and three operands.
@@ -159,9 +179,18 @@ enum class MaterialLobeOperation : foundation::uint8
     Diffuse = LUDUS_MATERIAL_LOBE_DIFFUSE,          ///< Lambertian reflection, 1/pi before the weight.
     Conductor = LUDUS_MATERIAL_LOBE_CONDUCTOR,      ///< Isotropic GGX, complex-IOR Fresnel; alpha = roughness^2.
     CosinePower = LUDUS_MATERIAL_LOBE_COSINE_POWER, ///< Reciprocal cosine power, exponent (1 - roughness) * Power.
+    /// Qualitative Oren-Nayar rough diffuse reflection, (1/pi)(A + B max(0, cos(phi_i - phi_o)) sin(alpha) tan(beta))
+    /// before the weight, with alpha and beta the larger and smaller of the two polar angles,
+    /// A = 1 - 0.5 sigma^2 / (sigma^2 + 0.33) and B = 0.45 sigma^2 / (sigma^2 + 0.09). The roughness register's first
+    /// component is sigma, the standard deviation of the facet slope angle in radians, clamped to
+    /// [0, MAX_OREN_NAYAR_SIGMA_RADIANS]; sigma = 0 is Lambertian. Samples the cosine-weighted hemisphere, density
+    /// cos(theta_i)/pi. Thanks to Michael Oren and Shree K. Nayar, "Generalization of Lambert's Reflectance Model",
+    /// SIGGRAPH '94, pp. 239-246, the qualitative model,
+    /// https://people.computing.clemson.edu/~ekp/courses/dpa8090/assets/papers/OrenNayar1994.pdf.
+    OrenNayar = LUDUS_MATERIAL_LOBE_OREN_NAYAR,
 };
 /// Last valid lobe operation.
-inline constexpr MaterialLobeOperation LAST_MATERIAL_LOBE_OPERATION = MaterialLobeOperation::CosinePower;
+inline constexpr MaterialLobeOperation LAST_MATERIAL_LOBE_OPERATION = MaterialLobeOperation::OrenNayar;
 
 /// One straight-line instruction; eight bytes on the wire. Unused operands are zero.
 struct MaterialProgramInstruction final
@@ -181,8 +210,9 @@ struct MaterialProgramLobe final
     MaterialLobeOperation Operation = MaterialLobeOperation::None; ///< Operation; None only in unused slots.
     /// Register whose RGB components weight the lobe. Evaluators clamp negative weights to zero.
     foundation::uint8 WeightRegister = 0;
-    /// Register whose first component is perceptual roughness for Conductor and CosinePower,
-    /// NO_MATERIAL_PROGRAM_REGISTER for Diffuse, and zero in unused slots. Evaluators clamp it to [MIN_ROUGHNESS,1].
+    /// Register whose first component is perceptual roughness for Conductor and CosinePower, which evaluators clamp
+    /// to [MIN_ROUGHNESS,1], or sigma in radians for OrenNayar, which they clamp to [0,MAX_OREN_NAYAR_SIGMA_RADIANS].
+    /// NO_MATERIAL_PROGRAM_REGISTER for Diffuse, and zero in unused slots.
     foundation::uint8 RoughnessRegister = 0;
     foundation::StaticArray<foundation::uint8, MATERIAL_PROGRAM_LOBE_PADDING> Reserved{}; ///< Zero.
     /// Conductor complex-IOR real part, RGB proxy, in (0,MAX_MATERIAL_OPTICAL_CONSTANT].
@@ -239,6 +269,7 @@ static_assert(sizeof(MaterialProgram) == MATERIAL_PROGRAM_BYTES &&
         case MaterialLobeOperation::Diffuse:
         case MaterialLobeOperation::Conductor:
         case MaterialLobeOperation::CosinePower:
+        case MaterialLobeOperation::OrenNayar:
             return LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION | LUDUS_MATERIAL_CAPABILITY_FIXED_DIMENSION_SAMPLER;
         case MaterialLobeOperation::None:
             break;
@@ -390,7 +421,8 @@ static_assert(sizeof(MaterialProgram) == MATERIAL_PROGRAM_BYTES &&
             }
             continue;
         }
-        const bool hasRoughness = isConductor == true || isCosinePower == true;
+        const bool hasRoughness =
+            isConductor == true || isCosinePower == true || lobe.Operation == MaterialLobeOperation::OrenNayar;
         const bool isRoughnessValid = hasRoughness == true ? isWritten(lobe.RoughnessRegister)
                                                            : lobe.RoughnessRegister == NO_MATERIAL_PROGRAM_REGISTER;
         if (GetMaterialLobeCapabilities(lobe.Operation) == 0 || isWritten(lobe.WeightRegister) == false ||
@@ -604,5 +636,6 @@ enum MaterialLobeOperation : MaterialProgramTag
     Diffuse = LUDUS_MATERIAL_LOBE_DIFFUSE,          ///< Lambertian reflection.
     Conductor = LUDUS_MATERIAL_LOBE_CONDUCTOR,      ///< Isotropic GGX conductor.
     CosinePower = LUDUS_MATERIAL_LOBE_COSINE_POWER, ///< Reciprocal cosine-power term.
+    OrenNayar = LUDUS_MATERIAL_LOBE_OREN_NAYAR,     ///< Qualitative Oren-Nayar rough diffuse.
 };
 #endif // __cplusplus

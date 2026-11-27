@@ -18,6 +18,7 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -3215,6 +3216,314 @@ TEST_CASE("A grain-masked closure program matches between CPU and GPU reference 
         brightest = math::Max(brightest, oracle[centreRow + column].Radiance.X);
     }
     CHECK(brightest > darkest);
+}
+
+namespace
+{
+/// Shading geometry of one pixel of the two-light Oren–Nayar fixture.
+struct BoardPixel final
+{
+    math::Vector3 PositionWorld{};
+    bool IsShadowedFromFirstLight = false;
+    bool IsNearShadowEdge = false;
+};
+/// Mean radiance of the pixels whose shadow state matches, and how many there were.
+struct RegionMean final
+{
+    math::Vector3 Radiance{};
+    usize Count = 0;
+};
+RegionMean MeasureRegion(const Array<rr::ReferencePixel>& pixels, const Array<BoardPixel>& board, bool isShadowed)
+{
+    RegionMean result;
+    for (usize index = 0; index < pixels.GetSize(); ++index)
+    {
+        if (board[index].IsNearShadowEdge == false && board[index].IsShadowedFromFirstLight == isShadowed)
+        {
+            result.Radiance = result.Radiance + pixels[index].Radiance;
+            ++result.Count;
+        }
+    }
+    if (result.Count != 0)
+    {
+        result.Radiance = result.Radiance * (1 / static_cast<float32>(result.Count));
+    }
+    return result;
+}
+bool IsNearRelative(math::Vector3 actual, math::Vector3 expected, float32 tolerance)
+{
+    return math::Distance(actual, expected) <= tolerance * math::Length(expected);
+}
+} // namespace
+
+TEST_CASE("A project Oren-Nayar lobe sums two directional lights and one shadow on CPU and GPU reference transport",
+          "[renderer][gpu][reference-compute][program][oren-nayar]")
+{
+    namespace fixtures = ludus::renderer_tests;
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+
+    // Pat Hanrahan and Jim Lawson, "A Language for Shading and Lighting Calculations", SIGGRAPH '90, pp. 289–298, give
+    // surface and light shaders distinct roles: the surface integrates whatever incident light the renderer supplies.
+    // Here the project lobe is cooked once, and only the renderer-owned lights and a blocker change between captures.
+    const ludus::content::scene_format::MaterialProgram program =
+        fixtures::MakeOrenNayarProgram(fixtures::OREN_NAYAR_SIGMA_RADIANS);
+    const math::Vector3 albedo{0.9F, 0.6F, 0.3F};
+    StaticArray<QuadItem, 2> quads{};
+    QuadItem& board = quads[0];
+    // Wound so the board's normal is +Z.
+    board.CornersWorld = {{{-4, -4, 0}, {4, -4, 0}, {4, 4, 0}, {-4, 4, 0}}};
+    board.BaseColor = albedo;
+    board.Model = ludus::content::scene_format::MaterialModel::Program;
+    board.ProgramOrNull = &program;
+    // A strip one metre above the board, beyond the camera's view in +X, shadows the first light from the board's
+    // pixels with x above FIRST_SHADOW_EDGE. The second light arrives from -X, so the strip never masks it.
+    constexpr float32 BLOCKER_HEIGHT = 1;
+    constexpr float32 BLOCKER_NEAR_X = 1.2F;
+    constexpr float32 BLOCKER_FAR_X = 8;
+    constexpr float32 BLOCKER_HALF_Y = 8;
+    QuadItem& blocker = quads[1];
+    // Wound so the strip faces the board.
+    blocker.CornersWorld = {{{BLOCKER_NEAR_X, -BLOCKER_HALF_Y, BLOCKER_HEIGHT},
+                             {BLOCKER_NEAR_X, BLOCKER_HALF_Y, BLOCKER_HEIGHT},
+                             {BLOCKER_FAR_X, BLOCKER_HALF_Y, BLOCKER_HEIGHT},
+                             {BLOCKER_FAR_X, -BLOCKER_HALF_Y, BLOCKER_HEIGHT}}};
+    // Two independently switchable directional lights with distinct colours and directions. Each light's azimuth is
+    // 60 degrees from the camera's, so both responses include the Oren–Nayar retroreflection term.
+    const math::Vector3 firstUnnormalized{0.6F, 0.35F, 0.72F};
+    const math::Vector3 secondUnnormalized{-0.55F, 0.32F, 0.77F};
+    const math::Vector3 firstTowardWorld = firstUnnormalized / math::Length(firstUnnormalized);
+    const math::Vector3 secondTowardWorld = secondUnnormalized / math::Length(secondUnnormalized);
+    StaticArray<rr::DirectLight, 2> lights{};
+    lights[0].SourceId = 1;
+    lights[0].Color = {1, 0.55F, 0.2F};
+    lights[0].Intensity = 2;
+    lights[0].Direction = -firstTowardWorld;
+    lights[1].SourceId = 2;
+    lights[1].Color = {0.25F, 0.5F, 1};
+    lights[1].Intensity = 3;
+    lights[1].Direction = -secondTowardWorld;
+    const float32 firstShadowEdge = BLOCKER_NEAR_X - BLOCKER_HEIGHT * firstTowardWorld.X / firstTowardWorld.Z;
+
+    // An orthographic camera in the Y-Z plane, so every primary ray sees the board from the same direction and the
+    // camera's horizontal axis is world X.
+    const math::Vector3 cameraUnnormalized{0, 0.5F, 0.866F};
+    const math::Vector3 cameraTowardWorld = cameraUnnormalized / math::Length(cameraUnnormalized);
+    constexpr uint32 EXTENT = 16;
+    constexpr float32 CAMERA_DISTANCE = 5;
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = EXTENT;
+    capture.Height = EXTENT;
+    capture.TargetSamples = 64;
+    capture.MaxDepth = 1;
+    capture.Seed = 1310;
+    capture.OrthographicCamera = true;
+    capture.CenterRays = true;
+    capture.ReverseZ = true;
+    math::Matrix4 view;
+    math::Matrix4 projection;
+    REQUIRE(math::TryLookAt(cameraTowardWorld * CAMERA_DISTANCE, {0, 0, 0}, {0, 0, 1}, view) ==
+            math::MathStatus::Success);
+    REQUIRE(math::TryOrthographicReverseZ(-1, 1, -1, 1, .1F, 20, projection) == math::MathStatus::Success);
+    capture.WorldToClip = projection * view;
+    math::Matrix4 clipToWorld;
+    REQUIRE(math::TryInverse(capture.WorldToClip, clipToWorld) == math::MathStatus::Success);
+    // Each pixel's centre ray meets the board where the ray from its near-plane point along -cameraTowardWorld
+    // crosses z = 0. Pixels within EDGE_MARGIN of the first light's shadow edge are left out of region checks.
+    constexpr float32 EDGE_MARGIN = 0.05F;
+    Array<BoardPixel> boardPixels;
+    REQUIRE(boardPixels.TryResize(usize{EXTENT} * EXTENT) == true);
+    usize shadowedCount = 0;
+    usize litCount = 0;
+    for (uint32 row = 0; row < EXTENT; ++row)
+    {
+        for (uint32 column = 0; column < EXTENT; ++column)
+        {
+            const float32 clipX = 2 * (static_cast<float32>(column) + 0.5F) / EXTENT - 1;
+            const float32 clipY = 1 - 2 * (static_cast<float32>(row) + 0.5F) / EXTENT;
+            const math::Vector4 nearWorld = clipToWorld * math::Vector4{clipX, clipY, 1, 1};
+            const math::Vector3 originWorld = math::Vector3{nearWorld.X, nearWorld.Y, nearWorld.Z} * (1 / nearWorld.W);
+            BoardPixel& pixel = boardPixels[usize{row} * EXTENT + column];
+            pixel.PositionWorld = originWorld - cameraTowardWorld * (originWorld.Z / cameraTowardWorld.Z);
+            pixel.IsShadowedFromFirstLight = pixel.PositionWorld.X > firstShadowEdge;
+            pixel.IsNearShadowEdge = math::Abs(pixel.PositionWorld.X - firstShadowEdge) < EDGE_MARGIN;
+            if (pixel.IsNearShadowEdge == false)
+            {
+                (pixel.IsShadowedFromFirstLight == true ? shadowedCount : litCount) += 1;
+            }
+        }
+    }
+    // Both regions hold a substantial share of the image.
+    REQUIRE(shadowedCount >= usize{EXTENT} * EXTENT / 5);
+    REQUIRE(litCount >= usize{EXTENT} * EXTENT / 5);
+
+    // The analytic single-bounce response: albedo times illuminance times the published BRDF times the cosine,
+    // evaluated at the same world-space directions the renderer uses.
+    const auto respond = [&](const rr::DirectLight& light, math::Vector3 towardWorld) {
+        const float64 brdf =
+            fixtures::EvaluatePublishedOrenNayar(static_cast<float64>(fixtures::OREN_NAYAR_SIGMA_RADIANS),
+                                                 cameraTowardWorld,
+                                                 towardWorld);
+        const float32 scale = static_cast<float32>(brdf * static_cast<float64>(towardWorld.Z)) * light.Intensity;
+        return math::Hadamard(albedo, light.Color) * scale;
+    };
+    const math::Vector3 firstExpected = respond(lights[0], firstTowardWorld);
+    const math::Vector3 secondExpected = respond(lights[1], secondTowardWorld);
+    // The two responses are distinct in every channel.
+    CHECK(math::Abs(firstExpected.X - secondExpected.X) > 0.1F * firstExpected.X);
+    CHECK(math::Abs(firstExpected.Z - secondExpected.Z) > 0.1F * secondExpected.Z);
+    // The lobe's directional response differs from the Lambertian control at both lights.
+    for (const math::Vector3& towardWorld : {firstTowardWorld, secondTowardWorld})
+    {
+        const float64 roughBrdf =
+            fixtures::EvaluatePublishedOrenNayar(static_cast<float64>(fixtures::OREN_NAYAR_SIGMA_RADIANS),
+                                                 cameraTowardWorld,
+                                                 towardWorld);
+        const float64 lambertBrdf = fixtures::EvaluatePublishedOrenNayar(0, cameraTowardWorld, towardWorld);
+        CHECK(math::Abs(roughBrdf - lambertBrdf) > 0.05 * lambertBrdf);
+    }
+
+    // A one-light pixel has a single deterministic estimate; float32 transport stays within this relative bound.
+    constexpr float32 EXACT_TOLERANCE = 1e-4F;
+    // Two lights share one uniform light draw per vertex, so each sample is twice one light's response. Each region
+    // holds at least 51 pixels of 64 samples; Hoeffding's bound for a region mean off by more than 5% of the sample
+    // range is about 2e-7.
+    constexpr float32 MEAN_TOLERANCE = 0.05F;
+    const auto checkMean = [](math::Vector3 actual, math::Vector3 expected, math::Vector3 range) {
+        CAPTURE(actual.X, actual.Y, actual.Z, expected.X, expected.Y, expected.Z);
+        CHECK(math::Abs(actual.X - expected.X) <= MEAN_TOLERANCE * range.X);
+        CHECK(math::Abs(actual.Y - expected.Y) <= MEAN_TOLERANCE * range.Y);
+        CHECK(math::Abs(actual.Z - expected.Z) <= MEAN_TOLERANCE * range.Z);
+    };
+    const math::Vector3 twoLightRange{2 * math::Max(firstExpected.X, secondExpected.X),
+                                      2 * math::Max(firstExpected.Y, secondExpected.Y),
+                                      2 * math::Max(firstExpected.Z, secondExpected.Z)};
+    struct LightCase final
+    {
+        const char* Name = "";
+        usize First = 0;
+        usize Count = 0;
+    };
+    constexpr usize LIGHT_CASE_COUNT = 3;
+    constexpr StaticArray<LightCase, LIGHT_CASE_COUNT> LIGHT_CASES{{
+        { .Name = "first light alone", .First = 0, .Count = 1 },
+        { .Name = "second light alone", .First = 1, .Count = 1 },
+        { .Name = "both lights", .First = 0, .Count = 2 },
+    }};
+    for (const bool hasBlocker : {false, true})
+    {
+        for (Session* session : {&cpu, &gpu})
+        {
+            REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+            REQUIRE(BuildQuadSnapshot(session->Renderer,
+                                      session->Program,
+                                      quads.GetData(),
+                                      hasBlocker == true ? 2 : 1,
+                                      session->Snapshot) == S::Ready);
+        }
+        for (const LightCase& lightCase : LIGHT_CASES)
+        {
+            CAPTURE(hasBlocker, lightCase.Name);
+            capture.Lights = &lights[lightCase.First];
+            capture.LightCount = lightCase.Count;
+            Array<rr::ReferencePixel> oracle;
+            Array<rr::ReferencePixel> compute;
+            rr::ReferenceCaptureInfo oracleInfo;
+            rr::ReferenceCaptureInfo computeInfo;
+            Capture(cpu, capture, surface, oracle, oracleInfo);
+            Capture(gpu, capture, surface, compute, computeInfo);
+            CHECK(oracleInfo.InvalidContributions == 0);
+            CHECK(computeInfo.InvalidContributions == 0);
+            CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
+            // Matched raw linear radiance: both traversals read the same addressed random values.
+            const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+            CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance));
+            CHECK(comparison.MaximumRadiance <= EXACT_TOLERANCE * 2 * math::Length(twoLightRange));
+            for (const Array<rr::ReferencePixel>* pixels : {&oracle, &compute})
+            {
+                INFO((pixels == &oracle ? "CPU oracle" : "GPU compute"));
+                const ImageMeans means = MeasureImage(*pixels);
+                CHECK(means.Emission == math::Vector3{});
+                CHECK(means.Indirect == math::Vector3{});
+                if (lightCase.Count == 1)
+                {
+                    const math::Vector3 expected = lightCase.First == 0 ? firstExpected : secondExpected;
+                    for (usize index = 0; index < pixels->GetSize(); ++index)
+                    {
+                        const BoardPixel& pixel = boardPixels[index];
+                        if (pixel.IsNearShadowEdge == true)
+                        {
+                            continue;
+                        }
+                        CAPTURE(index, pixel.PositionWorld.X, (*pixels)[index].Radiance.X, expected.X);
+                        // The blocker masks only the first light, and only where it lies between light and board.
+                        if (hasBlocker == true && lightCase.First == 0 && pixel.IsShadowedFromFirstLight == true)
+                        {
+                            CHECK((*pixels)[index].Radiance == math::Vector3{});
+                        }
+                        else
+                        {
+                            CHECK(IsNearRelative((*pixels)[index].Radiance, expected, EXACT_TOLERANCE) == true);
+                        }
+                    }
+                    continue;
+                }
+                // Both lights: the linear sum where the blocker does not intervene, the second light alone where it
+                // shadows the first.
+                const RegionMean lit = MeasureRegion(*pixels, boardPixels, false);
+                const RegionMean shadowed = MeasureRegion(*pixels, boardPixels, true);
+                checkMean(lit.Radiance, firstExpected + secondExpected, twoLightRange);
+                checkMean(shadowed.Radiance,
+                          hasBlocker == true ? secondExpected : firstExpected + secondExpected,
+                          twoLightRange);
+            }
+        }
+    }
+
+    // Continuation samples the declared cosine density and weighs it against both lights and a sky: deeper paths
+    // bounce between the board and the blocker's underside, and the two traversals still match pixel by pixel.
+    capture.Lights = lights.GetData();
+    capture.LightCount = lights.GetSize();
+    capture.MaxDepth = 4;
+    capture.CenterRays = false;
+    capture.Environment = {.1F, .12F, .15F};
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    Capture(cpu, capture, surface, oracle, oracleInfo);
+    Capture(gpu, capture, surface, compute, computeInfo);
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance));
+    CHECK(oracleInfo.InvalidContributions == 0);
+    CHECK(computeInfo.InvalidContributions == 0);
+    CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
+    // The tolerances of the typed-material parity case: matched raw linear radiance, not a converged mean.
+    CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+    CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
+    const ImageMeans means = MeasureImage(oracle);
+    CHECK(means.Indirect.X > 0);
 }
 
 TEST_CASE("RT1 rough-metal white furnace matches the single-scattering integral on CPU and GPU",

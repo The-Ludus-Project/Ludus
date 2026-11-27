@@ -5,6 +5,8 @@
 #include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/vector.hpp>
 
 namespace ludus::renderer_tests
 {
@@ -125,5 +127,73 @@ inline ludus::content::scene_format::MaterialProgram MakeGrainMixProgram()
         .K = GOLD_K,
     };
     return program;
+}
+
+/// Facet-slope standard deviation of the project Oren–Nayar lobe in the two-light fixture, in radians (about 29°).
+inline constexpr ludus::foundation::float32 OREN_NAYAR_SIGMA_RADIANS = 0.5F;
+
+/// The project diffuse lobe of the material gate-4 fixture: one qualitative Oren–Nayar lobe weighted by the base
+/// colour, with sigma a program constant in radians. Michael Oren and Shree K. Nayar, "Generalization of Lambert's
+/// Reflectance Model", SIGGRAPH '94, pp. 239–246
+/// (https://people.computing.clemson.edu/~ekp/courses/dpa8090/assets/papers/OrenNayar1994.pdf), model the directional
+/// diffuse response of a rough surface; sigma = 0 is the Lambertian control. The lobe declares the cosine-weighted
+/// proposal, so the program offers continuous reflection with the fixed three-value sampler.
+inline ludus::content::scene_format::MaterialProgram MakeOrenNayarProgram(ludus::foundation::float32 sigmaRadians)
+{
+    namespace format = ludus::content::scene_format;
+    using format::MaterialProgramOpcode;
+    format::MaterialProgram program;
+    program.ConstantCount = 1;
+    program.Constants[0] = {{sigmaRadians, sigmaRadians, sigmaRadians, 0}};
+    program.InstructionCount = 2;
+    program.Instructions[0] =
+    {
+        .Opcode = MaterialProgramOpcode::SurfaceInput,
+        .Destination = 0,
+        .OperandA = static_cast<ludus::foundation::uint8>(format::MaterialProgramInput::BaseColor),
+    };
+    program.Instructions[1] = { .Opcode = MaterialProgramOpcode::Constant, .Destination = 1, .OperandA = 0 };
+    program.LobeCount = 1;
+    program.Lobes[0] =
+    {
+        .Operation = format::MaterialLobeOperation::OrenNayar,
+        .WeightRegister = 0,
+        .RoughnessRegister = 1,
+    };
+    return program;
+}
+/// Michael Oren and Shree K. Nayar's qualitative model, "Generalization of Lambert's Reflectance Model", SIGGRAPH '94,
+/// pp. 239–246, evaluated independently of the renderer: in float64, from the polar and azimuthal angles
+/// of the two directions about the +Z normal, with the published sin(alpha) tan(beta) form. Returns the BRDF for unit
+/// albedo.
+inline ludus::foundation::float64 EvaluatePublishedOrenNayar(ludus::foundation::float64 sigma,
+                                                             ludus::foundation::math::Vector3 viewWorld,
+                                                             ludus::foundation::math::Vector3 lightWorld)
+{
+    using ludus::foundation::float64;
+    namespace math = ludus::foundation::math;
+    // The published coefficients, repeated here so the check does not read the renderer's constants.
+    constexpr float64 A_SCALE = 0.5;
+    constexpr float64 A_OFFSET = 0.33;
+    constexpr float64 B_SCALE = 0.45;
+    constexpr float64 B_OFFSET = 0.09;
+    const auto polar = [](math::Vector3 direction) {
+        const float64 x = static_cast<float64>(direction.X);
+        const float64 y = static_cast<float64>(direction.Y);
+        return math::Atan2(math::Sqrt(x * x + y * y), static_cast<float64>(direction.Z));
+    };
+    const auto azimuth = [](math::Vector3 direction) {
+        return math::Atan2(static_cast<float64>(direction.Y), static_cast<float64>(direction.X));
+    };
+    const float64 incident = polar(lightWorld);
+    const float64 outgoing = polar(viewWorld);
+    const float64 alpha = incident > outgoing ? incident : outgoing;
+    const float64 beta = incident > outgoing ? outgoing : incident;
+    const float64 sigmaSquared = sigma * sigma;
+    const float64 a = 1 - A_SCALE * sigmaSquared / (sigmaSquared + A_OFFSET);
+    const float64 b = B_SCALE * sigmaSquared / (sigmaSquared + B_OFFSET);
+    const float64 azimuthCosine = math::Cos(azimuth(lightWorld) - azimuth(viewWorld));
+    const float64 positiveCosine = azimuthCosine > 0 ? azimuthCosine : 0;
+    return (a + b * positiveCosine * math::Sin(alpha) * math::Sin(beta) / math::Cos(beta)) / math::kPi;
 }
 } // namespace ludus::renderer_tests

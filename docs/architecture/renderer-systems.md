@@ -1608,7 +1608,8 @@ composition of supported lobes as data. It needs no new model tag, scene kernel
 ABI or graph edit. The program is owned by the [scene format](../../modules/content/scene_format/include/ludus/content/scene_format/material_program.h)
 and has two parts. A straight-line parameter program runs over eight float4
 registers. A flattened mixture of up to eight leaf lobes follows it. The lobes
-are diffuse, isotropic GGX conductor and cosine power. With RGB lobe weights
+are diffuse, isotropic GGX conductor, cosine power and
+[Oren–Nayar](#project-oren-nayar-lobe-under-renderer-owned-lights). With RGB lobe weights
 $w_i$ and selection weights $s_i$, the mean of each $w_i$, the surface value is
 $\sum_i w_i f_i$. One uniform selects a lobe with probability $s_i / \sum_j s_j$,
 and two more sample its direction. Evaluation and continuation return the full
@@ -1733,6 +1734,85 @@ are 64×64 at 16 spp.
 The board has six triangles, so material evaluation takes a larger share of
 the time than in the Cornell box. The program's median device time was about
 1.5 times the Mix's, within this GPU's run-to-run variance.
+
+#### Project Oren-Nayar lobe under renderer-owned lights
+
+A project can author a rough diffuse lobe as data with the `oren_nayar`
+[closure-program operation](scene-source-format.md#closure-program). It is the
+qualitative model of Michael Oren and Shree K. Nayar,
+[*Generalization of Lambert's Reflectance Model*](https://people.computing.clemson.edu/~ekp/courses/dpa8090/assets/papers/OrenNayar1994.pdf)
+(SIGGRAPH ’94, pp. 239–246). Its angular response gives the project
+BRDF fixture a measurable difference from the Lambertian control. For albedo
+$\rho$,
+
+$$f = \frac{\rho}{\pi}\left(A + B \max(0, \cos(\phi_i - \phi_o)) \sin\alpha \tan\beta\right),$$
+
+with $\alpha$ and $\beta$ the larger and smaller polar angle,
+$A = 1 - 0.5\sigma^2/(\sigma^2 + 0.33)$ and $B = 0.45\sigma^2/(\sigma^2 + 0.09)$.
+
+- **Roughness units.** The lobe's roughness register holds $\sigma$, the
+  standard deviation of the facet slope angle, in radians. It is not perceptual
+  roughness. Evaluators clamp it to $[0, 1]$ radians, about 57°. $\sigma = 0$
+  is exactly Lambertian.
+- **Evaluation.** Both interpreters use the vector form
+  $\max(0, l \cdot v - (n \cdot l)(n \cdot v)) / \max(n \cdot l, n \cdot v)$
+  for the azimuthal term, in the same arithmetic order. The model is reciprocal.
+- **Proposal density.** The lobe samples the cosine-weighted hemisphere, with
+  density $\cos\theta_i / \pi$ in solid angle. Its sampler consumes the
+  mixture's three uniform values, so the lobe offers continuous reflection and
+  the fixed three-value sampler. A program of it satisfies the fixed-dimension
+  reflection requirement.
+- **Reflectance.** At normal view the hemispherical reflectance is $\rho A$.
+  It stays at most $\rho$ for views up to 60° from the normal. The published
+  model is not energy conserving near grazing view for small $\sigma$: it
+  returns up to about 1.5% more than $\rho$ at $\sigma \approx 0.2$ radians.
+  Ludus keeps the published values and reports this limit rather than
+  renormalizing the lobe.
+
+Scene kernel ABI 19 adds the operation. Rebuild ray graph shader packages; a
+stale package fails with the interface-version reason instead of reading the new
+lobe as another operation.
+
+Pat Hanrahan and Jim Lawson,
+[*A Language for Shading and Lighting Calculations*](https://people.csail.mit.edu/ericchan/bib/pdf/p289-hanrahan.pdf)
+(SIGGRAPH ’90, pp. 289–298), give surface and light shaders distinct roles. The
+surface integrates whatever incident light the renderer supplies. The fixture
+uses that separation: it cooks one program once and changes only the
+renderer-owned lights and the occluders between captures.
+
+The tests check these properties:
+- **CPU oracle.** The lobe matches an independent float64 evaluation of the
+  published angular form at $\sigma$ of 0, 0.2, 0.5 and 1 radian. At zero
+  roughness it equals the typed Diffuse model. Values of $\sigma$ outside the
+  admitted range clamp. An angular sweep fixes a 60° incident direction and
+  compares two 45° outgoing directions. In the light's plane the response
+  includes the $B$ term; across it only $A$ remains. A quadrature over
+  $\sigma \in [0, 1]$ checks reciprocity, the reflectance bounds and the
+  normal-view value $A$. Every proposal is accepted, and its density equals
+  the evaluated density $\cos\theta_i / \pi$. The sampled reflectance agrees
+  with the integrated reflectance.
+- **Two directional lights.** A board with the lobe is lit by two
+  independently switchable directional lights with distinct colours and
+  directions. An orthographic camera sees it with one direct-light bounce. The
+  CPU oracle and the GPU reference capture each light alone and both together.
+  With one light, every pixel equals the analytic response at the renderer's
+  world-space directions, within a relative 1e-4. With both, the region means
+  equal the linear sum. A strip beyond the camera's view then shadows the first
+  light only. Its shadowed pixels are black under the first light, keep the
+  second light's response, and the two-light mean drops to the second light
+  alone. A depth-4 capture with a sky follows the declared density through
+  continuation. Every capture meets the matched raw-radiance bounds of the
+  typed-material parity case.
+- **General graph.** The Wave Tracing graph renders the lobe through the
+  transport interface with unchanged source. At normal incidence its
+  geometric-optics export equals $A$ times the Lambertian control's.
+- **Restricted estimator.** The Rao-Blackwellized Metropolis graph admits the
+  program under the fixed-dimension requirement and completes its capture.
+
+The project-owned provider path is not yet covered. Registration through the
+installed SDK, capture from a saved World in the Editor and in a packaged
+standalone app, and the unavailable-provider diagnostic remain for
+[#1310](https://github.com/The-Ludus-Project/Ludus/issues/1310).
 
 ### Preparation and publication
 
@@ -1876,7 +1956,12 @@ dielectric coating over a conductor substrate.
    authored on the shared closure evaluator as an ordered dielectric varnish
    over a diffuse wood substrate (`materials/varnished-wood-panel.luscene.json`,
    the varnished-wood cook check), with a black companion patch for the coat
-   response on its own. World also authors the layered material directly from a
+   response on its own. A project
+   [Oren–Nayar lobe](#project-oren-nayar-lobe-under-renderer-owned-lights)
+   has paired CPU and GPU reference implementations. It is qualified under
+   two renderer-owned directional lights and a shadowing blocker, and the
+   general and restricted graphs accept it with unchanged source. Its
+   project-owned provider path through the installed SDK remains open. World also authors the layered material directly from a
    slot with **Make Coated Diffuse…**: a created coated-diffuse material (its
    base colour the substrate, typed coat alpha, IOR and thickness the coat),
    edited through the Material document's shared instance, per-slot override,
