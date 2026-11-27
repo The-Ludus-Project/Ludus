@@ -99,6 +99,13 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
         isGrainMix = true;
         grainMask = GENERATE(0.0F, 1.0F, INTERIOR_GRAIN_MASK);
     }
+    bool isOrenNayar = false;
+    SECTION("A project Oren-Nayar lobe declares fixed-dimension reflection")
+    {
+        hasSurface = true;
+        model = format::MaterialModel::Program;
+        isOrenNayar = true;
+    }
     SECTION("A project BRDF without the guarantee fails the material requirement")
     {
         hasSurface = true;
@@ -149,6 +156,12 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
         material.BaseColor = {grainMask, grainMask, grainMask};
         material.Roughness = ludus::renderer_tests::GRAIN_MIX_ROUGHNESS;
         material.Program = ludus::renderer_tests::MakeGrainMixProgram();
+        REQUIRE(format::SupportsFixedDimensionReflection(material.Scattering, material.Program) == true);
+    }
+    if (isOrenNayar == true)
+    {
+        // The same cooked program the reference parity case renders; the restricted estimator checks its guarantee.
+        material.Program = ludus::renderer_tests::MakeOrenNayarProgram(ludus::renderer_tests::OREN_NAYAR_SIGMA_RADIANS);
         REQUIRE(format::SupportsFixedDimensionReflection(material.Scattering, material.Program) == true);
     }
     if (model == format::MaterialModel::ProjectBrdf)

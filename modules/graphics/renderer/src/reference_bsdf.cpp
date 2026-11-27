@@ -365,12 +365,39 @@ struct ProgramMixture final
         mixture.Weights[lobe] = {math::Max(weight.X, 0.0F), math::Max(weight.Y, 0.0F), math::Max(weight.Z, 0.0F)};
         mixture.Selection[lobe] = (mixture.Weights[lobe].X + mixture.Weights[lobe].Y + mixture.Weights[lobe].Z) /
                                   static_cast<float32>(format::MATERIAL_RGB_CHANNELS);
-        mixture.Roughness[lobe] = source.RoughnessRegister == format::NO_MATERIAL_PROGRAM_REGISTER
-                                      ? 1.0F
-                                      : math::Clamp(registers[source.RoughnessRegister].X, format::MIN_ROUGHNESS, 1.0F);
+        if (source.RoughnessRegister == format::NO_MATERIAL_PROGRAM_REGISTER)
+        {
+            mixture.Roughness[lobe] = 1;
+        }
+        else if (source.Operation == format::MaterialLobeOperation::OrenNayar)
+        {
+            mixture.Roughness[lobe] =
+                math::Clamp(registers[source.RoughnessRegister].X, 0.0F, format::MAX_OREN_NAYAR_SIGMA_RADIANS);
+        }
+        else
+        {
+            mixture.Roughness[lobe] = math::Clamp(registers[source.RoughnessRegister].X, format::MIN_ROUGHNESS, 1.0F);
+        }
         mixture.SelectionTotal += mixture.Selection[lobe];
     }
     return mixture;
+}
+/// Qualitative Oren-Nayar value without its weight for facet-slope deviation sigma in radians. Thanks to Michael Oren
+/// and Shree K. Nayar, "Generalization of Lambert's Reflectance Model", SIGGRAPH '94, pp. 239-246, the qualitative
+/// model, https://people.computing.clemson.edu/~ekp/courses/dpa8090/assets/papers/OrenNayar1994.pdf. The product max(0,
+/// cos(phi_i - phi_o)) sin(alpha) tan(beta) is evaluated without trigonometry as max(0, l.v - (n.l)(n.v)) divided by
+/// the larger of the two cosines: the dot product is sin(theta_i) sin(theta_o) cos(phi_i - phi_o), and the larger
+/// cosine belongs to the smaller polar angle beta. material_program.slang evaluates the same operations.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): sigma, the view-light cosine, then the two polar cosines.
+[[nodiscard]] float32 EvaluateOrenNayar(float32 sigma, float32 viewLightCosine, float32 nv, float32 nl) noexcept
+{
+    const float32 sigmaSquared = sigma * sigma;
+    const float32 a = 1 - format::LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_A_SCALE * sigmaSquared /
+                              (sigmaSquared + format::LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_A_OFFSET);
+    const float32 b = format::LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_B_SCALE * sigmaSquared /
+                      (sigmaSquared + format::LUDUS_MATERIAL_PROGRAM_OREN_NAYAR_B_OFFSET);
+    const float32 tangentCosine = math::Max(0.0F, viewLightCosine - nl * nv);
+    return (a + b * tangentCosine / math::Max(nl, nv)) / math::kPiF;
 }
 /// One lobe's value without its weight, and its own solid-angle density.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters): normal, view and light directions, then their cosines,
@@ -387,6 +414,11 @@ struct ProgramMixture final
     if (lobe.Operation == format::MaterialLobeOperation::Diffuse)
     {
         const float32 value = 1 / math::kPiF;
+        return {{value, value, value}, nl / math::kPiF};
+    }
+    if (lobe.Operation == format::MaterialLobeOperation::OrenNayar)
+    {
+        const float32 value = EvaluateOrenNayar(roughness, math::Dot(v, l), nv, nl);
         return {{value, value, value}, nl / math::kPiF};
     }
     if (lobe.Operation == format::MaterialLobeOperation::Conductor)
@@ -468,7 +500,9 @@ struct ProgramMixture final
     }
     const format::MaterialProgramLobe& lobe = program.Lobes[selected];
     const float32 roughness = mixture.Roughness[selected];
-    if (lobe.Operation == format::MaterialLobeOperation::Diffuse)
+    // Oren-Nayar declares the cosine-weighted proposal of the Lambertian lobe.
+    if (lobe.Operation == format::MaterialLobeOperation::Diffuse ||
+        lobe.Operation == format::MaterialLobeOperation::OrenNayar)
     {
         return frame.World({diskX, diskY, math::Sqrt(math::Max(0.0F, 1 - sample.Y))});
     }

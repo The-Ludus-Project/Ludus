@@ -65,6 +65,8 @@ QString DescribeProgramLobe(const format::MaterialProgramLobe& lobe)
             return QStringLiteral("Conductor (η %1; k %2)").arg(FormatRgb(lobe.Eta), FormatRgb(lobe.K));
         case format::MaterialLobeOperation::CosinePower:
             return QStringLiteral("Cosine power %1").arg(FormatScalar(lobe.Power));
+        case format::MaterialLobeOperation::OrenNayar:
+            return QStringLiteral("Oren–Nayar diffuse (σ in radians)");
         case format::MaterialLobeOperation::None:
             break;
     }

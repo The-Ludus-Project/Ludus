@@ -161,6 +161,21 @@ TEST_CASE("Closure programs validate every operand, slot and parameter", "[scene
     CHECK(format::IsMaterialProgramValid(program) == true);
     program.Lobes[1].Power = format::LUDUS_PROJECT_BRDF_MAX_POWER + 1;
     CHECK(format::IsMaterialProgramValid(program) == false);
+    // Oren-Nayar reads its sigma register and no conductor or cosine-power parameter.
+    program = valid;
+    program.Lobes[1].Operation = format::MaterialLobeOperation::OrenNayar;
+    CHECK(format::IsMaterialProgramValid(program) == false);
+    program.Lobes[1].Eta = {};
+    program.Lobes[1].K = {};
+    CHECK(format::IsMaterialProgramValid(program) == true);
+    CHECK(format::GetMaterialProgramCapabilities(program) ==
+          (format::LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION |
+           format::LUDUS_MATERIAL_CAPABILITY_FIXED_DIMENSION_SAMPLER));
+    program.Lobes[1].Power = 1;
+    CHECK(format::IsMaterialProgramValid(program) == false);
+    program.Lobes[1].Power = 0;
+    program.Lobes[1].RoughnessRegister = format::NO_MATERIAL_PROGRAM_REGISTER;
+    CHECK(format::IsMaterialProgramValid(program) == false);
     program = valid;
     program.Lobes[2].WeightRegister = 1;
     CHECK(format::IsMaterialProgramValid(program) == false);

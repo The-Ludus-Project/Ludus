@@ -251,6 +251,42 @@ TEST_CASE("Scene source compiles closure programs into bounded register code", "
     }
 }
 
+TEST_CASE("Scene source reads an Oren-Nayar lobe whose roughness is sigma in radians", "[scene-source][program]")
+{
+    namespace format = ludus::content::scene_format;
+    constexpr std::string_view MATERIAL = R"("name": "Wall", "model": "diffuse")";
+    const std::string text = ReplaceInValid(MATERIAL, R"("name":"Wall","model":"program","program":{"version":1,
+          "parameters":[{"name":"albedo","input":"base_color"},{"name":"sigma","constant":0.5}],
+          "lobes":[{"operation":"oren_nayar","weight":"albedo","roughness":"sigma"}]})");
+    SceneSource scene;
+    SceneSourceError error;
+    const SceneSourceStatus status = ParseSceneSource(text, scene, error);
+    INFO(error.Message.View());
+    REQUIRE(status == SceneSourceStatus::Success);
+    const format::MaterialProgram& program = scene.Materials[0].Program;
+    REQUIRE(format::IsMaterialProgramValid(program) == true);
+    REQUIRE(program.LobeCount == 1);
+    CHECK(program.Lobes[0].Operation == format::MaterialLobeOperation::OrenNayar);
+    REQUIRE(program.Lobes[0].RoughnessRegister < format::MAX_MATERIAL_PROGRAM_REGISTERS);
+    CHECK(program.Constants[0][0] == 0.5F);
+    CHECK(format::SupportsFixedDimensionReflection({ .Model = format::MaterialModel::Program }, program) == true);
+    // Sigma is required, and the conductor and cosine-power parameters do not apply.
+    const auto lobe = [MATERIAL](std::string_view body) {
+        return ReplaceInValid(MATERIAL,
+                              std::string(R"("name":"P","model":"program","program":{"version":1,"lobes":[)") +
+                                  std::string(body) + "]}");
+    };
+    RequireFailure(lobe(R"({"operation":"oren_nayar","weight":1})"),
+                   SceneSourceStatus::InvalidValue,
+                   "program.lobes[0].roughness: is required");
+    RequireFailure(lobe(R"({"operation":"oren_nayar","weight":1,"roughness":0.2,"power":4})"),
+                   SceneSourceStatus::InvalidValue,
+                   "program.lobes[0].power: does not apply");
+    RequireFailure(lobe(R"({"operation":"oren","weight":1})"),
+                   SceneSourceStatus::InvalidValue,
+                   "cosine_power or oren_nayar");
+}
+
 TEST_CASE("Scene source shares equal inline constants between lobes", "[scene-source][program]")
 {
     namespace format = ludus::content::scene_format;

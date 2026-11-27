@@ -21,11 +21,11 @@
 #define LUDUS_GPU_PREVIEW_LUMINAIRE_WORDS 4
 // Word of a luminaire record holding beam steering, spread and twist.
 #define LUDUS_GPU_PREVIEW_LUMINAIRE_BEAM_WORD 3
-// 18: the camera matrix maps clip to eye-relative world (ClipToEye); 17: optional RT1 camera sky; 16: an RT1
-// reference medium (renderer_reference_layout.h); 15: closure programs after the environment; 12: panel luminaires
-// after the lights; 9: emitter bounds after the emitter records; 8: BVH leaf order in order word Z, beside native
-// opacity ranges in X.
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 18
+// 19: the Oren-Nayar closure-program lobe; 18: the camera matrix maps clip to eye-relative world (ClipToEye); 17:
+// optional RT1 camera sky; 16: an RT1 reference medium (renderer_reference_layout.h); 15: closure programs after the
+// environment; 12: panel luminaires after the lights; 9: emitter bounds after the emitter records; 8: BVH leaf order
+// in order word Z, beside native opacity ranges in X.
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 19
 // Closure programs (material_program.h) follow the environment. Each has a header word (instruction, lobe and
 // constant counts in X, Y and Z bits), its constants, one word per instruction (opcode, destination and operand A
 // bits, then operands B | C << PROGRAM_OPERAND_SHIFT), then PROGRAM_LOBE_WORDS per lobe: (operation, weight and
