@@ -1148,6 +1148,35 @@ an unavailable state. If a saved sidecar predates scope mappings, recook the
 original build generation and check that the cooked package SHA-256 is the same.
 Supply additional saved revisions with repeated `--plan`.
 
+The World viewport records each authored raster operation in its own scope,
+so its samples never report a group. Merged groups need renderer pass merging,
+which the [RG4 optimization gates](../architecture/render-graph-authoring.md#delivery-optimization-gates-and-acceptance)
+keep separate from this lookup.
+
+To produce a real recording with repeated pass names on macOS, run the hidden
+`[.profiling-gpu]` case **World graph GPU scopes resolve same-named instances
+through each frame's cooked plan** from `ludus_editor_tests`, with
+`LUDUS_EDITOR_PROFILING_CAPTURE` set to an output prefix. It splits the default
+graph's depth prepass into its own subgraph instance, so `Main/prepass/draw`
+and `Main/raster/draw` share the pass name `draw`. A third instance,
+`Main/unused/draw`, writes a target nothing reads and is culled. The case
+recooks the graph with another tone-map exposure during the recording. It saves
+the trace as `<prefix>-instances.json` and each revision's sidecar as
+`<prefix>-<runtime SHA-256>.resources.json`. The case needs the pinned shader
+tools that `./init.sh --with-tests --with-editor` prepares:
+
+```bash
+QT_QPA_PLATFORM=offscreen LUDUS_EDITOR_PROFILING_CAPTURE=out/instances out/build/macos-clang-development/apps/editor/ludus_editor_tests "World graph GPU scopes resolve same-named instances through each frame's cooked plan"
+```
+
+Pass both sidecars to the lookup: frames before the recook resolve through the
+first plan, later frames through the second. A reverse lookup of
+`Main/prepass/draw` and of `Main/raster/draw` returns separate samples, and the
+raster instance can report several `scope_pass_index` values in one frame
+because its scope encloses each physical pass it records. `Main/unused/draw`
+reports `operation_not_in_plan`. Omit one sidecar to see that revision's frames
+reported as `plan_unavailable`.
+
 For the Metal [installed-SDK skylight fixture](render-graph-authoring.md#sky-visibility),
 save the standard output of `skylight timing open` and pass it with
 `--sdk-timing` in place of `--editor-trace`. Use the sidecar for the exact
