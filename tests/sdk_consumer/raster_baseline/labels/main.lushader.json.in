@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "id": "LabelBaselineBuild",
+  "id": "RendererStaticBuild",
   "profiles": @RG2_TEST_PROFILES@,
   "schemas": [
     {
