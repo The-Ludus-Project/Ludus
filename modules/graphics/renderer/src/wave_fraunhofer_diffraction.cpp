@@ -190,8 +190,8 @@ struct EdgeAccumulation final
     /// Some segment bounds the obstacle.
     bool HasBoundary = false;
 };
-/// Walk the edge, clipped to the envelope radius, outwards from its stationary point and add each segment that
-/// `classify` places on the obstacle boundary.
+/// Walk the edge, clipped to the envelope cone's radius at the edge's deeper end, outwards from its stationary point
+/// and add each segment that `classify` places on the obstacle boundary.
 template <typename Classify>
 rhi::RasterStatus AccumulateEdge(const EdgeLine& line,
                                  const FraunhoferBeam& beam,
@@ -200,7 +200,11 @@ rhi::RasterStatus AccumulateEdge(const EdgeLine& line,
                                  EdgeAccumulation& outAccumulation) noexcept
 {
     outAccumulation = {};
-    const float64 envelopeRadiusWorld = LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * math::Sqrt(2 * beam.SigmaWorldSquared);
+    // The cone's radius at the deeper end is its largest over the edge, so the clip encloses the envelope at every
+    // point of the edge.
+    const float64 envelopeRadiusWorld = ComputeWaveEnvelopeRadius(
+        MakeWaveEnvelope({ .SigmaWorldSquared = beam.SigmaWorldSquared, .DistanceWorld = beam.DistanceWorld }),
+        math::Max(line.BeginDepthWorld, line.EndDepthWorld));
     const float64 chordSquaredWorld = envelopeRadiusWorld * envelopeRadiusWorld - line.OffsetWorld * line.OffsetWorld;
     if (chordSquaredWorld <= 0)
     {

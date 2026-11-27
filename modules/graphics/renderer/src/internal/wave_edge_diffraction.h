@@ -25,8 +25,10 @@ struct WaveEdgeConnection final
     float64 WavelengthWorld = 0;
     /// Sigma^2 = distance / wavenumber of the connection's Gaussian beam, in square metres.
     float64 SigmaWorldSquared = 0;
-    /// Radius around the axis beyond which the Gaussian envelope ignores geometry.
+    /// Radius of the envelope cone (MakeWaveEnvelope) at SourceWorld, beyond which the connection ignores geometry.
     float64 EnvelopeRadiusWorld = 0;
+    /// Growth of the envelope radius per metre of depth from SourceWorld along DirectionWorld.
+    float64 EnvelopeSlope = 0;
     /// Span at each endpoint whose own surface geometry is not diffracted.
     float64 EndpointEscapeWorld = 0;
     /// Coordinate rounding scale of the connection, for offsets that must stay resolvable.
@@ -122,7 +124,7 @@ struct UtdEdgeField final
                                                 float64 wavelengthWorld) noexcept;
 /// UTD connection through the current scene: the ballistic field (one when the straight segment is clear,
 /// otherwise zero) plus the coherent single-diffraction fields of scene edges whose diffraction points lie in
-/// the connection's Gaussian envelope. Fields are relative to the unobstructed free-space field. Accepts the
+/// the connection's envelope cone. Fields are relative to the unobstructed free-space field. Accepts the
 /// same inputs as EvaluateWaveConnectionToReceiver and fails the same way: invalid input returns
 /// InvalidDescription, a full interaction region CapacityExceeded and too many regions or escape attempts
 /// Unsupported. Failure preserves outField. No allocation or shared state.

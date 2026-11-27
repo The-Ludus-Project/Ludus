@@ -31,8 +31,8 @@ enum WaveConnectionOperator : uint
         return status;
     float wavenumber = 2 * PI / wavelengthWorld;
     float sigmaWorldSquared = distanceWorld / wavenumber;
-    // The same Gaussian envelope as the angular-spectrum operator bounds which edges this connection sees.
-    float halfWidthWorld = LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * sqrt(2 * sigmaWorldSquared);
+    // The same envelope cone as the angular-spectrum operator bounds which edges this connection sees.
+    WaveEnvelope envelope = MakeWaveEnvelope(sigmaWorldSquared, distanceWorld);
     float3 axisXWorld = MakeWaveConnectionAxis(chain.DirectionWorld[0]);
     float handedness = 1;
     // Single diffraction along the chain: every leg's ballistic field, plus one leg's diffracted field with the other
@@ -58,12 +58,7 @@ enum WaveConnectionOperator : uint
         // Inside both endpoint escapes: the caller's own path traced this leg clear, and nothing diffracts.
         if (2 * endpointEscapeWorld >= legLengthWorld)
             continue;
-        EllipticalCone cone = (EllipticalCone)0;
-        cone.OriginWorld = beginWorld;
-        cone.DirectionWorld = directionWorld;
-        cone.AxisXWorld = axisXWorld;
-        cone.RadiusWorld = halfWidthWorld;
-        cone.MinorToMajor = 1;
+        EllipticalCone cone = MakeWaveLegEnvelopeCone(envelope, chain, leg, axisXWorld, legStartReducedWorld);
         cone.NearWorld = endpointEscapeWorld;
         cone.FarWorld = legLengthWorld - endpointEscapeWorld;
         bool isBlocked;
@@ -84,7 +79,9 @@ enum WaveConnectionOperator : uint
         connection.DistanceWorld = refractiveIndex * distanceWorld;
         connection.WavelengthWorld = wavelengthWorld / refractiveIndex;
         connection.SigmaWorldSquared = sigmaWorldSquared;
-        connection.EnvelopeRadiusWorld = halfWidthWorld;
+        connection.EnvelopeRadiusWorld = envelope.SourceRadiusWorld;
+        // Virtual depth is the index times reduced depth, so the cone grows by Slope / n per virtual metre.
+        connection.EnvelopeSlope = envelope.Slope / refractiveIndex;
         connection.EndpointEscapeWorld = endpointEscapeWorld;
         connection.RoundoffWorld = roundoffWorld;
         connection.IsBallisticBlocked = isBlocked;
@@ -107,9 +104,12 @@ enum WaveConnectionOperator : uint
         float receiverEscapeWorld = 0;
         if (hasRegions == true)
         {
+            // The cone narrows towards the source: the receiver's probe uses a cylinder of the leg's far radius.
             EllipticalCone reverse = cone;
             reverse.OriginWorld = chain.EndWorld[leg];
             reverse.DirectionWorld = -directionWorld;
+            reverse.RadiusWorld = cone.RadiusWorld + cone.Slope * legLengthWorld;
+            reverse.Slope = 0;
             status = EscapeWaveOrigin(scene,
                                       reverse,
                                       wavelengthWorld,
@@ -160,6 +160,7 @@ enum WaveConnectionOperator : uint
                     // Skip geometry that continues straight past the region, as the angular-spectrum operator does.
                     EllipticalCone skip = cone;
                     skip.OriginWorld = beginWorld + directionWorld * cone.NearWorld;
+                    skip.RadiusWorld = cone.RadiusWorld + cone.Slope * cone.NearWorld;
                     skip.FarWorld = cone.FarWorld - cone.NearWorld;
                     skip.NearWorld = min(skip.FarWorld, endpointEscapeWorld);
                     float skippedWorld;

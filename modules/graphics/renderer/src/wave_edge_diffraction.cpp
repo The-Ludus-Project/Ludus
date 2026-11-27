@@ -203,8 +203,9 @@ rhi::RasterStatus AddRegionEdgeFields(const ReferenceSceneData& scene,
             const math::Vector3d pointOffsetWorld = diffracted.PointWorld - connection.SourceWorld;
             const float64 axialWorld = math::Dot(pointOffsetWorld, connection.DirectionWorld);
             const math::Vector3d radialWorld = pointOffsetWorld - connection.DirectionWorld * axialWorld;
+            const float64 envelopeRadiusWorld = connection.EnvelopeRadiusWorld + connection.EnvelopeSlope * axialWorld;
             if (axialWorld < region.Frustum.NearWorld || axialWorld > region.Frustum.FarWorld ||
-                math::Dot(radialWorld, radialWorld) > connection.EnvelopeRadiusWorld * connection.EnvelopeRadiusWorld)
+                math::Dot(radialWorld, radialWorld) > envelopeRadiusWorld * envelopeRadiusWorld)
             {
                 continue;
             }
@@ -553,8 +554,9 @@ rhi::RasterStatus EvaluateWaveEdgeChain(const ReferenceSceneData& scene,
     }
     const float64 wavenumber = 2 * math::kPi / wavelengthWorld;
     const float64 sigmaWorldSquared = distanceWorld / wavenumber;
-    // The same Gaussian envelope as the angular-spectrum operator bounds which edges this connection sees.
-    const float64 halfWidthWorld = LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * math::Sqrt(2 * sigmaWorldSquared);
+    // The same envelope cone as the angular-spectrum operator bounds which edges this connection sees.
+    const WaveEnvelope envelope =
+        MakeWaveEnvelope({ .SigmaWorldSquared = sigmaWorldSquared, .DistanceWorld = distanceWorld });
     const float64 coordinateScaleWorld = math::Max(geometricLengthWorld, coordinateMagnitudeWorld);
     const float64 endpointEscapeWorld = math::Max(LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld,
                                                   LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld);
@@ -579,11 +581,7 @@ rhi::RasterStatus EvaluateWaveEdgeChain(const ReferenceSceneData& scene,
             // Inside both endpoint escapes: the caller's own path traced this leg clear, and nothing diffracts.
             continue;
         }
-        math::EllipticalCone cone;
-        cone.OriginWorld = leg.BeginWorld;
-        cone.DirectionWorld = leg.DirectionWorld;
-        cone.AxisXWorld = frames.AxisXWorld[index];
-        cone.RadiusWorld = halfWidthWorld;
+        math::EllipticalCone cone = MakeWaveLegEnvelopeCone(envelope, leg, frames.AxisXWorld[index], legStartWorld);
         cone.NearWorld = endpointEscapeWorld;
         cone.FarWorld = leg.LengthWorld - endpointEscapeWorld;
         // Ballistic term: the straight leg between its offset endpoints.
@@ -611,7 +609,9 @@ rhi::RasterStatus EvaluateWaveEdgeChain(const ReferenceSceneData& scene,
             .DistanceWorld = refractiveIndex * distanceWorld,
             .WavelengthWorld = wavelengthWorld / refractiveIndex,
             .SigmaWorldSquared = sigmaWorldSquared,
-            .EnvelopeRadiusWorld = halfWidthWorld,
+            .EnvelopeRadiusWorld = envelope.SourceRadiusWorld,
+            // Virtual depth is the index times reduced depth, so the cone grows by Slope / n per virtual metre.
+            .EnvelopeSlope = envelope.Slope / refractiveIndex,
             .EndpointEscapeWorld = endpointEscapeWorld,
             .RoundoffWorld = LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld,
             .IsBallisticBlocked = isBlocked,
@@ -629,9 +629,12 @@ rhi::RasterStatus EvaluateWaveEdgeChain(const ReferenceSceneData& scene,
         const float64 sourceEscapeWorld = escape.DistanceWorld;
         if (hasRegions == true)
         {
+            // The cone narrows towards the source: the receiver's probe uses a cylinder of the leg's far radius.
             math::EllipticalCone reverse = cone;
             reverse.OriginWorld = leg.EndWorld;
             reverse.DirectionWorld = -leg.DirectionWorld;
+            reverse.RadiusWorld = cone.RadiusWorld + cone.Slope * leg.LengthWorld;
+            reverse.Slope = 0;
             status = EscapeWaveOrigin(scene, reverse, wavelengthWorld, false, escape);
             if (status != rhi::RasterStatus::Ready)
             {
@@ -679,6 +682,7 @@ rhi::RasterStatus EvaluateWaveEdgeChain(const ReferenceSceneData& scene,
                     // Skip geometry that continues straight past the region, as the angular-spectrum operator does.
                     math::EllipticalCone skip = cone;
                     skip.OriginWorld = leg.BeginWorld + leg.DirectionWorld * cone.NearWorld;
+                    skip.RadiusWorld = cone.RadiusWorld + cone.Slope * cone.NearWorld;
                     skip.FarWorld = cone.FarWorld - cone.NearWorld;
                     skip.NearWorld = math::Min(skip.FarWorld, endpointEscapeWorld);
                     status = EscapeWaveOrigin(scene, skip, wavelengthWorld, false, escape);

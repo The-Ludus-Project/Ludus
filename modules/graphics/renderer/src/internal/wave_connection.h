@@ -48,6 +48,34 @@ struct WaveOriginEscape final
     /// The escape cap was reached; the rest of the connection is treated as ballistic.
     bool IsEntirelyBallistic = false;
 };
+/// Declared envelope of a connection's Gaussian mode: a circular cone of Steinberg and Pharr's free-space form
+/// (Section 5.1, Eq. 12), whose major radius grows linearly from the source waist. The mode of reduced length L and
+/// wavenumber k has waist w0 = sqrt(Sigma^2) = sqrt(L / k) and amplitude radius w(z) = w0 * sqrt(1 + (z / L)^2) at
+/// reduced depth z. The cone's footprint is LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * w0 at the source, and its
+/// opening slope is the same number of the mode's far-field divergence w0 / L = 1 / (k * w0). Because
+/// sqrt(1 + t^2) <= 1 + t, the cone encloses that number of amplitude radii at every depth.
+struct WaveEnvelope final
+{
+    /// Major radius at the source waist, in metres.
+    float64 SourceRadiusWorld = 0;
+    /// Growth of the radius per metre of reduced depth: the tangent of the opening half-angle.
+    float64 Slope = 0;
+};
+/// A connection's Gaussian mode: Sigma^2 = DistanceWorld / wavenumber over its reduced length DistanceWorld.
+struct WaveMode final
+{
+    /// Square of the waist w0, in square metres.
+    float64 SigmaWorldSquared = 0;
+    /// Reduced length of the connection, in metres: the mode's Rayleigh range.
+    float64 DistanceWorld = 0;
+};
+/// The envelope of `mode`. Its fields must be positive and finite; the chain evaluators validate them first.
+[[nodiscard]] WaveEnvelope MakeWaveEnvelope(const WaveMode& mode) noexcept;
+/// Envelope radius at reduced depth `depthWorld` from the source, in metres.
+[[nodiscard]] LUDUS_INLINE float64 ComputeWaveEnvelopeRadius(const WaveEnvelope& envelope, float64 depthWorld) noexcept
+{
+    return envelope.SourceRadiusWorld + envelope.Slope * depthWorld;
+}
 /// Trace the zero-radius centre ray of rayCone over [NearWorld, FarWorld], ignoring `excluded`. A covered
 /// triangle blocks the ray. Ready publishes outIsBlocked; a malformed hierarchy returns InvalidDescription.
 [[nodiscard]] rhi::RasterStatus TraceWaveBallistic(const ReferenceSceneData& scene,
@@ -131,6 +159,15 @@ struct WaveConnectionFrames final
 /// transmission that reverses it.
 [[nodiscard]] bool TryMakeWaveConnectionFrames(const WaveConnectionChain& chain,
                                                WaveConnectionFrames& outFrames) noexcept;
+/// The envelope cone of one leg, from leg.BeginWorld along its direction, with zero near and far clips for the caller
+/// to set. The leg starts at reduced depth legStartReducedWorld; its geometric depth advances the reduced depth by
+/// 1 / RefractiveIndex per metre, so the cone's slope is the envelope's divided by the index. The major axis is the
+/// leg's carried frame axis, and the cone stays circular: the scalar mode is circular in every leg, and Section 5.2
+/// keeps a beam's eccentricity across interactions.
+[[nodiscard]] math::EllipticalCone MakeWaveLegEnvelopeCone(const WaveEnvelope& envelope,
+                                                           const WaveConnectionLeg& leg,
+                                                           math::Vector3d axisXWorld,
+                                                           float64 legStartReducedWorld) noexcept;
 /// Coherent angular-spectrum connection relayed through the chain's interface events. The paraxial Gaussian mode of
 /// the reduced length (the sum of each leg's LengthWorld / RefractiveIndex) propagates along the legs in its carried
 /// transverse frame, through the interaction regions of every leg, and is observed on the axis at the receiver.

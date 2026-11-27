@@ -549,3 +549,46 @@ TEST_CASE("Relayed connections reject invalid chains and preserve the field", "[
     CHECK(field.Real == 7);
     CHECK(field.Imaginary == 8);
 }
+
+TEST_CASE("The envelope cone grows from the source waist and continues across glass in reduced depth",
+          "[renderer][wave-relay][wave-cone]")
+{
+    // Declared cone (Steinberg and Pharr, Section 5.1, Eq. 12): footprint 3 * w0 at the source and slope 3 * w0 / L,
+    // with w0 = sqrt(Sigma^2), reaching 6 * w0 at the receiver.
+    constexpr float64 TAIL_DEVIATIONS = 3;
+    constexpr float64 REDUCED_LENGTH_WORLD = 2;
+    constexpr float64 SIGMA_WORLD_SQUARED = REDUCED_LENGTH_WORLD * LATTICE_WAVELENGTH_WORLD / (2 * math::kPi);
+    constexpr float64 ROUNDING_TOLERANCE = 1e-12;
+    const internal::WaveEnvelope envelope =
+        internal::MakeWaveEnvelope({ .SigmaWorldSquared = SIGMA_WORLD_SQUARED, .DistanceWorld = REDUCED_LENGTH_WORLD });
+    const float64 waistWorld = math::Sqrt(SIGMA_WORLD_SQUARED);
+    CHECK(math::Abs(envelope.SourceRadiusWorld - TAIL_DEVIATIONS * waistWorld) < ROUNDING_TOLERANCE);
+    CHECK(math::Abs(internal::ComputeWaveEnvelopeRadius(envelope, REDUCED_LENGTH_WORLD) -
+                    2 * TAIL_DEVIATIONS * waistWorld) < ROUNDING_TOLERANCE);
+    // The cone holds three amplitude radii w(z) = w0 sqrt(1 + (z / L)^2) of the mode at every depth.
+    constexpr int32 DEPTH_STEPS = 16;
+    for (int32 step = 0; step <= DEPTH_STEPS; ++step)
+    {
+        const float64 fraction = static_cast<float64>(step) / DEPTH_STEPS;
+        const float64 amplitudeRadiusWorld = waistWorld * math::Sqrt(1 + fraction * fraction);
+        CHECK(internal::ComputeWaveEnvelopeRadius(envelope, fraction * REDUCED_LENGTH_WORLD) >=
+              TAIL_DEVIATIONS * amplitudeRadiusWorld * (1 - ROUNDING_TOLERANCE));
+    }
+    // A glass leg of index 1.5 that starts 0.5 m into the reduced connection: the cone starts at the envelope's
+    // radius there and grows by the envelope's slope per metre of reduced depth, l / n.
+    constexpr float64 LEG_START_REDUCED_WORLD = 0.5;
+    constexpr float64 LEG_LENGTH_WORLD = 1.2;
+    internal::WaveConnectionChain chain;
+    REQUIRE(internal::TryAppendWaveConnectionLeg(chain, {0, 0, 0}, {0, 0, -LEG_LENGTH_WORLD}, GLASS_INDEX, false) ==
+            true);
+    const math::EllipticalCone cone =
+        internal::MakeWaveLegEnvelopeCone(envelope, chain.Legs[0], {1, 0, 0}, LEG_START_REDUCED_WORLD);
+    CHECK(cone.MinorToMajor == 1);
+    CHECK(math::Abs(cone.RadiusWorld - internal::ComputeWaveEnvelopeRadius(envelope, LEG_START_REDUCED_WORLD)) <
+          ROUNDING_TOLERANCE);
+    CHECK(math::Abs(
+              cone.RadiusWorld + cone.Slope * LEG_LENGTH_WORLD -
+              internal::ComputeWaveEnvelopeRadius(envelope, LEG_START_REDUCED_WORLD + LEG_LENGTH_WORLD / GLASS_INDEX)) <
+          ROUNDING_TOLERANCE);
+    CHECK(cone.DirectionWorld.Z == -1);
+}

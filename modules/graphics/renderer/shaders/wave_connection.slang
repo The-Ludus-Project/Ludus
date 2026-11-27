@@ -386,6 +386,43 @@ WaveQuery MeasureWaveConnectionChain(WaveConnectionChain chain,
     outRoundoffWorld = LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld;
     return WaveQuery::Ready;
 }
+/// Envelope cone of a connection's Gaussian mode (WaveEnvelope in wave_connection.h): footprint
+/// LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * w0 at the source waist, w0 = sqrt(Sigma^2), growing by the same multiple of
+/// the mode's far-field divergence w0 / L per metre of reduced depth.
+struct WaveEnvelope
+{
+    float SourceRadiusWorld;
+    float Slope;
+};
+WaveEnvelope MakeWaveEnvelope(float sigmaWorldSquared, float distanceWorld)
+{
+    WaveEnvelope envelope;
+    envelope.SourceRadiusWorld = LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * sqrt(sigmaWorldSquared);
+    envelope.Slope = envelope.SourceRadiusWorld / distanceWorld;
+    return envelope;
+}
+/// Envelope radius at reduced depth `depthWorld` from the source.
+float ComputeWaveEnvelopeRadius(WaveEnvelope envelope, float depthWorld)
+{
+    return envelope.SourceRadiusWorld + envelope.Slope * depthWorld;
+}
+/// Envelope cone of the chain's leg `leg`, starting at reduced depth legStartReducedWorld, with zero clips
+/// (MakeWaveLegEnvelopeCone in wave_connection.cpp): the slope per geometric metre is the envelope's over the index.
+EllipticalCone MakeWaveLegEnvelopeCone(WaveEnvelope envelope,
+                                       WaveConnectionChain chain,
+                                       uint leg,
+                                       float3 axisXWorld,
+                                       float legStartReducedWorld)
+{
+    EllipticalCone cone = (EllipticalCone)0;
+    cone.OriginWorld = chain.BeginWorld[leg];
+    cone.DirectionWorld = chain.DirectionWorld[leg];
+    cone.AxisXWorld = axisXWorld;
+    cone.RadiusWorld = ComputeWaveEnvelopeRadius(envelope, legStartReducedWorld);
+    cone.Slope = envelope.Slope / chain.RefractiveIndex[leg];
+    cone.MinorToMajor = 1;
+    return cone;
+}
 /// Coherent angular-spectrum connection relayed through the chain's interface events (EvaluateWaveChainConnection in
 /// wave_connection.cpp): field / unoccluded field of the same chain. Failure preserves the output.
 [noinline] WaveQuery EvaluateWaveChainConnection(SceneContext scene,
@@ -402,6 +439,8 @@ WaveQuery MeasureWaveConnectionChain(WaveConnectionChain chain,
         return measured;
     float wavenumber = 2 * PI / wavelengthWorld;
     float sigmaWorldSquared = distanceWorld / wavenumber;
+    WaveEnvelope envelope = MakeWaveEnvelope(sigmaWorldSquared, distanceWorld);
+    // The periodic lattice holds the mode where it is widest, at the receiver: sqrt(2) * w0 per amplitude radius.
     float halfWidthWorld = LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * sqrt(2 * sigmaWorldSquared);
     float3 axisXWorld = MakeWaveConnectionAxis(chain.DirectionWorld[0]);
     float handedness = 1;
@@ -425,12 +464,7 @@ WaveQuery MeasureWaveConnectionChain(WaveConnectionChain chain,
         // Inside both endpoint escapes: no interaction region is resolvable on this leg.
         if (2 * endpointEscapeWorld >= legLengthWorld)
             continue;
-        EllipticalCone cone = (EllipticalCone)0;
-        cone.OriginWorld = chain.BeginWorld[leg];
-        cone.DirectionWorld = chain.DirectionWorld[leg];
-        cone.AxisXWorld = axisXWorld;
-        cone.RadiusWorld = halfWidthWorld;
-        cone.MinorToMajor = 1;
+        EllipticalCone cone = MakeWaveLegEnvelopeCone(envelope, chain, leg, axisXWorld, legStartReducedWorld);
         cone.NearWorld = endpointEscapeWorld;
         cone.FarWorld = legLengthWorld - cone.NearWorld;
         float sourceEscapeWorld;
@@ -447,9 +481,12 @@ WaveQuery MeasureWaveConnectionChain(WaveConnectionChain chain,
         }
         if (isEntirelyBallistic == true)
             continue;
+        // The cone narrows towards the source: the receiver's probe uses a cylinder of the leg's far radius.
         EllipticalCone reverse = cone;
         reverse.OriginWorld = chain.EndWorld[leg];
         reverse.DirectionWorld = -chain.DirectionWorld[leg];
+        reverse.RadiusWorld = cone.RadiusWorld + cone.Slope * legLengthWorld;
+        reverse.Slope = 0;
         float receiverEscapeWorld;
         escapeStatus = EscapeWaveOrigin(scene,
                                         reverse,
@@ -485,7 +522,8 @@ WaveQuery MeasureWaveConnectionChain(WaveConnectionChain chain,
                 float nearReducedWorld = legStartReducedWorld + region.Frustum.NearWorld / refractiveIndex;
                 float farReducedWorld =
                     max(nearReducedWorld,
-                        min(distanceWorld - endpointEscapeWorld, nearReducedWorld + 2 * halfWidthWorld));
+                        min(distanceWorld - endpointEscapeWorld,
+                            nearReducedWorld + 2 * ComputeWaveEnvelopeRadius(envelope, nearReducedWorld)));
                 screenDistanceWorld = nearReducedWorld * 0.5 + farReducedWorld * 0.5;
             }
             float transmission[LUDUS_WAVE_CONNECTION_CELLS];
@@ -549,6 +587,7 @@ WaveQuery MeasureWaveConnectionChain(WaveConnectionChain chain,
             {
                 EllipticalCone escape = cone;
                 escape.OriginWorld = chain.BeginWorld[leg] + chain.DirectionWorld[leg] * cone.NearWorld;
+                escape.RadiusWorld = cone.RadiusWorld + cone.Slope * cone.NearWorld;
                 escape.FarWorld = cone.FarWorld - cone.NearWorld;
                 escape.NearWorld = min(escape.FarWorld, endpointEscapeWorld);
                 float escapedWorld;
