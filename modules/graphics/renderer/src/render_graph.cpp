@@ -140,6 +140,42 @@ bool IsCompatible(format::Technique technique, const RenderGraphItem& item, cons
            ((item.Coverage == RenderGraphMaterial::Opaque && IsMaskedTechnique(technique) == false) ||
             (item.Coverage == RenderGraphMaterial::Masked && IsMaskedTechnique(technique) == true));
 }
+/// Most raster passes that produce one visibility pair: an opaque and a masked producer.
+constexpr usize MAX_VISIBILITY_PRODUCERS = 2;
+/// Whether a raster pass writes a visibility consumer's identity/depth pair from its camera and stores both aspects.
+bool WritesVisibilityPair(const format::Pass& producer, const format::Pass& consumer) noexcept
+{
+    const format::Technique family = format::GetTechniqueFamily(producer.Program);
+    return (family == format::Technique::ColorAndDepth || family == format::Technique::MaskedColorAndDepth) &&
+           producer.Camera == consumer.Camera && producer.Color == consumer.Visibility &&
+           producer.Depth == consumer.VisibilityDepth && producer.ColorLoad == producer.DepthLoad &&
+           producer.ColorStore == format::Store::Store && producer.DepthStore == format::Store::Store;
+}
+/// Raster passes immediately before a visibility consumer that produce its pair: one Clear producer of either
+/// coverage family, or a Clear producer followed by a Load producer of the other family, so a scene with opaque
+/// and masked items keeps one visible surface per pixel. Zero rejects the plan. The cooker applies the same rule.
+usize CountVisibilityProducers(BorrowedView<const format::Pass> passes, usize consumer) noexcept
+{
+    if (consumer == 0 || consumer >= passes.GetSize() ||
+        WritesVisibilityPair(passes[consumer - 1], passes[consumer]) == false)
+    {
+        return 0;
+    }
+    const format::Pass& last = passes[consumer - 1];
+    if (last.ColorLoad == format::Load::Clear)
+    {
+        return 1;
+    }
+    if (last.ColorLoad != format::Load::Load || consumer < MAX_VISIBILITY_PRODUCERS)
+    {
+        return 0;
+    }
+    const format::Pass& first = passes[consumer - MAX_VISIBILITY_PRODUCERS];
+    return WritesVisibilityPair(first, passes[consumer]) == true && first.ColorLoad == format::Load::Clear &&
+                   IsMaskedTechnique(first.Program) != IsMaskedTechnique(last.Program)
+               ? MAX_VISIBILITY_PRODUCERS
+               : 0;
+}
 Status CheckDevice(rhi::DeviceHandle device) noexcept
 {
     rhi::DeviceInfo information;
@@ -844,11 +880,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
                         return Status::Unsupported;
                     }
                 }
-                else if (format::GetTechniqueFamily(previous.Program) != format::Technique::ColorAndDepth ||
-                         previous.Camera != pass.Camera || previous.Color != pass.Visibility ||
-                         previous.Depth != pass.VisibilityDepth || previous.ColorLoad != format::Load::Clear ||
-                         previous.DepthLoad != format::Load::Clear || previous.ColorStore != format::Store::Store ||
-                         previous.DepthStore != format::Store::Store)
+                else if (CountVisibilityProducers(plan.Passes, passIndex) == 0)
                 {
                     return Status::Unsupported;
                 }
@@ -1995,9 +2027,9 @@ struct RenderGraph::State final
                 Current->IsRayGraphPrepared = false;
                 continue;
             }
-            if (pass + 1 < Header.PassCount && Passes[pass + 1].Program == format::Technique::RayTracing &&
-                Passes[pass + 1].Visibility != format::ABSENT && Passes[pass + 1].Visibility == operation.Color)
+            if (IsVisibilityProducer(pass) == true)
             {
+                // The ray sequence's ordered graph records its producers before the first ray pass.
                 continue;
             }
             if (Execution == RenderGraphExecution::OrderedGraph)
@@ -2053,6 +2085,22 @@ struct RenderGraph::State final
                     : GetContext(operation.Program).DrawView(Current->Views[pass], description);
         }
         return RecordingStatus;
+    }
+    /// Whether a raster pass produces the visibility pair of the ray pass after it or after the next producer.
+    [[nodiscard]] bool IsVisibilityProducer(usize pass) const noexcept
+    {
+        const BorrowedView<const format::Pass> passes{Passes.GetData(), Header.PassCount};
+        for (usize consumer = pass + 1; consumer < Header.PassCount && consumer <= pass + MAX_VISIBILITY_PRODUCERS;
+             ++consumer)
+        {
+            if (Passes[consumer].Program == format::Technique::RayTracing &&
+                Passes[consumer].Visibility != format::ABSENT &&
+                consumer - CountVisibilityProducers(passes, consumer) <= pass)
+            {
+                return true;
+            }
+        }
+        return false;
     }
     /// Whether the cooked plan fits RenderGraphExecution::OrderedGraph: one flat ColorAndDepth pass clearing an
     /// offscreen allocation, outside the forward, deferred, visibility and light-transformer profiles.
@@ -2918,17 +2966,24 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         {
             shaderTextureCount = textureCount;
         }
-        // ValidatePlan pairs later sequence passes with the first pass's raster producer.
+        // ValidatePlan pairs later sequence passes with the first pass's raster producers.
         if (pass.Visibility != format::ABSENT && plan.Passes[index - 1].Program != format::Technique::RayTracing)
         {
             hasVisibility = true;
-            const format::Technique producer = plan.Passes[index - 1].Program;
-            if (GetStage(programs, producer, rhi::ShaderStage::Vertex).Inputs.GetSize() !=
-                    format::VISIBILITY_INPUT_COUNT ||
-                GetStage(programs, producer, rhi::ShaderStage::Vertex).Bindings.IsEmpty() == false ||
-                GetStage(programs, producer, rhi::ShaderStage::Fragment).Bindings.IsEmpty() == false)
+            const usize producerCount = CountVisibilityProducers(plan.Passes, index);
+            for (usize producerIndex = index - producerCount; producerIndex < index; ++producerIndex)
             {
-                return Status::Unsupported;
+                // Only masked coverage reads authored per-draw uniforms; an opaque producer binds nothing.
+                const format::Technique producer = plan.Passes[producerIndex].Program;
+                const bool canBind = IsMaskedTechnique(producer);
+                if (GetStage(programs, producer, rhi::ShaderStage::Vertex).Inputs.GetSize() !=
+                        format::VISIBILITY_INPUT_COUNT ||
+                    (canBind == false &&
+                     (GetStage(programs, producer, rhi::ShaderStage::Vertex).Bindings.IsEmpty() == false ||
+                      GetStage(programs, producer, rhi::ShaderStage::Fragment).Bindings.IsEmpty() == false)))
+                {
+                    return Status::Unsupported;
+                }
             }
         }
     }
@@ -4732,7 +4787,7 @@ Status RenderGraph::PrepareEncoding() noexcept
             continue;
         }
         const format::Pass& operation = state.Passes[pass];
-        // The raster producer precedes the first pass; later passes share its image.
+        // The raster producers precede the first pass; later passes share their image.
         if (operation.Visibility != format::ABSENT && visibilityOrNull == nullptr)
         {
             const format::Pass& producer = state.Passes[pass - 1];
@@ -4743,6 +4798,14 @@ Status RenderGraph::PrepareEncoding() noexcept
             visibility.Attachment.ColorStore = static_cast<rhi::RasterStore>(producer.ColorStore);
             visibility.Attachment.DepthLoad = static_cast<rhi::RasterLoad>(producer.DepthLoad);
             visibility.Attachment.DepthStore = static_cast<rhi::RasterStore>(producer.DepthStore);
+            if (CountVisibilityProducers({state.Passes.GetData(), state.Header.PassCount}, pass) ==
+                MAX_VISIBILITY_PRODUCERS)
+            {
+                // A Load producer adds its family's items to the pair the earlier Clear producer wrote.
+                const usize base = pass - MAX_VISIBILITY_PRODUCERS;
+                visibility.BaseProducerOrNull = &state.GetContext(state.Passes[base].Program);
+                visibility.BaseView = state.Current->Views[base];
+            }
             visibilityOrNull = &visibility;
         }
         // Every pass dispatches the same band in each frame, from a uniform copy prepared for that band.

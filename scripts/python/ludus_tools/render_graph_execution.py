@@ -177,6 +177,7 @@ def lower_plan(package, configuration):
     has_storage_texture = any(operation.get('storage_texture', False) for operation in operations)
     named_texture_count = max((len(operation.get('storage_textures', ())) for operation in operations), default=0)
     ray_colors = {}
+    visibility_producers = {}
     for operation in operations:
         if operation['kind'] == 'Upscale':
             build.require(operation.get('algorithm') in ('bilinear', 'metalfx-spatial'), 'Capability', operation['id'], 'unsupported upscaler')
@@ -207,16 +208,7 @@ def lower_plan(package, configuration):
                                   'Configuration', operation['id'],
                                   'consecutive ray passes must read the same visibility/depth versions using the same view')
                 else:
-                    color_output = producer.get('attachments', {}).get('color', {})
-                    depth_output = producer.get('attachments', {}).get('depth', {})
-                    build.require(producer.get('kind') == 'Raster' and producer.get('material') == 'DefaultOpaque' and
-                                  producer.get('view') == operation['view'] and
-                                  color_output.get('resource') == visibility and depth_output.get('resource') == visibility_depth and
-                                  color_output.get('output_version') == operation['visibility']['input_version'] and
-                                  depth_output.get('output_version') == operation['visibility_depth']['input_version'] and
-                                  all(item.get('load') == 'Clear' and item.get('store') == 'Store' for item in (color_output, depth_output)),
-                                  'Configuration', operation['id'],
-                                  'visibility/depth must come from the immediately preceding opaque Clear/Store raster using the same view')
+                    visibility_producers[operations.index(operation)] = _visibility_producers(operations, operation)
             color = operation['attachments'].get('color')
             sampled_colors = buffers.get_sampled_textures(operation)
             for sampled_color in sampled_colors:
@@ -306,7 +298,8 @@ def lower_plan(package, configuration):
     for index, record in enumerate(pass_records):
         if record.get('Visibility', ABSENT) != ABSENT:
             record['AllowsRepeatedCoverage'] = 1
-            pass_records[index - 1]['AllowsRepeatedCoverage'] = 1
+            for producer in range(visibility_producers.get(index, 1)):
+                pass_records[index - 1 - producer]['AllowsRepeatedCoverage'] = 1
     for operation, record in zip(operations, pass_records):
         record.setdefault('SourceColor', ABSENT)
         record['DenoisingQuality'] = quality.QUALITY_CODES[operation['denoising']['quality']] if 'denoising' in operation else 0
@@ -342,6 +335,55 @@ def lower_plan(package, configuration):
 
 STATIC_INPUTS = [{'location': i, 'format': 'Float3' if i == 0 else 'Float4'} for i in range(6)]
 VISIBILITY_INPUTS = STATIC_INPUTS + [{'location': i, 'format': 'Float2'} for i in (6, 7)]
+
+VISIBILITY_MATERIALS = ('DefaultOpaque', 'DefaultMasked')
+
+
+def _visibility_producers(operations, consumer):
+    """Return how many rasters immediately before consumer write the visibility/depth pair it reads.
+
+    One Clear/Store raster of either material family produces the pair. A Clear/Store raster
+    followed by a Load/Store raster of the other family adds that family's items to the same pair,
+    so a scene with opaque and masked coverage keeps one visible surface per pixel. The renderer
+    records the whole producer chain in the consumer's ordered graph.
+    """
+    index = operations.index(consumer)
+    targets = {'color': consumer['visibility'], 'depth': consumer['visibility_depth']}
+
+    def writes_pair(producer, reads):
+        attachments = producer.get('attachments', {})
+        return (producer.get('kind') == 'Raster' and producer.get('view') == consumer['view'] and
+                all(attachments.get(aspect, {}).get('resource') == targets[aspect]['resource'] and
+                    attachments[aspect].get('output_version') == reads[aspect] and
+                    attachments[aspect].get('store') == 'Store' for aspect in targets))
+
+    producer = operations[index - 1]
+    reads = {aspect: targets[aspect]['input_version'] for aspect in targets}
+    build.require(writes_pair(producer, reads), 'Configuration', consumer['id'],
+                  'visibility/depth must come from the immediately preceding Clear/Store or Load/Store raster that '
+                  'writes both using the same view')
+    build.require(producer.get('material') in VISIBILITY_MATERIALS, 'Configuration', producer['id'],
+                  f'a visibility producer draws DefaultOpaque or DefaultMasked items, not {producer.get("material")}')
+    loads = {producer['attachments'][aspect]['load'] for aspect in targets}
+    if loads == {'Clear'}:
+        return 1
+    earlier = operations[index - 2] if index >= 2 else {}
+    build.require(loads == {'Load'} and earlier.get('kind') == 'Raster', 'Configuration', producer['id'],
+                  f'{producer["id"]} loads the visibility/depth pair that {consumer["id"]} reads; an immediately '
+                  'preceding Clear/Store raster of the other material family must write it')
+    attachments = producer['attachments']
+    reads = {aspect: attachments[aspect]['input_version'] for aspect in targets}
+    build.require(writes_pair(earlier, reads) and
+                  all(earlier['attachments'][aspect]['load'] == 'Clear' for aspect in targets),
+                  'Configuration', producer['id'],
+                  f'{earlier["id"]} must clear and store the visibility/depth pair that {producer["id"]} loads, '
+                  'using the same view')
+    build.require(earlier.get('material') in VISIBILITY_MATERIALS and earlier.get('material') != producer.get('material'),
+                  'Configuration', producer['id'],
+                  f'visibility producers {earlier["id"]} and {producer["id"]} both draw {producer.get("material")} '
+                  'items, so each would be drawn twice; give one DefaultOpaque and the other DefaultMasked')
+    return 2
+
 
 def stage_inputs(item):
     return [{k: v for k, v in x.items() if k != 'name'} for x in item['descriptor']['interface']['inputs']]

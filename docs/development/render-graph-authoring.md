@@ -5315,9 +5315,11 @@ The compute node loads the raster hit and evaluates its material, emission and
 unshadowed directional, point and spot lights. Clear pixels show the World
 environment. Edit `main_shaders/resolve.slang` to change the shading, or wire
 another pass to the library's color, visibility or depth output. Color is linear
-RGBA8Unorm and clamps at one. The producer supports single-sample opaque static
-triangles. The resolve uses the native scene-compute profile and issues zero
-ray queries. Select this template explicitly for a new graph.
+RGBA8Unorm and clamps at one. The template's producer draws single-sample opaque
+static triangles; to add masked coverage, see
+[Masked visibility producers](#masked-visibility-producers). The resolve uses the
+native scene-compute profile and issues zero ray queries. Select this template
+explicitly for a new graph.
 
 Create the same packages through the CLI:
 
@@ -8714,6 +8716,30 @@ fragment, or a masked geometry stage that differs between the masked techniques.
 finite built-in state combinations; these physical PSOs are separate from RG1’s
 authored recipe budget. RG2 makes no scheduling/memory/performance improvement
 claim. Interactive editor adoption, graph editing and reload are RG3.
+
+#### Masked visibility producers
+
+A visibility consumer reads the identity/depth pair that the raster immediately
+before it writes. That producer clears and stores both aspects from the
+consumer's view and may be `DefaultOpaque` or `DefaultMasked`. Masked
+techniques draw only masked items, so a scene with opaque and masked items
+uses two producers: a raster of one family clears and stores the pair, then a
+raster of the other family loads and stores it, immediately before the consumer.
+Each pixel then keeps the nearest fragment that either family's coverage keeps,
+and the consumer reconstructs that surface. Both producers use the visibility
+vertex layout and fragments that call `EncodeVisibility`. The masked producer's
+fragment applies the same coverage function as its depth-only technique and
+reads each item's per-draw uniform values. The
+[masked visibility fixture](../../tests/sdk_consumer/rg2/masked_visibility/main.lurender.json)
+wires an opaque producer, a masked producer that discards by a mesh-space
+threshold, and a software-traversal resolve.
+
+The cooker rejects a Load producer without an immediately preceding Clear
+producer of the pair, and two producers of the same family, which would draw
+each of their items twice; its message names both passes. The renderer applies
+the same rule when it initializes a plan, and records both producers in the
+consumer's ordered graph. The `[visibility][masked]` GPU test renders the
+fixture's two quads and changes one item's threshold through its uniform values.
 
 `test_render_graph_execution` checks lowering, rejection, deterministic header
 publication, profile bounds and the RG1 nested-root/packer-name regressions. It

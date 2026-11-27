@@ -83,6 +83,8 @@ public:
     void Detach(rhi::DeviceHandle device, usize slot) noexcept;
     /// Binding snapshot of a Ready set.
     [[nodiscard]] rhi::BindingSetHandle GetBindings(usize slot) const noexcept;
+    /// Uniform buffer of a Ready set; an ordered graph that binds the set declares its reads of this buffer.
+    [[nodiscard]] rhi::BufferHandle GetBuffer(usize slot) const noexcept;
     /// Destroy every set regardless of references; used when the Renderer resets.
     void Clear(rhi::DeviceHandle device) noexcept;
 

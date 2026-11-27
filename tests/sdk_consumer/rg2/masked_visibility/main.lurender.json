@@ -1,0 +1,209 @@
+{
+  "version": 2,
+  "id": "Main",
+  "default": "Default",
+  "configurations": [
+    {
+      "id": "Default",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "RGBA8Unorm",
+          "id": "visibility",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "Depth32Float",
+          "id": "depth",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "DepthTexture"
+        },
+        {
+          "id": "opaque",
+          "kind": "Raster",
+          "mode": "ColorAndDepth",
+          "vertex_layout": "RendererStatic",
+          "material": "DefaultOpaque",
+          "color_load": "Clear",
+          "color_store": "Store",
+          "depth_load": "Clear",
+          "depth_store": "Store"
+        },
+        {
+          "id": "masked",
+          "kind": "Raster",
+          "mode": "ColorAndDepth",
+          "vertex_layout": "RendererStatic",
+          "material": "DefaultMasked",
+          "color_load": "Load",
+          "color_store": "Store",
+          "depth_load": "Load",
+          "depth_store": "Store"
+        },
+        {
+          "id": "resolve",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "visibility",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "Resolve"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "TriangleLoop"
+          }
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        }
+      ],
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "opaque.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "opaque.view"
+        },
+        {
+          "from": "visibility.texture",
+          "to": "opaque.color"
+        },
+        {
+          "from": "depth.texture",
+          "to": "opaque.depth"
+        },
+        {
+          "from": "scene.scene",
+          "to": "masked.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "masked.view"
+        },
+        {
+          "from": "opaque.color",
+          "to": "masked.color"
+        },
+        {
+          "from": "opaque.depth",
+          "to": "masked.depth"
+        },
+        {
+          "from": "scene.scene",
+          "to": "resolve.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "resolve.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "resolve.color"
+        },
+        {
+          "from": "masked.color",
+          "to": "resolve.visibility"
+        },
+        {
+          "from": "masked.depth",
+          "to": "resolve.depth"
+        },
+        {
+          "from": "resolve.color",
+          "to": "output.texture"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        }
+      ]
+    }
+  ]
+}

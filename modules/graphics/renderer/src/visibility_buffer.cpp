@@ -64,12 +64,17 @@ Status AppendVisibilityCommands(rhi::DeviceHandle device,
     Array<rhi::RasterDraw> draws;
     Array<StaticArray<rhi::RasterVertexSlice, STREAM_COUNT>> slices;
     Array<rhi::GraphUse> uses;
+    const usize uniformBlocks = commands.UniformLayoutOrNull != nullptr ? commands.UniformLayoutOrNull->Count : 0;
     if (draws.TryResize(commands.Draws.GetSize()) == false || slices.TryResize(commands.Draws.GetSize()) == false ||
-        uses.TryEnsureCapacity(commands.Draws.GetSize() * 2 + 2) == false)
+        uses.TryEnsureCapacity(commands.Draws.GetSize() * (2 + uniformBlocks) + 2) == false)
     {
         return Status::OutOfMemory;
     }
-    if (uses.TryAdd({written, rhi::GraphAccessMode::ColorWrite}) == false)
+    // A Load attachment adds this pass's draws to the version an earlier producer wrote.
+    const bool isLoaded = commands.Attachment.ColorLoad == rhi::RasterLoad::Load;
+    if (uses.TryAdd(
+            {written, isLoaded == true ? rhi::GraphAccessMode::ColorReadWrite : rhi::GraphAccessMode::ColorWrite}) ==
+        false)
     {
         return Status::OutOfMemory;
     }
@@ -116,12 +121,44 @@ Status AppendVisibilityCommands(rhi::DeviceHandle device,
                 return Status::OutOfMemory;
             }
         }
+        if (packet.HasUniforms == true && commands.UniformLayoutOrNull == nullptr)
+        {
+            return Status::InvalidDescription;
+        }
+        bool isUniformImported = packet.HasUniforms == false;
+        for (usize earlier = 0; earlier < index && isUniformImported == false; ++earlier)
+        {
+            isUniformImported =
+                commands.Draws[earlier].HasUniforms == true && commands.Draws[earlier].Uniforms == packet.Uniforms;
+        }
+        if (isUniformImported == false)
+        {
+            // Declare each block the draw's binding snapshot reads, at its layout range and stages.
+            rhi::GraphVersion uniforms;
+            result = rhi::ImportGraphBuffer(device, inoutGraph, packet.Uniforms, uniforms);
+            if (result != Status::Ready)
+            {
+                return result;
+            }
+            const FlatUniformLayout& layout = *commands.UniformLayoutOrNull;
+            for (usize block = 0; block < layout.Count; ++block)
+            {
+                if (uses.TryAdd({uniforms,
+                                 rhi::GraphAccessMode::Uniform,
+                                 layout.Offsets[block],
+                                 layout.Bindings[block].MinSize,
+                                 layout.Bindings[block].Visibility}) == false)
+                {
+                    return Status::OutOfMemory;
+                }
+            }
+        }
         slices[index][0] = {packet.Vertices, 0, packet.VertexCount * commands.VertexStride};
         slices[index][1] = {commands.Instances,
                             packet.FirstInstance * commands.InstanceStride,
                             packet.InstanceCount * commands.InstanceStride};
         draws[index] = {commands.Pipeline,
-                        commands.Bindings,
+                        packet.HasUniforms == true ? packet.Bindings : commands.Bindings,
                         {slices[index].GetData(), slices[index].GetSize()},
                         packet.Indices,
                         0,

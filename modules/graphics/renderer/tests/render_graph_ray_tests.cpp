@@ -2358,6 +2358,137 @@ TEST_CASE("Visibility raster IDs reconstruct instance materials and launch secon
     CHECK(fixture.Pixels[rightBottom + 1] == 188);
 }
 
+TEST_CASE("A masked visibility producer adds its covered fragments to an opaque one",
+          "[render-graph][gpu][visibility][masked]")
+{
+    // Software traversal: the resolve issues no ray queries.
+    GraphGpuFixture fixture(false, false);
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_MASKED_VISIBILITY_DIRECTORY, "rg2_masked_visibility.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(programs.HasVisibilityBuffer == true);
+    const renderer::RenderGraphPlan& plan = package->GetPlan();
+    constexpr usize PASS_COUNT = 3;
+    REQUIRE(plan.Passes.GetSize() == PASS_COUNT);
+    CHECK(plan.Passes[0].Program == format::Technique::ColorAndDepth);
+    CHECK(plan.Passes[0].ColorLoad == format::Load::Clear);
+    CHECK(plan.Passes[1].Program == format::Technique::MaskedColorAndDepth);
+    CHECK(plan.Passes[1].ColorLoad == format::Load::Load);
+    CHECK(plan.Passes[2].Visibility == plan.Passes[1].Color);
+    StaticArray<format::Pass, PASS_COUNT> passes{};
+    for (usize i = 0; i < PASS_COUNT; ++i)
+    {
+        passes[i] = plan.Passes[i];
+    }
+    renderer::RenderGraphPlan edited = plan;
+    edited.Passes = {passes.GetData(), passes.GetSize()};
+    bool isRejected = false;
+    SECTION("an opaque Clear producer and a masked Load producer") {}
+    SECTION("two producers of one coverage family are rejected")
+    {
+        isRejected = true;
+        passes[0].Program = passes[1].Program;
+    }
+    SECTION("a Load producer without an earlier Clear producer is rejected")
+    {
+        isRejected = true;
+        passes[0].ColorLoad = format::Load::Load;
+        passes[0].DepthLoad = format::Load::Load;
+    }
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, edited, programs);
+    if (isRejected == true)
+    {
+        CHECK((status == rhi::RasterStatus::Unsupported || status == rhi::RasterStatus::InvalidDescription));
+        return;
+    }
+    const uint64 started = time::NowTicks();
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - started < FIRST_SAMPLE_TIMEOUT_NANOSECONDS)
+    {
+        status = fixture.Graph.Poll();
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    // Two equal quads over the middle of the view: the far one opaque, the near one masked.
+    constexpr usize QUAD_VERTICES = 4;
+    constexpr usize QUAD_INDICES = 6;
+    constexpr float32 FAR_DEPTH = .7F;
+    constexpr float32 NEAR_DEPTH = .3F;
+    const StaticArray<math::Vector3, QUAD_VERTICES> farPositions{
+        {{-.8F, -.6F, FAR_DEPTH}, {.8F, -.6F, FAR_DEPTH}, {-.8F, .6F, FAR_DEPTH}, {.8F, .6F, FAR_DEPTH}}};
+    const StaticArray<math::Vector3, QUAD_VERTICES> nearPositions{
+        {{-.8F, -.6F, NEAR_DEPTH}, {.8F, -.6F, NEAR_DEPTH}, {-.8F, .6F, NEAR_DEPTH}, {.8F, .6F, NEAR_DEPTH}}};
+    const StaticArray<uint32, QUAD_INDICES> indices{{0, 1, 2, 2, 1, 3}};
+    const StaticArray<uint32, 2> slots{{0, 0}};
+    const StaticArray<uint32, 1> farMaterial{{0}};
+    const StaticArray<uint32, 1> nearMaterial{{1}};
+    StaticArray<renderer::RenderGraphMesh, 2> meshes{};
+    meshes[0].Geometry = {farPositions.GetData(), farPositions.GetSize(), indices.GetData(), indices.GetSize()};
+    meshes[0].MaterialSlots = {slots.GetData(), slots.GetSize()};
+    meshes[0].MaterialBindings = {farMaterial.GetData(), farMaterial.GetSize()};
+    meshes[1].Geometry = {nearPositions.GetData(), nearPositions.GetSize(), indices.GetData(), indices.GetSize()};
+    meshes[1].MaterialSlots = {slots.GetData(), slots.GetSize()};
+    meshes[1].MaterialBindings = {nearMaterial.GetData(), nearMaterial.GetSize()};
+    // The plan's one uniform value is the mesh-space coverage threshold; the opaque program ignores it.
+    StaticArray<float32, 1> farThreshold{{0}};
+    StaticArray<float32, 1> nearThreshold{{0}};
+    StaticArray<renderer::RenderGraphItem, 2> items{};
+    items[0].SourceId = 1;
+    items[0].Uniforms = {farThreshold.GetData(), farThreshold.GetSize()};
+    items[1].SourceId = 2;
+    items[1].MeshIndex = 1;
+    items[1].Coverage = renderer::RenderGraphMaterial::Masked;
+    items[1].Uniforms = {nearThreshold.GetData(), nearThreshold.GetSize()};
+    StaticArray<renderer::SceneShaderMaterial, 2> materials{};
+    materials[0].BaseColor = {1, 0, 0};
+    materials[1].BaseColor = {0, 1, 0};
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    fixture.Cameras[0].OrthographicCamera = true;
+    const auto update = [&](uint64 revision) {
+        renderer::RenderGraphReport report;
+        rhi::RasterStatus result = fixture.Graph.Update({meshes.GetData(), meshes.GetSize()},
+                                                        {items.GetData(), items.GetSize()},
+                                                        {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                                        revision,
+                                                        renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                        report,
+                                                        &inputs,
+                                                        revision);
+        const uint64 beginning = time::NowTicks();
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < FRAME_TIMEOUT_NANOSECONDS)
+        {
+            result = fixture.Graph.Poll();
+        }
+        CHECK(report.Conflicting == 0);
+        CHECK(report.Unsupported == 0);
+        return result;
+    };
+    constexpr uint8 FULL = 255;
+    const auto checkColor = [&fixture](usize column, usize row, uint8 red, uint8 green, uint8 blue) {
+        INFO("pixel (" << column << ", " << row << ")");
+        const usize pixel = GetPixel(column, row);
+        CHECK(fixture.Pixels[pixel] == red);
+        CHECK(fixture.Pixels[pixel + 1] == green);
+        CHECK(fixture.Pixels[pixel + 2] == blue);
+    };
+    // Columns 24 and 72 lie left and right of the near quad's mesh-space threshold x = 0; column 2 misses both.
+    constexpr usize LEFT = 24;
+    constexpr usize RIGHT = 72;
+    constexpr usize OUTSIDE = 2;
+    constexpr usize MIDDLE = 32;
+    REQUIRE(update(1) == rhi::RasterStatus::Ready);
+    ReadGraphFrame(fixture);
+    checkColor(LEFT, MIDDLE, FULL, 0, 0);  // The near quad's discarded half shows the far quad.
+    checkColor(RIGHT, MIDDLE, 0, FULL, 0); // Its covered half is nearer.
+    checkColor(OUTSIDE, MIDDLE, 0, 0, FULL);
+    // Each draw's own uniform set drives coverage: a threshold past the quad uncovers the far quad everywhere.
+    nearThreshold[0] = 1;
+    REQUIRE(update(2) == rhi::RasterStatus::Ready);
+    ReadGraphFrame(fixture);
+    checkColor(LEFT, MIDDLE, FULL, 0, 0);
+    checkColor(RIGHT, MIDDLE, FULL, 0, 0);
+}
+
 TEST_CASE("One visibility raster feeds every pass of an ordered ray sequence",
           "[render-graph][gpu][ray-history][visibility]")
 {

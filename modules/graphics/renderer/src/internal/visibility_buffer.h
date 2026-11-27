@@ -5,6 +5,8 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/rhi/graph.h>
 
+#include "uniform_set_table.h"
+
 namespace ludus::graphics::renderer::internal
 {
 /// Private portable visibility stream: duplicated triangle corners carry exact primitive halves.
@@ -31,6 +33,12 @@ struct VisibilityDraw final
     foundation::usize FirstInstance;
     foundation::uint32 InstanceCount;
     foundation::usize MeshIndex;
+    /// Per-draw uniform binding snapshot, used when HasUniforms is true.
+    rhi::BindingSetHandle Bindings{};
+    /// Buffer that Bindings reads at VisibilityCommands::UniformLayoutOrNull's block ranges.
+    rhi::BufferHandle Uniforms{};
+    /// True when the draw binds Bindings and reads Uniforms; false draws with VisibilityCommands::Bindings.
+    bool HasUniforms = false;
 };
 /// Synchronous graph-append inputs; borrowed resources become graph-retained on success.
 /// The defaulted tail selects the visibility producer; the flat opaque raster pilot overrides it.
@@ -49,10 +57,12 @@ struct VisibilityCommands final
     const char* Name = "Visibility raster";
     /// Clear alpha to zero, the visibility codec's background; false keeps Attachment.Clear.
     bool ShouldClearTransparent = true;
+    /// Flat uniform layout whose block ranges each draw's Uniforms buffer is read at; null when no draw reads one.
+    const FlatUniformLayout* UniformLayoutOrNull = nullptr;
 };
-/// Append one ordered raster producer of a whole new attachment version; partial failure requires
-/// discarding the caller's graph. outWritten is preserved on failure. Caller validates the view's
-/// opaque, unbound packet ABI and an attachment that clears color, so the pass writes no prior contents.
+/// Append one ordered raster producer of a new attachment version; partial failure requires discarding the
+/// caller's graph. outWritten is preserved on failure. Caller validates the view's packet ABI. An attachment
+/// that clears color writes no prior contents; one that loads color and depth reads previous and adds to it.
 [[nodiscard]] rhi::RasterStatus AppendVisibilityCommands(rhi::DeviceHandle device,
                                                          rhi::OrderedGraph& inoutGraph,
                                                          const VisibilityCommands& commands,
