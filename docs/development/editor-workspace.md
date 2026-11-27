@@ -907,6 +907,58 @@ wide as the screen, is refused in Properties with the field to change. An apertu
 draws its own screen, so it cannot share an entity with Renderable, Terrain or
 imported geometry. Like the other presets, apertures need a default World.
 
+### Absorbing media
+
+An absorbing medium is an invisible box of homogeneous absorber, such as tinted
+water or ink, that RT1 reference captures attenuate light through. Choose **Add
+World Preset → Absorbing Medium** to create a 1 m box at the origin. Select the
+entity and edit the **Absorbing Medium** component in Properties, then **Apply
+Changes**:
+
+- **Width**, **Height** and **Depth** (m) size the box along its local X, Y and Z
+  axes. The box is centred on the entity, and its Transform moves, turns and
+  scales it.
+- **Absorption R**, **G** and **B** (1/m) are the linear Rec. 709 absorption
+  coefficient σ<sub>a</sub> of each channel, from 0 to 10000 per metre. Light
+  crossing a length *d* inside keeps exp(−σ<sub>a</sub> *d*) of the channel; 0 is
+  vacuum. The defaults, 0.5, 1 and 2, match the
+  [installed-SDK sample's medium](../examples/reference-scene.md#absorbing-medium-capture).
+
+Below the fields, Properties shows each channel's **attenuation distance**,
+1/σ<sub>a</sub>: the length over which the channel falls to 1/e (37%). A zero
+coefficient reads **vacuum (no attenuation)**. It also shows how much of each
+channel crosses the box's shortest side after the Transform scale. Compare the
+distance with the size of the box: a box much shorter than the distance barely
+tints, and one much longer is nearly opaque in that channel. The readout follows
+the fields as you type, before **Apply Changes**. This follows the extinction
+distance control described for Hyperion by Fong, Wrenninge, Kulla and Habel in
+§7.5 of [Production Volume Rendering](https://doi.org/10.1145/3084873.3084907).
+
+Properties refuses an edit that RT1 cannot transport and names the field to
+change. That includes a coefficient outside 0 to 10000, a size that is not
+positive, and a box that reaches more than 1,000,000 m from the origin. A World
+holds one medium, because RT1 transports one medium per capture and does not
+support overlapping or nested media. A second Absorbing Medium preset, a
+duplicate of the medium, and Renderable, Terrain or Aperture components on its
+entity are refused with the repair. Undo, Redo, Save and reopening restore the same
+box and coefficients. **Delete** removes the medium.
+
+The raster viewport and render graphs do not draw the medium, so ordinary
+navigation is unchanged. Select the entity to see the box as an outline, and use
+the Move, Rotate and Scale tools on it like any other entity. To see the medium,
+open **Reference…** and capture with **CPU oracle** or **GPU compute**. A World
+with a medium disables **Native ray queries**, whose tooltip explains why, and
+moves a native selection to GPU compute, or to the CPU oracle without compute. The
+status line notes that a render graph or raster comparison image ignores the
+medium. See [Reference capture of the viewport](#reference-capture-of-the-viewport)
+and the
+[homogeneous absorbing medium reference](../architecture/renderer-systems.md#homogeneous-absorbing-medium-reference).
+A capture freezes the medium with the rest of the scene, and the next capture
+includes an applied edit. Importing a scene source with a
+[`medium_interface` material](../architecture/scene-source-format.md#medium-interface)
+is not supported yet: the import names the material, and the medium can be added
+with this preset instead.
+
 ## Recording CPU and GPU profiling
 
 For a scene-to-package performance check, see
@@ -1095,6 +1147,35 @@ has no matching scope. A skipped measurement or missing recorded plan shows
 an unavailable state. If a saved sidecar predates scope mappings, recook the
 original build generation and check that the cooked package SHA-256 is the same.
 Supply additional saved revisions with repeated `--plan`.
+
+The World viewport records each authored raster operation in its own scope,
+so its samples never report a group. Merged groups need renderer pass merging,
+which the [RG4 optimization gates](../architecture/render-graph-authoring.md#delivery-optimization-gates-and-acceptance)
+keep separate from this lookup.
+
+To produce a real recording with repeated pass names on macOS, run the hidden
+`[.profiling-gpu]` case **World graph GPU scopes resolve same-named instances
+through each frame's cooked plan** from `ludus_editor_tests`, with
+`LUDUS_EDITOR_PROFILING_CAPTURE` set to an output prefix. It splits the default
+graph's depth prepass into its own subgraph instance, so `Main/prepass/draw`
+and `Main/raster/draw` share the pass name `draw`. A third instance,
+`Main/unused/draw`, writes a target nothing reads and is culled. The case
+recooks the graph with another tone-map exposure during the recording. It saves
+the trace as `<prefix>-instances.json` and each revision's sidecar as
+`<prefix>-<runtime SHA-256>.resources.json`. The case needs the pinned shader
+tools that `./init.sh --with-tests --with-editor` prepares:
+
+```bash
+QT_QPA_PLATFORM=offscreen LUDUS_EDITOR_PROFILING_CAPTURE=out/instances out/build/macos-clang-development/apps/editor/ludus_editor_tests "World graph GPU scopes resolve same-named instances through each frame's cooked plan"
+```
+
+Pass both sidecars to the lookup: frames before the recook resolve through the
+first plan, later frames through the second. A reverse lookup of
+`Main/prepass/draw` and of `Main/raster/draw` returns separate samples, and the
+raster instance can report several `scope_pass_index` values in one frame
+because its scope encloses each physical pass it records. `Main/unused/draw`
+reports `operation_not_in_plan`. Omit one sidecar to see that revision's frames
+reported as `plan_unavailable`.
 
 For the Metal [installed-SDK skylight fixture](render-graph-authoring.md#sky-visibility),
 save the standard output of `skylight timing open` and pass it with
@@ -2192,6 +2273,23 @@ keeps both across reopening.
 The raster viewport approximates the surface using base color and roughness.
 The reference paths and Wave Tracing evaluate the authored terms. Metropolis
 also requires the program's fixed-dimension reflection declaration.
+
+The **Project BRDF** list also offers imported
+[closure programs](../architecture/scene-source-format.md#closure-program), so
+a project can provide its own reflection model as material data. For example,
+import `tests/scenes/materials/oren-nayar-provider.luscene.json`, then assign
+`project/oren-nayar`, a rough Oren–Nayar lobe, to a slot of
+`tests/scenes/materials/oren-nayar-two-light-boards.luscene.json`. The other
+board keeps the built-in Diffuse material for comparison. **Project BRDF
+roughness** applies only to version-1 project BRDFs; a program's roughness
+comes from its own parameters. See the
+[provider boundary](../architecture/renderer-systems.md#project-oren-nayar-lobe-under-renderer-owned-lights).
+
+If an assigned project material is no longer in the project catalog, the
+World status names it by its project name and resource ID, along with the
+slot. Import its provider scene again to restore it under the same resource
+ID, or select the slot and choose **Use Inherited Material**. Until a World
+prepares, the viewport keeps the last drawable view.
 
 ### Make a slot a hair card
 
@@ -3404,7 +3502,9 @@ capture runs. It moves without showing a fraction while the scene is prepared,
 then fills as samples per pixel arrive.
 
 The capture uses the scene and camera as they were when you clicked. Later
-navigation or edits do not change it; capture again to include them. The window
+navigation or edits do not change it; capture again to include them. A World's
+[absorbing medium](#absorbing-media) is transported only by the **CPU oracle** and
+**GPU compute** traversals. The window
 shows the image as it fills in, the minimum samples reached per pixel, the number
 of analytic lights and the elapsed time. **Stop** discards the capture. **Save…**
 writes the linear `LUHDR01` capture and, beside it, a PNG with the same base name.

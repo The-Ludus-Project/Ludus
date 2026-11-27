@@ -1,6 +1,7 @@
 #include "internal/builtin_world.h"
 #include "internal/render_scene.h"
 #include "internal/render_scene_limits.h"
+#include "internal/world_absorbing_medium.h"
 #include "internal/world_aperture.h"
 #include "internal/world_document.h"
 #include "internal/world_probe_volume.h"
@@ -312,6 +313,19 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
     {
         outError = QStringLiteral("World object presets require the default World schema.");
         return false;
+    }
+    if (preset == QStringLiteral("Absorbing Medium"))
+    {
+        // A 1 m box at the origin with the schema's default absorption; Validate refuses a second medium.
+        const QString component = GetAbsorbingMediumComponentId();
+        const QString transform = QStringLiteral("transform");
+        return inoutWorld.CreateEntity(entropy,
+                                       outError,
+                                       preset,
+                                       outId,
+                                       QJsonObject{{transform, MakeDefaultValues(inoutWorld, transform)},
+                                                   {component, MakeDefaultValues(inoutWorld, component)}},
+                                       "Add Absorbing Medium");
     }
     if (preset == QStringLiteral("Atmosphere"))
     {

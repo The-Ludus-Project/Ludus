@@ -6,6 +6,7 @@
 #include "internal/reference_capture_window.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
+#include "internal/world_absorbing_medium.h"
 #include "internal/world_document.h"
 
 #include "entropy_fixture.h"
@@ -68,6 +69,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstring>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -719,6 +721,329 @@ TEST_CASE("GPU compute reference capture matches the CPU oracle on the viewport 
                              << compute.Indirect.Z);
     CAPTURE(largest);
     CHECK(largest <= MAXIMUM_DISTANCE);
+}
+
+namespace
+{
+// The installed-SDK reference-scene sample's absorbing-medium fixture (examples/reference-scene/tests/
+// check_medium.py): a unit box of absorber centred at the origin, seen from (0, 0, -3) along +Z with a 0.5 rad
+// vertical field of view. The World here authors the same box and coefficients with World commands; a lit plane
+// behind it replaces the sample's emitter, because a default World authors no emissive surface.
+constexpr float32 MEDIUM_CAMERA_DISTANCE = 3;
+constexpr float32 MEDIUM_VERTICAL_FOV_RADIANS = 0.5F;
+constexpr float32 MEDIUM_NEAR = 0.05F;
+constexpr float32 MEDIUM_FAR = 100;
+/// Sample absorption per metre, and the length of the box along the camera axis.
+const math::Vector3 SAMPLE_ABSORPTION{0.5F, 1, 2};
+constexpr float32 SAMPLE_BOX_LENGTH = 1;
+/// An odd image side gives a centre pixel whose centre ray runs along the box axis.
+constexpr uint32 MEDIUM_LONG_SIDE = 25;
+/// The sample's Beer-Lambert tolerances: relative slack at the centre, and float32 rounding elsewhere.
+constexpr float32 SAMPLE_CENTER_TOLERANCE = 2e-3F;
+constexpr float32 SAMPLE_UNATTENUATED_TOLERANCE = 1e-6F;
+/// Relative CPU/GPU distance of raw means on the medium scene; the GPU repeats the oracle's float32 order.
+constexpr float32 MEDIUM_PARITY_TOLERANCE = 1e-4F;
+
+/// A default World holding a plane facing the camera 2.5 m behind the box, a directional light whose shadow rays
+/// miss the box, and the Absorbing Medium preset with the sample's coefficients. outMediumKey names the medium.
+WorldDocument MakeMediumWorld(QString& outMediumKey)
+{
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument world;
+    REQUIRE(world.LoadSchema(schema, error) == true);
+    REQUIRE(world.New(error) == true);
+    tests::SequentialEntropy entropy;
+    const auto create = [&world, &entropy](const QString& preset, const QJsonObject& transform) {
+        QString key;
+        QString createError;
+        INFO(createError.toStdString());
+        REQUIRE(CreateWorldObject(world, tests::MakeSequentialEntropySource(entropy), preset, key, createError) ==
+                true);
+        QJsonObject components = world.Entity(key).value(QStringLiteral("components")).toObject();
+        QJsonObject values = components.value(QStringLiteral("transform")).toObject();
+        for (QJsonObject::const_iterator value = transform.constBegin(); value != transform.constEnd(); ++value)
+        {
+            values.insert(value.key(), value.value());
+        }
+        components.insert(QStringLiteral("transform"), values);
+        REQUIRE(world.Edit(key, components, world.Entity(key).value(QStringLiteral("name")).toString(), createError) ==
+                true);
+        return key;
+    };
+    // The plane mesh lies in XZ facing +Y; turned -90 degrees about X it lies in XY facing -Z.
+    static_cast<void>(create(QStringLiteral("Plane"),
+                             {{QStringLiteral("z"), 2.5},
+                              {QStringLiteral("rx"), -90},
+                              {QStringLiteral("sx"), 6},
+                              {QStringLiteral("sz"), 6}}));
+    // Light travels along (-0.866, 0, 0.5): the plane's front sees it at 60 degrees and its shadow rays leave the
+    // visible plane toward +X, away from the box.
+    static_cast<void>(create(QStringLiteral("Directional Light"), {{QStringLiteral("ry"), 120}}));
+    outMediumKey = create(QStringLiteral("Absorbing Medium"), {});
+    QJsonObject components = world.Entity(outMediumKey).value(QStringLiteral("components")).toObject();
+    QJsonObject medium = components.value(GetAbsorbingMediumComponentId()).toObject();
+    REQUIRE(medium.value(QStringLiteral("absorptionR")).toDouble() == static_cast<float64>(SAMPLE_ABSORPTION.X));
+    REQUIRE(medium.value(QStringLiteral("absorptionG")).toDouble() == static_cast<float64>(SAMPLE_ABSORPTION.Y));
+    REQUIRE(medium.value(QStringLiteral("absorptionB")).toDouble() == static_cast<float64>(SAMPLE_ABSORPTION.Z));
+    return world;
+}
+
+void SetMediumAbsorption(WorldDocument& inoutWorld, const QString& key, math::Vector3 absorption)
+{
+    QJsonObject components = inoutWorld.Entity(key).value(QStringLiteral("components")).toObject();
+    QJsonObject medium = components.value(GetAbsorbingMediumComponentId()).toObject();
+    medium.insert(QStringLiteral("absorptionR"), static_cast<float64>(absorption.X));
+    medium.insert(QStringLiteral("absorptionG"), static_cast<float64>(absorption.Y));
+    medium.insert(QStringLiteral("absorptionB"), static_cast<float64>(absorption.Z));
+    components.insert(GetAbsorbingMediumComponentId(), medium);
+    QString error;
+    REQUIRE(inoutWorld.Edit(key, components, inoutWorld.Entity(key).value(QStringLiteral("name")).toString(), error) ==
+            true);
+}
+
+RenderScene LoadMediumScene(const WorldDocument& world)
+{
+    QTemporaryDir root;
+    REQUIRE(root.isValid() == true);
+    RenderScene scene;
+    QString error;
+    const bool isLoaded = RenderScene::Load(root.path(), world, scene, error);
+    INFO(error.toStdString());
+    REQUIRE(isLoaded == true);
+    REQUIRE(scene.Lit == true);
+    REQUIRE(scene.Medium.IsPresent() == true);
+    return scene;
+}
+
+/// The sample's pinhole camera at the reference extent.
+renderer::ViewDescription DescribeMediumView(const RenderScene& scene, const QSize& extent)
+{
+    renderer::ViewDescription view;
+    DescribeTestView(scene, extent, view);
+    math::Matrix4 worldToView;
+    math::Matrix4 viewToClip;
+    REQUIRE(math::TryLookAt({0, 0, -MEDIUM_CAMERA_DISTANCE}, {0, 0, 0}, {0, 1, 0}, worldToView) ==
+            math::MathStatus::Success);
+    REQUIRE(math::TryPerspectiveReverseZ(MEDIUM_VERTICAL_FOV_RADIANS, 1, MEDIUM_NEAR, MEDIUM_FAR, viewToClip) ==
+            math::MathStatus::Success);
+    view.WorldToClip = viewToClip * worldToView;
+    view.CameraPosition = {0, 0, -MEDIUM_CAMERA_DISTANCE};
+    view.OrthographicCamera = false;
+    view.Depth = renderer::DepthConvention::ReverseZ;
+    view.InfiniteFar = false;
+    return view;
+}
+
+ViewportReferenceSettings MakeMediumSettings(renderer::ReferenceTraversal traversal)
+{
+    ViewportReferenceSettings settings;
+    settings.LongSide = MEDIUM_LONG_SIDE;
+    settings.Samples = TEST_SAMPLES;
+    // Direct light only: every camera path then crosses the box once and its light paths miss it.
+    settings.MaxDepth = 1;
+    settings.ShouldCenterRays = true;
+    settings.Traversal = traversal;
+    return settings;
+}
+
+bool StartMediumCapture(ViewportReferenceCapture& inoutCapture,
+                        const DeviceFixture& device,
+                        const RenderScene& scene,
+                        renderer::ReferenceTraversal traversal,
+                        QString& outError)
+{
+    const QSize extent(static_cast<int32>(MEDIUM_LONG_SIDE), static_cast<int32>(MEDIUM_LONG_SIDE));
+    return inoutCapture.Start(device.Device,
+                              device.Surface,
+                              scene,
+                              DescribeMediumView(scene, extent),
+                              extent,
+                              MakeMediumSettings(traversal),
+                              outError);
+}
+
+Array<renderer::ReferencePixel> FinishMediumCapture(ViewportReferenceCapture& inoutCapture,
+                                                    renderer::ReferenceTraversal traversal)
+{
+    const ViewportReferencePhase phase = RunToEnd(inoutCapture, GetCaptureTimeoutMilliseconds(traversal));
+    INFO(inoutCapture.GetError().toStdString());
+    REQUIRE(phase == ViewportReferencePhase::Complete);
+    renderer::ReferenceCaptureInfo info;
+    REQUIRE(inoutCapture.GetInfo(info) == true);
+    CHECK(info.Traversal == traversal);
+    CHECK(info.InvalidContributions == 0);
+    Array<renderer::ReferencePixel> pixels;
+    QString error;
+    REQUIRE(inoutCapture.CopyPixels(pixels, error) == true);
+    REQUIRE(pixels.GetSize() == static_cast<usize>(MEDIUM_LONG_SIDE) * MEDIUM_LONG_SIDE);
+    return pixels;
+}
+
+float32 GetChannel(math::Vector3 value, usize channel)
+{
+    return channel == 0 ? value.X : (channel == 1 ? value.Y : value.Z);
+}
+
+/// The sample's acceptance: the centre pixel keeps exp(-sigma_a * length) of the vacuum image and the corners,
+/// whose rays miss the box, keep everything.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the medium capture, then its vacuum reference
+void CheckBeerLambert(const Array<renderer::ReferencePixel>& medium,
+                      const Array<renderer::ReferencePixel>& vacuum,
+                      math::Vector3 absorption)
+{
+    const usize side = MEDIUM_LONG_SIDE;
+    const usize centre = (side / 2) * side + side / 2;
+    for (usize channel = 0; channel < 3; ++channel)
+    {
+        const float32 unattenuated = GetChannel(vacuum[centre].Radiance, channel);
+        REQUIRE(unattenuated > 0);
+        const float32 expected =
+            unattenuated *
+            static_cast<float32>(math::Exp(-static_cast<float64>(GetChannel(absorption, channel) * SAMPLE_BOX_LENGTH)));
+        const float32 measured = GetChannel(medium[centre].Radiance, channel);
+        CAPTURE(channel, measured, expected);
+        CHECK(math::Abs(measured - expected) <= SAMPLE_CENTER_TOLERANCE * expected);
+    }
+    for (const usize corner : {usize{0}, side - 1, side * (side - 1), side * side - 1})
+    {
+        for (usize channel = 0; channel < 3; ++channel)
+        {
+            const float32 unattenuated = GetChannel(vacuum[corner].Radiance, channel);
+            CAPTURE(corner, channel);
+            REQUIRE(unattenuated > 0);
+            CHECK(math::Abs(GetChannel(medium[corner].Radiance, channel) - unattenuated) <=
+                  SAMPLE_UNATTENUATED_TOLERANCE * unattenuated);
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("A World's absorbing medium attenuates the RT1 capture like the installed-SDK sample's fixture",
+          "[editor][reference-capture][gpu][absorbing-medium]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QString key;
+    WorldDocument world = MakeMediumWorld(key);
+    RenderScene scene = LoadMediumScene(world);
+    // The medium is not geometry; the plane is the only object raster and RT1 see.
+    REQUIRE(scene.Objects.size() == 1);
+    const renderer::ReferenceTraversal traversal = renderer::ReferenceTraversal::CpuOracle;
+    ViewportReferenceCapture inFlight;
+    QString error;
+    REQUIRE(StartMediumCapture(inFlight, device, scene, traversal, error) == true);
+
+    // The author makes the box a vacuum while the capture prepares. The workspace publishes the new extraction in
+    // place of the old one; the started capture keeps the scene it froze.
+    SetMediumAbsorption(world, key, {0, 0, 0});
+    scene = LoadMediumScene(world);
+    CHECK(scene.Medium.AbsorptionPerWorld == math::Vector3{0, 0, 0});
+    const Array<renderer::ReferencePixel> ink = FinishMediumCapture(inFlight, traversal);
+
+    // The accepted edit appears in the next capture.
+    ViewportReferenceCapture next;
+    REQUIRE(StartMediumCapture(next, device, scene, traversal, error) == true);
+    const Array<renderer::ReferencePixel> vacuum = FinishMediumCapture(next, traversal);
+    CheckBeerLambert(ink, vacuum, SAMPLE_ABSORPTION);
+
+    // The saved LUHDR records the medium as the sample's captures do: flag 512, absorption and 12 triangles.
+    QByteArray hdr;
+    REQUIRE(inFlight.EncodeHdr(hdr, error) == true);
+    constexpr uint32 LUHDR_MEDIUM_FLAG = 512;
+    constexpr usize LUHDR_MEDIUM_ABSORPTION_OFFSET = 184;
+    constexpr usize LUHDR_MEDIUM_TRIANGLES_OFFSET = 196;
+    REQUIRE(static_cast<usize>(hdr.size()) > LUHDR_HEADER_BYTES);
+    CHECK((qFromLittleEndian<uint32>(hdr.constData() + LUHDR_FLAGS_OFFSET) & LUHDR_MEDIUM_FLAG) != 0);
+    const uint32 redBits = qFromLittleEndian<uint32>(hdr.constData() + LUHDR_MEDIUM_ABSORPTION_OFFSET);
+    float32 red = 0;
+    std::memcpy(&red, &redBits, sizeof(red));
+    CHECK(red == SAMPLE_ABSORPTION.X);
+    CHECK(qFromLittleEndian<uint32>(hdr.constData() + LUHDR_MEDIUM_TRIANGLES_OFFSET) ==
+          static_cast<uint32>(ABSORBING_MEDIUM_BOX_TRIANGLES));
+}
+
+TEST_CASE("GPU compute captures a World's absorbing medium like the CPU oracle",
+          "[editor][reference-capture][gpu][reference-compute][oracle-parity][absorbing-medium]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QString key;
+    WorldDocument world = MakeMediumWorld(key);
+    const RenderScene scene = LoadMediumScene(world);
+    Array<renderer::ReferencePixel> pixels[2];
+    const renderer::ReferenceTraversal traversals[]{renderer::ReferenceTraversal::CpuOracle,
+                                                    renderer::ReferenceTraversal::GpuCompute};
+    for (usize index = 0; index < 2; ++index)
+    {
+        ViewportReferenceCapture capture;
+        QString error;
+        const bool isStarted = StartMediumCapture(capture, device, scene, traversals[index], error);
+        INFO(error.toStdString());
+        if (isStarted == false && traversals[index] == renderer::ReferenceTraversal::GpuCompute)
+        {
+            SKIP("GPU compute is unavailable on this device: " << error.toStdString());
+        }
+        REQUIRE(isStarted == true);
+        pixels[index] = FinishMediumCapture(capture, traversals[index]);
+    }
+    float32 largest = 0;
+    for (usize i = 0; i < pixels[0].GetSize(); ++i)
+    {
+        CHECK(pixels[1][i].Samples == pixels[0][i].Samples);
+        for (usize channel = 0; channel < 3; ++channel)
+        {
+            const float32 oracle = GetChannel(pixels[0][i].Radiance, channel);
+            const float32 compute = GetChannel(pixels[1][i].Radiance, channel);
+            largest = math::Max(largest, math::Abs(compute - oracle) / math::Max(oracle, 1.0F));
+        }
+    }
+    CAPTURE(largest);
+    CHECK(largest <= MEDIUM_PARITY_TOLERANCE);
+}
+
+TEST_CASE("Reference capture of a World with an absorbing medium refuses native ray queries with the repair",
+          "[editor][reference-capture][absorbing-medium]")
+{
+    QString key;
+    const WorldDocument world = MakeMediumWorld(key);
+    const RenderScene scene = LoadMediumScene(world);
+    const QSize extent(static_cast<int32>(MEDIUM_LONG_SIDE), static_cast<int32>(MEDIUM_LONG_SIDE));
+    ViewportReferenceCapture capture;
+    QString error;
+    // Refused before the device is used, so no adapter is needed.
+    CHECK(capture.Start({},
+                        {},
+                        scene,
+                        DescribeMediumView(scene, extent),
+                        extent,
+                        MakeMediumSettings(renderer::ReferenceTraversal::NativeQueries),
+                        error) == false);
+    CHECK(error.contains(QStringLiteral("CPU oracle or GPU compute")) == true);
+    CHECK(error.contains(QStringLiteral("Absorbing Medium")) == true);
+    CHECK(capture.GetPhase() == ViewportReferencePhase::Idle);
+
+    // The capture window offers only the traversals that transport the medium and leaves native ray queries.
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    QComboBox traversal;
+    PopulateReferenceTraversalChoices(traversal, renderer::ReferenceTraversal::NativeQueries);
+    UpdateReferenceTraversalAvailability(traversal, &preview, false);
+    CHECK(traversal.currentIndex() != static_cast<int32>(renderer::ReferenceTraversal::NativeQueries));
+    const QStandardItemModel* modelOrNull = qobject_cast<const QStandardItemModel*>(traversal.model());
+    REQUIRE(modelOrNull != nullptr);
+    const QStandardItem* nativeOrNull =
+        modelOrNull->item(static_cast<int32>(renderer::ReferenceTraversal::NativeQueries));
+    REQUIRE(nativeOrNull != nullptr);
+    CHECK(nativeOrNull->isEnabled() == false);
+    CHECK(nativeOrNull->toolTip().contains(QStringLiteral("Absorbing Medium")) == true);
 }
 
 TEST_CASE("Reference capture window explains a missing viewport device without starting", "[editor][reference-capture]")

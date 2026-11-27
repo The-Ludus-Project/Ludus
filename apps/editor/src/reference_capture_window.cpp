@@ -5,6 +5,7 @@
 #include "internal/inspector_fields.h"
 #include "internal/reference_comparison.h"
 #include "internal/render_preview.h"
+#include "internal/render_scene.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/celestial_time_lapse_window.h"
 #    include "internal/graph_comparison_window.h"
@@ -125,6 +126,15 @@ QString DescribeDisplay(const renderer::ViewDescription& view, const ViewportDis
             : QStringLiteral("graph exposure");
     return QStringLiteral(" Displayed with the viewport's exposure: %1%2, %3.").arg(base, compensation, curve);
 }
+/// A sentence for a capture whose image ignores the World's medium, or empty when the World has none.
+QString DescribeUntransportedMedium(const PreviewMedium& medium)
+{
+    return medium.IsPresent() == true
+               ? QStringLiteral(" Render graph and raster images do not transport the Absorbing Medium '%1'; only "
+                                "the RT1 reference shows it.")
+                     .arg(medium.Name)
+               : QString();
+}
 } // namespace
 
 CaptureProgressView DescribeCaptureProgress(bool isRunning, int32 samples, int32 targetSamples) noexcept
@@ -191,13 +201,23 @@ void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice,
                              graphics::rhi::RasterStatus::Ready;
 #endif
     }
+    // Native ray queries do not transport an absorbing medium, so a World with one offers the other two.
+    const bool hasMedium = previewOrNull != nullptr && previewOrNull->Scene().Medium.IsPresent() == true;
     QStandardItemModel* modelOrNull = qobject_cast<QStandardItemModel*>(inoutChoice.model());
     if (modelOrNull != nullptr)
     {
-        modelOrNull->item(NATIVE_QUERIES_INDEX)->setEnabled(isNativeAvailable);
+        QStandardItem* nativeItem = modelOrNull->item(NATIVE_QUERIES_INDEX);
+        nativeItem->setEnabled(isNativeAvailable == true && hasMedium == false);
+        nativeItem->setToolTip(
+            hasMedium == true
+                ? QStringLiteral("The World's Absorbing Medium '%1' needs the CPU oracle or GPU compute; native ray "
+                                 "queries do not transport media.")
+                      .arg(previewOrNull->Scene().Medium.Name)
+                : QString());
         modelOrNull->item(GPU_COMPUTE_INDEX)->setEnabled(isComputeAvailable);
     }
-    if (shouldSelectDefault == true)
+    // Leaving native ray queries changes only the next capture's setting, so it needs no confirmation.
+    if (shouldSelectDefault == true || (hasMedium == true && inoutChoice.currentIndex() == NATIVE_QUERIES_INDEX))
     {
         inoutChoice.setCurrentIndex(isComputeAvailable == true ? GPU_COMPUTE_INDEX : CPU_ORACLE_INDEX);
     }
@@ -1166,6 +1186,7 @@ bool ReferenceCaptureWindow::startGraphSource()
                    .arg(extent.width())
                    .arg(extent.height())
                    .arg(samples);
+    mMessage += DescribeUntransportedMedium(mPreview->Scene().Medium);
     mProgressTarget = static_cast<int32>(samples);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mDisplay = mGraphCapture.GetDisplayTransform();
@@ -1292,6 +1313,15 @@ bool ReferenceCaptureWindow::StartCapture()
     hasToneMap = mProjectGraph.isNull() == false && mProjectGraph->GetRasterToneMappingExposure() > 0;
 #endif
     mMessage += DescribeDisplay(exposureView, mDisplay, hasToneMap);
+    const PreviewMedium& medium = mPreview->Scene().Medium;
+    if (medium.IsPresent() == true)
+    {
+        mMessage += QStringLiteral(" Transports the Absorbing Medium '%1'.").arg(medium.Name);
+        if (mIsComparing == true)
+        {
+            mMessage += DescribeUntransportedMedium(medium);
+        }
+    }
     mProgressTarget = static_cast<int32>(settings.Samples);
     mProgressSamples = 0;
     mCaptureTimer.start();

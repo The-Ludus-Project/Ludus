@@ -3,6 +3,7 @@
 #include "internal/editor_camera_controller.h"
 #include "internal/qt_numeric_stream.h"
 #include "internal/render_scene_limits.h"
+#include "internal/world_absorbing_medium.h"
 #include "internal/world_aperture.h"
 #include "internal/world_celestial_light.h"
 #include "internal/world_demo_adapter.h"
@@ -11,6 +12,7 @@
 
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_format/luscn.h>
+#include <ludus/content/scene_format/material_program.h>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -180,7 +182,7 @@ void ConvertToConventionalDepth(rr::ViewDescription& inoutView) noexcept
     inoutView.Depth = rr::DepthConvention::Conventional;
     inoutView.InfiniteFar = false;
 }
-/// Carry the authored snapshot's bindings, cameras and luminaires into a composed scene, and fold the authored
+/// Carry the authored snapshot's bindings, cameras, luminaires and medium into a composed scene, and fold the authored
 /// identities into its own so that an authored edit is a new scene.
 void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
 {
@@ -196,6 +198,7 @@ void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
     inoutScene.GiProbeReceiverIds = authored.GiProbeReceiverIds;
     inoutScene.LuminaireBinding = authored.LuminaireBinding;
     inoutScene.Luminaires = authored.Luminaires;
+    inoutScene.Medium = authored.Medium;
     inoutScene.Atmosphere = authored.Atmosphere;
     inoutScene.IsAtmosphereSunSwitchedOff = authored.IsAtmosphereSunSwitchedOff;
     inoutScene.AtmosphereMoonSourceId = authored.AtmosphereMoonSourceId;
@@ -1186,6 +1189,8 @@ bool RenderScene::Load(const QString& root,
     const QString terrainComponent = GetTerrainComponentId();
     const bool canGenerateApertures = world.HasBuiltInAperture();
     const QString apertureComponent = GetApertureComponentId();
+    const bool canGenerateMedium = world.HasBuiltInSchema();
+    const QString mediumComponent = GetAbsorbingMediumComponentId();
     math::Vector3 low{}, high{};
     for (const auto value : world.Draft().value(QStringLiteral("entities")).toArray())
     {
@@ -1210,8 +1215,11 @@ bool RenderScene::Load(const QString& root,
                 ? entity.value(QStringLiteral("components")).toObject().value(apertureComponent).toObject()
                 : QJsonObject{};
         const bool hasAperture = aperture.isEmpty() == false;
+        const QJsonObject medium =
+            canGenerateMedium == true ? components.value(mediumComponent).toObject() : QJsonObject{};
+        const bool hasMedium = medium.isEmpty() == false;
         const bool hasRenderable = Attached(entity, renderable);
-        if (hasTerrain == false && hasAperture == false && hasRenderable == false &&
+        if (hasTerrain == false && hasAperture == false && hasMedium == false && hasRenderable == false &&
             Attached(entity, cameraBinding) == false && Attached(entity, lightBinding) == false &&
             Attached(entity, luminaireBinding) == false)
         {
@@ -1224,6 +1232,34 @@ bool RenderScene::Load(const QString& root,
         if (Attached(entity, transform) == false || Transform(Values(entity, transform), trs, outError) == false)
         {
             return Fail(outError, name + QStringLiteral(": missing or invalid transform. ") + outError);
+        }
+        if (hasMedium == true)
+        {
+            // An invisible boundary: no mesh or object, so raster and render graph views never see it. The box is
+            // regenerated from its fields on every extraction, so an applied edit reaches the next capture.
+            math::Affine3 boxToWorld;
+            PreviewMedium extracted;
+            extracted.Id = id;
+            extracted.Name = name;
+            if (candidate.Medium.IsPresent() == true)
+            {
+                return Fail(outError,
+                            QStringLiteral("'%1' and '%2' are both Absorbing Media; a World supports one. Remove one.")
+                                .arg(candidate.Medium.Name, name));
+            }
+            if (math::TryToAffine3(trs, WORLD_TRANSFORM_TOLERANCE, boxToWorld) != math::MathStatus::Success ||
+                BuildAbsorbingMediumBoundary(medium, boxToWorld, extracted.BoundaryCornersWorld, outError) == false)
+            {
+                return Fail(outError,
+                            name + QStringLiteral(": ") +
+                                (outError.isEmpty() == true ? QStringLiteral("invalid Absorbing Medium Transform.")
+                                                            : outError));
+            }
+            const math::Vector3d absorption = GetAbsorbingMediumAbsorption(medium);
+            extracted.AbsorptionPerWorld = {static_cast<float32>(absorption.X),
+                                            static_cast<float32>(absorption.Y),
+                                            static_cast<float32>(absorption.Z)};
+            candidate.Medium = foundation::Move(extracted);
         }
         if (Attached(entity, lightBinding) == true)
         {
@@ -2054,6 +2090,15 @@ void WriteSourceMaterialExtension(QDataStream& inoutStream, const resources::Sce
     }
     inoutStream << material.Scattering.AlphaU << material.Scattering.AlphaV << material.Scattering.CoatingEta
                 << material.Scattering.CoatingThickness;
+    // LUSCN v11 follows a program material's extension with its fixed-width program record. The bundle version
+    // already admits programs (GetMaterialModelBundleVersion), so omitting the record breaks the decode.
+    if (material.Scattering.Model == content::scene_format::MaterialModel::Program)
+    {
+        content::scene_format::MaterialProgramBytes program{};
+        content::scene_format::EncodeMaterialProgram(material.Program, program);
+        inoutStream.writeRawData(reinterpret_cast<const char*>(program.GetData()),
+                                 static_cast<int32>(program.GetSize()));
+    }
 }
 } // namespace
 
@@ -2446,9 +2491,10 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         {
             // The boundary is invisible and only RT1 reference captures transport its medium.
             return Fail(error,
-                        QStringLiteral("Material '%1' is the boundary of an absorbing medium, which the World viewport "
-                                       "cannot show yet. Remove its medium_interface objects from the scene source, or "
-                                       "render the cooked bundle with a CPU-oracle or GPU-compute reference capture.")
+                        QStringLiteral("Material '%1' is the boundary of an absorbing medium, which a World cannot "
+                                       "import yet. Remove its medium_interface objects from the scene source and add "
+                                       "the medium with Add World Preset → Absorbing Medium, or render the cooked "
+                                       "bundle with a CPU-oracle or GPU-compute reference capture.")
                             .arg(QString::fromUtf8(source.Name.View().data(),
                                                    static_cast<qsizetype>(source.Name.View().size()))));
         }

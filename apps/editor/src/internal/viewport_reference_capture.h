@@ -171,8 +171,9 @@ ResolveViewportAtmosphereSky(const graphics::renderer::AtmosphereDescription& at
 /// Atmosphere lights the raster scene at the camera, its sky replaces the imported environment
 /// and the linked Sun carries the atmosphere's transmittance (see
 /// graphics::renderer::ResolveAtmosphereEnvironment). Primary misses also show the frozen
-/// celestial boundary inside the shell. Owner thread only, between frames; the
-/// borrowed device must outlive the capture or Release must run first.
+/// celestial boundary inside the shell. The World's absorbing medium (RenderScene::Medium) is transported
+/// through the CPU oracle and GPU compute; Start refuses native ray queries for a scene with a medium.
+/// Owner thread only, between frames; the borrowed device must outlive the capture or Release must run first.
 class ViewportReferenceCapture final
 {
 public:
@@ -256,6 +257,8 @@ private:
     graphics::rhi::SurfaceHandle mSurface{};
     graphics::renderer::ReferenceCaptureDescription mDescription{};
     graphics::renderer::ReferenceCapture mCapture{};
+    /// The frozen scene's absorbing medium, borrowing the generation's boundary corners.
+    graphics::renderer::ReferenceMediumDescription mMedium{};
     ReferenceLightArray mLights{};
 #if !defined(Q_OS_WASM)
     /// Background resolution of the Atmosphere sky. Dropping it lets the job finish on its own copies.

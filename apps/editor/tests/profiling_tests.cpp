@@ -2,6 +2,7 @@
 #include "internal/hosted_profiling_session.h"
 #include "internal/main_window.h"
 #include "internal/profiling_panel.h"
+#include "internal/render_graph_document.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
@@ -21,6 +22,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -29,6 +31,9 @@
 #include <QList>
 #include <QMenu>
 #include <QPushButton>
+#include <QSet>
+#include <QSignalSpy>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
@@ -63,6 +68,8 @@ RenderScene MakeProfilingScene()
     mesh.Id = QStringLiteral("triangle");
     mesh.Positions = {{-.5F, -.5F, .5F}, {.5F, -.5F, .5F}, {0, .5F, .5F}};
     mesh.Indices = {0, 1, 2};
+    // The default graph's forward scene path needs a shading normal per vertex.
+    mesh.Normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
     scene.Meshes.append(mesh);
     PreviewObject object;
     object.Id = QStringLiteral("object");
@@ -627,6 +634,354 @@ TEST_CASE("delegated project graph Stats and GPU recording share the viewport sa
     CHECK(preview.GetStatistics().GpuMilliseconds.GetCount() > 0);
     CHECK(workspace.GetPreviewOrNull()->GetStatistics().GetCpuMilliseconds().GetCount() > 0);
     CHECK(workspace.GetPreviewOrNull()->GetStatistics().GetReadbackMilliseconds().GetCount() > 0);
+    preview.Stop();
+    workspace.SetPreviewSource(nullptr);
+}
+
+namespace
+{
+constexpr QLatin1StringView PREPASS_OPERATION{"Main/prepass/draw"};
+constexpr QLatin1StringView COLOR_OPERATION{"Main/raster/draw"};
+constexpr QLatin1StringView CULLED_OPERATION{"Main/unused/draw"};
+
+QJsonObject FindById(const QJsonArray& values, const QString& identity)
+{
+    for (const QJsonValue value : values)
+    {
+        if (value.toObject().value(QStringLiteral("id")).toString() == identity)
+        {
+            return value.toObject();
+        }
+    }
+    return {};
+}
+
+QJsonArray ReplaceById(const QJsonArray& values, const QJsonObject& replacement)
+{
+    QJsonArray replaced;
+    for (const QJsonValue value : values)
+    {
+        const bool isReplaced = value.toObject().value(QStringLiteral("id")) == replacement.value(QStringLiteral("id"));
+        replaced.append(isReplaced == true ? QJsonValue(replacement) : value);
+    }
+    return replaced;
+}
+
+QJsonObject MakeEdge(const QString& from, const QString& to)
+{
+    return {{QStringLiteral("from"), from}, {QStringLiteral("to"), to}};
+}
+
+QJsonObject MakeSubgraph(const QString& identity, const QString& configuration)
+{
+    return {
+        {QStringLiteral("asset"), QStringLiteral("rasterize.lurender.json")},
+        {QStringLiteral("configuration"), configuration},
+        {QStringLiteral("id"), identity},
+        {QStringLiteral("kind"), QStringLiteral("Subgraph")},
+    };
+}
+
+/// Split the customized default World graph's depth prepass into its own subgraph instance, so
+/// two instances author a pass named `draw`: Main/prepass/draw writes depth and Main/raster/draw
+/// loads it. A third instance, Main/unused/draw, writes a target that nothing reads, so the graph
+/// compiler culls it.
+void SplitDepthPrepassIntoInstances(RenderGraphDocument& inoutDocument)
+{
+    const QString library = QStringLiteral("rasterize.lurender.json");
+    QJsonObject subgraph = QJsonDocument::fromJson(inoutDocument.GetDraft(library)).object();
+    QJsonArray configurations = subgraph.value(QStringLiteral("configurations")).toArray();
+    QJsonObject afterPrepass = FindById(configurations, QStringLiteral("ColorAndDepthWithPrepass"));
+    REQUIRE(afterPrepass.isEmpty() == false);
+    afterPrepass.insert(QStringLiteral("id"), QStringLiteral("ColorAfterPrepass"));
+    const QJsonObject draw = FindById(afterPrepass.value(QStringLiteral("nodes")).toArray(), QStringLiteral("draw"));
+    REQUIRE(draw.isEmpty() == false);
+    afterPrepass.insert(QStringLiteral("nodes"), QJsonArray{draw});
+    QJsonArray drawEdges{MakeEdge(QStringLiteral("input.depth"), QStringLiteral("draw.depth"))};
+    for (const QJsonValue value : afterPrepass.value(QStringLiteral("edges")).toArray())
+    {
+        const QJsonObject edge = value.toObject();
+        if (edge.value(QStringLiteral("from")).toString().startsWith(QStringLiteral("prepass.")) == false &&
+            edge.value(QStringLiteral("to")).toString().startsWith(QStringLiteral("prepass.")) == false)
+        {
+            drawEdges.append(edge);
+        }
+    }
+    afterPrepass.insert(QStringLiteral("edges"), drawEdges);
+    configurations.append(afterPrepass);
+    subgraph.insert(QStringLiteral("configurations"), configurations);
+    REQUIRE(inoutDocument.SetText(library, EncodeCanonicalJson(subgraph)) == RenderGraphDocumentStatus::Ok);
+
+    const QString main = QStringLiteral("main.lurender.json");
+    QJsonObject root = QJsonDocument::fromJson(inoutDocument.GetDraft(main)).object();
+    QJsonArray rootConfigurations = root.value(QStringLiteral("configurations")).toArray();
+    QJsonObject configuration = FindById(rootConfigurations, QStringLiteral("Default"));
+    REQUIRE(configuration.isEmpty() == false);
+    QJsonArray nodes = configuration.value(QStringLiteral("nodes")).toArray();
+    QJsonObject raster = FindById(nodes, QStringLiteral("raster"));
+    QJsonObject scratchDepth = FindById(nodes, QStringLiteral("depth"));
+    REQUIRE(raster.isEmpty() == false);
+    REQUIRE(scratchDepth.isEmpty() == false);
+    raster.insert(QStringLiteral("configuration"), QStringLiteral("ColorAfterPrepass"));
+    nodes = ReplaceById(nodes, raster);
+    scratchDepth.insert(QStringLiteral("id"), QStringLiteral("scratchDepth"));
+    nodes.append(scratchDepth);
+    nodes.append(MakeSubgraph(QStringLiteral("prepass"), QStringLiteral("DepthOnly")));
+    nodes.append(MakeSubgraph(QStringLiteral("unused"), QStringLiteral("DepthOnly")));
+    QJsonArray edges{
+        MakeEdge(QStringLiteral("scene.scene"), QStringLiteral("prepass.scene")),
+        MakeEdge(QStringLiteral("camera.view"), QStringLiteral("prepass.view")),
+        MakeEdge(QStringLiteral("depth.texture"), QStringLiteral("prepass.depth")),
+        MakeEdge(QStringLiteral("prepass.depth"), QStringLiteral("raster.depth")),
+        MakeEdge(QStringLiteral("scene.scene"), QStringLiteral("unused.scene")),
+        MakeEdge(QStringLiteral("camera.view"), QStringLiteral("unused.view")),
+        MakeEdge(QStringLiteral("scratchDepth.texture"), QStringLiteral("unused.depth")),
+        MakeEdge(QStringLiteral("renderSize.size"), QStringLiteral("scratchDepth.size")),
+    };
+    for (const QJsonValue value : configuration.value(QStringLiteral("edges")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("to")).toString() != QStringLiteral("raster.depth"))
+        {
+            edges.append(value);
+        }
+    }
+    configuration.insert(QStringLiteral("nodes"), nodes);
+    configuration.insert(QStringLiteral("edges"), edges);
+    root.insert(QStringLiteral("configurations"), ReplaceById(rootConfigurations, configuration));
+    REQUIRE(inoutDocument.SetText(main, EncodeCanonicalJson(root)) == RenderGraphDocumentStatus::Ok);
+}
+
+/// Change the tone-map exposure: a new cooked plan revision with the same operation names.
+void SetToneMapExposure(RenderGraphDocument& inoutDocument, float64 exposure)
+{
+    const QString main = QStringLiteral("main.lurender.json");
+    QJsonObject root = QJsonDocument::fromJson(inoutDocument.GetDraft(main)).object();
+    const QJsonArray configurations = root.value(QStringLiteral("configurations")).toArray();
+    QJsonObject configuration = FindById(configurations, QStringLiteral("Default"));
+    QJsonObject toneMap = FindById(configuration.value(QStringLiteral("nodes")).toArray(), QStringLiteral("tonemap"));
+    REQUIRE(toneMap.isEmpty() == false);
+    toneMap.insert(QStringLiteral("exposure"), exposure);
+    configuration.insert(QStringLiteral("nodes"),
+                         ReplaceById(configuration.value(QStringLiteral("nodes")).toArray(), toneMap));
+    root.insert(QStringLiteral("configurations"), ReplaceById(configurations, configuration));
+    REQUIRE(inoutDocument.SetText(main, EncodeCanonicalJson(root)) == RenderGraphDocumentStatus::Ok);
+}
+
+/// Saved GPU scope mapping of one cooked package revision.
+struct SavedPlan final
+{
+    QByteArray RuntimeIdentity;
+    QString Sidecar;
+    QHash<qint64, QStringList> Operations;
+};
+
+/// Build and cook the saved graph, then keep a copy of the cooked plan's sidecar: the next cook
+/// replaces the file beside the runtime package.
+SavedPlan CookAndKeepPlan(RendererWorkspace& inoutWorkspace, const QTemporaryDir& directory)
+{
+    constexpr int32 COOK_TIMEOUT_MILLISECONDS = 180000;
+    QSignalSpy finished(&inoutWorkspace, &RendererWorkspace::JobFinished);
+    const bool hasStarted = inoutWorkspace.BuildAndPreview();
+    INFO(inoutWorkspace.GetStatusText().toStdString());
+    REQUIRE(hasStarted == true);
+    REQUIRE((finished.isEmpty() == false || finished.wait(COOK_TIMEOUT_MILLISECONDS) == true));
+    INFO(inoutWorkspace.GetLastResult().Message.toStdString());
+    REQUIRE(inoutWorkspace.GetLastResult().IsSuccessful == true);
+    const QString package = inoutWorkspace.GetRuntimePackagePath();
+    QFile cooked(package);
+    REQUIRE(cooked.open(QIODevice::ReadOnly) == true);
+    SavedPlan plan;
+    plan.RuntimeIdentity = QCryptographicHash::hash(cooked.readAll(), QCryptographicHash::Sha256).toHex();
+    plan.Sidecar = directory.filePath(QString::fromLatin1(plan.RuntimeIdentity) + QStringLiteral(".resources.json"));
+    REQUIRE(QFile::copy(package + QStringLiteral(".resources.json"), plan.Sidecar) == true);
+    QFile sidecar(plan.Sidecar);
+    REQUIRE(sidecar.open(QIODevice::ReadOnly) == true);
+    const QJsonObject names = QJsonDocument::fromJson(sidecar.readAll()).object();
+    CHECK(names.value(QStringLiteral("runtime_sha256")).toString().toLatin1() == plan.RuntimeIdentity);
+    for (const QJsonValue value : names.value(QStringLiteral("gpu_scopes")).toArray())
+    {
+        const QJsonObject scope = value.toObject();
+        QStringList operations;
+        for (const QJsonValue operation : scope.value(QStringLiteral("operations")).toArray())
+        {
+            operations.append(operation.toString());
+        }
+        plan.Operations.insert(scope.value(QStringLiteral("scope_identity")).toInteger(), operations);
+    }
+    return plan;
+}
+} // namespace
+
+// Issue 1815: two subgraph instances author the same pass name, a third is culled, and the graph is
+// recooked during the recording. Each recorded GPU scope must resolve to exactly one qualified
+// operation through the cooked plan that submitted its frame.
+TEST_CASE("World graph GPU scopes resolve same-named instances through each frame's cooked plan", "[.profiling-gpu]")
+{
+    constexpr int32 RECORD_MILLISECONDS = 2000;
+    constexpr int32 FRAME_TIMEOUT_MILLISECONDS = 20000;
+    constexpr float64 RECOOKED_EXPOSURE = 2;
+    const QString python = QString::fromUtf8(LUDUS_TEST_PYTHON);
+    const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
+    if (QFileInfo(compiler).isExecutable() == false || QFileInfo(python).isExecutable() == false)
+    {
+        SKIP("pinned shader tools are required to cook the project World graph");
+    }
+    QTemporaryDir directory;
+    QTemporaryDir plans;
+    REQUIRE(directory.isValid() == true);
+    REQUIRE(plans.isValid() == true);
+    RenderPreview initialPreview;
+    ProfilingController controller(&initialPreview);
+    RendererWorkspace workspace({python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    RenderPreview preview;
+    preview.UseProjectGraph();
+    workspace.SetPreviewSource(&preview);
+    workspace.EnableWorldRendering();
+    workspace.SetProject(directory.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    // A temporary directory has no project descriptor to resolve an SDK, so the cook uses the pinned tools.
+    workspace.SetBuildTools(QDir(QFileInfo(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)).absolutePath())
+                                .filePath(QStringLiteral("helper")),
+                            compiler);
+    const QString validator = QStringLiteral(LUDUS_EDITOR_TEST_SPIRV_VALIDATOR);
+    if (QFileInfo(validator).isExecutable() == true)
+    {
+        RenderGraphBuildSettings settings = workspace.GetBuildSettings();
+        settings.Tools.Validator = validator;
+        workspace.SetBuildSettings(settings);
+    }
+    SplitDepthPrepassIntoInstances(workspace.GetDocument());
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(preview.SetScene(MakeProfilingScene()) == true);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(preview.AdmitOffscreenDevice() == true);
+    REQUIRE(controller.SetPreviewSource(&preview) == true);
+    WorldGraphView view(workspace, nullptr);
+    view.resize(320, 180);
+    view.show();
+    RenderGraphPreview* graphOrNull = workspace.GetPreviewOrNull();
+    REQUIRE(graphOrNull != nullptr);
+    const auto waitForGeneration = [&](uint64 previousGeneration) {
+        QElapsedTimer timer;
+        timer.start();
+        while (
+            (graphOrNull->GetImage().isNull() == true || graphOrNull->GetPresentedGeneration() == previousGeneration) &&
+            timer.elapsed() < FRAME_TIMEOUT_MILLISECONDS)
+        {
+            preview.Look(1, 0);
+            workspace.ServicePreview();
+            QTest::qWait(1);
+        }
+        INFO(graphOrNull->GetDisplayStatus().toStdString());
+        REQUIRE(graphOrNull->GetImage().isNull() == false);
+        REQUIRE(graphOrNull->GetPresentedGeneration() != previousGeneration);
+    };
+    const auto renderFor = [&](int32 milliseconds) {
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < milliseconds)
+        {
+            preview.Look(1, 0);
+            workspace.ServicePreview();
+            QTest::qWait(1);
+        }
+    };
+    const SavedPlan first = CookAndKeepPlan(workspace, plans);
+    waitForGeneration(0);
+    const uint64 firstGeneration = graphOrNull->GetPresentedGeneration();
+    const QString path = directory.filePath(QStringLiteral("graph.json"));
+    REQUIRE(controller.Start(ProfilingMode::Both, path) == true);
+    renderFor(RECORD_MILLISECONDS);
+    SetToneMapExposure(workspace.GetDocument(), RECOOKED_EXPOSURE);
+    REQUIRE(workspace.Save() == true);
+    const SavedPlan recooked = CookAndKeepPlan(workspace, plans);
+    REQUIRE(recooked.RuntimeIdentity != first.RuntimeIdentity);
+    waitForGeneration(firstGeneration);
+    renderFor(RECORD_MILLISECONDS);
+    controller.Stop();
+    REQUIRE(FinishRecording(controller) == true);
+    INFO(controller.GetStatus().toStdString());
+    REQUIRE(controller.GetState() == ProfilingState::Complete);
+
+    // Both revisions name the same two scopes, and the culled instance has none.
+    const QHash<qint64, QStringList> expected{{1, {QString(PREPASS_OPERATION)}}, {2, {QString(COLOR_OPERATION)}}};
+    for (const SavedPlan* savedPlan : {&first, &recooked})
+    {
+        CHECK(savedPlan->Operations == expected);
+        for (const QStringList& operations : savedPlan->Operations)
+        {
+            CHECK(operations.contains(CULLED_OPERATION) == false);
+        }
+    }
+    const QJsonObject trace = ReadTrace(path);
+    // Frames keep the revision that submitted them: every first-plan frame precedes the recooked ones.
+    QHash<QString, QByteArray> revisions;
+    qint64 lastFirstFrame = 0;
+    qint64 firstRecookedFrame = 0;
+    for (const QJsonValue value : trace.value(QStringLiteral("ludusGpuGraphFrames")).toArray())
+    {
+        const QJsonObject frame = value.toObject();
+        const QByteArray revision = frame.value(QStringLiteral("runtime_sha256")).toString().toLatin1();
+        const qint64 frameId = frame.value(QStringLiteral("frameId")).toInteger();
+        REQUIRE((revision == first.RuntimeIdentity || revision == recooked.RuntimeIdentity));
+        if (revision == first.RuntimeIdentity && frameId > lastFirstFrame)
+        {
+            lastFirstFrame = frameId;
+        }
+        if (revision == recooked.RuntimeIdentity && (firstRecookedFrame == 0 || frameId < firstRecookedFrame))
+        {
+            firstRecookedFrame = frameId;
+        }
+        revisions.insert(
+            QStringLiteral("%1/%2").arg(frame.value(QStringLiteral("deviceSession")).toInteger()).arg(frameId),
+            revision);
+    }
+    REQUIRE(lastFirstFrame != 0);
+    REQUIRE(firstRecookedFrame != 0);
+    CHECK(lastFirstFrame < firstRecookedFrame);
+
+    // Every scoped sample resolves through its own frame's plan to the operation it was named after.
+    QHash<QByteArray, QSet<qint64>> resolved;
+    for (const QJsonValue value : trace.value(QStringLiteral("traceEvents")).toArray())
+    {
+        const QJsonObject event = value.toObject();
+        if (event.value(QStringLiteral("name")).toString() != QStringLiteral("GPU sample identity"))
+        {
+            continue;
+        }
+        const QJsonObject identity = event.value(QStringLiteral("args")).toObject();
+        const qint64 scope = identity.value(QStringLiteral("scopeIdentity")).toInteger();
+        if (scope == 0)
+        {
+            continue;
+        }
+        const QString key = QStringLiteral("%1/%2")
+                                .arg(identity.value(QStringLiteral("deviceSession")).toInteger())
+                                .arg(identity.value(QStringLiteral("frameId")).toInteger());
+        INFO(key.toStdString());
+        REQUIRE(revisions.contains(key) == true);
+        const SavedPlan& plan = revisions.value(key) == first.RuntimeIdentity ? first : recooked;
+        CHECK(identity.value(QStringLiteral("logicalPassCount")).toInteger() == 1);
+        CHECK(plan.Operations.value(scope) == QStringList{identity.value(QStringLiteral("passName")).toString()});
+        resolved[plan.RuntimeIdentity].insert(scope);
+    }
+    if (preview.CanProfileGpuPasses() == true)
+    {
+        const QSet<qint64> scopes{1, 2};
+        CHECK(resolved.value(first.RuntimeIdentity) == scopes);
+        CHECK(resolved.value(recooked.RuntimeIdentity) == scopes);
+    }
+    const QString evidence = qEnvironmentVariable("LUDUS_EDITOR_PROFILING_CAPTURE");
+    if (evidence.isEmpty() == false)
+    {
+        REQUIRE(QFile::copy(path, evidence + QStringLiteral("-instances.json")) == true);
+        for (const SavedPlan* savedPlan : {&first, &recooked})
+        {
+            REQUIRE(QFile::copy(savedPlan->Sidecar,
+                                evidence + QStringLiteral("-") + QFileInfo(savedPlan->Sidecar).fileName()) == true);
+        }
+    }
     preview.Stop();
     workspace.SetPreviewSource(nullptr);
 }

@@ -1807,10 +1807,52 @@ The tests check these properties:
 - **Restricted estimator.** The Rao-Blackwellized Metropolis graph admits the
   program under the fixed-dimension requirement and completes its capture.
 
-The project-owned provider path is not yet covered. Registration through the
-installed SDK, capture from a saved World in the Editor and in a packaged
-standalone app, and the unavailable-provider diagnostic remain for
-[#1310](https://github.com/The-Ludus-Project/Ludus/issues/1310).
+The project owns the lobe through a provider scene,
+`tests/scenes/materials/oren-nayar-provider.luscene.json`. Its
+`project/oren-nayar` material is the closure program with σ = 0.5 radians.
+Registration and cooking use the same path as a
+[project BRDF program](#project-brdf-programs): importing the provider into a
+World registers the material in the project catalog. **Assign Project BRDF**
+then binds a slot to it through the level's `project_brdf` binding, and the
+cook writes the provider's program record for that slot. No graph, shader,
+model tag or scene kernel ABI changes. A World of two boards from
+`oren-nayar-two-light-boards.luscene.json` puts the project material on one
+board and keeps the built-in Diffuse control on the other. Two World
+directional lights carry the fixture's directions, colours and illuminances,
+because scene sources cannot author lights.
+
+Philipp Slusallek and Hans-Peter Seidel,
+[*Towards an Open Rendering Kernel for Image Synthesis*](https://doi.org/10.1007/978-3-7091-7484-5_6)
+(Rendering Techniques '96, pp. 51–60), put reflection and emission behind
+interfaces in a small extensible kernel. These checks qualify Ludus's
+equivalent boundary, from project registration through cooking, graph
+execution and packaging:
+
+- **Saved World in the Editor.** The `[project-provider]` Editor test saves the
+  World and reopens it. It switches the lights through the World's light
+  switches and captures each light alone and both together three ways: the
+  CPU oracle and the GPU reference, as paired raw linear captures with one
+  scattering event and centred rays, and the compute ray-tracing template, as
+  the World graph capture. Each one-light CPU pixel equals the analytic
+  response within a relative 2e-4. The CPU and GPU images meet the parity RMS
+  bound of 1e-3. Every capture's board means are within 3% of the analytic
+  means, and both lights together are the sum of each alone. The graph renders
+  the control and the project material with unchanged source.
+- **Standalone app.** `tests/sdk_consumer/project_brdf_world` builds a Qt-free
+  app against the installed SDK, cooks the installed compute ray-tracing
+  template and launches the app from its staged package with the Editor's
+  exported `scene.luscn`. Its board means for each light set must be within 3%
+  of the analytic response and of the Editor's CPU, GPU and graph captures. See
+  [qualify a project BRDF provider](../development/project-sdk-workflow.md#qualify-a-project-brdf-provider).
+- **Unavailable provider.** When the provider's catalog record is missing, the
+  binding check runs before the cook visits any dependency. The diagnostic
+  names the project material, by its project name and resource ID, and the
+  slot. Its repairs are to import the provider scene again, which restores the
+  material under the same resource ID, or to choose **Use Inherited Material**.
+  A binding to a material that is no longer a project BRDF or closure program
+  is named the same way. The Editor test rejects such a replacement World and
+  checks that the last drawable World stays presented, with the same scene,
+  image and revision, until the reimported provider prepares.
 
 ### Preparation and publication
 
@@ -1958,8 +2000,12 @@ dielectric coating over a conductor substrate.
    [Oren–Nayar lobe](#project-oren-nayar-lobe-under-renderer-owned-lights)
    has paired CPU and GPU reference implementations. It is qualified under
    two renderer-owned directional lights and a shadowing blocker, and the
-   general and restricted graphs accept it with unchanged source. Its
-   project-owned provider path through the installed SDK remains open. World also authors the layered material directly from a
+   general and restricted graphs accept it with unchanged source. A project
+   owns it through a provider scene registered with **Assign Project BRDF**,
+   and a saved World draws it beside the built-in control in the Editor and
+   in a standalone app built against the installed SDK
+   ([provider boundary](#project-oren-nayar-lobe-under-renderer-owned-lights)).
+   World also authors the layered material directly from a
    slot with **Make Coated Diffuse…**: a created coated-diffuse material (its
    base colour the substrate, typed coat alpha, IOR and thickness the coat),
    edited through the Material document's shared instance, per-slot override,
@@ -5720,8 +5766,9 @@ never see it. It must be closed and consistently oriented, with its oriented fro
 side (counterclockwise corners) facing the outside. Admission sorts the directed
 edges and requires every edge to appear once with its reverse once, on
 bit-identical corners. Disjoint closed pieces form one medium. Admission rejects an
-open, nonmanifold or inconsistently wound boundary, degenerate or out-of-range
-corners and invalid absorption with `InvalidDescription`.
+open, nonmanifold or inconsistently wound boundary, degenerate corners, corners
+beyond `MAX_REFERENCE_MEDIUM_COORDINATE_WORLD` (1,000,000 m) and invalid absorption
+with `InvalidDescription`.
 
 Both tracers follow every camera, continuation and light-visibility segment through
 the boundary's ordered crossings. A crossing against the outward normal enters the
@@ -5765,7 +5812,9 @@ Cooked scenes carry the medium as a LUSCN v12 `MediumInterface` material whose
 objects are the boundary, and the authored source as a
 [`medium_interface` material](scene-source-format.md#medium-interface). The
 [installed-SDK reference-scene sample](../examples/reference-scene.md#absorbing-medium-capture)
-turns those objects into the capture's medium.
+turns those objects into the capture's medium. The Editor authors a medium as a
+World's [Absorbing Medium](../development/editor-workspace.md#absorbing-media) box,
+whose extraction generates the closed boundary for **Reference…** captures.
 
 **Evidence.** On Apple M5 Metal (macOS 26.6, debug build), the `[medium]` cases of
 the [renderer test](../../modules/graphics/renderer/tests/reference_compute_tests.cpp)

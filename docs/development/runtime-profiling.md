@@ -342,7 +342,7 @@ p95 metric is the median across repetitions of their individual p95 values.
 
 | Workflow | Scenario and metric | Use |
 | --- | --- | --- |
-| Editor camera navigation | `editor-viewport-navigation`, `EDVIEW/workload=<workload>/latency_p95_ns` | Review analytic-light and mesh-light workloads individually. Inspect `cpu_p95_ns`, `gpu_p95_ns` and the trace to attribute a change. The latency metric reaches the test's new-presentation and GPU-sample observation. |
+| Editor camera navigation | `editor-viewport-navigation`, `EDVIEW/workload=<workload>/latency_p95_ns` | Review analytic-light and mesh-light workloads individually. Inspect `cpu_p95_ns`, `gpu_p95_ns`, the log's `EDVIEWPASS` rows and the trace to attribute a change. The latency metric reaches the test's new-presentation and GPU-sample observation, so it moves in display-refresh steps: a frame whose GPU work no longer fits before the next refresh adds a whole interval. |
 | Engine frame pacing | `world-presented`, `frames/interval_p95_ns` and `frames/interval_max_ns` | Look for recurring slow frames and isolated hitches. The marker intervals include pacing and scheduling. Use `scope=WorldFrame/p95_ns` and the trace to inspect frame work. |
 | Engine simulation | `world-headless`, `scope=WorldTick/p95_ns` | Track the fixed simulation fixture. Inspect tick phase scopes when the total moves. |
 
@@ -644,6 +644,24 @@ latency from issuing the orbit through observing the new presentation, graph
 revision, and GPU sample. That latency includes event-loop and presentation
 scheduling. GPU timestamps use the device clock. The report records the adapter and
 retains a CPU Perfetto trace for diagnosing preparation and scheduling delays.
+
+The scenario log also carries report-only rows that the parser does not summarize.
+`EDVIEWFIRST,<workload>,<nanoseconds>` is the wait from starting the preview to its
+first presentation, which includes program, shadow-map and sky-map preparation and
+is excluded from the orbit samples. A first frame approaching the 60 s deadline
+shows up here before the run fails. `EDVIEWPASS` rows give each completed per-pass
+GPU sample from the batches the editor's GPU recording uses:
+`workload, sample, batch, scope, kind, ordinal, duration_ns, dropped_passes`.
+A timed operation belongs to the outermost open scope, so the default raster graph
+reports its pass name, such as `Main/raster/draw`, and `ordinal` separates its
+native operations in encoding order. The renderer's nested scopes
+(`Deferred/Material`, `Deferred/Lighting`, `Deferred/Overlays`) label native
+captures only. Metal raster durations are vertex-to-fragment envelopes and can
+overlap, so the operations need not sum to the frame duration. A pass batch can
+skip a frame while it is pending; `sample` is the orbit in progress when the batch
+completed. Compare medians per scope and ordinal across builds of the same
+scene, and check that the scope and ordinal sets match before attributing a
+change.
 
 These workloads participate in the existing baseline comparison, notable-change
 summary and 90-day artifacts. Timing changes remain report-only on shared hosts;

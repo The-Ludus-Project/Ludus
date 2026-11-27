@@ -24,6 +24,7 @@
 #include "internal/material_inspection.h"
 #include "internal/render_panel.h"
 #include "internal/state_view.h"
+#include "internal/world_absorbing_medium.h"
 #include "internal/world_climate.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_environment_panel.h"
@@ -219,7 +220,7 @@ EditorIcon GetComponentIcon(const QString& component)
         return EditorIcon::Material;
     }
     if (name.contains(QStringLiteral("transform")) == true || name.contains(QStringLiteral("collider")) == true ||
-        name.contains(QStringLiteral("terrain")) == true)
+        name.contains(QStringLiteral("terrain")) == true || name.contains(QStringLiteral("medium")) == true)
     {
         return EditorIcon::Geometry;
     }
@@ -724,6 +725,37 @@ QString GetWorldIntroduction()
                           "Projects may supply authoring/world.schema.json for gameplay fields. Runtime binding "
                           "belongs to the game.");
 }
+/// Name the project materials that a failed scene operation identifies only by resource ID. A missing provider no
+/// longer has a catalog record to read its name from, so take the name from the last presented World, whose slots
+/// still draw that material.
+QString NameProjectMaterials(const QString& message, const QJsonObject& presentedLevel, const RenderScene& presented)
+{
+    const QString prefix = QStringLiteral("The project material ");
+    if (message.contains(prefix + QStringLiteral("material/")) == false)
+    {
+        return message;
+    }
+    QString named = message;
+    for (const QJsonValue value : presentedLevel.value(QStringLiteral("objects")).toArray())
+    {
+        const QJsonObject object = value.toObject();
+        const QString resource =
+            object.value(QStringLiteral("project_brdf")).toObject().value(QStringLiteral("material")).toString();
+        const resources::SceneMaterial* materialOrNull =
+            resource.isEmpty() == true || named.contains(prefix + resource) == false
+                ? nullptr
+                : GetSceneObjectMaterialOrNull(presented, object.value(QStringLiteral("id")).toString());
+        if (materialOrNull == nullptr)
+        {
+            continue;
+        }
+        const std::string_view name = materialOrNull->Name.View();
+        named.replace(prefix + resource,
+                      QStringLiteral("%1'%2' (%3)")
+                          .arg(prefix, QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size())), resource));
+    }
+    return named;
+}
 } // namespace
 WorldWorkspace::WorldWorkspace(QWidget* parent) : WorldWorkspace(ToolingPaths{}, parent) {}
 WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
@@ -1074,7 +1106,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
                                   QStringLiteral("Atmosphere"),
                                   QStringLiteral("GI Probe Volume"),
                                   QStringLiteral("First Person Player"),
-                                  QStringLiteral("Aperture Slit")})
+                                  QStringLiteral("Aperture Slit"),
+                                  QStringLiteral("Absorbing Medium")})
     {
         QAction* action = objectMenu->addAction(preset);
         action->setObjectName(QStringLiteral("worldCreate") + QString(preset).remove(QLatin1Char(' ')));
@@ -2098,7 +2131,8 @@ void WorldWorkspace::placementValidationFinished(PlacementValidationResult resul
         }
         else
         {
-            SceneError_ = Scene_->StatusText();
+            SceneError_ =
+                NameProjectMaterials(Scene_->StatusText(), Scene_->GetPresentedLevel(), Scene_->GetPresentedScene());
             message = SceneError_;
         }
     }
@@ -2148,7 +2182,8 @@ void WorldWorkspace::SceneCompleted(bool accepted)
     const bool isConverting = conversionSource.isEmpty() == false;
     if (accepted == false)
     {
-        SceneError_ = Scene_->StatusText();
+        SceneError_ =
+            NameProjectMaterials(Scene_->StatusText(), Scene_->GetPresentedLevel(), Scene_->GetPresentedScene());
         Render();
         if (isConverting == true)
         {
@@ -3224,26 +3259,34 @@ void WorldWorkspace::addProjectBrdfControls(QFormLayout& inoutRows,
         const QJsonObject slot = entity.value(QStringLiteral("scene")).toObject();
         if (slot.isEmpty() == false)
         {
-            bindings.insert(entity.value(QStringLiteral("id")).toString(), Document_.GetMaterialResourceId(slot));
+            // A default World keys entities by UUID; GetEntityKey matches the presented object IDs either way.
+            bindings.insert(Document_.GetEntityKey(entity), Document_.GetMaterialResourceId(slot));
         }
     }
     QComboBox* choices = new QComboBox(group);
     choices->setObjectName(QStringLiteral("worldProjectBrdfChoice"));
     choices->setAccessibleName(QStringLiteral("Project BRDF"));
     const QString current = Document_.GetMaterialResourceId(placement);
+    // A project material is project-owned reflection data: a version-1 project BRDF or a closure program, such as
+    // an Oren-Nayar lobe, imported from the project's provider scene.
+    const auto isProjectMaterial = [](MaterialModel model) {
+        return model == MaterialModel::ProjectBrdf || model == MaterialModel::Program;
+    };
+    const bool isAssignedProjectMaterial =
+        materialOrNull != nullptr && isProjectMaterial(materialOrNull->Scattering.Model) == true;
     QSet<QString> listed;
     for (const PreviewObject& object : scene.Objects)
     {
         const QString identity = bindings.value(object.Id);
         if (identity.isEmpty() == true || listed.contains(identity) == true ||
-            (isProjectBrdf == true && current == identity) || object.Surface < 0 ||
+            (isAssignedProjectMaterial == true && current == identity) || object.Surface < 0 ||
             static_cast<foundation::usize>(object.Surface) >= scene.Definition->Materials.GetSize())
         {
             continue;
         }
         const resources::SceneMaterial& material =
             scene.Definition->Materials[static_cast<foundation::usize>(object.Surface)];
-        if (material.Scattering.Model != MaterialModel::ProjectBrdf)
+        if (isProjectMaterial(material.Scattering.Model) == false)
         {
             continue;
         }
@@ -4437,6 +4480,10 @@ void WorldWorkspace::RenderInspector()
             }
             configureProbeVolumeFields(*group, *rows, cid, attached);
         }
+        if (Document_.HasBuiltInSchema() == true && cid == GetAbsorbingMediumComponentId())
+        {
+            configureAbsorbingMediumFields(*group, *rows, cid);
+        }
         addComponentActions(*section, component);
         if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light"))
         {
@@ -4940,6 +4987,92 @@ void WorldWorkspace::configureProbeVolumeFields(QWidget& inoutGroup,
                                     isCountsLayout == false && isAuthoredLayout == true && isCoverageLimited == true);
         };
     connect(layoutOrNull, &QComboBox::currentIndexChanged, summary, refresh);
+    refresh();
+}
+
+void WorldWorkspace::configureAbsorbingMediumFields(QWidget& inoutGroup, QFormLayout& inoutRows, const QString& cid)
+{
+    // One typed number of the box: its text field and the schema definition that parses it.
+    struct MediumField final
+    {
+        QLineEdit* FieldOrNull = nullptr;
+        QJsonObject Property;
+    };
+    const auto findField = [this](const QString& componentId, const QString& propertyId) {
+        MediumField field;
+        field.FieldOrNull = qobject_cast<QLineEdit*>(Fields_.value(FieldKey(componentId, propertyId)));
+        for (const QJsonValue candidate :
+             Document_.Component(componentId).value(QStringLiteral("properties")).toArray())
+        {
+            if (candidate.toObject().value(QStringLiteral("id")).toString() == propertyId)
+            {
+                field.Property = candidate.toObject();
+            }
+        }
+        return field;
+    };
+    const QString transform = QStringLiteral("transform");
+    // Absorption R, G and B, then each box extent with the Transform scale along its axis.
+    const QVector<MediumField> absorption{findField(cid, QStringLiteral("absorptionR")),
+                                          findField(cid, QStringLiteral("absorptionG")),
+                                          findField(cid, QStringLiteral("absorptionB"))};
+    const QVector<MediumField> extents{findField(cid, QStringLiteral("width")),
+                                       findField(transform, QStringLiteral("sx")),
+                                       findField(cid, QStringLiteral("height")),
+                                       findField(transform, QStringLiteral("sy")),
+                                       findField(cid, QStringLiteral("depth")),
+                                       findField(transform, QStringLiteral("sz"))};
+    QLabel* readout = new QLabel(&inoutGroup);
+    readout->setObjectName(QStringLiteral("worldMediumReadout"));
+    readout->setTextFormat(Qt::PlainText);
+    readout->setWordWrap(true);
+    QLabel* note = new QLabel(QStringLiteral("Raster and render graph views do not draw the medium; select it to see "
+                                             "its outline. Reference… captures it with the CPU oracle or GPU "
+                                             "compute traversal."),
+                              &inoutGroup);
+    note->setObjectName(QStringLiteral("worldMediumNote"));
+    note->setTextFormat(Qt::PlainText);
+    note->setWordWrap(true);
+    inoutRows.addRow(readout);
+    inoutRows.addRow(note);
+    const auto read = [](const MediumField& field, foundation::float64& outValue) {
+        QJsonValue value;
+        QString error;
+        if (field.FieldOrNull == nullptr ||
+            WorldDocument::ParseValue(field.Property, field.FieldOrNull->text(), value, error) == false)
+        {
+            return false;
+        }
+        outValue = value.toDouble();
+        return true;
+    };
+    const auto refresh = [absorption, extents, readout, read]() {
+        foundation::math::Vector3d coefficients{};
+        foundation::float64 smallestExtent = 0;
+        bool isValid = read(absorption[0], coefficients.X) == true && read(absorption[1], coefficients.Y) == true &&
+                       read(absorption[2], coefficients.Z) == true;
+        for (qsizetype axis = 0; isValid == true && axis + 1 < extents.size(); axis += 2)
+        {
+            foundation::float64 size = 0;
+            foundation::float64 scale = 0;
+            isValid = read(extents[axis], size) == true && read(extents[axis + 1], scale) == true;
+            const foundation::float64 extent = size * scale;
+            smallestExtent = axis == 0 ? extent : foundation::math::Min(smallestExtent, extent);
+        }
+        readout->setText(isValid == true ? DescribeAbsorbingMedium(coefficients, smallestExtent)
+                                         : QStringLiteral("Enter the absorption and box sizes within their ranges to "
+                                                          "see the attenuation distance."));
+    };
+    for (const QVector<MediumField>* fields : {&absorption, &extents})
+    {
+        for (const MediumField& field : *fields)
+        {
+            if (field.FieldOrNull != nullptr)
+            {
+                connect(field.FieldOrNull, &QLineEdit::textChanged, readout, refresh);
+            }
+        }
+    }
     refresh();
 }
 

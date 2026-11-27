@@ -48,22 +48,6 @@
         {
           "from": "labelTarget.texture",
           "to": "camera.target"
-        },
-        {
-          "from": "renderSize.size",
-          "to": "labelTarget.size"
-        },
-        {
-          "from": "renderSize.size",
-          "to": "labelDepth.size"
-        },
-        {
-          "from": "renderSize.size",
-          "to": "colorTarget.size"
-        },
-        {
-          "from": "renderSize.size",
-          "to": "colorDepth.size"
         }
       ],
       "id": "Default",
@@ -81,18 +65,10 @@
           "target_type": "ColorTexture"
         },
         {
-          "extent": {
-            "reference": "View",
-            "scale": [
-              1,
-              1
-            ]
-          },
-          "id": "renderSize",
-          "kind": "RenderSize"
-        },
-        {
-          "extent": "RenderSize",
+          "extent": [
+            96,
+            64
+          ],
           "format": "RGBA8Unorm",
           "id": "labelTarget",
           "imported": false,
@@ -103,7 +79,10 @@
           "type": "ColorTexture"
         },
         {
-          "extent": "RenderSize",
+          "extent": [
+            96,
+            64
+          ],
           "format": "Depth32Float",
           "id": "labelDepth",
           "imported": false,
@@ -114,7 +93,10 @@
           "type": "DepthTexture"
         },
         {
-          "extent": "RenderSize",
+          "extent": [
+            96,
+            64
+          ],
           "format": "RGBA8Unorm",
           "id": "colorTarget",
           "imported": false,
@@ -125,7 +107,10 @@
           "type": "ColorTexture"
         },
         {
-          "extent": "RenderSize",
+          "extent": [
+            96,
+            64
+          ],
           "format": "Depth32Float",
           "id": "colorDepth",
           "imported": false,

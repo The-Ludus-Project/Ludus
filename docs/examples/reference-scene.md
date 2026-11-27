@@ -390,6 +390,14 @@ argument. The matched analytic and CPU/GPU parity fixtures are
 described in the
 [homogeneous absorbing medium reference](../architecture/renderer-systems.md#homogeneous-absorbing-medium-reference).
 
+The Editor authors the same cube with the same coefficients as a World's
+[Absorbing Medium](../development/editor-workspace.md#absorbing-media) and captures
+it through **Reference…**. Its regression
+(`apps/editor/tests/viewport_reference_capture_tests.cpp`) uses this sample's
+camera and centre-pixel and corner tolerances. It lights a plane behind the cube
+instead of the sample's emitter, because a default World has no emissive surface
+preset, and compares each pixel with a vacuum capture of the same World.
+
 ## GPU preview acceptance
 
 This is the explicit optional progressive path-tracing reference mode, distinct

@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "entropy_fixture.h"
+#    include "internal/builtin_world.h"
 #    include "internal/preview_viewport.h"
 #    include "internal/render_preview.h"
 #    include "internal/selection_outline_request.h"
@@ -26,6 +28,7 @@
 #    include <QSGClipNode>
 #    include <QSGGeometryNode>
 #    include <QSignalSpy>
+#    include <QTemporaryDir>
 #    include <QTest>
 
 using namespace ludus::editor;
@@ -674,5 +677,38 @@ TEST_CASE("World viewport CPU fallback clips a perspective contour with Properti
             });
         }
     }
+}
+TEST_CASE("A selected absorbing medium, which raster does not draw, is outlined as its turned box",
+          "[editor][object-interaction][absorbing-medium]")
+{
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument world;
+    REQUIRE(world.LoadSchema(schema, error) == true);
+    REQUIRE(world.New(error) == true);
+    QString key;
+    REQUIRE(CreateWorldObject(world, tests::MakeFixedEntropySource(), QStringLiteral("Absorbing Medium"), key, error) ==
+            true);
+    QTemporaryDir root;
+    REQUIRE(root.isValid() == true);
+    RenderScene scene;
+    REQUIRE(RenderScene::Load(root.path(), world, scene, error, false) == true);
+    REQUIRE(scene.Objects.isEmpty() == true);
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(world, key, true);
+    const QRectF framePixel{0, 0, 800, 600};
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(framePixel, overlay);
+    // The twelve box edges, all in front of the orbit camera.
+    constexpr usize BOX_EDGES = 12;
+    CHECK(overlay.OutlineLinesPixel.GetSize() == BOX_EDGES);
+    // Without a medium the same entity shows no outline.
+    interaction.SetWorld(world, QString(), true);
+    ViewportObjectOverlay empty;
+    interaction.BuildOverlay(framePixel, empty);
+    CHECK(empty.OutlineLinesPixel.GetSize() == 0);
 }
 #endif

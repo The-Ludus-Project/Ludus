@@ -1,0 +1,30 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Oren-Nayar two-light boards",
+  "description": "Two upward-facing boards of equal built-in Diffuse materials, side by side, one material each so the cook keeps them as two World slots, seen from 30 degrees off their normal. Scene sources cannot author lights: the World adds two directional lights. Assign the project Oren-Nayar material of oren-nayar-provider.luscene.json to the Project board; the Control board keeps the built-in Lambertian material.",
+  "camera": {
+    "eye": [0, 6.928203230275509, 4],
+    "target": [0, 0, 0],
+    "up": [0, 0, -1],
+    "vertical_fov_degrees": 20
+  },
+  "materials": [
+    {"name": "Control board", "model": "diffuse", "base_color": [0.9, 0.6, 0.3]},
+    {"name": "Project board", "model": "diffuse", "base_color": [0.9, 0.6, 0.3]}
+  ],
+  "objects": [
+    {
+      "name": "Control board",
+      "material": "Control board",
+      "positions": [[-2.2, 0, 1], [-0.2, 0, 1], [-0.2, 0, -1], [-2.2, 0, -1]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Project board",
+      "material": "Project board",
+      "positions": [[0.2, 0, 1], [2.2, 0, 1], [2.2, 0, -1], [0.2, 0, -1]],
+      "polygons": [[0, 1, 2, 3]]
+    }
+  ]
+}

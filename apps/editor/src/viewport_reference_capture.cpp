@@ -352,6 +352,13 @@ bool ViewportReferenceCapture::Start(rhi::DeviceHandle device,
         outError = QStringLiteral("Reference capture needs a lit scene: add a light or an emissive surface.");
         return false;
     }
+    if (scene.Medium.IsPresent() == true && settings.Traversal == renderer::ReferenceTraversal::NativeQueries)
+    {
+        outError = QStringLiteral("The World's Absorbing Medium '%1' needs the CPU oracle or GPU compute traversal; "
+                                  "native ray queries do not transport media. Choose one of them under Traversal.")
+                       .arg(scene.Medium.Name);
+        return false;
+    }
     PreviewReferenceSetup setup;
     if (ResolveTileAndShader(device, settings.Traversal, setup, outError) == false)
     {
@@ -436,6 +443,17 @@ bool ViewportReferenceCapture::beginCapture() noexcept
     mDescription.Lights = mLightCount == 0 ? nullptr : mLights.GetData();
     mDescription.LightCount = mLightCount;
     mDescription.AtmosphereBackgroundOrNull = mAtmosphere.IsEnabled == true ? &mAtmosphere : nullptr;
+    // The generation's frozen scene owns the boundary, so a World edit during this capture cannot change it; the
+    // renderer copies it during BeginReferenceCapture.
+    const PreviewMedium& medium = generation.Source.Medium;
+    mDescription.MediumOrNull = nullptr;
+    if (medium.IsPresent() == true)
+    {
+        mMedium.BoundaryCornersWorld = {medium.BoundaryCornersWorld.constData(),
+                                        static_cast<usize>(medium.BoundaryCornersWorld.size())};
+        mMedium.AbsorptionPerWorld = medium.AbsorptionPerWorld;
+        mDescription.MediumOrNull = &mMedium;
+    }
     if (mHasAtmosphereSky == true)
     {
         // As renderer_lit.slang does, the Atmosphere's sky replaces the imported environment and its Sun

@@ -7,6 +7,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTreeWidget>
@@ -207,8 +208,19 @@ QString DescribeScatterLockConflict(const ScatterLockConflict& conflict)
 WorldScatterPanel::WorldScatterPanel(QWidget* parentOrNull) : QWidget(parentOrNull)
 {
     setObjectName(QStringLiteral("worldScatterPanel"));
-    QVBoxLayout* layout = new QVBoxLayout(this);
+    // The World tab widget sizes itself for every page, hidden tabs included, so the controls scroll instead of
+    // setting the World window's minimum height (batch 45956714997: a small styled World grew to 826 px).
+    QVBoxLayout* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    QScrollArea* scroll = new QScrollArea(this);
+    scroll->setObjectName(QStringLiteral("scatterScroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    QWidget* content = new QWidget(scroll);
+    QVBoxLayout* layout = new QVBoxLayout(content);
     layout->setContentsMargins(0, 0, 0, 0);
+    scroll->setWidget(content);
+    outer->addWidget(scroll);
 
     mStatusOrNull = new QLabel(this);
     mStatusOrNull->setObjectName(QStringLiteral("scatterStatus"));
