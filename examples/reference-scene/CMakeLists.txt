@@ -39,9 +39,19 @@ if(BUILD_TESTING)
     set_tests_properties(scene_gpu_preview PROPERTIES TIMEOUT 60)
     add_test(NAME scene_capture COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_capture.py" "$<TARGET_FILE:reference_scene>")
     set_tests_properties(scene_capture PROPERTIES TIMEOUT 60)
+    # A cold GPU-compute capture compiles the monolithic reference kernel. It gets the renderer's reference
+    # cold-preparation budget (renderer_test_reference_cold_gpu_timeout_seconds in
+    # modules/graphics/renderer/CMakeLists.txt), which the installed SDK does not carry; the CPU oracle and the
+    # acceptance stop share the remaining minute.
+    set(scene_reference_capture_timeout_seconds 180)
+    if(LUDUS_SCENE_SANITIZERS)
+        set(scene_reference_capture_timeout_seconds 300)
+    endif()
+    math(EXPR scene_absorbing_medium_timeout_seconds "${scene_reference_capture_timeout_seconds} + 60")
     add_test(NAME scene_absorbing_medium COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_medium.py" "$<TARGET_FILE:reference_scene>")
-    set_tests_properties(scene_absorbing_medium PROPERTIES TIMEOUT 120)
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_medium.py" "$<TARGET_FILE:reference_scene>"
+        "${scene_reference_capture_timeout_seconds}")
+    set_tests_properties(scene_absorbing_medium PROPERTIES TIMEOUT ${scene_absorbing_medium_timeout_seconds})
     add_test(NAME scene_acceptance_driver COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_acceptance.py -v)
     add_test(NAME scene_renderer_acceptance COMMAND "${Python3_EXECUTABLE}"
