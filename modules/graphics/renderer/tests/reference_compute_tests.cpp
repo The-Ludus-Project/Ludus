@@ -2647,6 +2647,13 @@ TEST_CASE("RT1 rough-metal white furnace matches the single-scattering integral 
     // per trial. At 16,384 trials, Hoeffding's two-sided bound for an error above 0.02 is about 4.1e-6.
     constexpr float64 MEAN_RADIANCE_TOLERANCE = 0.02;
     constexpr float32 MATCHED_PIXEL_TOLERANCE = 1e-3F;
+    // Thanks to Eric Heitz, "Understanding the Masking-Shadowing Function in Microfacet-Based BRDFs",
+    // JCGT 3(2), 2014, section 3.4, https://jcgt.org/published/0003/02/03/paper.pdf#page=18.
+    // The weak white furnace includes both hemispheres. With alpha = 1 and a normal view, the masking-only
+    // reflected density is uniform on the sphere. Half its proposals fall below the plane and stay null.
+    constexpr float64 EXPECTED_NULL_FRACTION = 0.5;
+    constexpr float64 NULL_FRACTION_TOLERANCE = 0.02;
+    constexpr float64 PROPOSALS_PER_CAPTURE = static_cast<float64>(IMAGE_EXTENT * IMAGE_EXTENT * SAMPLES_PER_PIXEL);
     rr::ReferenceCaptureDescription capture;
     capture.Width = IMAGE_EXTENT;
     capture.Height = IMAGE_EXTENT;
@@ -2673,6 +2680,11 @@ TEST_CASE("RT1 rough-metal white furnace matches the single-scattering integral 
             CHECK(computeInfo.Traversal == rr::ReferenceTraversal::GpuCompute);
             CHECK(oracleInfo.InvalidContributions == 0);
             CHECK(computeInfo.InvalidContributions == 0);
+            const float64 cpuNullFraction = static_cast<float64>(oracleInfo.NullBsdfSamples) / PROPOSALS_PER_CAPTURE;
+            const float64 gpuNullFraction = static_cast<float64>(computeInfo.NullBsdfSamples) / PROPOSALS_PER_CAPTURE;
+            CAPTURE(cpuNullFraction, gpuNullFraction);
+            CHECK(math::Abs(cpuNullFraction - EXPECTED_NULL_FRACTION) <= NULL_FRACTION_TOLERANCE);
+            CHECK(math::Abs(gpuNullFraction - EXPECTED_NULL_FRACTION) <= NULL_FRACTION_TOLERANCE);
             const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
             CAPTURE(comparison.MaximumRadiance, comparison.MaximumDirect);
             CHECK(comparison.MaximumRadiance <= MATCHED_PIXEL_TOLERANCE);
