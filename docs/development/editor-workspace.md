@@ -3757,6 +3757,40 @@ highlight exactly the 256 cube pixels. Two channels change by one on each,
 giving a normalized RGB RMSE of 1/6. The artifact includes the PNGs, driver
 version, graph digest, export names and per-run adapter logs.
 
+#### Label export baseline
+
+The same job checks a categorical export. The saved `labels.world.json` places a
+red foreground cube and a blue rear cube three metres behind it, offset by one
+metre right and down. The cooked graph in `tests/sdk_consumer/raster_baseline/labels`
+has two static raster passes from the same camera and extent. `Main/labels`
+writes the visibility-buffer identity. Alpha is the object's position among the
+World's renderables plus one, RGB is its mesh-local triangle, and the cleared
+background is zero in every channel. `Main/color` writes the matching flat
+tints. Neither export is tone mapped, blended, filtered or display-converted.
+The Editor saves each export's raw RGBA8 bytes, so the alpha identity survives.
+The installed-SDK app captures both from the same package with
+`raster_capture labels.world.json labels.lurgrt Main/labels labels.png Main/color color.png`.
+
+`labels.py` predicts the label grid without the renderer. It projects the cube
+mesh through the saved orthographic camera at every pixel centre and keeps the
+nearest face. The foreground covers columns 32–47 and rows 16–31. The rear cube
+shows 192 pixels in columns 40–55 and rows 24–39, with the 8 × 8 overlap hidden
+behind the foreground. Silhouettes fall on pixel boundaries, and the prediction
+rejects a pixel centre on any silhouette. A centre on the diagonal shared by a
+face's two triangles may carry either triangle; the check accepts exactly those
+two. Every other pixel must match its label and triangle exactly.
+
+Both hosts run each phase. Two fresh runs must match the prediction. An
+appearance-only edit changes both tints; the label bytes must not change, and
+the colour export must show the new tints. A geometry edit moves the foreground
+half a metre right. Exactly 128 labels change, and the captures must follow the
+new prediction. The negative control reorders the two renderables, which swaps
+their labels. Its captures must match the swapped prediction and fail the saved
+one on all 448 labelled pixels. The `labels/` folder of the
+`raster-baseline-vulkan` artifact holds the raw label PNGs and per-capture
+JSON. It also has label views that draw labels 1 and 2 in orange and cyan,
+plus HTML heatmaps for each phase, with the swap's failing `swap-label.html`.
+
 ## S4 scene authoring
 
 World owns the world-demo adapter as well as 3D scene placement. Its sample
