@@ -3,6 +3,8 @@
 
 #include <ludus/content/foliage_cook/foliage_cook.h>
 
+#include <ludus/content/foliage_pages/foliage_page_publication.h>
+
 #include <ludus/content/terrain/terrain_surface.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/threading/thread.hpp>
@@ -668,6 +670,74 @@ TEST_CASE("dirty-halo recooks equal a clean cook", "[foliage][cook]")
     REQUIRE(TryGetFoliageDirtyPages(suppressedInput, roots, dirty, diagnostic) == FoliageCookStatus::Ok);
     Merge(Cook(suppressedInput, {dirty.GetData(), dirty.GetSize()}), spliced);
     CHECK(AreBytesEqual(Write(suppressedInput, spliced), CookAll(suppressedInput)) == true);
+}
+
+TEST_CASE("a dirty recook replaces the published page set only after it validates", "[foliage][cook]")
+{
+    const pages::FoliagePageBinding binding
+    {
+        .DomainId = golden::DOMAIN_ID,
+        .TerrainRevision = golden::TERRAIN_REVISION,
+    };
+    Fixture before;
+    const FoliageCookInput beforeInput = before.Cook.MakeInput();
+    const Array<FoliagePageAddress> all = GetTerrainPages(beforeInput);
+    const FoliageCookedPages previous = Cook(beforeInput, {all.GetData(), all.GetSize()});
+    const Array<uint8> previousBytes = Write(beforeInput, previous);
+
+    pages::FoliagePageSetPublication publication;
+    pages::FoliagePageSetCandidate candidate;
+    pages::FoliagePageDiagnostic diagnostic;
+    Array<uint8> staged = previousBytes;
+    REQUIRE(publication.TryStage(staged, binding, candidate, diagnostic) == pages::FoliagePageStatus::Ok);
+    REQUIRE(publication.TryPublish(candidate) == pages::FoliagePublicationStatus::Ok);
+
+    // Recook the pages a terrain edit dirties and splice them over the published cook.
+    constexpr int64 PATCH_CODES = 300;
+    golden::GoldenCook after;
+    REQUIRE(golden::TryInitializeGoldenCook(after, [](int64 x, int64 z) noexcept {
+                const bool isInPatch = x <= golden::MINIMUM_SAMPLE + 1 && z <= golden::MINIMUM_SAMPLE + 1;
+                return golden::ComputeCode(x, z) + (isInPatch == true ? PATCH_CODES : 0);
+            }) == true);
+    const FoliageCookInput afterInput = after.MakeInput();
+    FoliageCookDiagnostic cookDiagnostic;
+    FoliageLatticeRectangle roots;
+    REQUIRE(TryGetFoliageSampleEditRoots(afterInput,
+                                         { .X = golden::MINIMUM_SAMPLE, .Z = golden::MINIMUM_SAMPLE },
+                                         { .X = golden::MINIMUM_SAMPLE + 1, .Z = golden::MINIMUM_SAMPLE + 1 },
+                                         roots,
+                                         cookDiagnostic) == FoliageCookStatus::Ok);
+    Array<FoliagePageAddress> dirty;
+    REQUIRE(TryGetFoliageDirtyPages(afterInput, roots, dirty, cookDiagnostic) == FoliageCookStatus::Ok);
+    FoliageCookedPages spliced = Cook(beforeInput, {all.GetData(), all.GetSize()});
+    Merge(Cook(afterInput, {dirty.GetData(), dirty.GetSize()}), spliced);
+    Array<uint8> replacement = Write(afterInput, spliced);
+    const Array<uint8> clean = CookAll(afterInput);
+    REQUIRE(AreBytesEqual(replacement, clean) == true);
+    REQUIRE(AreBytesEqual(replacement, previousBytes) == false);
+
+    // A replacement damaged after the cook, or bound to another terrain revision, keeps the published cook.
+    Array<uint8> damaged = replacement;
+    damaged[damaged.GetSize() - 1] ^= 1U;
+    CHECK(publication.TryStage(damaged, binding, candidate, diagnostic) != pages::FoliagePageStatus::Ok);
+    CHECK(publication.TryPublish(candidate) == pages::FoliagePublicationStatus::NotReady);
+    pages::FoliagePageBinding newerTerrain = binding;
+    newerTerrain.TerrainRevision += 1;
+    CHECK(publication.TryStage(replacement, newerTerrain, candidate, diagnostic) ==
+          pages::FoliagePageStatus::RevisionMismatch);
+    CHECK(publication.TryPublish(candidate) == pages::FoliagePublicationStatus::NotReady);
+    CHECK(publication.GetAcceptedRevision() == 1);
+    CHECK(pages::golden::ComputeDigest(publication.GetAcceptedBytes()) == golden::ENCODED_DIGEST);
+
+    // The validated replacement publishes the clean cook's bytes and retires the previous generation.
+    REQUIRE(publication.TryStage(replacement, binding, candidate, diagnostic) == pages::FoliagePageStatus::Ok);
+    REQUIRE(publication.TryPublish(candidate) == pages::FoliagePublicationStatus::Ok);
+    CHECK(publication.GetAcceptedRevision() == 2);
+    const BorrowedView<const uint8> accepted = publication.GetAcceptedBytes();
+    CHECK(pages::golden::ComputeDigest(accepted) == pages::golden::ComputeDigest({clean.GetData(), clean.GetSize()}));
+    CHECK(accepted.GetSize() == clean.GetSize());
+    REQUIRE(candidate.GetState() == pages::FoliagePageSetCandidateState::Retired);
+    CHECK(candidate.GetView().GetPlacementCount() == Read(previousBytes).GetPlacementCount());
 }
 
 TEST_CASE("render-only species edits keep the page set bytes", "[foliage][cook]")
