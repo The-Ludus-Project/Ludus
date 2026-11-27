@@ -41,7 +41,7 @@ void PublishBaseline(ScatterGenerationCoordinator& inoutCoordinator, const Scatt
     GenerationTrace trace(TRACE_CAPACITY);
     ScatterCandidate candidate;
     REQUIRE(inoutCoordinator.TryStage(input, trace, candidate) == GenerationStatus::Success);
-    REQUIRE(inoutCoordinator.TryPublish(candidate) == GenerationStatus::Success);
+    REQUIRE(inoutCoordinator.TryPublish(input, candidate) == GenerationStatus::Success);
 }
 
 /// An accepted room-A tree outside the keep-out edit, which the author locks.
@@ -77,7 +77,7 @@ TEST_CASE("A staged keep-out edit is explained by placement before publication",
         REQUIRE(record.IsStored == true);
     }
     REQUIRE(coordinator.GetAcceptedRevision() == 0);
-    REQUIRE(coordinator.TryPublish(baseline) == GenerationStatus::Success);
+    REQUIRE(coordinator.TryPublish(fixture.Input, baseline) == GenerationStatus::Success);
     REQUIRE(coordinator.GetAcceptedRevision() == 1);
     REQUIRE(baseline.Status == GenerationStatus::NotReady);
     REQUIRE(baseline.Manifest.Placements.IsEmpty() == true);
@@ -164,7 +164,7 @@ TEST_CASE("A staged keep-out edit is explained by placement before publication",
     // Rejecting the candidate preserves the accepted placements and manifest.
     coordinator.Reject(edited);
     REQUIRE(edited.Status == GenerationStatus::NotReady);
-    REQUIRE(coordinator.TryPublish(edited) == GenerationStatus::NotReady);
+    REQUIRE(coordinator.TryPublish(fixture.Input, edited) == GenerationStatus::NotReady);
     REQUIRE(coordinator.GetAcceptedRevision() == 1);
     RequireSameManifest(accepted, coordinator.GetAccepted());
 }
@@ -187,16 +187,24 @@ TEST_CASE("Each layer product is invalidated only by its own inputs", "[procedur
         REQUIRE(FindRecord(trace, ROOM_B, TREE_LAYER).Outcome == GenerationStageOutcome::CacheHit);
         REQUIRE(candidate.Manifest.Digest != coordinator.GetAccepted().Digest);
     }
-    SECTION("adding a lock changes no product")
+    SECTION("locking an accepted placement reruns only its layer and keeps every placement")
     {
-        const ScatterPlacement lock = coordinator.GetAccepted().Placements[0];
+        const ScatterManifest& accepted = coordinator.GetAccepted();
+        const ScatterPlacement lock = accepted.Placements[0];
+        REQUIRE(lock.Identity.Layer == TREE_LAYER);
         fixture.Scopes[0].Locks = {&lock, 1};
         REQUIRE(coordinator.TryStage(fixture.Input, trace, candidate) == GenerationStatus::Success);
-        for (const GenerationStageRecord& record : trace.GetRecords())
+        const GenerationStageRecord& locked = FindRecord(trace, ROOM_A, TREE_LAYER);
+        REQUIRE(locked.Outcome == GenerationStageOutcome::Executed);
+        // An accepted placement already outranks every candidate it conflicts with, so locking it removes nothing.
+        REQUIRE(locked.Output == accepted.Layers[0].Output);
+        REQUIRE(FindRecord(trace, ROOM_A, STONE_LAYER).Outcome == GenerationStageOutcome::CacheHit);
+        REQUIRE(FindRecord(trace, ROOM_B, TREE_LAYER).Outcome == GenerationStageOutcome::CacheHit);
+        REQUIRE(candidate.Manifest.Placements.GetSize() == accepted.Placements.GetSize());
+        for (usize i = 0; i < accepted.Placements.GetSize(); ++i)
         {
-            REQUIRE(record.Outcome == GenerationStageOutcome::CacheHit);
+            REQUIRE(AreEqual(candidate.Manifest.Placements[i], accepted.Placements[i]) == true);
         }
-        RequireSameManifest(coordinator.GetAccepted(), candidate.Manifest);
     }
     SECTION("a seed edit reruns every scope")
     {
@@ -232,15 +240,25 @@ TEST_CASE("An unsatisfied author lock blocks publication and names its cause", "
         REQUIRE(candidate.Conflicts[0].Decision.Rule == ScatterDecisionRule::KeepOut);
         REQUIRE(candidate.Manifest.FindPlacement(lock.Identity) == nullptr);
     }
-    SECTION("a lock whose values the recipe no longer produces")
+    SECTION("a lock moved out of its cell")
     {
         ScatterPlacement lock = accepted.Placements[0];
-        lock.Rotation = static_cast<uint16>(lock.Rotation + 1U);
+        lock.LatticeX = (static_cast<int32>(lock.Identity.CellX) + 1) * fixture.RoomALayers[0].CellSize;
         fixture.Scopes[0].Locks = {&lock, 1};
         REQUIRE(coordinator.TryStage(fixture.Input, trace, candidate) == GenerationStatus::ConstraintFailed);
         REQUIRE(candidate.Conflicts.GetSize() == 1);
-        REQUIRE(candidate.Conflicts[0].IsMissing == false);
-        REQUIRE(AreEqual(candidate.Conflicts[0].Generated, accepted.Placements[0]) == true);
+        REQUIRE(candidate.Conflicts[0].IsMissing == true);
+        REQUIRE(candidate.Conflicts[0].Decision.Stage == ScatterDecisionStage::Recipe);
+        REQUIRE(candidate.Conflicts[0].Decision.Rule == ScatterDecisionRule::LockOutsideRecipe);
+        REQUIRE(candidate.Conflicts[0].Decision.IsLocked == true);
+    }
+    SECTION("a lock whose scale the layer no longer allows")
+    {
+        ScatterPlacement lock = accepted.Placements[0];
+        lock.Scale = static_cast<uint16>(fixture.RoomALayers[0].MaximumScale + 1U);
+        fixture.Scopes[0].Locks = {&lock, 1};
+        REQUIRE(coordinator.TryStage(fixture.Input, trace, candidate) == GenerationStatus::ConstraintFailed);
+        REQUIRE(candidate.Conflicts[0].Decision.Rule == ScatterDecisionRule::LockOutsideRecipe);
     }
     SECTION("a lock whose layer was removed")
     {
@@ -252,9 +270,252 @@ TEST_CASE("An unsatisfied author lock blocks publication and names its cause", "
         REQUIRE(candidate.Conflicts[0].Decision.Rule == ScatterDecisionRule::LayerRemoved);
     }
     REQUIRE(candidate.Status == GenerationStatus::ConstraintFailed);
-    REQUIRE(coordinator.TryPublish(candidate) == GenerationStatus::NotReady);
+    REQUIRE(coordinator.TryPublish(fixture.Input, candidate) == GenerationStatus::NotReady);
     REQUIRE(coordinator.GetAcceptedRevision() == 1);
     RequireSameManifest(accepted, coordinator.GetAccepted());
+}
+
+namespace
+{
+/// A room-A tree candidate that thinning rejected, and the accepted placement that outranked it.
+struct ThinnedCandidate final
+{
+    ScatterIdentity Identity;
+    ScatterIdentity Outranking;
+};
+
+[[nodiscard]] ThinnedCandidate FindThinnedTree(const TwoScopeFixture& fixture, const ScatterManifest& accepted)
+{
+    ScatterKeys keys;
+    REQUIRE(TryMakeScatterKeys(fixture.Input.WorldSeed, fixture.Input.Domains, keys) == ScatterStatus::Success);
+    const ScatterRecipe& recipe = fixture.Scopes[0].Recipe;
+    ScatterCellRange cells;
+    REQUIRE(TryGetScatterCells(recipe, 0, cells) == ScatterStatus::Success);
+    for (int32 y = cells.MinimumY; y < cells.MaximumY; ++y)
+    {
+        for (int32 x = cells.MinimumX; x < cells.MaximumX; ++x)
+        {
+            for (uint16 k = 0; k < recipe.Layers[0].CandidatesPerCell; ++k)
+            {
+                const ScatterIdentity identity{ROOM_A,
+                                               TREE_LAYER,
+                                               static_cast<uint8>(k),
+                                               static_cast<int16>(x),
+                                               static_cast<int16>(y)};
+                ScatterDecision decision;
+                REQUIRE(TryExplainScatterCandidate(recipe, keys, 0, identity, decision) == ScatterStatus::Success);
+                if (decision.Rule == ScatterDecisionRule::Conflict &&
+                    accepted.FindPlacement(decision.Outranking) != nullptr)
+                {
+                    return {identity, decision.Outranking};
+                }
+            }
+        }
+    }
+    FAIL("the fixture's tree layer thins no candidate for an accepted placement");
+    return {};
+}
+
+[[nodiscard]] int32 Clamp(int32 value, int32 minimum, int32 maximum) noexcept
+{
+    return value < minimum ? minimum : (value > maximum ? maximum : value);
+}
+
+/// Number of an override conflict's properties, by kind.
+[[nodiscard]] usize CountProperty(const Array<ScatterOverrideConflict>& conflicts, ScatterOverrideProperty property)
+{
+    usize count = 0;
+    for (const ScatterOverrideConflict& conflict : conflicts)
+    {
+        count += conflict.Property == property ? 1 : 0;
+    }
+    return count;
+}
+} // namespace
+
+TEST_CASE("A lock enters thinning before the conflicts around it are decided", "[procedural][generation][lock]")
+{
+    MemoryGenerationCacheStore store(CACHE_LIMITS);
+    ScatterGenerationCoordinator coordinator(store);
+    TwoScopeFixture fixture;
+    PublishBaseline(coordinator, fixture.Input);
+    const ScatterManifest accepted = coordinator.GetAccepted();
+    const ThinnedCandidate thinned = FindThinnedTree(fixture, accepted);
+    const ScatterPlacement& outranking = *accepted.FindPlacement(thinned.Outranking);
+
+    // Lock the thinned candidate at the point of its cell nearest the placement that outranked it, with the widest
+    // variant. That point is no farther from it than the candidate's sampled one, so the two still conflict.
+    const int32 cellSize = fixture.RoomALayers[0].CellSize;
+    const int32 cellX = static_cast<int32>(thinned.Identity.CellX) * cellSize;
+    const int32 cellY = static_cast<int32>(thinned.Identity.CellY) * cellSize;
+    constexpr uint32 WIDEST_TREE_VARIANT = 1;
+    constexpr uint16 LOCKED_ROTATION = 0x1234;
+    constexpr uint16 LOCKED_SCALE = 1000;
+    const ScatterPlacement lock{thinned.Identity,
+                                Clamp(outranking.LatticeX, cellX, cellX + cellSize - 1),
+                                Clamp(outranking.LatticeY, cellY, cellY + cellSize - 1),
+                                WIDEST_TREE_VARIANT,
+                                LOCKED_ROTATION,
+                                LOCKED_SCALE};
+    fixture.Scopes[0].Locks = {&lock, 1};
+
+    GenerationTrace trace(TRACE_CAPACITY);
+    ScatterCandidate candidate;
+    REQUIRE(coordinator.TryStage(fixture.Input, trace, candidate) == GenerationStatus::Success);
+    REQUIRE(candidate.Conflicts.IsEmpty() == true);
+    REQUIRE(FindRecord(trace, ROOM_A, TREE_LAYER).Outcome == GenerationStageOutcome::Executed);
+    REQUIRE(FindRecord(trace, ROOM_A, STONE_LAYER).Outcome == GenerationStageOutcome::CacheHit);
+    REQUIRE(FindRecord(trace, ROOM_B, TREE_LAYER).Outcome == GenerationStageOutcome::CacheHit);
+
+    // The locked candidate is generated with exactly its lock's values, and the placement that outranked it is
+    // removed by thinning in its favour.
+    const ScatterPlacement* lockedOrNull = candidate.Manifest.FindPlacement(lock.Identity);
+    REQUIRE(lockedOrNull != nullptr);
+    REQUIRE(AreEqual(*lockedOrNull, lock) == true);
+    REQUIRE(candidate.Manifest.FindPlacement(outranking.Identity) == nullptr);
+    Array<ScatterChange> changes;
+    REQUIRE(TryCompareScatterManifests(accepted, candidate.Manifest, fixture.Input, changes) ==
+            GenerationStatus::Success);
+    bool isExplained = false;
+    for (const ScatterChange& change : changes)
+    {
+        REQUIRE(change.Identity.Room == ROOM_A);
+        REQUIRE(change.Identity.Layer == TREE_LAYER);
+        if (change.Identity == outranking.Identity)
+        {
+            REQUIRE(change.Kind == ScatterChangeKind::Removed);
+            REQUIRE(change.Decision.Stage == ScatterDecisionStage::Thinning);
+            REQUIRE(change.Decision.Rule == ScatterDecisionRule::Conflict);
+            REQUIRE(change.Decision.Outranking == lock.Identity);
+            REQUIRE(change.Decision.IsLocked == false);
+            isExplained = true;
+        }
+    }
+    REQUIRE(isExplained == true);
+
+    // A clean cook of the same inputs agrees, and publication accepts the lock's values.
+    MemoryGenerationCacheStore cleanStore(CACHE_LIMITS);
+    ScatterGenerationCoordinator cleanCoordinator(cleanStore);
+    ScatterCandidate clean;
+    REQUIRE(cleanCoordinator.TryStage(fixture.Input, trace, clean) == GenerationStatus::Success);
+    RequireSameManifest(clean.Manifest, candidate.Manifest);
+    REQUIRE(coordinator.TryPublish(fixture.Input, candidate) == GenerationStatus::Success);
+    REQUIRE(AreEqual(*coordinator.GetAccepted().FindPlacement(lock.Identity), lock) == true);
+}
+
+TEST_CASE("An override edited while a candidate is pending makes it stale and is named by property",
+          "[procedural][generation][lock]")
+{
+    MemoryGenerationCacheStore store(CACHE_LIMITS);
+    ScatterGenerationCoordinator coordinator(store);
+    TwoScopeFixture fixture;
+    PublishBaseline(coordinator, fixture.Input);
+    const ScatterManifest accepted = coordinator.GetAccepted();
+
+    // Stage a candidate against the accepted manifest with an override of one room-B placement's rotation.
+    const ScatterPlacement target = accepted.Placements.GetLast();
+    REQUIRE(target.Identity.Room == ROOM_B);
+    constexpr uint16 QUARTER_TURN = 0x4000;
+    constexpr uint16 EIGHTH_TURN = 0x2000;
+    ScatterPlacement authored = target;
+    authored.Rotation = static_cast<uint16>(target.Rotation + QUARTER_TURN);
+    fixture.Scopes[1].Locks = {&authored, 1};
+    GenerationTrace trace(TRACE_CAPACITY);
+    ScatterCandidate pending;
+    REQUIRE(coordinator.TryStage(fixture.Input, trace, pending) == GenerationStatus::Success);
+    const ScatterPlacement staged = authored;
+    REQUIRE(AreEqual(*pending.Manifest.FindPlacement(target.Identity), staged) == true);
+    Array<ScatterOverrideConflict> conflicts;
+    REQUIRE(TryFindScatterOverrideConflicts(pending, fixture.Input, conflicts) == GenerationStatus::Success);
+    REQUIRE(conflicts.IsEmpty() == true);
+
+    SECTION("a changed override is named by placement and property; retrying keeps the authored value")
+    {
+        authored.Rotation = static_cast<uint16>(authored.Rotation + EIGHTH_TURN);
+        REQUIRE(coordinator.TryPublish(fixture.Input, pending) == GenerationStatus::StaleCandidate);
+        REQUIRE(pending.Status == GenerationStatus::Success);
+        REQUIRE(coordinator.GetAcceptedRevision() == 1);
+        RequireSameManifest(accepted, coordinator.GetAccepted());
+
+        REQUIRE(TryFindScatterOverrideConflicts(pending, fixture.Input, conflicts) == GenerationStatus::Success);
+        REQUIRE(conflicts.GetSize() == 1);
+        REQUIRE(conflicts[0].Identity == target.Identity);
+        REQUIRE(conflicts[0].Property == ScatterOverrideProperty::Rotation);
+        REQUIRE(conflicts[0].HasAuthored == true);
+        REQUIRE(conflicts[0].Authored.Rotation == authored.Rotation);
+        REQUIRE(conflicts[0].HasCandidate == true);
+        REQUIRE(conflicts[0].Candidate.Rotation == staged.Rotation);
+
+        // Retrying stages the current input: only the overridden layer runs again, and the other scope keeps its
+        // cached work.
+        trace.Clear();
+        ScatterCandidate retried;
+        REQUIRE(coordinator.TryStage(fixture.Input, trace, retried) == GenerationStatus::Success);
+        REQUIRE(FindRecord(trace, ROOM_A, TREE_LAYER).Outcome == GenerationStageOutcome::CacheHit);
+        REQUIRE(FindRecord(trace, ROOM_A, STONE_LAYER).Outcome == GenerationStageOutcome::CacheHit);
+        REQUIRE(FindRecord(trace, ROOM_B, TREE_LAYER).Outcome == GenerationStageOutcome::Executed);
+        REQUIRE(TryFindScatterOverrideConflicts(retried, fixture.Input, conflicts) == GenerationStatus::Success);
+        REQUIRE(conflicts.IsEmpty() == true);
+        REQUIRE(coordinator.TryPublish(fixture.Input, retried) == GenerationStatus::Success);
+        REQUIRE(coordinator.GetAcceptedRevision() == 2);
+        REQUIRE(AreEqual(*coordinator.GetAccepted().FindPlacement(target.Identity), authored) == true);
+        for (const ScatterPlacement& placement : accepted.Placements)
+        {
+            if (placement.Identity.Room == ROOM_A)
+            {
+                REQUIRE(AreEqual(*coordinator.GetAccepted().FindPlacement(placement.Identity), placement) == true);
+            }
+        }
+    }
+    SECTION("editing two properties names each one, in property order")
+    {
+        constexpr uint16 EDITED_SCALE = 1100;
+        authored.Rotation = static_cast<uint16>(authored.Rotation + EIGHTH_TURN);
+        authored.Scale = EDITED_SCALE;
+        REQUIRE(staged.Scale != EDITED_SCALE);
+        REQUIRE(TryFindScatterOverrideConflicts(pending, fixture.Input, conflicts) == GenerationStatus::Success);
+        REQUIRE(conflicts.GetSize() == 2);
+        REQUIRE(conflicts[0].Property == ScatterOverrideProperty::Rotation);
+        REQUIRE(conflicts[1].Property == ScatterOverrideProperty::Scale);
+        REQUIRE(conflicts[1].Authored.Scale == EDITED_SCALE);
+        REQUIRE(conflicts[1].Candidate.Scale == staged.Scale);
+    }
+    SECTION("removing the override while pending is a lock conflict")
+    {
+        fixture.Scopes[1].Locks = {};
+        REQUIRE(coordinator.TryPublish(fixture.Input, pending) == GenerationStatus::StaleCandidate);
+        REQUIRE(TryFindScatterOverrideConflicts(pending, fixture.Input, conflicts) == GenerationStatus::Success);
+        REQUIRE(conflicts.GetSize() == 1);
+        REQUIRE(CountProperty(conflicts, ScatterOverrideProperty::Lock) == 1);
+        REQUIRE(conflicts[0].HasAuthored == false);
+        REQUIRE(conflicts[0].HasCandidate == true);
+        REQUIRE(AreEqual(conflicts[0].Candidate, staged) == true);
+    }
+    SECTION("a new override of a placement the candidate lacks is a presence conflict")
+    {
+        ScatterPlacement absent = target;
+        absent.Identity.Candidate = static_cast<uint8>(fixture.RoomBLayers[0].CandidatesPerCell);
+        const ScatterPlacement locks[] = {absent, authored};
+        fixture.Scopes[1].Locks = BorrowedView<const ScatterPlacement>(locks);
+        REQUIRE(TryFindScatterOverrideConflicts(pending, fixture.Input, conflicts) == GenerationStatus::Success);
+        REQUIRE(conflicts.GetSize() == 1);
+        REQUIRE(conflicts[0].Property == ScatterOverrideProperty::Presence);
+        REQUIRE(conflicts[0].Identity == absent.Identity);
+        REQUIRE(conflicts[0].HasCandidate == false);
+        REQUIRE(coordinator.TryPublish(fixture.Input, pending) == GenerationStatus::StaleCandidate);
+    }
+    SECTION("rejecting the stale proposal preserves the accepted manifest")
+    {
+        authored.Rotation = static_cast<uint16>(authored.Rotation + EIGHTH_TURN);
+        coordinator.Reject(pending);
+        REQUIRE(TryFindScatterOverrideConflicts(pending, fixture.Input, conflicts) == GenerationStatus::NotReady);
+        REQUIRE(coordinator.TryPublish(fixture.Input, pending) == GenerationStatus::NotReady);
+    }
+    REQUIRE(coordinator.GetAcceptedRevision() <= 2);
+    if (coordinator.GetAcceptedRevision() == 1)
+    {
+        RequireSameManifest(accepted, coordinator.GetAccepted());
+    }
 }
 
 TEST_CASE("A candidate staged against an older revision cannot publish", "[procedural][generation]")
@@ -272,8 +533,12 @@ TEST_CASE("A candidate staged against an older revision cannot publish", "[proce
     fixture.Input.WorldSeed += 1;
     REQUIRE(coordinator.TryStage(fixture.Input, trace, second) == GenerationStatus::Success);
     const ScatterManifest firstManifest = first.Manifest;
-    REQUIRE(coordinator.TryPublish(first) == GenerationStatus::Success);
-    REQUIRE(coordinator.TryPublish(second) == GenerationStatus::StaleCandidate);
+    // The current input is the seed edit: the first candidate is stale against it, the second against the revision.
+    REQUIRE(coordinator.TryPublish(fixture.Input, first) == GenerationStatus::StaleCandidate);
+    fixture.Input.WorldSeed -= 1;
+    REQUIRE(coordinator.TryPublish(fixture.Input, first) == GenerationStatus::Success);
+    fixture.Input.WorldSeed += 1;
+    REQUIRE(coordinator.TryPublish(fixture.Input, second) == GenerationStatus::StaleCandidate);
     REQUIRE(second.Status == GenerationStatus::Success);
     REQUIRE(second.Manifest.Placements.IsEmpty() == false);
     REQUIRE(coordinator.GetAcceptedRevision() == 2);
@@ -373,9 +638,21 @@ TEST_CASE("Invalid generation requests stage nothing and publish nothing", "[pro
         fixture.Input.Scopes = {};
         REQUIRE(coordinator.TryStage(fixture.Input, trace, candidate) == GenerationStatus::InvalidInput);
     }
+    const ScatterPlacement duplicates[] = {lock, lock};
+    SECTION("two locks of one identity")
+    {
+        fixture.Scopes[1].Locks = BorrowedView<const ScatterPlacement>(duplicates);
+        REQUIRE(coordinator.TryStage(fixture.Input, trace, candidate) == GenerationStatus::InvalidInput);
+    }
+    SECTION("a lock placed in the recipe's layer rather than the scope")
+    {
+        fixture.RoomBLayers[0].Locks = {&lock, 1};
+        REQUIRE(coordinator.TryStage(fixture.Input, trace, candidate) == GenerationStatus::InvalidInput);
+    }
     REQUIRE(candidate.Manifest.Placements.IsEmpty() == true);
     REQUIRE(candidate.Manifest.Layers.IsEmpty() == true);
-    REQUIRE(coordinator.TryPublish(candidate) == GenerationStatus::NotReady);
+    REQUIRE(candidate.Locks.IsEmpty() == true);
+    REQUIRE(coordinator.TryPublish(fixture.Input, candidate) == GenerationStatus::NotReady);
     RequireSameManifest(accepted, coordinator.GetAccepted());
     Array<ScatterChange> changes;
     REQUIRE(TryCompareScatterManifests(accepted, candidate.Manifest, fixture.Input, changes) ==

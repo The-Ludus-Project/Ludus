@@ -281,6 +281,7 @@ Status GameWorld::prepareScatter(WorldSeed worldSeed, foundation::BorrowedView<c
             .Variants = BorrowedView<const procedural::ScatterVariant>(variants[index], authored.VariantCount),
             .MinimumScale = authored.MinimumScale,
             .MaximumScale = authored.MaximumScale,
+            .Locks = {},
         };
     }
     recipe.Layers = BorrowedView<const procedural::ScatterLayer>(layers, scatter.LayerCount);

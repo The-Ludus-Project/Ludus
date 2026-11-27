@@ -1,5 +1,7 @@
 #include <ludus/content/procedural/environment/scatter_generation.h>
 
+#include <ludus/foundation/containers/sort.hpp>
+
 // Thanks to Kristian Hähnlein, Gilbert Louis Bernstein and Adriana Schulz, "DeCAD:
 // Semantic Differencing of CAD Models", UIST 2024, sections 4.1-4.3 and 6.1,
 // https://obikate.github.io/papers/decad.pdf. Their idea of tracing a difference
@@ -57,13 +59,53 @@ constexpr usize SCATTER_LAYER_PRODUCT_HEADER_BYTES = 4;
            a.Rotation == b.Rotation && a.Scale == b.Scale;
 }
 
-[[nodiscard]] GenerationStatus ValidateInput(const ScatterGenerationInput& input, ScatterKeys& outKeys) noexcept
+/// Lock order across a request: room, layer, then canonical identity order.
+struct LockOrder final
+{
+    [[nodiscard]] bool operator()(const ScatterPlacement& a, const ScatterPlacement& b) const noexcept
+    {
+        if (a.Identity.Room != b.Identity.Room)
+        {
+            return a.Identity.Room < b.Identity.Room;
+        }
+        if (a.Identity.Layer != b.Identity.Layer)
+        {
+            return a.Identity.Layer < b.Identity.Layer;
+        }
+        return IsCanonicallyBefore(a.Identity, b.Identity);
+    }
+};
+
+/// The contiguous locks of one room and layer within locks in LockOrder.
+[[nodiscard]] BorrowedView<const ScatterPlacement>
+GetLayerLocks(BorrowedView<const ScatterPlacement> locks, uint16 room, uint8 layer) noexcept
+{
+    usize first = 0;
+    while (first < locks.GetSize() && (locks[first].Identity.Room < room ||
+                                       (locks[first].Identity.Room == room && locks[first].Identity.Layer < layer)))
+    {
+        ++first;
+    }
+    usize end = first;
+    while (end < locks.GetSize() && locks[end].Identity.Room == room && locks[end].Identity.Layer == layer)
+    {
+        ++end;
+    }
+    // An empty share has no element to address.
+    return first == end ? BorrowedView<const ScatterPlacement>{}
+                        : BorrowedView<const ScatterPlacement>{&locks[first], end - first};
+}
+
+/// Validate a request, derive its keys and gather every scope's locks in LockOrder. Outputs are unchanged on failure.
+[[nodiscard]] GenerationStatus
+ValidateInput(const ScatterGenerationInput& input, ScatterKeys& outKeys, Array<ScatterPlacement>& outLocks) noexcept
 {
     if (input.Scopes.IsValid() == false || input.Scopes.IsEmpty() == true ||
         input.Scopes.GetSize() > MAX_SCATTER_GENERATION_SCOPES)
     {
         return GenerationStatus::InvalidInput;
     }
+    Array<ScatterPlacement> locks;
     for (usize i = 0; i < input.Scopes.GetSize(); ++i)
     {
         const ScatterScope& scope = input.Scopes[i];
@@ -73,6 +115,13 @@ constexpr usize SCATTER_LAYER_PRODUCT_HEADER_BYTES = 4;
         {
             return GenerationStatus::InvalidInput;
         }
+        for (const ScatterLayer& layer : scope.Recipe.Layers)
+        {
+            if (layer.Locks.IsEmpty() == false)
+            {
+                return GenerationStatus::InvalidInput;
+            }
+        }
         for (const ScatterPlacement& lock : scope.Locks)
         {
             if (lock.Identity.Room != scope.Recipe.Room)
@@ -80,10 +129,29 @@ constexpr usize SCATTER_LAYER_PRODUCT_HEADER_BYTES = 4;
                 return GenerationStatus::InvalidInput;
             }
         }
+        // Scopes ascend by room, so sorting each scope's share leaves the whole array in LockOrder.
+        const usize first = locks.GetSize();
+        if (locks.TryAddRange(scope.Locks) == false)
+        {
+            return GenerationStatus::OutOfMemory;
+        }
+        foundation::Sort(locks.GetData() + first, scope.Locks.GetSize(), LockOrder{});
+        for (usize lock = first + 1; lock < locks.GetSize(); ++lock)
+        {
+            if (locks[lock - 1].Identity == locks[lock].Identity)
+            {
+                return GenerationStatus::InvalidInput;
+            }
+        }
     }
-    return TryMakeScatterKeys(input.WorldSeed, input.Domains, outKeys) == ScatterStatus::Success
-               ? GenerationStatus::Success
-               : GenerationStatus::InvalidInput;
+    ScatterKeys keys;
+    if (TryMakeScatterKeys(input.WorldSeed, input.Domains, keys) != ScatterStatus::Success)
+    {
+        return GenerationStatus::InvalidInput;
+    }
+    outKeys = keys;
+    outLocks = foundation::Move(locks);
+    return GenerationStatus::Success;
 }
 
 void WriteRectangle(const ScatterRectangle& rectangle, GenerationByteWriter& outWriter) noexcept
@@ -104,20 +172,40 @@ void WriteRectangle(const ScatterRectangle& rectangle, GenerationByteWriter& out
     return rectangle;
 }
 
-/// A layer stage's parameters: every input the layer product depends on. Other layers and locks are excluded, so
-/// editing them never invalidates it. The operator, its version and the schema are in the stage key already.
-void WriteLayerParameters(const ScatterGenerationInput& input,
-                          const ScatterRecipe& recipe,
-                          const ScatterLayer& layer,
-                          GenerationByteWriter& outWriter) noexcept
+/// One placement record: identity 8, lattice 8, variant 4, rotation 2, scale 2 bytes.
+void WritePlacement(const ScatterPlacement& placement, GenerationByteWriter& outWriter) noexcept
 {
-    outWriter.Clear();
-    outWriter.WriteUInt32(SCATTER_LAYOUT_VERSION);
-    outWriter.WriteUInt64(input.WorldSeed);
-    outWriter.WriteUInt32(input.Domains.Placement);
-    outWriter.WriteUInt32(input.Domains.Variant);
-    outWriter.WriteUInt32(input.Domains.Transform);
-    outWriter.WriteUInt16(recipe.Room);
+    outWriter.WriteUInt16(placement.Identity.Room);
+    outWriter.WriteUInt8(placement.Identity.Layer);
+    outWriter.WriteUInt8(placement.Identity.Candidate);
+    outWriter.WriteInt16(placement.Identity.CellX);
+    outWriter.WriteInt16(placement.Identity.CellY);
+    outWriter.WriteInt32(placement.LatticeX);
+    outWriter.WriteInt32(placement.LatticeY);
+    outWriter.WriteUInt32(placement.Variant);
+    outWriter.WriteUInt16(placement.Rotation);
+    outWriter.WriteUInt16(placement.Scale);
+}
+
+[[nodiscard]] ScatterPlacement ReadPlacement(GenerationByteReader& inoutReader) noexcept
+{
+    ScatterPlacement placement;
+    placement.Identity.Room = inoutReader.ReadUInt16();
+    placement.Identity.Layer = inoutReader.ReadUInt8();
+    placement.Identity.Candidate = inoutReader.ReadUInt8();
+    placement.Identity.CellX = inoutReader.ReadInt16();
+    placement.Identity.CellY = inoutReader.ReadInt16();
+    placement.LatticeX = inoutReader.ReadInt32();
+    placement.LatticeY = inoutReader.ReadInt32();
+    placement.Variant = inoutReader.ReadUInt32();
+    placement.Rotation = inoutReader.ReadUInt16();
+    placement.Scale = inoutReader.ReadUInt16();
+    return placement;
+}
+
+/// A layer's own fields and variants.
+void WriteLayerFields(const ScatterLayer& layer, GenerationByteWriter& outWriter) noexcept
+{
     outWriter.WriteUInt8(layer.Id);
     outWriter.WriteUInt16(layer.CellSize);
     outWriter.WriteUInt16(layer.CandidatesPerCell);
@@ -128,6 +216,19 @@ void WriteLayerParameters(const ScatterGenerationInput& input,
     {
         outWriter.WriteUInt32(variant.ExclusionRadius);
     }
+}
+
+void WritePlacements(BorrowedView<const ScatterPlacement> placements, GenerationByteWriter& outWriter) noexcept
+{
+    outWriter.WriteUInt32(static_cast<uint32>(placements.GetSize()));
+    for (const ScatterPlacement& placement : placements)
+    {
+        WritePlacement(placement, outWriter);
+    }
+}
+
+void WriteRegionAndKeepOuts(const ScatterRecipe& recipe, GenerationByteWriter& outWriter) noexcept
+{
     WriteRectangle(recipe.Region, outWriter);
     outWriter.WriteUInt32(static_cast<uint32>(recipe.KeepOuts.GetSize()));
     for (const ScatterRectangle& keepOut : recipe.KeepOuts)
@@ -136,23 +237,57 @@ void WriteLayerParameters(const ScatterGenerationInput& input,
     }
 }
 
+/// A layer stage's parameters: every input the layer product depends on, its locks in canonical order included.
+/// Other layers and their locks are excluded, so editing them never invalidates it. The operator, its version and
+/// the schema are in the stage key already.
+void WriteLayerParameters(const ScatterGenerationInput& input,
+                          const ScatterRecipe& recipe,
+                          const ScatterLayer& layer,
+                          BorrowedView<const ScatterPlacement> layerLocks,
+                          GenerationByteWriter& outWriter) noexcept
+{
+    outWriter.Clear();
+    outWriter.WriteUInt32(SCATTER_LAYOUT_VERSION);
+    outWriter.WriteUInt64(input.WorldSeed);
+    outWriter.WriteUInt32(input.Domains.Placement);
+    outWriter.WriteUInt32(input.Domains.Variant);
+    outWriter.WriteUInt32(input.Domains.Transform);
+    outWriter.WriteUInt16(recipe.Room);
+    WriteLayerFields(layer, outWriter);
+    WritePlacements(layerLocks, outWriter);
+    WriteRegionAndKeepOuts(recipe, outWriter);
+}
+
 void WriteLayerProduct(BorrowedView<const ScatterPlacement> placements, GenerationByteWriter& outWriter) noexcept
 {
     outWriter.Clear();
-    outWriter.WriteUInt32(static_cast<uint32>(placements.GetSize()));
-    for (const ScatterPlacement& placement : placements)
+    WritePlacements(placements, outWriter);
+}
+
+/// The request's canonical encoding: every authored input of every scope, then every lock in LockOrder.
+void WriteInput(const ScatterGenerationInput& input,
+                BorrowedView<const ScatterPlacement> locks,
+                GenerationByteWriter& outWriter) noexcept
+{
+    outWriter.Clear();
+    outWriter.WriteUInt32(SCATTER_INPUT_DIGEST_VERSION);
+    outWriter.WriteUInt32(SCATTER_LAYOUT_VERSION);
+    outWriter.WriteUInt64(input.WorldSeed);
+    outWriter.WriteUInt32(input.Domains.Placement);
+    outWriter.WriteUInt32(input.Domains.Variant);
+    outWriter.WriteUInt32(input.Domains.Transform);
+    outWriter.WriteUInt32(static_cast<uint32>(input.Scopes.GetSize()));
+    for (const ScatterScope& scope : input.Scopes)
     {
-        outWriter.WriteUInt16(placement.Identity.Room);
-        outWriter.WriteUInt8(placement.Identity.Layer);
-        outWriter.WriteUInt8(placement.Identity.Candidate);
-        outWriter.WriteInt16(placement.Identity.CellX);
-        outWriter.WriteInt16(placement.Identity.CellY);
-        outWriter.WriteInt32(placement.LatticeX);
-        outWriter.WriteInt32(placement.LatticeY);
-        outWriter.WriteUInt32(placement.Variant);
-        outWriter.WriteUInt16(placement.Rotation);
-        outWriter.WriteUInt16(placement.Scale);
+        outWriter.WriteUInt16(scope.Recipe.Room);
+        WriteRegionAndKeepOuts(scope.Recipe, outWriter);
+        outWriter.WriteUInt32(static_cast<uint32>(scope.Recipe.Layers.GetSize()));
+        for (const ScatterLayer& layer : scope.Recipe.Layers)
+        {
+            WriteLayerFields(layer, outWriter);
+        }
     }
+    WritePlacements(locks, outWriter);
 }
 
 /// Decode a layer product's placements and append them: every record in the first record's room and layer, in
@@ -172,17 +307,7 @@ void WriteLayerProduct(BorrowedView<const ScatterPlacement> placements, Generati
     const usize first = inoutPlacements.GetSize();
     for (uint32 i = 0; i < count; ++i)
     {
-        ScatterPlacement placement;
-        placement.Identity.Room = reader.ReadUInt16();
-        placement.Identity.Layer = reader.ReadUInt8();
-        placement.Identity.Candidate = reader.ReadUInt8();
-        placement.Identity.CellX = reader.ReadInt16();
-        placement.Identity.CellY = reader.ReadInt16();
-        placement.LatticeX = reader.ReadInt32();
-        placement.LatticeY = reader.ReadInt32();
-        placement.Variant = reader.ReadUInt32();
-        placement.Rotation = reader.ReadUInt16();
-        placement.Scale = reader.ReadUInt16();
+        const ScatterPlacement placement = ReadPlacement(reader);
         const bool isOrdered = i == 0 || (placement.Identity.Room == inoutPlacements.GetLast().Identity.Room &&
                                           placement.Identity.Layer == inoutPlacements.GetLast().Identity.Layer &&
                                           IsCanonicallyBefore(inoutPlacements.GetLast().Identity, placement.Identity));
@@ -237,9 +362,10 @@ void WriteLayerProduct(BorrowedView<const ScatterPlacement> placements, Generati
                                                                                 : GenerationStatus::OutOfMemory;
 }
 
-/// Explain why the input's candidate lacks an identity.
+/// Explain why the input's candidate lacks an identity, evaluating its layer with the request's locks.
 [[nodiscard]] GenerationStatus ExplainAbsence(const ScatterGenerationInput& input,
                                               const ScatterKeys& keys,
+                                              BorrowedView<const ScatterPlacement> locks,
                                               ScatterIdentity identity,
                                               ScatterDecision& outDecision) noexcept
 {
@@ -264,7 +390,11 @@ void WriteLayerProduct(BorrowedView<const ScatterPlacement> placements, Generati
     {
         if (recipe.Layers[layer].Id == identity.Layer)
         {
-            return ToGenerationStatus(TryExplainScatterCandidate(recipe, keys, layer, identity, outDecision));
+            ScatterLayer lockedLayer = recipe.Layers[layer];
+            lockedLayer.Locks = GetLayerLocks(locks, recipe.Room, lockedLayer.Id);
+            ScatterRecipe lockedRecipe = recipe;
+            lockedRecipe.Layers = {&lockedLayer, 1};
+            return ToGenerationStatus(TryExplainScatterCandidate(lockedRecipe, keys, 0, identity, outDecision));
         }
     }
     decision.Rule = ScatterDecisionRule::LayerRemoved;
@@ -306,40 +436,72 @@ void WriteLayerProduct(BorrowedView<const ScatterPlacement> placements, Generati
     return GenerationStatus::Success;
 }
 
+/// Record every lock the candidate's manifest does not satisfy, in LockOrder.
 [[nodiscard]] GenerationStatus
 TryCheckLocks(const ScatterGenerationInput& input, const ScatterKeys& keys, ScatterCandidate& inoutCandidate) noexcept
 {
-    for (const ScatterScope& scope : input.Scopes)
+    const BorrowedView<const ScatterPlacement> locks{inoutCandidate.Locks.GetData(), inoutCandidate.Locks.GetSize()};
+    for (const ScatterPlacement& lock : locks)
     {
-        for (const ScatterPlacement& lock : scope.Locks)
+        const ScatterPlacement* generatedOrNull = inoutCandidate.Manifest.FindPlacement(lock.Identity);
+        if (generatedOrNull != nullptr && AreEqual(*generatedOrNull, lock) == true)
         {
-            const ScatterPlacement* generatedOrNull = inoutCandidate.Manifest.FindPlacement(lock.Identity);
-            if (generatedOrNull != nullptr && AreEqual(*generatedOrNull, lock) == true)
+            continue;
+        }
+        ScatterLockConflict conflict;
+        conflict.Lock = lock;
+        conflict.IsMissing = generatedOrNull == nullptr;
+        if (generatedOrNull != nullptr)
+        {
+            conflict.Generated = *generatedOrNull;
+        }
+        else
+        {
+            const GenerationStatus status = ExplainAbsence(input, keys, locks, lock.Identity, conflict.Decision);
+            if (status != GenerationStatus::Success)
             {
-                continue;
+                return status;
             }
-            ScatterLockConflict conflict;
-            conflict.Lock = lock;
-            conflict.IsMissing = generatedOrNull == nullptr;
-            if (generatedOrNull != nullptr)
-            {
-                conflict.Generated = *generatedOrNull;
-            }
-            else
-            {
-                const GenerationStatus status = ExplainAbsence(input, keys, lock.Identity, conflict.Decision);
-                if (status != GenerationStatus::Success)
-                {
-                    return status;
-                }
-            }
-            if (inoutCandidate.Conflicts.TryAdd(conflict) == false)
-            {
-                return GenerationStatus::OutOfMemory;
-            }
+        }
+        if (inoutCandidate.Conflicts.TryAdd(conflict) == false)
+        {
+            return GenerationStatus::OutOfMemory;
         }
     }
     return inoutCandidate.Conflicts.IsEmpty() == true ? GenerationStatus::Success : GenerationStatus::ConstraintFailed;
+}
+
+/// Append a conflict on one property of an authored lock and the candidate's placement with its identity.
+[[nodiscard]] bool TryAddPropertyConflict(ScatterOverrideProperty property,
+                                          const ScatterPlacement& authored,
+                                          const ScatterPlacement& generated,
+                                          Array<ScatterOverrideConflict>& inoutConflicts) noexcept
+{
+    ScatterOverrideConflict conflict;
+    conflict.Identity = authored.Identity;
+    conflict.Property = property;
+    conflict.HasAuthored = true;
+    conflict.Authored = authored;
+    conflict.HasCandidate = true;
+    conflict.Candidate = generated;
+    return inoutConflicts.TryAdd(conflict);
+}
+
+/// Append one conflict per property on which the candidate's placement differs from the authored lock, in
+/// ScatterOverrideProperty order.
+[[nodiscard]] bool TryAddPropertyConflicts(const ScatterPlacement& authored,
+                                           const ScatterPlacement& generated,
+                                           Array<ScatterOverrideConflict>& inoutConflicts) noexcept
+{
+    const bool isPositionDifferent = authored.LatticeX != generated.LatticeX || authored.LatticeY != generated.LatticeY;
+    return (isPositionDifferent == false ||
+            TryAddPropertyConflict(ScatterOverrideProperty::Position, authored, generated, inoutConflicts) == true) &&
+           (authored.Variant == generated.Variant ||
+            TryAddPropertyConflict(ScatterOverrideProperty::Variant, authored, generated, inoutConflicts) == true) &&
+           (authored.Rotation == generated.Rotation ||
+            TryAddPropertyConflict(ScatterOverrideProperty::Rotation, authored, generated, inoutConflicts) == true) &&
+           (authored.Scale == generated.Scale ||
+            TryAddPropertyConflict(ScatterOverrideProperty::Scale, authored, generated, inoutConflicts) == true);
 }
 } // namespace
 
@@ -396,6 +558,15 @@ bool ScatterLayerKernel::tryDecodeParameters(const GenerationStage& stage) noexc
     {
         variant.ExclusionRadius = reader.ReadUInt32();
     }
+    const uint32 lockCount = reader.ReadUInt32();
+    if (reader.HasFailed() == true || lockCount > MAX_SCATTER_LAYER_LOCKS || mLocks.TryResize(lockCount) == false)
+    {
+        return false;
+    }
+    for (ScatterPlacement& lock : mLocks)
+    {
+        lock = ReadPlacement(reader);
+    }
     mRecipe.Region = ReadRectangle(reader);
     const uint32 keepOutCount = reader.ReadUInt32();
     if (reader.HasFailed() == true || keepOutCount > MAX_SCATTER_KEEP_OUTS ||
@@ -408,6 +579,7 @@ bool ScatterLayerKernel::tryDecodeParameters(const GenerationStage& stage) noexc
         keepOut = ReadRectangle(reader);
     }
     mLayer.Variants = {mVariants.GetData(), mVariants.GetSize()};
+    mLayer.Locks = {mLocks.GetData(), mLocks.GetSize()};
     mRecipe.KeepOuts = {mKeepOuts.GetData(), mKeepOuts.GetSize()};
     mRecipe.Layers = {&mLayer, 1};
     return reader.IsAtEnd() == true && mRecipe.Room == stage.Scope && mLayer.Id == stage.Stage &&
@@ -460,7 +632,8 @@ GenerationStatus TryAddScatterStages(const ScatterGenerationInput& input,
                                      Array<GenerationStage>& inoutPlan) noexcept
 {
     ScatterKeys keys;
-    const GenerationStatus inputStatus = ValidateInput(input, keys);
+    Array<ScatterPlacement> locks;
+    const GenerationStatus inputStatus = ValidateInput(input, keys, locks);
     if (inputStatus != GenerationStatus::Success)
     {
         return inputStatus;
@@ -471,7 +644,11 @@ GenerationStatus TryAddScatterStages(const ScatterGenerationInput& input,
     {
         for (const ScatterLayer& layer : scope.Recipe.Layers)
         {
-            WriteLayerParameters(input, scope.Recipe, layer, writer);
+            WriteLayerParameters(input,
+                                 scope.Recipe,
+                                 layer,
+                                 GetLayerLocks({locks.GetData(), locks.GetSize()}, scope.Recipe.Room, layer.Id),
+                                 writer);
             GenerationStage stage;
             stage.Scope = scope.Recipe.Room;
             stage.Stage = layer.Id;
@@ -513,7 +690,8 @@ GenerationStatus ScatterGenerationCoordinator::TryStage(const ScatterGenerationI
     ScatterCandidate candidate;
     candidate.BaseRevision = mGeneration.GetAcceptedRevision();
     ScatterKeys keys;
-    candidate.Status = ValidateInput(input, keys);
+    Array<ScatterPlacement> locks;
+    candidate.Status = ValidateInput(input, keys, locks);
     Array<GenerationStage> plan;
     if (candidate.Status == GenerationStatus::Success)
     {
@@ -534,11 +712,21 @@ GenerationStatus ScatterGenerationCoordinator::TryStage(const ScatterGenerationI
     }
     if (candidate.Status == GenerationStatus::Success)
     {
+        GenerationByteWriter writer;
+        WriteInput(input, {locks.GetData(), locks.GetSize()}, writer);
+        candidate.Input = writer.ComputeDigest();
+        candidate.Status = writer.HasFailed() == true ? GenerationStatus::OutOfMemory : GenerationStatus::Success;
+        candidate.Locks = foundation::Move(locks);
+    }
+    if (candidate.Status == GenerationStatus::Success)
+    {
         candidate.Status = TryCheckLocks(input, keys, candidate);
     }
     if (candidate.Status != GenerationStatus::Success && candidate.Status != GenerationStatus::ConstraintFailed)
     {
         candidate.Manifest = ScatterManifest{};
+        candidate.Input = GenerationDigest{};
+        candidate.Locks.Clear();
         candidate.Conflicts.Clear();
         mGeneration.Reject(candidate.Generation);
     }
@@ -546,11 +734,22 @@ GenerationStatus ScatterGenerationCoordinator::TryStage(const ScatterGenerationI
     return outCandidate.Status;
 }
 
-GenerationStatus ScatterGenerationCoordinator::TryPublish(ScatterCandidate& inoutCandidate) noexcept
+GenerationStatus ScatterGenerationCoordinator::TryPublish(const ScatterGenerationInput& current,
+                                                          ScatterCandidate& inoutCandidate) noexcept
 {
     if (inoutCandidate.Status != GenerationStatus::Success)
     {
         return GenerationStatus::NotReady;
+    }
+    GenerationDigest currentInput;
+    const GenerationStatus inputStatus = TryComputeScatterInputDigest(current, currentInput);
+    if (inputStatus != GenerationStatus::Success)
+    {
+        return inputStatus;
+    }
+    if (currentInput != inoutCandidate.Input)
+    {
+        return GenerationStatus::StaleCandidate;
     }
     const GenerationStatus status = mGeneration.TryPublish(inoutCandidate.Generation);
     if (status != GenerationStatus::Success)
@@ -573,7 +772,8 @@ GenerationStatus TryCompareScatterManifests(const ScatterManifest& accepted,
                                             Array<ScatterChange>& outChanges) noexcept
 {
     ScatterKeys keys;
-    const GenerationStatus inputStatus = ValidateInput(candidateInput, keys);
+    Array<ScatterPlacement> locks;
+    const GenerationStatus inputStatus = ValidateInput(candidateInput, keys, locks);
     if (inputStatus != GenerationStatus::Success)
     {
         return inputStatus;
@@ -591,7 +791,11 @@ GenerationStatus TryCompareScatterManifests(const ScatterManifest& accepted,
         change.Kind = generatedOrNull == nullptr ? ScatterChangeKind::Removed : ScatterChangeKind::Changed;
         if (generatedOrNull == nullptr)
         {
-            const GenerationStatus status = ExplainAbsence(candidateInput, keys, placement.Identity, change.Decision);
+            const GenerationStatus status = ExplainAbsence(candidateInput,
+                                                           keys,
+                                                           {locks.GetData(), locks.GetSize()},
+                                                           placement.Identity,
+                                                           change.Decision);
             if (status != GenerationStatus::Success)
             {
                 return status;
@@ -617,6 +821,82 @@ GenerationStatus TryCompareScatterManifests(const ScatterManifest& accepted,
         }
     }
     outChanges = foundation::Move(changes);
+    return GenerationStatus::Success;
+}
+
+GenerationStatus TryComputeScatterInputDigest(const ScatterGenerationInput& input, GenerationDigest& outDigest) noexcept
+{
+    ScatterKeys keys;
+    Array<ScatterPlacement> locks;
+    const GenerationStatus status = ValidateInput(input, keys, locks);
+    if (status != GenerationStatus::Success)
+    {
+        return status;
+    }
+    GenerationByteWriter writer;
+    WriteInput(input, {locks.GetData(), locks.GetSize()}, writer);
+    if (writer.HasFailed() == true)
+    {
+        return GenerationStatus::OutOfMemory;
+    }
+    outDigest = writer.ComputeDigest();
+    return GenerationStatus::Success;
+}
+
+GenerationStatus TryFindScatterOverrideConflicts(const ScatterCandidate& candidate,
+                                                 const ScatterGenerationInput& current,
+                                                 Array<ScatterOverrideConflict>& outConflicts) noexcept
+{
+    if (candidate.Status != GenerationStatus::Success && candidate.Status != GenerationStatus::ConstraintFailed)
+    {
+        return GenerationStatus::NotReady;
+    }
+    ScatterKeys keys;
+    Array<ScatterPlacement> authored;
+    const GenerationStatus inputStatus = ValidateInput(current, keys, authored);
+    if (inputStatus != GenerationStatus::Success)
+    {
+        return inputStatus;
+    }
+    // Walk the authored and staged locks together; both are in LockOrder.
+    const LockOrder isBefore;
+    Array<ScatterOverrideConflict> conflicts;
+    usize authoredIndex = 0;
+    usize stagedIndex = 0;
+    while (authoredIndex < authored.GetSize() || stagedIndex < candidate.Locks.GetSize())
+    {
+        const bool isAuthoredNext = stagedIndex == candidate.Locks.GetSize() ||
+                                    (authoredIndex < authored.GetSize() &&
+                                     isBefore(candidate.Locks[stagedIndex], authored[authoredIndex]) == false);
+        const ScatterPlacement& lock = isAuthoredNext == true ? authored[authoredIndex] : candidate.Locks[stagedIndex];
+        const bool isStaged =
+            stagedIndex < candidate.Locks.GetSize() && candidate.Locks[stagedIndex].Identity == lock.Identity;
+        const ScatterPlacement* generatedOrNull = candidate.Manifest.FindPlacement(lock.Identity);
+        bool isAdded = true;
+        if (isAuthoredNext == true && generatedOrNull != nullptr)
+        {
+            isAdded = TryAddPropertyConflicts(lock, *generatedOrNull, conflicts);
+        }
+        else
+        {
+            ScatterOverrideConflict conflict;
+            conflict.Identity = lock.Identity;
+            conflict.Property =
+                isAuthoredNext == true ? ScatterOverrideProperty::Presence : ScatterOverrideProperty::Lock;
+            conflict.HasAuthored = isAuthoredNext;
+            conflict.Authored = isAuthoredNext == true ? lock : ScatterPlacement{};
+            conflict.HasCandidate = generatedOrNull != nullptr;
+            conflict.Candidate = generatedOrNull != nullptr ? *generatedOrNull : ScatterPlacement{};
+            isAdded = conflicts.TryAdd(conflict);
+        }
+        if (isAdded == false)
+        {
+            return GenerationStatus::OutOfMemory;
+        }
+        authoredIndex += isAuthoredNext == true ? 1 : 0;
+        stagedIndex += isStaged == true ? 1 : 0;
+    }
+    outConflicts = foundation::Move(conflicts);
     return GenerationStatus::Success;
 }
 } // namespace ludus::content::procedural
