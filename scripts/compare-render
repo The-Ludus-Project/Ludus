@@ -26,6 +26,84 @@ CHUNK_PIXELS = 65536
 DISPLAY_MAXIMUM = 255
 UNSAMPLED_GREY = 64
 
+# The error heatmap keeps three classes apart. An exact match is black. A
+# nonzero error takes a red-to-yellow ramp whose CIELAB lightness rises linearly
+# from a visible floor to near white at the full scale, so brightness alone
+# orders errors in greyscale and under common colour-vision deficiencies. A
+# pixel without samples on either side is a neutral diagonal hatch, which no
+# ramp value can match in colour or texture.
+# The error is an absolute magnitude with no meaningful midpoint, so the ramp is
+# sequential rather than diverging. Thanks to Francesca Samsel, Ken Moreland,
+# W. Alan Scott, Spiros Tsalikis and Cory Quammen, "New Default Colormap and
+# Background in the next version of ParaView", Kitware blog, 10 October 2024,
+# https://www.kitware.com/new-default-colormap-and-background-in-next-paraview-release/,
+# and Moreland's reply there, for contrasting the unambiguous low-to-high reading
+# of monotonic maps with diverging ones. Ludus builds its own ramp in CIELAB
+# rather than copying a published table.
+HEATMAP_LEVELS = 256
+HEATMAP_LIGHTNESS = (20.0, 95.0)  # CIELAB L* of the smallest nonzero and the full-scale error
+HEATMAP_HUE_DEGREES = (25.0, 95.0)  # CIELAB hue angle, red through orange to yellow
+HEATMAP_MAXIMUM_CHROMA = 70.0
+HEATMAP_CHROMA_STEPS = 40  # bisection steps for the largest in-gamut chroma
+HEATMAP_TICKS = 5
+UNSAMPLED_STRIPES = (72, 150)  # dark and light grey of the missing-sample hatch
+UNSAMPLED_STRIPE_PIXELS = 4  # width of each hatch stripe; the pattern repeats every two stripes
+LEGEND_SWATCH_PIXELS = 16
+# CIE 1976 L*a*b* with the D65 white point, and the sRGB primaries (IEC 61966-2-1).
+D65_WHITE = (0.95047, 1.0, 1.08883)
+XYZ_TO_LINEAR_SRGB = ((3.2404542, -1.5371385, -0.4985314),
+                      (-0.9692660, 1.8760108, 0.0415560),
+                      (0.0556434, -0.2040259, 1.0572252))
+LAB_EPSILON = 6 / 29
+LAB_OFFSET = 16
+LAB_SCALE = 116
+LAB_A_SCALE = 500
+LAB_B_SCALE = 200
+SRGB_LINEAR_LIMIT = 0.0031308
+SRGB_LINEAR_SLOPE = 12.92
+SRGB_GAMMA = 2.4
+SRGB_SCALE = 1.055
+SRGB_OFFSET = 0.055
+
+
+def encode_srgb(linear, np):
+    return np.where(linear <= SRGB_LINEAR_LIMIT, SRGB_LINEAR_SLOPE * linear,
+                    SRGB_SCALE * np.power(np.maximum(linear, SRGB_LINEAR_LIMIT), 1 / SRGB_GAMMA) - SRGB_OFFSET)
+
+
+def convert_lab_to_linear_srgb(lightness, a, b, np):
+    fy = (lightness + LAB_OFFSET) / LAB_SCALE
+    corners = np.stack((fy + a / LAB_A_SCALE, fy, fy - b / LAB_B_SCALE), axis=-1)
+    xyz = np.where(corners > LAB_EPSILON, corners ** 3,
+                   3 * LAB_EPSILON ** 2 * (corners - (LAB_OFFSET / LAB_SCALE))) * D65_WHITE
+    return xyz @ np.asarray(XYZ_TO_LINEAR_SRGB).T
+
+
+def make_heatmap_palette(np):
+    """Return the 8-bit sRGB heatmap colours: entry 0 is an exact match, entries 1 onward rise to full scale."""
+    t = np.linspace(0, 1, HEATMAP_LEVELS - 1)
+    lightness = HEATMAP_LIGHTNESS[0] + (HEATMAP_LIGHTNESS[1] - HEATMAP_LIGHTNESS[0]) * t
+    hue = np.radians(HEATMAP_HUE_DEGREES[0] + (HEATMAP_HUE_DEGREES[1] - HEATMAP_HUE_DEGREES[0]) * t)
+    # Keep lightness and hue, and reduce chroma only as far as the sRGB gamut requires.
+    low = np.zeros_like(t)
+    high = np.full_like(t, HEATMAP_MAXIMUM_CHROMA)
+    for _ in range(HEATMAP_CHROMA_STEPS):
+        chroma = (low + high) / 2
+        rgb = convert_lab_to_linear_srgb(lightness, chroma * np.cos(hue), chroma * np.sin(hue), np)
+        inside = np.all((rgb >= 0) & (rgb <= 1), axis=1)
+        low = np.where(inside, chroma, low)
+        high = np.where(inside, high, chroma)
+    rgb = convert_lab_to_linear_srgb(lightness, low * np.cos(hue), low * np.sin(hue), np)
+    ramp = np.rint(encode_srgb(np.clip(rgb, 0, 1), np) * DISPLAY_MAXIMUM).astype(np.uint8)
+    return np.concatenate((np.zeros((1, 3), dtype=np.uint8), ramp))
+
+
+def paint_unsampled(heatmap, width, np):
+    """Overwrite every pixel of a flat heatmap with the hatch that marks missing samples."""
+    index = np.arange(len(heatmap))
+    stripe = ((index % width + index // width) // UNSAMPLED_STRIPE_PIXELS) % 2
+    heatmap[:] = np.asarray(UNSAMPLED_STRIPES, dtype=np.uint8)[stripe, None]
+
 
 @dataclass
 class ImageInput:
@@ -108,7 +186,7 @@ def describe_captures(baseline, candidate):
     return warnings
 
 
-def compare(baseline, candidate, scale, np):
+def compare(baseline, candidate, scale, palette, np):
     """Measure candidate minus baseline over pixels present in both inputs."""
     total = len(baseline.rgb)
     compared = 0
@@ -116,7 +194,7 @@ def compare(baseline, candidate, scale, np):
     maximum = -1.0
     worst_pixel = 0
     heatmap = np.empty((total, 3), dtype=np.uint8)
-    heatmap[:] = UNSAMPLED_GREY
+    paint_unsampled(heatmap, baseline.size[0], np)
     for start in range(0, total, CHUNK_PIXELS):
         region = slice(start, start + CHUNK_PIXELS)
         first = baseline.rgb[region]
@@ -148,8 +226,8 @@ def compare(baseline, candidate, scale, np):
             # Rousselle, Knaus and Zwicker, "Adaptive Sampling and Reconstruction using Greedy
             # Error Minimization", ACM TOG 30(6), 2011, https://doi.org/10.1145/2070781.2024193.
             relative += float(np.sum(error_squared / (first * first + 0.01)))
-        strength = np.minimum(pixel_error, scale) / scale
-        heatmap[region][valid] = np.rint(strength[:, None] * (255, 128, 0)).astype(np.uint8)
+        level = 1 + np.rint(np.minimum(pixel_error, scale) / scale * (HEATMAP_LEVELS - 2)).astype(np.intp)
+        heatmap[region][valid] = palette[np.where(pixel_error > 0, level, 0)]
     if not compared:
         raise ValueError('no pixels have committed samples in both captures. Let both captures render and save again.')
     channels = compared * 3
@@ -204,7 +282,21 @@ def format_metrics(metrics, is_linear):
     return ''.join(f'<div><dt>{label}</dt><dd>{value}</dd></div>' for label, value in formatted.items())
 
 
-def write_report(path, report, baseline, results, np, Image):
+def make_legend(scale, is_linear, palette, np, Image):
+    """Describe the heatmap scale in the compared encoding, with swatches for an exact match and missing samples."""
+    swatch = np.empty((LEGEND_SWATCH_PIXELS * LEGEND_SWATCH_PIXELS, 3), dtype=np.uint8)
+    paint_unsampled(swatch, LEGEND_SWATCH_PIXELS, np)
+    ticks = ''.join(f'<span>{scale * i / (HEATMAP_TICKS - 1):.6g}</span>' for i in range(HEATMAP_TICKS))
+    return {
+        'unit': 'scene-linear RGB' if is_linear else 'normalized sRGB, 0 to 1',
+        'ramp_image': png_uri(palette[None, 1:], Image),
+        'zero_image': png_uri(palette[None, :1], Image),
+        'unsampled_image': png_uri(swatch.reshape(LEGEND_SWATCH_PIXELS, LEGEND_SWATCH_PIXELS, 3), Image),
+        'ticks': ticks,
+    }
+
+
+def write_report(path, report, baseline, results, palette, np, Image):
     payload = json.dumps(report, indent=2, allow_nan=False)
     template = Template((SCRIPT_DATA / 'render_comparison.html').read_text(encoding='utf-8'))
     options = []
@@ -229,6 +321,7 @@ def write_report(path, report, baseline, results, np, Image):
     html = template.substitute(
         baseline=escape(baseline.path.name),
         width=baseline.size[0], height=baseline.size[1], scale=f"{report['heatmap_full_scale']:.6g}",
+        **make_legend(report['heatmap_full_scale'], baseline.is_linear, palette, np, Image),
         space=report['comparison_space'],
         preview_note=('HDR previews compress radiance with x / (1 + x) before sRGB encoding.'
                       if baseline.is_linear else 'The previews show the sRGB values used for the metrics.'),
@@ -241,14 +334,14 @@ def write_report(path, report, baseline, results, np, Image):
         output.write(html)
 
 
-def analyze(baseline, candidate, scale, np):
+def analyze(baseline, candidate, scale, palette, np):
     if baseline.is_linear != candidate.is_linear:
         raise ValueError(f'{candidate.path}: choose two linear captures or display images. For display comparisons, '
                          'use the PNG saved alongside the capture.')
     if baseline.size != candidate.size:
         raise ValueError(f'{candidate.path}: baseline is {baseline.size[0]}×{baseline.size[1]}, candidate is '
                          f'{candidate.size[0]}×{candidate.size[1]}. Capture or export both at the same resolution.')
-    metrics, heatmap = compare(baseline, candidate, scale, np)
+    metrics, heatmap = compare(baseline, candidate, scale, palette, np)
     return {
         'candidate': {'path': str(candidate.path), **candidate.metadata},
         'warnings': describe_captures(baseline, candidate),
@@ -294,11 +387,12 @@ def main():
         parser.error('install the analysis dependencies with python -m pip install numpy Pillow')
     try:
         baseline = read_image(args.baseline, np, Image, ImageCms, ImageOps)
+        palette = make_heatmap_palette(np)
         results = []
         passed = True
         for path in args.candidates:
             candidate = read_image(path, np, Image, ImageCms, ImageOps)
-            comparison, heatmap = analyze(baseline, candidate, args.diff_scale, np)
+            comparison, heatmap = analyze(baseline, candidate, args.diff_scale, palette, np)
             if args.max_rmse is not None:
                 comparison['regression'] = check_regression(comparison, baseline, args.max_rmse)
                 passed = passed and comparison['regression']['passed']
@@ -312,7 +406,7 @@ def main():
             report.update(results[0][1])
         else:
             report['comparisons'] = [entry[1] for entry in results]
-        write_report(args.output, report, baseline, results, np, Image)
+        write_report(args.output, report, baseline, results, palette, np, Image)
     except FileExistsError:
         parser.error(f'{args.output} already exists. Choose a new report path.')
     except (OSError, ValueError) as error:
