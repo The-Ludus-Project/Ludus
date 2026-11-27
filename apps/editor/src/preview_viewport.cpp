@@ -25,8 +25,10 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QContextMenuEvent>
+#include <QCoreApplication>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -884,6 +886,9 @@ private:
 #    if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 /// Service period for frame polling, about one 60 Hz display refresh.
 constexpr int32 SERVICE_INTERVAL_MILLISECONDS = 16;
+/// Time a taken frame waits for Qt Quick to draw it before the viewport delivers the update request itself, in
+/// milliseconds: several 60 Hz refreshes plus a Metal drawable wait.
+constexpr int32 PAINT_REDELIVERY_MILLISECONDS = 100;
 /// Time a screenshot waits for the viewport to draw the frame it reads back, in milliseconds.
 constexpr int32 SCREENSHOT_TIMEOUT_MILLISECONDS = 5000;
 /// Reports whether this QtWayland release breaks a hidden then re-shown Vulkan subsurface.
@@ -993,6 +998,8 @@ struct PreviewViewport::State final
         QSGNode* updatePaintNode(QSGNode* oldNodeOrNull, UpdatePaintNodeData*) override
         {
             LUDUS_REQUIRE(QThread::currentThread() == mState.Widget->thread());
+            // Qt Quick is drawing: the request to draw a taken frame has been answered.
+            mState.PendingPaint.invalidate();
             QSGSimpleTextureNode* node = static_cast<QSGSimpleTextureNode*>(oldNodeOrNull);
             if (mState.ProjectGraph.isNull() == false && mState.Source == &mState.ProjectGraph->GetDisplayFrames() &&
                 mState.ProjectGraph->HasGpuFrame() == false && mState.ProjectGraph->GetImage().isNull() == false)
@@ -1128,6 +1135,8 @@ struct PreviewViewport::State final
     /// The window was shown before its parent had a surface; recreate it once the parent is visible.
     bool IsSurfaceRecreationPending = false;
     QTimer Service;
+    /// Runs from the request to draw a taken frame (Pending, or a graph CPU image) until Qt Quick draws it.
+    QElapsedTimer PendingPaint;
     /// Retry only while a submitted Qt sampling read is awaiting its GPU completion marker.
     QTimer RetirementRetry;
     /// Qt Quick read-back of the presented GPU frame for a pending screenshot; null otherwise.
@@ -1605,6 +1614,7 @@ private:
         PresentedCpuImageKey = 0;
         PaintTrace.Cancel();
         Active = Pending = -1;
+        PendingPaint.invalidate();
         for (Frame& frame : Frames)
         {
             delete frame.Wrapper;
@@ -1624,6 +1634,7 @@ private:
     {
         RetirementRetry.stop();
         Service.stop();
+        PendingPaint.invalidate();
         if (ScreenshotGrab.isNull() == false)
         {
             ScreenshotGrab.reset();
@@ -1670,6 +1681,44 @@ private:
         IsDestroyingWindow = false;
         MessageOrNull->show();
     }
+    /// Ask Qt Quick to draw the image item, and time the request until it does (PendingPaint).
+    void requestPaint()
+    {
+        if (PendingPaint.isValid() == false)
+        {
+            PendingPaint.start();
+        }
+        Item->update();
+        Window->update();
+    }
+    /// Keep asking Qt Quick to draw a taken frame until it does. Qt coalesces update requests per window, and a
+    /// request can be answered without a draw (a frame Qt skips when it cannot begin a Metal frame) or never be
+    /// delivered (a lost display-link wakeup). Nothing else redraws an idle viewport, so one dropped request used
+    /// to leave a taken frame unpainted with the GPU and CPU idle (issue #2445). Each service repeats the request;
+    /// past PAINT_REDELIVERY_MILLISECONDS the viewport delivers the update request itself, as the platform does.
+    /// The retained Active frame stays on screen throughout.
+    void servicePendingPaint()
+    {
+        if (PendingPaint.isValid() == false || Window == nullptr || Item == nullptr || IsRecording == true ||
+            IsDestroyingWindow == true)
+        {
+            return;
+        }
+        // Qt draws a newly exposed window itself; a hidden one has nothing to show.
+        if (Window->isExposed() == false || Widget->isVisible() == false)
+        {
+            return;
+        }
+        Item->update();
+        if (PendingPaint.elapsed() < PAINT_REDELIVERY_MILLISECONDS)
+        {
+            Window->update();
+            return;
+        }
+        PendingPaint.restart();
+        QEvent request(QEvent::UpdateRequest);
+        static_cast<void>(QCoreApplication::sendEvent(Window, &request));
+    }
     void showFrame()
     {
         if (CanvasOrNull != nullptr && Preview.isNull() == false && Source.isNull() == false)
@@ -1682,8 +1731,7 @@ private:
             ProjectGraph->GetImage().isNull() == false && ProjectGraph->GetImage().cacheKey() != PresentedCpuImageKey &&
             Widget->isVisible() == true)
         {
-            Item->update();
-            Window->update();
+            requestPaint();
             return;
         }
         if (Preview.isNull() == true || Source.isNull() == true || Window == nullptr || Pending >= 0 ||
@@ -1722,8 +1770,7 @@ private:
                 frame.FrameBeginTicks = trace.GetPublishedBeginTicks();
             }
             Pending = i;
-            Item->update();
-            Window->update();
+            requestPaint();
             return;
         }
     }
@@ -2401,6 +2448,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         {
             mState->showFrame();
         }
+        mState->servicePendingPaint();
     });
     mState->RetirementRetry.setInterval(ViewportFramePump::COMPLETION_POLL_MILLISECONDS);
     mState->RetirementRetry.setTimerType(Qt::PreciseTimer);

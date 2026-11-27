@@ -649,7 +649,15 @@ The scenario log also carries report-only rows that the parser does not summariz
 `EDVIEWFIRST,<workload>,<nanoseconds>` is the wait from starting the preview to its
 first presentation, which includes program, shadow-map and sky-map preparation and
 is excluded from the orbit samples. A first frame approaching the 60 s deadline
-shows up here before the run fails. `EDVIEWPASS` rows give each completed per-pass
+shows up here before the run fails. The shared-device viewport keeps asking Qt
+Quick to draw a frame it has taken from the graph until Qt draws it, and after
+100 ms delivers the update request itself. Before #2445, a single dropped request
+left a published frame undrawn, with the CPU and GPU idle, until an unrelated
+window update arrived. The `[.render-native]` case "Viewport draws a taken
+mesh-light frame after Qt drops its update requests" drops the window's update
+requests around the first and a replacement mesh-light frame. It then requires
+each frame to be drawn within 5 s and the previous frame to stay retained.
+`EDVIEWPASS` rows give each completed per-pass
 GPU sample from the batches the editor's GPU recording uses:
 `workload, sample, batch, scope, kind, ordinal, duration_ns, dropped_passes`.
 A timed operation belongs to the outermost open scope, so the default raster graph
