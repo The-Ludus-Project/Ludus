@@ -1,0 +1,64 @@
+// LUSL declarations of the reference kernels' bindings and Slang libraries (renderer_reference_bindings.slang), for
+// renderer_reference_transport.luslh (LUSL L5d wave 2). The block names the bindings file, so lowering includes it
+// once; it includes every library below, which the kernels reach without further includes.
+#pragma once
+@search "../../../foundation/math/shaders"
+@search "../../rhi/shaders"
+@search "../include/ludus/graphics/renderer"
+@search "../include/ludus/graphics/renderer/detail"
+@search "../../../content/scene_format/include/ludus/content/scene_format"
+@search "../../../content/render_graph_format/include/ludus/content/render_graph_format"
+@search "../../../content/render_graph_format/include/ludus/content/render_graph_format/detail"
+@prelude float4 SceneValue(uint index);
+
+/// Columns of LinearlyTransformedCosine's 3x3 transforms.
+static const uint32 TRANSFORM_COLUMNS = 3;
+
+@extern "renderer_reference_bindings.slang"
+    /// The Parameters fields (renderer_reference_layout.h documents their words).
+    float32x4x4 ClipToEye;
+    float32x4 CameraPositionWorld;
+    uint32x4 Dimensions;
+    uint32x4 Offsets;
+    uint32x4 Counts;
+    uint32x4 Sampling;
+    float32x4 Environment;
+    float32x4 Options;
+    float32x4 BoundsMinimumWorld;
+    float32x4 BoundsMaximumWorld;
+    uint32x4 SurfaceLayout;
+    uint32x4 Tile;
+    /// The scene, accumulation, status and texel buffers.
+    StructuredBuffer<uint32x4> sceneWords;
+    RWStructuredBuffer<float32x4> accumulation;
+    RWStructuredBuffer<uint32x4> status;
+    StructuredBuffer<uint32x4> textureWords;
+    /// Polygon distributions of ReferenceTriangleLight, which the kernels pass to the samplers unopened; their array
+    /// fields have no named LUSL size. No kernel zeroes a value that holds one.
+    struct ProjectedSolidAnglePolygon;
+    struct LinearlyTransformedCosinePolygon;
+    /// ReferenceReceiverFrame's specular distribution, declared in full so that zeroing a frame zeroes it.
+    struct LinearlyTransformedCosine
+    {
+        float32x3 InverseTransform[TRANSFORM_COLUMNS];
+        float32x3 Transform[TRANSFORM_COLUMNS];
+        float32 InverseDeterminant;
+    };
+@declare BvhHit BvhRay CoatingEvaluation CoatingMaterial CoatingRandomContext CoatingSample DielectricSample
+@declare MaterialModel MaterialProgramInputs ReferenceReceiverFrame ReferenceTriangleLight SurfaceParameters
+@declare WeightedReservoir ATMOSPHERE_PLANET_CAPACITY REFERENCE_DIFFUSE_TECHNIQUE
+@declare REFERENCE_LIGHT_TECHNIQUE_VISIBILITY REFERENCE_SPECULAR_TECHNIQUE AttenuateMediumSegment
+@declare ComputeConductorFresnelRgb ComputeDielectricIndex ComputeGgxNormalDistribution ComputeMaterialAlpha
+@declare ComputeMaterialSpecularProbability ComputePlanetPointWeight ComputeReferenceLightTechniqueWeights
+@declare ComputeReferenceLuminance ConvertSpectralRadiance DecodeSurfaceParameters EvaluateCelestialStars
+@declare EvaluateCoatedDiffuse EvaluateLunarPhase EvaluateMaterialProgram EvaluateProjectBrdf
+@declare EvaluateReferenceLightTechniqueDensities EvaluateReferenceSurrogateProbability EvaluateSolarLimb
+@declare EvaluateUpliftedSpectrum HasReservoirSelection HasRoughConductorLobe IsDielectricModel
+@declare LookupGgxAverageDeficit LookupGgxDirectionalAlbedo MakeEmptyReferenceTriangleLight
+@declare MakeReferenceReceiverFrame MakeWeightedReservoir SampleCoatedDiffuse SampleDielectric
+@declare SampleMaterialProgramDirection SampleProjectBrdfDirection TraceBvh TransformReferenceTangentToWorld
+@declare TryAddReservoirCandidate TryApproximateReferenceTriangleIntegrals
+@declare TryComputeReservoirContributionWeight TryIntersectReferenceTrianglePlane
+@declare TryPrepareReferenceTriangleLight TrySampleLinearlyTransformedCosinePolygon
+@declare TrySampleProjectedSolidAnglePolygon
+@end

@@ -1347,7 +1347,8 @@ private:
             writeLiteral(type, 0);
             return;
         }
-        if (shape.Kind == TypeKind::Vector || shape.Kind == TypeKind::Matrix)
+        // An enum's zero is its underlying value 0, which Slang converts only explicitly.
+        if (shape.Kind == TypeKind::Vector || shape.Kind == TypeKind::Matrix || shape.Kind == TypeKind::Enum)
         {
             writeType(type);
             write("(");

@@ -956,8 +956,9 @@ Renderer recipes can include `point_search_layout.luslh`,
 `scene_shader_layout.luslh`, `renderer_gpu_preview_layout.luslh`,
 `renderer_reference_layout.luslh`, `deferred_layout.luslh` (with its
 `deferred_binding_slots.luslh`), `skin_diffusion_layout.luslh`,
-`light_transformer_layout.luslh`, `light_transformer_encoder_layout.luslh`, `lighting_layout.luslh` and
-`renderer_atmosphere_layout.luslh`. These headers
+`light_transformer_layout.luslh`, `light_transformer_encoder_layout.luslh`, `lighting_layout.luslh`,
+`renderer_atmosphere_layout.luslh`, `renderer_reference_sky_layout.luslh`, `ggx_albedo_table_layout.luslh` and
+`wave_connection_layout.luslh`. These headers
 expose shared layout macros, function-like ones included, and `static const` layout constants from the
 corresponding C++ headers. After changing an owner, run
 `python3 cmake/shaders/generate_lusl_layouts.py` and commit the regenerated
@@ -1028,7 +1029,7 @@ The IR is internal. It is the seam for direct backends later.
 | --- | --- |
 | Types | Fixed-width scalars become Slang scalars (`uint32` is `uint`, `int64` is `int64_t`, `float16` is `half`); vectors and matrices use the short names (`float3`, `uint4x4`) where Slang has them, otherwise `vector<T, N>` and `matrix<T, R, C>` |
 | Untyped constants | Spelled in the type the checker gave them: `4u`, `0.5f`, `9000000000ll`, `2.0h`, `0.1l`; integer and bool constant expressions are emitted as their exact folded value |
-| The literal `0` | An explicit zero: `float3(0.0f)`, or a generated `_luslZeroN()` that zeroes every field and element |
+| The literal `0` | An explicit zero: `float3(0.0f)`, an enum's `Mode(0u)`, or a generated `_luslZeroN()` that zeroes every field and element |
 | Designated initializers | A generated `_luslInitN(...)` that takes the written fields in written order; omitted fields take their default or zero |
 | Named arguments and defaults | Positional arguments with defaults filled in. When the written order differs from parameter order and an argument calls a function, a generated adapter `_luslCallN` takes them in written order, so they are evaluated as written |
 | `M * v`, `A * B` on matrices | `mul(M, v)`, `mul(A, B)` |
@@ -1343,6 +1344,12 @@ profile checks SPIR-V, WGSL and Metal together. For widths outside that common
 set, use a supported native profile or lower with `luslc` and compile for a
 specific target with Slang. Slang also exposes `INT8_MIN`, `INT8_MAX`, and
 `UINT8_MAX` on targets that support 8-bit integer values.
+
+`renderer_reference_bindings.luslh` declares the renderer reference kernels' bindings and Slang libraries
+(`renderer_reference_bindings.slang`) for `renderer_reference_transport.luslh`: the `Parameters` fields and
+buffers as `extern slang` variables, then the libraries' types, constants and functions. Its template reflects the
+bindings file with a `@prelude` prototype of `SceneValue`, the kernel callback the libraries call.
+`renderer_reference_optical_bindings.luslh` adds the wave scene queries of the optical kernel.
 
 `ray_shader.luslh` declares the ray callback types `Ray`, `RayLaunch` and
 `RayHit` for [render-graph programs](#render-graph-programs). The ray wrapper

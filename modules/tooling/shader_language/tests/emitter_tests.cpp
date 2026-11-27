@@ -107,6 +107,11 @@ float3 Make(in float32 x, in uint32x2 pair, in float32x4x4 transform)
 TEST_CASE("LUSL lowering writes explicit zero values", "[shader-language][emitter]")
 {
     const Lowered lowered = Lower(R"(static const uint32 COUNT = 3;
+enum class Kind : uint32
+{
+    None,
+    Some,
+};
 struct Inner
 {
     float32x2 Uv;
@@ -117,14 +122,16 @@ struct Hit
     float32 Weights[COUNT];
     float32x3x3 Basis;
     bool IsFront;
+    Kind Choice;
 };
 float32 Read()
 {
     Hit hit = 0;
     float32x3 v = 0;
     float32 w[COUNT] = 0;
+    Kind kind = 0;
     hit = 0;
-    return hit.Weights[0] + v.x + w[1];
+    return kind == Kind::None ? hit.Weights[0] + v.x + w[1] : 0.0;
 }
 )");
     INFO(lowered.Diagnostics);
@@ -133,6 +140,9 @@ float32 Read()
     CHECK(Contains(lowered.Text, "    value.Uv = float2(0.0f);\n"));
     CHECK(Contains(lowered.Text, "    value.Basis = float3x3(0.0f);\n"));
     CHECK(Contains(lowered.Text, "    value.IsFront = false;\n"));
+    // Slang converts an integer to an enum only explicitly.
+    CHECK(Contains(lowered.Text, "    value.Choice = Kind(0u);\n"));
+    CHECK(Contains(lowered.Text, "Kind kind = Kind(0u);"));
     CHECK(Contains(lowered.Text, "        value[i] = 0.0f;\n"));
     CHECK(Contains(lowered.Text, "float3 v = float3(0.0f);"));
     CHECK(Contains(lowered.Text, "float w[3] = _luslZero"));

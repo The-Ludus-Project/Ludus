@@ -27,6 +27,8 @@
 // renderer_reference_optical too, so `reference,optical` measures what the optical state costs them. A positive
 // WAVELENGTH_NANOMETERS dispatches renderer_reference_optical and accepts only reference and optical; the
 // diagnostic kernels are geometric.
+#include "baseline_renderer_reference.h"
+#include "baseline_renderer_reference_optical.h"
 #include "renderer_authored.h"
 #include "renderer_authored_shadow.h"
 #include "renderer_composite.h"
@@ -496,10 +498,13 @@ enum class TransportKernel : uint8
     Permuted,         ///< Threads take pixels in a fixed pseudorandom order.
     /// renderer_reference_optical for every capture: what geometric captures cost with the optical state compiled in.
     Optical,
+    /// The Slang original of the LUSL renderer_reference and renderer_reference_optical recipes
+    /// (shaders/renderer_reference.slang, LUSL L5d wave 2), for an in-process A/B of the port.
+    Slang,
 };
-constexpr usize TRANSPORT_KERNELS = 5;
+constexpr usize TRANSPORT_KERNELS = 6;
 constexpr StaticArray<const char*, TRANSPORT_KERNELS> TRANSPORT_KERNEL_NAMES{
-    {"reference", "repeat-closest", "repeat-visibility", "permuted", "optical"}};
+    {"reference", "repeat-closest", "repeat-visibility", "permuted", "optical", "slang"}};
 
 [[nodiscard]] rhi::RasterShaderDescription GetTraceKernel(TransportKernel kernel) noexcept
 {
@@ -513,6 +518,8 @@ constexpr StaticArray<const char*, TRANSPORT_KERNELS> TRANSPORT_KERNEL_NAMES{
             return shaders::renderer_reference_permuted::Compute();
         case TransportKernel::Optical:
             return shaders::renderer_reference_optical::Compute();
+        case TransportKernel::Slang:
+            return shaders::baseline_renderer_reference::Compute();
         case TransportKernel::Reference:
             break;
     }
@@ -871,8 +878,11 @@ void DiscardPendingTimings(rhi::DeviceHandle device) noexcept
     }
     else if (isOptical == true)
     {
+        // Optical captures dispatch the optical kernel, so the Slang original is compared through its own.
         enabled = inoutRenderer.EnableReferenceRendering(GetTraceKernel(kernel),
-                                                         shaders::renderer_reference_optical::Compute(),
+                                                         kernel == TransportKernel::Slang
+                                                             ? shaders::baseline_renderer_reference_optical::Compute()
+                                                             : shaders::renderer_reference_optical::Compute(),
                                                          shaders::renderer_reference_reduce::Compute(),
                                                          options);
     }
@@ -963,16 +973,17 @@ int main(int argc, char** argv)
             "usage: %s {SCENE_DIRECTORY|cornell:ARRANGEMENT[:TILES]} [WIDTH HEIGHT SAMPLES DEPTH {gpu|cpu} RUNS "
             "[WAVELENGTH_NANOMETERS]]\n"
             "LUDUS_REFERENCE_BENCHMARK_KERNELS: distinct comma-separated GPU kernels from reference, "
-            "repeat-closest, repeat-visibility, permuted and optical\n",
+            "repeat-closest, repeat-visibility, permuted, optical and slang\n",
             argc > 0 ? argv[0] : "ludus_reference_benchmark");
         return 1;
     }
     description.OpticalWavelengthWorld = static_cast<float32>(wavelengthNanometers) * METRES_PER_NANOMETRE;
     for (const TransportKernel kernel : kernels)
     {
-        if (wavelengthNanometers > 0 && kernel != TransportKernel::Reference && kernel != TransportKernel::Optical)
+        if (wavelengthNanometers > 0 && kernel != TransportKernel::Reference && kernel != TransportKernel::Optical &&
+            kernel != TransportKernel::Slang)
         {
-            std::fprintf(stderr, "WAVELENGTH_NANOMETERS needs the reference or optical kernel\n");
+            std::fprintf(stderr, "WAVELENGTH_NANOMETERS needs the reference, optical or slang kernel\n");
             return 1;
         }
     }
