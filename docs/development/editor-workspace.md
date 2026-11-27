@@ -3677,6 +3677,32 @@ heatmap to copy or save it at capture resolution. The expected pattern is
 scaled to the supplied transmission before comparison. See the
 [power budget setup](render-graph-authoring.md#check-a-diffraction-renders-power-budget).
 
+To audit a single absorbing diffraction mask, choose **Gaussian knife edge**,
+**Gaussian single slit** or **Gaussian double slit** as the **Budget model**.
+These models use a circular, centred, forward-propagating Gaussian beam and an
+ideal thin screen that absorbs everywhere outside the openings. The knife
+edge opens one half-plane through the centre. Single-slit openings are
+centred rectangles. Double-slit openings are identical rectangles placed
+symmetrically along world X. Use a face-on camera aligned with world X and
+Y and a uniform XY receiver that fills the frame. Keep the background black
+and include only direct illumination on the receiver.
+
+Load matched **Measured** and **Open control** captures. Enter the open beam's
+irradiance radius at the receiver and, for slits, the beam radius and opening
+dimensions at the mask. The irradiance radius is where the beam falls to
+1/e² of its central value. Leave **Emitted power** at **Relative power** for
+fractions of the source or enter independently calibrated watts. An
+**Expected pattern** is optional for these models and adds the spatial heatmap.
+
+The report derives **Absorbed by mask** from the beam and openings, calibrates
+the open control's integrated radiance using the predicted Gaussian power in
+its frame, and measures **Escaped in frame** from the masked capture. It
+reports the signed remainder and the power in the outer band. Repeat with a
+wider frame and finer sampling before attributing a deficit to the renderer.
+The audit covers the declared forward fixture. A scene with reflections, other
+absorbers or illumination from the environment needs a budget that measures
+those paths as well.
+
 #### Compare with the viewport's render graph
 
 In the native editor, **Compare with the render graph** is on by default. Each

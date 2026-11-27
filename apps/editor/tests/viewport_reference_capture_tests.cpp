@@ -45,6 +45,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -1070,17 +1071,18 @@ TEST_CASE("Reference capture shows a saved power budget and its signed heatmap",
     namespace format = ludus::content::render_graph_format;
     QTemporaryDir directory;
     REQUIRE(directory.isValid() == true);
-    constexpr uint32 WIDTH = 2;
-    const auto writeCapture = [&directory](const QString& name, float32 left, float32 right) {
+    const auto writeCapture = [&directory](const QString& name, uint32 width, const QVector<float32>& pixels) {
         const QString path = directory.filePath(name);
-        QByteArray bytes(format::CAPTURE_HEADER_BYTES + WIDTH * format::CAPTURE_PIXEL_BYTES, '\0');
+        REQUIRE(pixels.size() % width == 0);
+        const qsizetype bytesToWrite = format::CAPTURE_HEADER_BYTES + pixels.size() * format::CAPTURE_PIXEL_BYTES;
+        QByteArray bytes(bytesToWrite, '\0');
         std::memcpy(bytes.data(), format::CAPTURE_MAGIC, format::CAPTURE_MAGIC_BYTES);
         const auto writeWord = [&bytes](usize offset, uint32 value) { qToLittleEndian(value, bytes.data() + offset); };
         writeWord(format::CAPTURE_VERSION_OFFSET, format::CAPTURE_VERSION);
         writeWord(format::CAPTURE_HEADER_SIZE_OFFSET, format::CAPTURE_HEADER_BYTES);
         writeWord(format::CAPTURE_PIXEL_SIZE_OFFSET, format::CAPTURE_PIXEL_BYTES);
-        writeWord(format::CAPTURE_WIDTH_OFFSET, WIDTH);
-        writeWord(format::CAPTURE_HEIGHT_OFFSET, 1);
+        writeWord(format::CAPTURE_WIDTH_OFFSET, width);
+        writeWord(format::CAPTURE_HEIGHT_OFFSET, static_cast<uint32>(pixels.size() / width));
         writeWord(format::CAPTURE_TARGET_SAMPLES_OFFSET, 1);
         writeWord(format::CAPTURE_SUBMITTED_SAMPLES_OFFSET, 1);
         // Orthographic projection with a clip-depth offset so the plane at Z=-1 is visible.
@@ -1106,10 +1108,12 @@ TEST_CASE("Reference capture shows a saved power budget and its signed heatmap",
         {
             writeWord(format::CAPTURE_WORLD_TO_CLIP_OFFSET + i * sizeof(float32), std::bit_cast<uint32>(PROJECTION[i]));
         }
-        writeWord(format::CAPTURE_HEADER_BYTES, std::bit_cast<uint32>(left));
-        writeWord(format::CAPTURE_HEADER_BYTES + LUHDR_SAMPLE_COUNT_OFFSET, 1);
-        writeWord(format::CAPTURE_HEADER_BYTES + format::CAPTURE_PIXEL_BYTES, std::bit_cast<uint32>(right));
-        writeWord(format::CAPTURE_HEADER_BYTES + format::CAPTURE_PIXEL_BYTES + LUHDR_SAMPLE_COUNT_OFFSET, 1);
+        for (qsizetype i = 0; i < pixels.size(); ++i)
+        {
+            const usize offset = format::CAPTURE_HEADER_BYTES + static_cast<usize>(i) * format::CAPTURE_PIXEL_BYTES;
+            writeWord(offset, std::bit_cast<uint32>(pixels[i]));
+            writeWord(offset + LUHDR_SAMPLE_COUNT_OFFSET, 1);
+        }
         QFile file(path);
         REQUIRE(file.open(QIODevice::WriteOnly) == true);
         REQUIRE(file.write(bytes) == bytes.size());
@@ -1135,9 +1139,9 @@ TEST_CASE("Reference capture shows a saved power budget and its signed heatmap",
     REQUIRE(imageOrNull != nullptr);
     REQUIRE(statusOrNull != nullptr);
 
-    measuredOrNull->setText(writeCapture(QStringLiteral("measured.lurgcap"), 1, 0));
-    openOrNull->setText(writeCapture(QStringLiteral("open.lurgcap"), 1, 1));
-    expectedOrNull->setText(writeCapture(QStringLiteral("expected.lurgcap"), 0, 1));
+    measuredOrNull->setText(writeCapture(QStringLiteral("measured.lurgcap"), 2, {1, 0}));
+    openOrNull->setText(writeCapture(QStringLiteral("open.lurgcap"), 2, {1, 1}));
+    expectedOrNull->setText(writeCapture(QStringLiteral("expected.lurgcap"), 2, {0, 1}));
     measureOrNull->click();
     constexpr int32 WAIT_MILLISECONDS = 5000;
     REQUIRE(QTest::qWaitFor([imageOrNull]() { return imageOrNull->GetImage().isNull() == false; }, WAIT_MILLISECONDS));
@@ -1154,6 +1158,69 @@ TEST_CASE("Reference capture shows a saved power budget and its signed heatmap",
         [statusOrNull]() { return statusOrNull->text().contains(QStringLiteral("Choose a readable raw capture")); },
         WAIT_MILLISECONDS));
     CHECK(imageOrNull->GetImage().isNull() == true);
+
+    QComboBox* modelOrNull = tabOrNull->findChild<QComboBox*>(QStringLiteral("referencePowerModel"));
+    REQUIRE(modelOrNull != nullptr);
+    QDoubleSpinBox* emittedOrNull = tabOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("powerEmittedWatts"));
+    REQUIRE(emittedOrNull != nullptr);
+    modelOrNull->setCurrentText(QStringLiteral("Gaussian knife edge"));
+    emittedOrNull->setValue(10);
+    expectedOrNull->clear();
+    measureOrNull->click();
+    const auto waitForBudget = [measureOrNull]() { return measureOrNull->isEnabled(); };
+    REQUIRE(QTest::qWaitFor(waitForBudget, WAIT_MILLISECONDS));
+    // Both pixels are in the outer band. Even an exactly closing sum needs more receiver coverage.
+    CHECK(statusOrNull->text().contains(QStringLiteral("Widen the receiver")) == true);
+    CHECK(imageOrNull->GetImage().isNull() == true);
+
+    constexpr uint32 WIDE_SIDE = 8;
+    constexpr qsizetype CENTRE_PIXEL = 4 * WIDE_SIDE + 4;
+    QVector<float32> beam(WIDE_SIDE * WIDE_SIDE, 0);
+    beam[CENTRE_PIXEL] = 1;
+    openOrNull->setText(writeCapture(QStringLiteral("wide-open.lurgcap"), WIDE_SIDE, beam));
+    beam[CENTRE_PIXEL] = 0.5F;
+    measuredOrNull->setText(writeCapture(QStringLiteral("wide-measured.lurgcap"), WIDE_SIDE, beam));
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor(waitForBudget, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text().contains(QStringLiteral("Emitted 10 W")) == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Absorbed by mask 5 W")) == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Escaped in frame 5 W")) == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("closes within tolerance")) == true);
+
+    beam[CENTRE_PIXEL] = 0.6F;
+    measuredOrNull->setText(writeCapture(QStringLiteral("wide-bright.lurgcap"), WIDE_SIDE, beam));
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor(waitForBudget, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text().contains(QStringLiteral("measured escape exceeds")) == true);
+
+    emittedOrNull->setValue(0);
+    modelOrNull->setCurrentText(QStringLiteral("Gaussian single slit"));
+    QDoubleSpinBox* radiusOrNull = tabOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("powerMaskRadius"));
+    QDoubleSpinBox* heightOrNull = tabOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("powerSlitHeight"));
+    REQUIRE(radiusOrNull != nullptr);
+    REQUIRE(heightOrNull != nullptr);
+    radiusOrNull->setValue(0.5);
+    heightOrNull->setValue(1);
+    QDoubleSpinBox* slitWidthOrNull = tabOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("powerSlitWidth"));
+    REQUIRE(slitWidthOrNull != nullptr);
+    slitWidthOrNull->setValue(1);
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor(waitForBudget, WAIT_MILLISECONDS));
+    // Independent Gaussian integral for a 1 m square at a radius of 0.5 m.
+    CHECK(statusOrNull->text().contains(QStringLiteral("Absorbed by mask 8.893%")) == true);
+
+    modelOrNull->setCurrentText(QStringLiteral("Gaussian double slit"));
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor(waitForBudget, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text().contains(QStringLiteral("openings overlap")) == true);
+
+    QDoubleSpinBox* separationOrNull = tabOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("powerSlitSeparation"));
+    REQUIRE(separationOrNull != nullptr);
+    separationOrNull->setValue(1);
+    slitWidthOrNull->setValue(0.5);
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor(waitForBudget, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text().contains(QStringLiteral("Absorbed by mask 69.970%")) == true);
 }
 #endif
 
