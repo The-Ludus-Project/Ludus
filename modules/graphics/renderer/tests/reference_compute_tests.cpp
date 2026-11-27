@@ -471,9 +471,17 @@ S Run(rr::Renderer& inoutRenderer, rr::ReferenceCapture capture, rhi::SurfaceHan
     uint64 timeoutNanoseconds = COLD_CAPTURE_TIMEOUT_NANOSECONDS;
     bool hasCompletedColdWork = false;
     rr::ReferenceCaptureInfo progress;
+    REQUIRE(inoutRenderer.GetReferenceCaptureInfo(capture, progress) == S::Ready);
+    // The CPU oracle traces inside each advance and never waits for the device, so only device traversals pause between
+    // polls. SleepFor may sleep well past its interval: on hosted macOS runners a CPU capture paid about 10 ms for each
+    // of a sample's stages, and batch 45934093190's 1024-sample CPU slit and prism captures missed TIMEOUT.
+    const bool shouldPause = progress.Traversal != rr::ReferenceTraversal::CpuOracle;
     while (status == S::Pending && time::NowTicks() - windowStartedTicks < timeoutNanoseconds)
     {
-        threading::SleepFor(COMPLETION_POLL_INTERVAL);
+        if (shouldPause == true)
+        {
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
+        }
         status = inoutRenderer.AdvanceReferenceCapture(capture, surface);
         REQUIRE(inoutRenderer.GetReferenceCaptureInfo(capture, progress) == S::Ready);
         if (hasCompletedColdWork == false && progress.CommittedSamples > 0)
@@ -1068,18 +1076,16 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: Fraunhofer edge diffractio
     });
 }
 
-TEST_CASE("GPU-compute raw AOVs match the CPU oracle: spectral optical scene connections",
-          "[renderer][gpu][reference-compute][wave-spectral]")
+namespace
+{
+/// The spectral raw-AOV case for one connection. Each connection is its own test case, so CTest gives each its own
+/// deadline: one starts a device and compiles both reference kernels, which under ASan on lavapipe took 140-330 s.
+void CheckSpectralRawAovs(rr::ReferenceOpticalConnection connection, const char* name)
 {
     // Every path samples its own wavelength; matching addresses give both traversals the same one.
-    const rr::ReferenceOpticalConnection connection =
-        GENERATE(rr::ReferenceOpticalConnection::AngularSpectrum,
-                 rr::ReferenceOpticalConnection::UtdEdgeDiffraction,
-                 rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction);
-    CAPTURE(connection);
     CheckReferenceRawAovs(
     {
-        .Name = "spectral optical scene connections",
+        .Name = name,
         .IsPerspective = true,
         .MaxDepth = 4,
         .RouletteDepth = 3,
@@ -1091,6 +1097,28 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: spectral optical scene con
         .OpticalSpectrum = rr::ReferenceOpticalSpectrum::Visible,
         .IsFarConventional = false,
     });
+}
+} // namespace
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: spectral angular-spectrum scene connections",
+          "[renderer][gpu][reference-compute][wave-spectral]")
+{
+    CheckSpectralRawAovs(rr::ReferenceOpticalConnection::AngularSpectrum,
+                         "spectral angular-spectrum scene connections");
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: spectral UTD edge diffraction scene connections",
+          "[renderer][gpu][reference-compute][wave-spectral]")
+{
+    CheckSpectralRawAovs(rr::ReferenceOpticalConnection::UtdEdgeDiffraction,
+                         "spectral UTD edge diffraction scene connections");
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: spectral Fraunhofer edge diffraction scene connections",
+          "[renderer][gpu][reference-compute][wave-spectral]")
+{
+    CheckSpectralRawAovs(rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction,
+                         "spectral Fraunhofer edge diffraction scene connections");
 }
 
 TEST_CASE("GPU-compute raw AOVs match the CPU oracle: perspective textured environment",
@@ -2611,18 +2639,15 @@ TEST_CASE("Typed reflection and transmission match between CPU and GPU reference
     CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
 }
 
-TEST_CASE("Optical connections relayed through glass match between CPU and GPU reference transport",
-          "[renderer][gpu][reference-compute][wave-relay]")
+namespace
+{
+/// Relays one operator's connection through glass at one spectrum. Each operator is its own test case, so CTest gives
+/// each its own deadline: one spectrum starts a device and compiles both reference kernels, which under ASan on
+/// lavapipe took 140-190 s.
+void CheckGlassRelayedConnection(rr::ReferenceOpticalConnection connection, rr::ReferenceOpticalSpectrum spectrum)
 {
     // The glass spheres (a solid dielectric and a thin one) relay the emissive sphere's connection: camera paths and
     // rough vertices reach it through reflections and refractions, and every operator evaluates the relayed chain.
-    const rr::ReferenceOpticalConnection connection =
-        GENERATE(rr::ReferenceOpticalConnection::AngularSpectrum,
-                 rr::ReferenceOpticalConnection::UtdEdgeDiffraction,
-                 rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction);
-    // A spectral capture relays each path at its own wavelength, through glass whose index is evaluated there.
-    const rr::ReferenceOpticalSpectrum spectrum =
-        GENERATE(rr::ReferenceOpticalSpectrum::Monochromatic, rr::ReferenceOpticalSpectrum::Visible);
     CAPTURE(connection, spectrum);
     rhi::Shutdown();
     struct Guard final
@@ -2707,6 +2732,33 @@ TEST_CASE("Optical connections relayed through glass match between CPU and GPU r
     rr::ReferenceCaptureInfo classicalInfo;
     Capture(cpu, geometric, surface, classical, classicalInfo);
     CHECK(oracleInfo.VisibilityQueries > classicalInfo.VisibilityQueries);
+}
+} // namespace
+
+TEST_CASE("Angular-spectrum connections relayed through glass match between CPU and GPU reference transport",
+          "[renderer][gpu][reference-compute][wave-relay]")
+{
+    // A spectral capture relays each path at its own wavelength, through glass whose index is evaluated there.
+    const rr::ReferenceOpticalSpectrum spectrum =
+        GENERATE(rr::ReferenceOpticalSpectrum::Monochromatic, rr::ReferenceOpticalSpectrum::Visible);
+    CheckGlassRelayedConnection(rr::ReferenceOpticalConnection::AngularSpectrum, spectrum);
+}
+
+TEST_CASE("UTD edge diffraction connections relayed through glass match between CPU and GPU reference transport",
+          "[renderer][gpu][reference-compute][wave-relay]")
+{
+    const rr::ReferenceOpticalSpectrum spectrum =
+        GENERATE(rr::ReferenceOpticalSpectrum::Monochromatic, rr::ReferenceOpticalSpectrum::Visible);
+    CheckGlassRelayedConnection(rr::ReferenceOpticalConnection::UtdEdgeDiffraction, spectrum);
+}
+
+TEST_CASE("Fraunhofer edge diffraction connections relayed through glass match between CPU and GPU reference "
+          "transport",
+          "[renderer][gpu][reference-compute][wave-relay]")
+{
+    const rr::ReferenceOpticalSpectrum spectrum =
+        GENERATE(rr::ReferenceOpticalSpectrum::Monochromatic, rr::ReferenceOpticalSpectrum::Visible);
+    CheckGlassRelayedConnection(rr::ReferenceOpticalConnection::FraunhoferEdgeDiffraction, spectrum);
 }
 
 namespace
@@ -3035,7 +3087,8 @@ TEST_CASE("A dispersive prism separates white light by each wavelength's refract
         SKIP("No Metal adapter");
     }
     Session gpu;
-    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    // Spectral captures relay through renderer_reference_optical; the geometric kernel reports them Unsupported.
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu, false, TraceKernels::WithOptical);
     if (enabled == S::Unsupported)
     {
         SKIP("Compute storage is unavailable on this device");

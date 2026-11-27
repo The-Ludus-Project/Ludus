@@ -924,9 +924,9 @@ explained generation request. Modular assembly is the second consumer, and the
 executor they share now serves requests for a single scope's output over a
 persistent cache store. Author locks enter thinning before its conflicts are
 decided, and a candidate whose authored input changed while it was pending is
-stale; its override conflicts are named by placement and property. The Editor
-surface for repairing those conflicts and World Demo consumption of the accepted
-manifest follow as separate changes under the same acceptance gate. The
+stale; its override conflicts are named by placement and property, and the
+Editor's Scatter tab repairs them. World Demo consumption of the accepted
+manifest follows as a separate change under the same acceptance gate. The
 comparison of serial and bounded-worker preparation also follows.
 
 **Modules.** `Ludus::ProceduralCore` (`modules/content/procedural/core`) holds
@@ -1075,7 +1075,27 @@ scale; each differing property is one conflict that carries both the authored
 and the candidate values. A lock the candidate was staged with and the author
 has since removed is a `Lock` conflict. Keeping the authored values is a retry:
 staging the current input again reruns only the edited lock's layer and reuses
-every other cached product. The Editor's repair surface builds on this report.
+every other cached product.
+
+**Editor repair.** The World workspace's Scatter tab
+([task guide](../development/editor-workspace.md#repair-a-stale-scatter-candidate))
+holds one `ScatterGenerationCoordinator` over an in-process cache for the
+World-demo rooms: the open World's draft and the rooms saved beside it. Both the
+tab and the World demo build each room's recipe with `TryBuildRoomScatterRecipe`
+(`apps/world_demo/internal/room_scatter.h`), so they generate from the same stage
+bytes. The author locks a placement's position, variant, rotation and scale,
+stages a candidate and publishes it. A refused publication shows each
+`ScatterOverrideConflict` by placement and property with both values, in the tab
+where the author acted. **Keep Authored Values and Retry** stages the current
+input and publishes it; **Reject Proposal** calls `Reject`. Either way the
+accepted manifest changes only on a valid publication. Holter et al.'s
+[agency distribution and attribution framework](https://www.steffenholter.com/papers/towards-agency.pdf)
+and Amershi et al.'s
+[Guidelines for Human-AI Interaction](https://www.microsoft.com/en-us/research/wp-content/uploads/2019/01/Guidelines-for-Human-AI-Interaction-camera-ready.pdf)
+(Table 1, G8 efficient dismissal and G9 efficient correction) motivate offering
+both decisions at the refusal rather than resolving the conflict silently. The
+overrides and accepted manifest are session state until the World Demo
+consumption change saves them.
 
 **Explanations.** `TryCompareScatterManifests` compares an accepted manifest with
 a candidate by persistent placement identity. It reports Removed, Changed and
@@ -1122,7 +1142,15 @@ unchanged. The conflict report names that placement's rotation with the authored
 and candidate values. Retrying runs only room B's layer, with room A all cache
 hits, and publishes the authored value. Further sections cover two edited
 properties, a removed override, a new override of a placement the candidate
-lacks, and rejecting the stale candidate.
+lacks, and rejecting the stale candidate. The Editor cases repeat the
+override fixture on the two World-demo rooms through the Scatter tab's controls,
+offscreen: the stale refusal leaves the accepted manifest and revision unchanged,
+the conflict row names the second room's placement and its rotation with both
+values, and retrying publishes the authored value with the first room all cache
+hits and only the overridden layer of the second room executed. Rejecting keeps
+the accepted manifest and the override, and the next publication carries it. An
+override inside a keep-out is listed with its reason and cannot publish until
+removed.
 
 The demand fixture extends the two rooms into one plan. A shared module catalog
 stage feeds a span assembly in each room, beside the rooms' scatter layers, and

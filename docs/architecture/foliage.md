@@ -207,9 +207,58 @@ The tests in `modules/content/foliage_cook/tests` check the following:
 - Holes, slope, wetness, masks and exclusion between strata.
 - Dormant suppressions, signed-limit cells, dirty recooks of terrain and
   suppression edits, and render-only edits.
+- Placement gaps against a maximal fill, described below.
 
 The golden cook in `foliage_cook_golden.h` is shared with the WebAssembly math
 probe, so native and browser builds must produce the same pinned bytes.
+
+#### Placement gaps
+
+Thinning removes a candidate whenever a higher-priority conflict exists, even
+if that conflict is itself removed. The cook therefore keeps the minimum
+spacing but leaves admissible area between placements. The tests in
+`foliage_gap_tests.cpp` measure the two properties separately and compare the
+cook with a maximal Poisson-disk fill:
+
+- **Fixture.** The page-cook fixture is flat, with one layer, one species, a
+  64-unit radius (minimum distance d = 128 lattice units, 0.25 m) and density
+  at capacity. A band of hole cells forms a keep-out beside a valid strip one
+  terrain cell (2d) wide. The pages are 2,048 units across, and the seam zone
+  lies within d of a page boundary.
+- **Control.** Hierarchical dart throwing (Cline, White and Egbert, RT 2007)
+  fills the same eligible roots until none is admissible, the coverage
+  objective of Dunbar and Humphreys (SIGGRAPH 2006). A cell is discarded only when one disk or the
+  keep-out covers all of it. The quadtree starts at 64-unit cells and ends at
+  single roots, which are decided exactly. The smallest explored cell is
+  therefore one root and the termination tolerance is zero.
+- **Probe.** An independent probe checks every eligible root with exact
+  integer distances. It reports nearest-neighbour spacing and the roots that
+  no placement excludes, separately for the interior, the seam and the narrow
+  strip. It confirms that the control leaves no admissible root.
+
+The quick test checks spacing, eligibility, the control's maximality and the
+cook's gaps with sparse probes. The hidden `[.benchmark][gap]` case probes
+every root and reports the following. Times are from a release build on an
+Apple M5 under load.
+
+| Point set | Interior placements | Seam placements | Strip placements | Admissible area left (interior, seam, strip) | Largest empty distance | Time |
+| --- | --- | --- | --- | --- | --- | --- |
+| Cook, cell 128, 1 slot | 928 | 269 | 45 | 15.8 %, 17.9 %, 16.2 % | 1.97 d | 1.9 ms |
+| Cook, cell 64, 1 slot | 830 | 249 | 41 | 20.7 %, 21.1 %, 21.2 % | 2.51 d | 4.3 ms |
+| Dart throwing control | 1,771 | 522 | 86 | 0 % in every zone | below d | 7.8–11.9 ms |
+
+The cook keeps 47–52 % of the maximal fill's count. Its nearest-neighbour
+distances spread across [d, 2d), while 97 % of the control's lie in
+[d, 1.25 d). The seam and the narrow strip stay within about two percentage
+points of the interior, so page halos and keep-outs add no measurable gaps of
+their own. The finer lattice offers four times the candidates but places
+fewer, consistent with more candidates being removed by conflicts that are
+themselves removed. The control threw 24,036 darts and discarded 75,722
+covered cells. It held at most 13,184 active cells and 520,448 bytes.
+At about 10 ms, the control does not limit the study, so the conditional
+raster conflict-culling trial (PixelPie, HPG 2013) is not needed. These gaps are a property of the declared
+placement rule. Shuffled and isolated cooks of the fixture still produce
+identical pages, and the golden bytes remain the product contract.
 
 ## Cooked pages and publication
 

@@ -56,6 +56,7 @@ class WorldLightsPanel;
 class WorldMaterialDocument;
 class WorldMaterialsPanel;
 class WorldEnvironmentPanel;
+class WorldScatterPanel;
 class WorldTerrainPanel;
 struct WorldLightChange;
 struct WorldLightRow;
@@ -302,9 +303,13 @@ private:
     [[nodiscard]] bool canEditTerrain(const QString& key) const;
     [[nodiscard]] bool tryPlaceTerrainDraft(const QString& id, const QJsonObject& placement);
     void applyTerrainInteraction();
+    /// Cook the ready terrain view for Show cooked pages, update the panel summary and the page-border overlay.
+    void updateTerrainCookedPages();
     WorldTerrainPanel* mTerrainPanelOrNull = nullptr;
     /// Refresh the light list from the World and the presented scene.
     void renderLights();
+    /// Show the Scatter tab for a World-demo World and give it the open room and its sibling rooms.
+    void renderScatter();
     /// Apply a light switch, Solo or Enable All from the light list as one undo step.
     void applyLightChange(const WorldLightChange& change, const QString& message);
     /// Commit the Environment tool's climate (undefined removes it) as one undoable edit; a refusal stays in the
@@ -447,6 +452,10 @@ private:
     [[nodiscard]] foundation::int32 entitySectionContentHeight() const;
     WorldMaterialsPanel* mMaterialsPanel;
     WorldEnvironmentPanel* mEnvironmentPanel;
+    WorldScatterPanel* mScatterPanel;
+    /// The World whose sibling rooms the Scatter tab holds, and the draft it last generated from.
+    QString mScatterRoomsPath;
+    QJsonObject mScatterDraft;
     QPointer<WorldMaterialDocument> mMaterialDocumentOrNull;
     /// Splitter sizes captured when the chrome was hidden, restored when it is shown.
     QByteArray mSplitterStateBeforeChromeHidden;

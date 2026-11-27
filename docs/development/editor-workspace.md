@@ -828,6 +828,18 @@ collision. Carving depends on the sample grid, so changing **Samples per side**
 moves the channels. The fields, routing and carving are described in
 [terrain fields, drainage, rivers and material rules](../modules/content/terrain.md).
 
+**Show cooked pages** inspects the terrain as a game reads it. The Editor cooks
+the ready view's final heights, after rivers and sculpt strokes, into a
+versioned revision of height pages. It then reads every page back from its own
+bytes and draws the page borders over the terrain at the decoded heights. The
+panel names the revision, the page grid, the height step and the largest
+difference from the source heights. A terrain with up to 64 samples per side
+uses at most four pages per axis. The revision is for inspection only; the World
+keeps its recipe. The cooked format needs square cells. When **Width** and
+**Depth** divide into cells of different sizes, the panel names the **Depth**
+that matches. See
+[inspect and read a cooked revision](../modules/content/terrain.md#inspect-and-read-a-cooked-revision).
+
 The editor extracts a single indexed mesh of at most 64 samples per side,
 including after reopening the World. The terrain uses the current viewport
 shading and authored lights. In an unlit World, the default raster graph
@@ -3814,6 +3826,57 @@ There is no separate authoring window and no keyboard transform gesture. Edit
 transforms in the World inspector, as for every other World. Viewport picking and
 gizmos are later work for all Worlds; see
 [Play in the editor viewport](../architecture/editor-gui-systems.md#play-in-the-editor-viewport).
+
+### Repair a stale scatter candidate
+
+A World-demo World shows a **Scatter** tab beside Lights, Materials and
+Environment. It stages the rooms' scatter through the
+[staged generation executor](../architecture/procedural-content-generation.md#p1-staged-scatter-generation)
+and keeps an accepted set of placements that changes only when you publish.
+The tab generates the open World's room from its applied draft, together with
+every other World-demo room saved beside it (for example `first-room.world.json`
+and `second-room.world.json` in `apps/world_demo/levels`). A sibling World in the
+same catalog room as the open one is left out, because the draft is that room's
+input.
+
+1. Select **Stage Candidate**, then **Publish**. The placement list shows each
+   accepted placement by room, layer, cell and candidate index, with its
+   position in lattice units, variant, rotation (in 1/65536 turns and degrees)
+   and scale.
+2. Select a placement and edit its values under **Override**. The fields stay
+   inside the placement's cell and the layer's variant and scale ranges.
+   **Apply Override** locks the placement at those values; **Remove Override**
+   lets generation choose them again.
+3. **Stage Candidate** generates the override. Only the overridden layer runs
+   again; the evaluation list names each layer **Executed** or **Cache hit**.
+4. If you edit an override while the candidate is pending, **Publish** refuses
+   it, and the accepted placements and revision stay unchanged. The conflict
+   list names each disagreement by placement and property (**Position**,
+   **Variant**, **Rotation**, **Scale**, **Presence** for a placement the
+   candidate lacks, or **Override removed**), with the authored and the
+   candidate value side by side.
+5. **Keep Authored Values and Retry** stages the current overrides and publishes
+   them. Only the edited room's layer runs again, and every other room's layers
+   are cache hits. **Reject Proposal** discards the candidate instead; the
+   accepted placements and your overrides stay, and the next candidate you stage
+   and publish carries the authored values.
+
+An override that generation cannot honour, such as a position inside the
+keep-out around a spawn point, exit or collision box, makes the candidate
+unpublishable. The conflict list then names the placement and the reason. Select
+it, then edit or remove its override and stage again.
+
+The overrides and the accepted placements are Editor session state. Save World
+does not write them yet, and the World viewport and Play still generate the
+room without them. Saving the overrides and having the World demo consume only
+the accepted placements is the next part of
+[Generation P1](https://github.com/The-Ludus-Project/Ludus/issues/1203). The
+offscreen regression cases cover the stale refusal, the conflict list, retry,
+rejection and an unhonourable override:
+
+```bash
+QT_QPA_PLATFORM=offscreen out/build/macos-clang-debug/apps/editor/ludus_editor_tests '[scatter]'
+```
 
 ### Enable the rendered authoring surface
 

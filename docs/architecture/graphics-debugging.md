@@ -384,9 +384,29 @@ that a hidden window's skipped acquisition discards its empty trace.
 
 To capture from an application built against the installed SDK, build and
 install the `macos-clang-development` SDK. Then configure
-`tests/sdk_consumer/metal_capture` as a separate CMake project with the
-installed prefix, the pinned compiler and the preset's macOS SDK flags, and run
-`ctest --test-dir <consumer-build> -V`. The fixture captures two frames inside a
+`tests/sdk_consumer/metal_capture` as a separate CMake project. Pass the
+installed prefix, the pinned compiler, the preset's macOS SDK flags, and the
+pinned Slang compiler and SPIRV-Cross. `ludus_compile_shader` needs those two
+to build the fixture's LUSL shader. From the repository root:
+
+```bash
+./scripts/install-sdk macos-clang-development
+out/host-tools/venv/bin/cmake -S tests/sdk_consumer/metal_capture \
+  -B out/build/metal-capture-consumer -G Ninja \
+  -DCMAKE_MAKE_PROGRAM="$PWD/out/host-tools/venv/bin/ninja" \
+  -DCMAKE_CXX_COMPILER="$PWD/out/host-tools/bin/clang++" \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_PREFIX_PATH="$PWD/out/install/macos-clang-development" \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+  -DCMAKE_OSX_SYSROOT="$PWD/out/host-tools/macos-sdk" \
+  -DCMAKE_CXX_FLAGS="-stdlib=libc++ -nostdinc++ -isystem $PWD/out/host-tools/libcxx-include" \
+  -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" \
+  -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross"
+out/host-tools/venv/bin/cmake --build out/build/metal-capture-consumer
+out/host-tools/venv/bin/ctest --test-dir out/build/metal-capture-consumer -V
+```
+
+The fixture captures two frames inside a
 `Fixture/View` scope. The first draws the LUSL diagnostic shader. The second
 clears a texture named `Fixture/OffscreenColor` in a `Fixture/OffscreenPass`
 scope. Its `verify.py` runs it without capture enabled and expects the restart

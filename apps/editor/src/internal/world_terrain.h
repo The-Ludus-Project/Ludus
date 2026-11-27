@@ -2,6 +2,7 @@
 
 #include "internal/render_scene.h"
 
+#include <ludus/content/terrain/terrain_fields.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/identity/uuid.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -91,6 +92,8 @@ struct TerrainBuild final
     foundation::math::Vector3 BaseColorMean{1, 1, 1};
     /// Water over carved channels, in the terrain's local space; empty without rivers or water.
     PreviewMesh Water;
+    /// Sample grid of Mesh's positions, which are row-major with columns along +X.
+    content::terrain::TerrainFieldGrid Grid{};
 };
 
 /// Generate the terrain mesh, its baked surface and its river water from one versioned recipe.
@@ -103,6 +106,13 @@ struct TerrainBuild final
 /// Generate an indexed, Y-up mesh from one versioned recipe, without its surface or water. Failure preserves
 /// outMesh.
 [[nodiscard]] bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& outError);
+
+/// Generate the mesh like BuildTerrainMesh and report the sample grid of its positions. Failure preserves both
+/// outputs.
+[[nodiscard]] bool BuildTerrainMesh(const QJsonObject& recipe,
+                                    PreviewMesh& outMesh,
+                                    content::terrain::TerrainFieldGrid& outGrid,
+                                    QString& outError);
 
 /// Create or update terrain as one edit. An empty key uses the draft transform, or the defaults when it is empty.
 [[nodiscard]] bool EditWorldTerrain(WorldDocument& inoutWorld,

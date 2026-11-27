@@ -819,20 +819,64 @@ rhi::GraphicsCaptureReport GetReport(rhi::GraphicsCaptureIdentity identity)
     REQUIRE(rhi::GetGraphicsCaptureReport(identity, report) == rhi::GraphicsCaptureError::None);
     return report;
 }
-/// True when some file of the .gputrace bundle holds `text`; the trace records labels as UTF-8.
+/// Leading bytes of each file that DescribeTrace reports, enough for a container or compression signature.
+constexpr usize TRACE_SIGNATURE_BYTES = 8;
+/// Every regular file of the .gputrace bundle at any depth, relative to the bundle.
+NSArray<NSString*>* GetTraceFiles(NSString* bundle)
+{
+    NSMutableArray<NSString*>* files = [NSMutableArray array];
+    NSFileManager* manager = [NSFileManager defaultManager];
+    for (NSString* entry in [manager enumeratorAtPath:bundle])
+    {
+        BOOL isDirectory = NO;
+        if ([manager fileExistsAtPath:[bundle stringByAppendingPathComponent:entry] isDirectory:&isDirectory] == YES &&
+            isDirectory == NO)
+        {
+            [files addObject:entry];
+        }
+    }
+    return files;
+}
+/// True when some file of the .gputrace bundle, at any depth, holds `text` as UTF-8 or UTF-16LE. Traces written on
+/// macOS 26 record labels as UTF-8 in a top-level file; batch 45934093190's macOS 15 runner found neither there.
 bool DoesTraceContain(NSString* bundle, const char* text)
 {
-    NSData* needle = [NSData dataWithBytes:text length:std::strlen(text)];
-    for (NSString* entry in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundle error:nil])
+    NSData* utf8 = [NSData dataWithBytes:text length:std::strlen(text)];
+    NSData* utf16 = [[NSString stringWithUTF8String:text] dataUsingEncoding:NSUTF16LittleEndianStringEncoding];
+    for (NSString* entry in GetTraceFiles(bundle))
     {
         NSData* bytes = [NSData dataWithContentsOfFile:[bundle stringByAppendingPathComponent:entry]];
-        if (bytes != nil &&
-            [bytes rangeOfData:needle options:0 range:NSMakeRange(0, bytes.length)].location != NSNotFound)
+        if (bytes == nil)
         {
-            return true;
+            continue;
+        }
+        for (NSData* needle in @[ utf8, utf16 ])
+        {
+            if ([bytes rangeOfData:needle options:0 range:NSMakeRange(0, bytes.length)].location != NSNotFound)
+            {
+                return true;
+            }
         }
     }
     return false;
+}
+/// One line per file of the bundle: its path, byte count and leading bytes in hexadecimal, so a failed
+/// DoesTraceContain shows what the platform's trace format holds.
+NSString* DescribeTrace(NSString* bundle)
+{
+    NSMutableString* description = [NSMutableString string];
+    for (NSString* entry in GetTraceFiles(bundle))
+    {
+        NSData* bytes = [NSData dataWithContentsOfFile:[bundle stringByAppendingPathComponent:entry]];
+        const usize count = bytes == nil ? 0 : bytes.length;
+        [description appendFormat:@"\n%@ %zu bytes:", entry, count];
+        const uint8* data = bytes == nil ? nullptr : static_cast<const uint8*>(bytes.bytes);
+        for (usize i = 0; i < count && i < TRACE_SIGNATURE_BYTES; ++i)
+        {
+            [description appendFormat:@" %02x", data[i]];
+        }
+    }
+    return description;
 }
 } // namespace
 
@@ -968,6 +1012,7 @@ TEST_CASE("G2 Metal captures named offscreen frames to verified .gputrace docume
         BOOL isDirectory = NO;
         REQUIRE([[NSFileManager defaultManager] fileExistsAtPath:bundle isDirectory:&isDirectory] == YES);
         CHECK(isDirectory == YES);
+        CAPTURE(DescribeTrace(bundle).UTF8String);
         // The trace holds the frame's command buffer, its scope and the drawn MSL source.
         CHECK(DoesTraceContain(bundle, "Ludus/Frame") == true);
         CHECK(DoesTraceContain(bundle, CAPTURE_VIEW) == true);
@@ -991,6 +1036,7 @@ TEST_CASE("G2 Metal captures named offscreen frames to verified .gputrace docume
         REQUIRE(report.State == rhi::GraphicsCaptureState::Complete);
         CHECK(directory.GetEntries().count == 4);
         bundle = directory.GetPath(report.Artifact.GetData());
+        CAPTURE(DescribeTrace(bundle).UTF8String);
         CHECK(DoesTraceContain(bundle, CAPTURE_VIEW) == true);
         CHECK(DoesTraceContain(bundle, CAPTURE_PASS) == true);
         CHECK(DoesTraceContain(bundle, CAPTURE_TEXTURE) == true);
