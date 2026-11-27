@@ -351,9 +351,7 @@ positions and optional finite top-left UVs into a 20-byte vertex in L3 (40 bytes
 ignore UVs. Existing flat/error materials keep their behavior.
 
 ```cmake
-ludus_compile_shader(TARGET my_app NAME renderer_material RASTER
-    SOURCE "${Ludus_DIR}/shaders/renderer_material.slang"
-    VERTEX vertexMain FRAGMENT fragmentMain)
+ludus_compile_renderer_shaders(TARGET my_app SHADERS renderer_material)
 ludus_cook_texture(TARGET my_app NAME albedo SOURCE assets/albedo.texture.json)
 ```
 

@@ -1,0 +1,67 @@
+// Unlit material program (MaterialDescription). The renderer's L3 schema checks the reflected
+// uniform members (Tint, UvTransform, Options at consecutive Float4 offsets) and the fixed
+// uniform, texture and sampler slots 0, 1 and 2, which the declaration order below produces.
+// Port of renderer_material.slang (LUSL L5d wave 2).
+
+static const float32 MASKED_DOMAIN = 1.0;
+static const float32 PAINTER_DOMAIN = 2.0;
+
+struct MaterialParameters
+{
+    float32x4 Tint;
+    float32x4 UvTransform; // xy: scale, zw: offset
+    float32x4 Options; // x: alpha cutoff, y: explicit LOD (negative is implicit), z: alpha domain, w: reserved
+};
+
+ConstantBuffer<MaterialParameters> material;
+Texture2D<float32x4> colorTexture;
+SamplerState colorSampler;
+
+struct MaterialInput
+{
+    float32x3 PositionMesh;
+    float32x4 MeshToClipRow0;
+    float32x4 MeshToClipRow1;
+    float32x4 MeshToClipRow2;
+    float32x4 MeshToClipRow3;
+    float32x4 Color;
+    float32x2 Uv;
+};
+
+struct MaterialVarying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x2 Uv;
+    float32x4 Color;
+};
+
+[stage(vertex)]
+MaterialVarying VertexMain(in MaterialInput input)
+{
+    float32x4 positionMesh = float32x4(input.PositionMesh, 1.0);
+    MaterialVarying output =
+    {
+        .PositionClip = float32x4(dot(input.MeshToClipRow0, positionMesh),
+                                  dot(input.MeshToClipRow1, positionMesh),
+                                  dot(input.MeshToClipRow2, positionMesh),
+                                  dot(input.MeshToClipRow3, positionMesh)),
+        .Uv = input.Uv,
+        .Color = input.Color,
+    };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in MaterialVarying input)
+{
+    float32x2 uv = input.Uv * material.UvTransform.xy + material.UvTransform.zw;
+    float32x4 texel = material.Options.y < 0.0 ? colorTexture.Sample(colorSampler, uv)
+        : colorTexture.SampleLevel(colorSampler, uv, material.Options.y);
+    float32x4 color = texel * material.Tint * input.Color;
+    if (material.Options.z == MASKED_DOMAIN && color.w < material.Options.x)
+    {
+        discard;
+    }
+    float32 alpha = material.Options.z == PAINTER_DOMAIN ? color.w : 1.0;
+    return float32x4(color.xyz * alpha, alpha);
+}

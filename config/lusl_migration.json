@@ -47,6 +47,10 @@
       "reason": "RHI tests of Slang input: graph ray queries, ordered compute and raster storage"
     },
     {
+      "path": "modules/graphics/renderer/shaders/renderer_atmosphere.slang",
+      "reason": "Differential oracle of the LUSL recipes renderer_atmosphere_transmittance, renderer_atmosphere_multiple, renderer_atmosphere_sky and renderer_atmosphere_display (renderer_atmosphere.lusl, L5d wave 2): the renderer GPU suites draw each table and the display with both programs on one device and require identical pixels"
+    },
+    {
       "path": "modules/graphics/renderer/shaders/renderer_composite.slang",
       "reason": "Differential oracle of the LUSL recipe renderer_composite.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
     },
@@ -69,6 +73,10 @@
     {
       "path": "modules/graphics/renderer/shaders/renderer_light_transformer_query.slang",
       "reason": "Per-query decoder that render_graph_ray.py splices into the Slang wrapper of render-graph packages with scene_interface.light_transformer; it reads the graph's GraphBuffer0 and migrates with the render-graph scene interface"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_material.slang",
+      "reason": "Differential oracle of the LUSL recipe renderer_material.lusl (L5d wave 2): the renderer GPU suites draw both on one device and require identical pixels"
     },
     {
       "path": "modules/graphics/renderer/shaders/renderer_overlay.slang",

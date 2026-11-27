@@ -15,7 +15,7 @@
 // CPU evaluation of the raster's clear-sky tables for distant reference lighting. Thanks to
 // Sébastien Hillaire, A Scalable and Production Ready Sky and Atmosphere Rendering Technique,
 // CGF 2020, §§4–5, doi:10.1111/cgf.14050. Each function mirrors the same-named function in
-// renderer_atmosphere_transport.slang or entry point in renderer_atmosphere.slang, including
+// renderer_atmosphere_transport.slang or entry point in renderer_atmosphere.lusl, including
 // their table parameterizations and bilinear lookups, so the reference sees the raster's sky.
 // It differs only in evaluating in double precision and storing the tables in float64.
 namespace ludus::graphics::renderer

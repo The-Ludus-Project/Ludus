@@ -33,7 +33,7 @@ struct AtmosphereViewSample final
 };
 
 /// CPU copies of the raster's clear-sky transmittance, multiple-scattering and sky tables
-/// (renderer_atmosphere.slang) for one observer altitude and solar zenith cosine, with their lookups.
+/// (renderer_atmosphere.lusl) for one observer altitude and solar zenith cosine, with their lookups.
 /// Values are per unit solar illuminance. Heights are in kilometres above the ground sphere.
 class AtmosphereSkyTables final
 {
