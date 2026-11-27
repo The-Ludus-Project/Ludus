@@ -701,8 +701,10 @@ geometry. Texture dependencies continue to refer to immutable catalog revisions.
 
 The typed PBRT importer resolves its declared defaults at import. The current
 subset admits diffuse, conductor, coated-diffuse and smooth dielectric or thin
-dielectric definitions (scalar `eta`; roughness below pbrt-v4's smooth threshold); its coating's
-unexposed layer settings retain PBRT's defaults (zero medium scattering albedo,
+dielectric definitions. A dielectric takes a scalar `eta`, or a `"spectrum eta"`
+naming a pbrt-v4 glass or tabulating its index, stored as
+[`n_d` and an Abbe number](renderer-systems.md#dispersive-dielectrics), and roughness
+below pbrt-v4's smooth threshold. A coating's unexposed layer settings retain PBRT's defaults (zero medium scattering albedo,
 zero phase anisotropy, ten internal events and one evaluation sample). It requires
 explicit `remaproughness=false` and positive isotropic alpha for rough source
 models. Unsupported profiles reject; no anonymous conversion to a different

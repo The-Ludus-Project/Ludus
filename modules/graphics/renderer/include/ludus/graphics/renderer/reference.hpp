@@ -82,10 +82,12 @@ enum class ReferenceOpticalSpectrum : ludus::foundation::uint8
 /// alpha directly. Coatings require isotropy, alpha >= LUDUS_COATING_MIN_ALPHA,
 /// and IOR >= 1. Their internal depth is LUDUS_COATING_MAX_DEPTH; it does not consume
 /// scene bounces. Dielectric and ThinDielectric are smooth nonabsorbing interfaces
-/// with one real index (equal Eta channels, zero K, alpha below
-/// LUDUS_SMOOTH_INTERFACE_ALPHA): their reflection and transmission are directional
-/// deltas, sampled only. Rough transmission, scattering media, absorption inside
-/// dielectrics and spectral dispersion are absent.
+/// with one declared real index (equal Eta channels, an Abbe number in K[0] or zero,
+/// zero K[1..2], alpha below LUDUS_SMOOTH_INTERFACE_ALPHA): their reflection and
+/// transmission are directional deltas, sampled only. They refract at the index of
+/// WavelengthNanometers (content::scene_format::ComputeDielectricIndex), which is n_d for
+/// RGB transport. Rough transmission, scattering media and absorption inside dielectrics
+/// are absent.
 struct ReferenceBsdf final
 {
     /// Linear RGB reflectance, each channel in [0,1]; conductor evaluation uses Eta/K instead.
@@ -104,6 +106,9 @@ struct ReferenceBsdf final
     /// Dielectric only: the view direction lies inside the medium, behind the surface's
     /// oriented front side, so refraction uses the inverse relative index. Thin slabs ignore it.
     bool IsViewerInside = false;
+    /// Dielectric only: vacuum wavelength in nanometres of a spectral path, at which a dispersive index is
+    /// evaluated; zero for RGB transport, which explicitly uses the index n_d. Other models ignore it.
+    ludus::foundation::float32 WavelengthNanometers = 0;
     /// Declared reflection integral of the GGX lobes; values outside the enumeration are invalid input.
     ReferenceMaterialProfile Profile = ReferenceMaterialProfile::SingleScattering;
 };

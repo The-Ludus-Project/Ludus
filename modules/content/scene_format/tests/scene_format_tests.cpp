@@ -4,6 +4,8 @@
 #include <ludus/content/scene_format/material.h>
 #include <ludus/content/scene_format/material_program.h>
 
+#include <ludus/foundation/base/types.h>
+
 #include <limits>
 
 #include <catch2/catch_test_macros.hpp>
@@ -367,6 +369,86 @@ TEST_CASE("Skin stores scattering distances in LUSCN v14 and reflects like metal
     scattering.Model = format::MaterialModel::Skin;
     scattering.CoatingThickness = 0;
     CHECK(format::IsMaterialScatteringValid(scattering) == false);
+}
+
+TEST_CASE("Dielectrics declare dispersion as an index n_d and an Abbe number", "[scene_format][materials][dielectric]")
+{
+    using ludus::foundation::float64;
+    const auto magnitude = [](float64 value) { return value < 0 ? -value : value; };
+    // pbrt-v4's glass-F11 as the pbrt importers declare it.
+    constexpr format::DielectricDispersion FLINT{ .IndexD = 1.784743F, .AbbeNumber = 25.7F };
+    for (const format::MaterialModel model : {format::MaterialModel::Dielectric, format::MaterialModel::ThinDielectric})
+    {
+        CAPTURE(static_cast<format::uint32>(model));
+        const format::MaterialScattering scattering = format::MakeDielectricScattering(model, FLINT);
+        CHECK(format::IsMaterialScatteringValid(scattering) == true);
+        CHECK(format::IsStoredMaterialScatteringValid(scattering) == true);
+        // n_d fills every Eta channel and V_d is K[0]; the declaration reads back unchanged.
+        CHECK(scattering.Eta[0] == FLINT.IndexD);
+        CHECK(scattering.Eta[2] == FLINT.IndexD);
+        CHECK(scattering.K[0] == FLINT.AbbeNumber);
+        CHECK(format::GetDielectricDispersion(scattering).IndexD == FLINT.IndexD);
+        CHECK(format::GetDielectricDispersion(scattering).AbbeNumber == FLINT.AbbeNumber);
+        CHECK(format::GetMaterialCapabilities(scattering) == format::GetMaterialCapabilities(model));
+    }
+    // Other models carry no dispersion.
+    format::MaterialScattering conductor;
+    conductor.Model = format::MaterialModel::Conductor;
+    conductor.K = {{3, 3, 3}};
+    CHECK(format::GetDielectricDispersion(conductor).AbbeNumber == 0);
+    // The Cauchy equation n = A + B / lambda^2 through n_d with n_F - n_C = (n_d - 1) / V_d, checked in float64
+    // against its defining properties rather than its expression.
+    const auto index = [&](format::float32 nanometers) {
+        return static_cast<float64>(format::ComputeDielectricIndex(FLINT, nanometers));
+    };
+    const float64 indexD = static_cast<float64>(FLINT.IndexD);
+    constexpr float64 INDEX_TOLERANCE = 1e-6;
+    CHECK(magnitude(index(format::LUDUS_DIELECTRIC_D_LINE_NANOMETERS) - indexD) <= INDEX_TOLERANCE);
+    CHECK(magnitude(index(format::LUDUS_DIELECTRIC_F_LINE_NANOMETERS) -
+                    index(format::LUDUS_DIELECTRIC_C_LINE_NANOMETERS) -
+                    (indexD - 1) / static_cast<float64>(FLINT.AbbeNumber)) <= INDEX_TOLERANCE);
+    // (n - A) lambda^2 is the same constant B at every wavelength; normal dispersion makes blue refract more.
+    const float64 lineD = static_cast<float64>(format::LUDUS_DIELECTRIC_D_LINE_NANOMETERS);
+    const float64 cauchyA = indexD - (index(400) - indexD) / (lineD * lineD / (400.0 * 400.0) - 1);
+    const float64 cauchyB = (index(400) - cauchyA) * 400.0 * 400.0;
+    for (const format::float32 nanometers : {380.0F, 486.1327F, 550.0F, 656.2725F, 780.0F})
+    {
+        CAPTURE(nanometers);
+        const float64 wavelength = static_cast<float64>(nanometers);
+        CHECK(magnitude((index(nanometers) - cauchyA) * wavelength * wavelength - cauchyB) <= cauchyB * 1e-4);
+    }
+    CHECK(index(380) > index(550));
+    CHECK(index(550) > index(780));
+    // RGB transport (zero wavelength) and a nondispersive index both use n_d.
+    CHECK(format::ComputeDielectricIndex(FLINT, 0) == FLINT.IndexD);
+    CHECK(format::ComputeDielectricIndex({ .IndexD = 1.5F, .AbbeNumber = 0 }, 400) == 1.5F);
+    // Admission: an Abbe number in [MIN, MAX] above an index of one, or zero; K[1..2] stay zero.
+    CHECK(format::IsDielectricDispersionValid({ .IndexD = 1.5F, .AbbeNumber = format::MIN_DIELECTRIC_ABBE_NUMBER }) ==
+          true);
+    CHECK(format::IsDielectricDispersionValid({ .IndexD = 1.5F, .AbbeNumber = format::MAX_DIELECTRIC_ABBE_NUMBER }) ==
+          true);
+    CHECK(format::IsDielectricDispersionValid({ .IndexD = 0.8F, .AbbeNumber = 0 }) == true);
+    for (const format::DielectricDispersion invalid : {
+             format::DielectricDispersion{ .IndexD = 1.5F, .AbbeNumber = format::MIN_DIELECTRIC_ABBE_NUMBER * 0.5F },
+             format::DielectricDispersion{ .IndexD = 1.5F, .AbbeNumber = format::MAX_DIELECTRIC_ABBE_NUMBER * 2 },
+             format::DielectricDispersion{ .IndexD = 1.5F, .AbbeNumber = -30 },
+             format::DielectricDispersion
+             {
+                 .IndexD = 1.5F,
+                 .AbbeNumber = std::numeric_limits<format::float32>::quiet_NaN(),
+             },
+             format::DielectricDispersion{ .IndexD = 0.8F, .AbbeNumber = 30 },
+             format::DielectricDispersion{ .IndexD = 1, .AbbeNumber = 30 },
+         })
+    {
+        CAPTURE(invalid.IndexD, invalid.AbbeNumber);
+        CHECK(format::IsDielectricDispersionValid(invalid) == false);
+        CHECK(format::IsMaterialScatteringValid(
+                  format::MakeDielectricScattering(format::MaterialModel::Dielectric, invalid)) == false);
+    }
+    format::MaterialScattering stray = format::MakeDielectricScattering(format::MaterialModel::Dielectric, FLINT);
+    stray.K[1] = 1;
+    CHECK(format::IsMaterialScatteringValid(stray) == false);
 }
 
 TEST_CASE("Material program decode rejects invalid extents without replacing the output", "[scene_format][materials]")

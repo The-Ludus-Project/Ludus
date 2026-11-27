@@ -2310,7 +2310,12 @@ PathSample TracePath(uint pixel, uint sample)
         float3 outgoingWorld;
         if (isSpecular == true)
         {
-            specular = SampleDielectric(bsdf.Model, bsdf.Eta.x, bsdf.IsViewerInside, normalWorld, viewWorld, samples.x);
+            specular = SampleDielectric(bsdf.Model,
+                                        ComputeDielectricIndex(bsdf.Eta.x, bsdf.K.x, path.WavelengthNanometers),
+                                        bsdf.IsViewerInside,
+                                        normalWorld,
+                                        viewWorld,
+                                        samples.x);
             outgoingWorld = specular.HasSample == true ? specular.DirectionWorld : float3(0);
         }
         else if (hasCoating == true)
@@ -2408,7 +2413,7 @@ PathSample TracePath(uint pixel, uint sample)
                 if (isSpecular == true)
                     AppendWaveRelayEvent(relay,
                                          bsdf.Model == MaterialModel::Dielectric,
-                                         bsdf.Eta.x,
+                                         ComputeDielectricIndex(bsdf.Eta.x, bsdf.K.x, path.WavelengthNanometers),
                                          bsdf.IsViewerInside,
                                          isTransmitted == false,
                                          positionWorld);

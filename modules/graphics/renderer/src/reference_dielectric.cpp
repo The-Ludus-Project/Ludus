@@ -9,7 +9,8 @@
 // b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f, src/pbrt/bxdfs.{h,cpp} (DielectricBxDF, ThinDielectricBxDF) and
 // util/scattering.h (FrDielectric, Refract), Copyright 1998-2020 the authors, licensed under Apache-2.0 (see
 // third_party/pbrt/LICENSE.txt). Specialization: smooth interfaces only, one real index for all RGB channels and
-// radiance transport; shaders/dielectric.slang is the GPU twin.
+// radiance transport. A spectral path refracts at the declared index of its wavelength
+// (content::scene_format::ComputeDielectricIndex); shaders/dielectric.slang is the GPU twin.
 namespace ludus::graphics::renderer::internal
 {
 using namespace foundation;
@@ -34,9 +35,14 @@ bool IsReferenceDielectricSupported(const format::MaterialScattering& scattering
     {
         return true;
     }
-    return scattering.Eta[0] == scattering.Eta[1] && scattering.Eta[0] == scattering.Eta[2] && scattering.K[0] == 0 &&
-           scattering.K[1] == 0 && scattering.K[2] == 0 &&
+    return scattering.Eta[0] == scattering.Eta[1] && scattering.Eta[0] == scattering.Eta[2] && scattering.K[1] == 0 &&
+           scattering.K[2] == 0 &&
+           format::IsDielectricDispersionValid(format::GetDielectricDispersion(scattering)) == true &&
            math::Max(scattering.AlphaU, scattering.AlphaV) < format::LUDUS_SMOOTH_INTERFACE_ALPHA;
+}
+float32 GetReferenceDielectricIndex(const ReferenceBsdf& bsdf) noexcept
+{
+    return format::ComputeDielectricIndex(format::GetDielectricDispersion(bsdf.Scattering), bsdf.WavelengthNanometers);
 }
 float32 ComputeDielectricFresnel(float32 cosine, float32 eta) noexcept
 {
@@ -68,7 +74,7 @@ ReferenceBsdfSample SampleDielectric(const ReferenceBsdf& bsdf,
         return result;
     }
     const bool isThin = bsdf.Scattering.Model == format::MaterialModel::ThinDielectric;
-    const float32 eta = bsdf.Scattering.Eta[0];
+    const float32 eta = GetReferenceDielectricIndex(bsdf);
     // pbrt-v4 orients the interface by the shading frame; Ludus flips the normal to the viewer and keeps the side.
     const float32 relativeEta = isThin == false && bsdf.IsViewerInside == true ? 1 / eta : eta;
     float32 reflectance = ComputeDielectricFresnel(cosine, relativeEta);

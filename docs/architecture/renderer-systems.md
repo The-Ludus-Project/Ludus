@@ -5477,12 +5477,15 @@ means; numerical/statistical acceptance never uses tone mapping or denoising.
 
 Reference profile 8 renders pbrt-v4's smooth `dielectric` and `thindielectric`
 materials, such as the glass balustrade beside the staircase. `Dielectric` is the
-interface of a nonabsorbing medium with one real index in every `Eta` channel and
-zero `K`. A closed mesh bounds the medium, and its oriented front side faces the
-outside. `ThinDielectric` is an infinitesimally thin slab of that index. Reference
-admission accepts equal RGB indices, zero extinction and GGX alpha below
+interface of a nonabsorbing medium with one declared real index: `n_d` in every
+`Eta` channel and its Abbe number in `K[0]` (see
+[dispersive dielectrics](#dispersive-dielectrics)), with zero `K[1..2]`. A closed mesh
+bounds the medium, and its oriented front side faces the outside. `ThinDielectric`
+is an infinitesimally thin slab of that index. Reference admission accepts equal RGB
+indices, an admitted Abbe number or zero, zero extinction and GGX alpha below
 `LUDUS_SMOOTH_INTERFACE_ALPHA` (pbrt-v4's `EffectivelySmooth` threshold, 0.001).
-Dispersion, absorption inside the medium and rough transmission are rejected.
+Channel-wise indices, absorption inside the medium and rough transmission are
+rejected.
 
 Both lobes are directional deltas. Sampling reflects with probability equal to the
 unpolarized Fresnel reflectance and otherwise refracts by Snell's law; total
@@ -5517,6 +5520,61 @@ cooker admits scalar `eta` and smooth roughness, and rejects rough dielectrics. 
 best-effort importer stores the typed model and imports a rough dielectric as a
 smooth one with `ROUGH_TRANSMISSION_APPROXIMATED`. `LIGHTING_PROFILE_VERSION` 8
 separates these captures from the opaque approximation.
+
+#### Dispersive dielectrics
+
+A dielectric declares a wavelength-dependent index the way optical glass catalogues
+do: the index `n_d` at the Fraunhofer d line (587.5618 nm) and the Abbe number
+`V_d = (n_d - 1) / (n_F - n_C)`, between the F (486.1327 nm) and C (656.2725 nm)
+lines (`content::scene_format::DielectricDispersion`). `V_d` is zero for a
+nondispersive index, otherwise in `[MIN_DIELECTRIC_ABBE_NUMBER, MAX_DIELECTRIC_ABBE_NUMBER]`
+(5 to 1000) with `n_d > 1`. The index at a vacuum wavelength `lambda` is the two-term
+Cauchy equation through `n_d` with that `n_F - n_C`:
+
+```text
+n(lambda) = n_d + (n_d - 1) / V_d * ((lambda_d / lambda)^2 - 1) / ((lambda_d / lambda_F)^2 - (lambda_d / lambda_C)^2)
+```
+
+`ComputeDielectricIndex` in `material.h` is the CPU definition and
+`shaders/dielectric.slang` its GPU twin. The catalogue pair was chosen over pbrt-v4's
+tabulated spectra and over Sellmeier coefficients: it is two numbers in the existing
+record (LUSCN keeps its layout, `K` was zero for every dielectric), every glass
+catalogue lists it, and an author can type it. Against Schott's published Sellmeier fits over
+380–780 nm, the two Cauchy terms through the catalogue pair stay within `3e-4` in
+index for the crown N-BK7. For the dense flint SF11 they stay within `2e-3` above 450 nm,
+but fall `0.012` short at 380 nm. Anomalous dispersion and absorption bands are out
+of scope.
+
+Spectral paths (`ReferenceOpticalSpectrum::Visible` and the wave-tracing template's
+`WT_SPECTRUM` `1`) refract, reflect and [relay](../development/render-graph-authoring.md#spectral-optical-connections)
+at `n(lambda)` of their sampled wavelength (`ReferenceBsdf::WavelengthNanometers` on
+the CPU oracle). RGB transport carries no wavelength and explicitly uses `n_d` for
+every channel: a zero wavelength selects it. RGB captures of a dispersive glass are
+therefore identical to those of the nondispersive glass with the same `n_d`, and the
+prism test checks that bit for bit.
+
+The pbrt importers convert a dielectric's `"spectrum eta"`: one of pbrt-v4's named
+glasses (`glass-BK7`, `glass-BAF10`, `glass-FK51A`, `glass-LASF9`, `glass-F5`,
+`glass-F10`, `glass-F11`) uses `n_d` and `V_d` read from pbrt-v4's tabulated spectra,
+and `(wavelength nm, index)` pairs are interpolated linearly at the F, d and C
+lines. The typed cooker rejects an unknown name, a table not spanning 486–656 nm, an
+index rising with wavelength or an Abbe number outside the admitted range. The
+best-effort importer keeps the nondispersive default 1.5 with `SPECTRUM_APPROXIMATED`
+instead.
+LUSCN readers before this change accept the record, and their reference
+evaluators reject the nonzero `K[0]` rather than ignoring it.
+
+Evidence, on an Apple M5 with Metal: `reference_material_tests.cpp`
+(`[dispersion]`) checks each wavelength's refraction against Snell's law at the
+Cauchy index solved independently in float64. `reference_compute_tests.cpp`
+(`[dispersion]`) renders a white strip through a flint prism (pbrt-v4's
+`glass-F11`, `n_d` 1.784743 and `V_d` 25.7) with a 25° apex under orthographic rays.
+It compares each column with the analytic sensor-weighted spectral integral of the
+two interfaces' Fresnel transmittance over the wavelengths that land on the strip,
+within four standard errors plus 0.01. The columns sweep from violet to red, red and
+blue differing by more than 0.1. A nondispersive control shows no tint, and CPU and
+GPU agree within one sample's contribution. `wave_scene_graph_tests.cpp`
+(`[dispersion]`) renders the same prism with the template.
 
 `shaders/dielectric.slang` is the GPU twin of `src/reference_dielectric.cpp`.
 The CPU sampler is checked against an independent float64 Fresnel/Snell oracle,

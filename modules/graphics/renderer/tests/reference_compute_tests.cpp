@@ -1,5 +1,6 @@
 #include "../shaders/wave_connection_layout.h"
 #include "../src/internal/spectral_sensor.h"
+#include "dispersive_prism_fixture.h"
 #include "l6_scene.h"
 #include "material_program_fixtures.h"
 #include "microfacet_random_walk.h"
@@ -1614,8 +1615,10 @@ struct QuadItem final
     ludus::content::scene_format::MaterialModel Model = ludus::content::scene_format::MaterialModel::MetallicRoughness;
     float32 Metallic = 0;
     float32 Roughness = 1;
-    /// Real index of a smooth Dielectric or ThinDielectric model.
+    /// Real index n_d of a smooth Dielectric or ThinDielectric model.
     float32 Eta = ludus::content::scene_format::DEFAULT_DIELECTRIC_ETA;
+    /// Abbe number of a dispersive Dielectric or ThinDielectric model; zero for a nondispersive index.
+    float32 AbbeNumber = 0;
     /// Conductor model only: RGB complex index and isotropic GGX alpha.
     StaticArray<float32, 3> ConductorEta{{1, 1, 1}};
     StaticArray<float32, 3> ConductorK{};
@@ -1669,9 +1672,9 @@ S BuildQuadSnapshot(rr::Renderer& inoutRenderer,
         if (quad.Model == ludus::content::scene_format::MaterialModel::Dielectric ||
             quad.Model == ludus::content::scene_format::MaterialModel::ThinDielectric)
         {
-            material.Scattering.Eta = {{quad.Eta, quad.Eta, quad.Eta}};
-            material.Scattering.AlphaU = ludus::content::scene_format::MIN_MATERIAL_ALPHA;
-            material.Scattering.AlphaV = ludus::content::scene_format::MIN_MATERIAL_ALPHA;
+            material.Scattering = ludus::content::scene_format::MakeDielectricScattering(
+                quad.Model,
+                { .IndexD = quad.Eta, .AbbeNumber = quad.AbbeNumber });
         }
         if (quad.Model == ludus::content::scene_format::MaterialModel::Conductor)
         {
@@ -2802,6 +2805,256 @@ TEST_CASE("A white-light slit's colour fringes match the analytic spectral integ
     };
     checkAgainstAnalytic(capture, oracle, "CPU oracle");
     checkAgainstAnalytic(tall, converged, "GPU compute");
+}
+
+TEST_CASE("A dispersive prism separates white light by each wavelength's refraction angle",
+          "[renderer][gpu][reference-compute][wave-spectral][dispersion]")
+{
+    // Thanks to Shlomi Steinberg and Matt Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics", CGF
+    // 45(2), e70322 (2026), Section 3 ("Dispersion and color"): a spectral path refracts at its wavelength's index.
+    // A white strip seen through a flint prism (pbrt-v4's glass-F11, as the importers declare it) appears as a
+    // spectrum across the columns; the nondispersive control at the same n_d shows only white or nothing.
+    namespace format = ludus::content::scene_format;
+    namespace fixtures = ludus::renderer_tests;
+    const bool isDispersive = GENERATE(true, false);
+    CAPTURE(isDispersive);
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    // Three metres past the exit face, the columns' landing points sweep the 7 cm strip from violet to red.
+    fixtures::PrismFixture prism;
+    if (isDispersive == false)
+    {
+        prism.Glass.AbbeNumber = 0;
+    }
+    constexpr float32 FACE_HALF_EXTENT_WORLD = 1;
+    constexpr usize PRISM_QUAD_COUNT = 3;
+    StaticArray<QuadItem, PRISM_QUAD_COUNT> quads{};
+    // The entry face faces the camera (-z); the exit face's outward normal is (-sin(apex), 0, cos(apex)).
+    quads[0].CornersWorld = {{{-FACE_HALF_EXTENT_WORLD, -FACE_HALF_EXTENT_WORLD, 0},
+                              {-FACE_HALF_EXTENT_WORLD, FACE_HALF_EXTENT_WORLD, 0},
+                              {FACE_HALF_EXTENT_WORLD, FACE_HALF_EXTENT_WORLD, 0},
+                              {FACE_HALF_EXTENT_WORLD, -FACE_HALF_EXTENT_WORLD, 0}}};
+    const auto exitDepth = [&](float32 xWorld) {
+        return static_cast<float32>(fixtures::GetPrismExitDepthWorld(prism, static_cast<float64>(xWorld)));
+    };
+    quads[1].CornersWorld = {{{-FACE_HALF_EXTENT_WORLD, -FACE_HALF_EXTENT_WORLD, exitDepth(-FACE_HALF_EXTENT_WORLD)},
+                              {FACE_HALF_EXTENT_WORLD, -FACE_HALF_EXTENT_WORLD, exitDepth(FACE_HALF_EXTENT_WORLD)},
+                              {FACE_HALF_EXTENT_WORLD, FACE_HALF_EXTENT_WORLD, exitDepth(FACE_HALF_EXTENT_WORLD)},
+                              {-FACE_HALF_EXTENT_WORLD, FACE_HALF_EXTENT_WORLD, exitDepth(-FACE_HALF_EXTENT_WORLD)}}};
+    for (usize face = 0; face < 2; ++face)
+    {
+        quads[face].Model = format::MaterialModel::Dielectric;
+        quads[face].Eta = prism.Glass.IndexD;
+        quads[face].AbbeNumber = prism.Glass.AbbeNumber;
+    }
+    // A one-sided white emitter facing the prism, black so its own scattering adds nothing.
+    const float32 stripLower = static_cast<float32>(prism.StripLowerWorld);
+    const float32 stripUpper = static_cast<float32>(prism.StripUpperWorld);
+    const float32 stripDepth = static_cast<float32>(prism.StripDepthWorld);
+    quads[2].CornersWorld = {{{stripLower, -FACE_HALF_EXTENT_WORLD, stripDepth},
+                              {stripLower, FACE_HALF_EXTENT_WORLD, stripDepth},
+                              {stripUpper, FACE_HALF_EXTENT_WORLD, stripDepth},
+                              {stripUpper, -FACE_HALF_EXTENT_WORLD, stripDepth}}};
+    const math::Vector3 emission{1, 1, 1};
+    quads[2].Emission = emission;
+    quads[2].IsEmissionTwoSided = false;
+    quads[2].BaseColor = {};
+    quads[2].Model = format::MaterialModel::Diffuse;
+    for (Session* session : {&cpu, &gpu})
+    {
+        REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+        REQUIRE(BuildQuadSnapshot(session->Renderer,
+                                  session->Program,
+                                  quads.GetData(),
+                                  PRISM_QUAD_COUNT,
+                                  session->Snapshot) == S::Ready);
+    }
+    constexpr uint32 COLUMNS = 16;
+    constexpr uint32 PARITY_ROWS = 4;
+    constexpr uint32 ANALYTIC_ROWS = 64;
+    constexpr uint32 SAMPLES = 1024;
+    constexpr float32 HALF_WIDTH_WORLD = 0.25F;
+    constexpr float32 HALF_HEIGHT_WORLD = 0.05F;
+    constexpr float32 CAMERA_DEPTH_WORLD = -0.5F;
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = COLUMNS;
+    capture.Height = PARITY_ROWS;
+    capture.TargetSamples = SAMPLES;
+    // Entry and exit vertices; an internally reflected path needs more glass events than three vertices allow before
+    // it could reach the strip, so only the twice-refracted path contributes.
+    capture.MaxDepth = 3;
+    capture.RouletteDepth = 64;
+    capture.Seed = 2281;
+    capture.CenterRays = true;
+    capture.Environment = {};
+    // Orthographic rays along +z from z = -0.5; each column is one x and every row repeats it.
+    capture.OrthographicCamera = true;
+    capture.WorldToClip.Columns[0].X = 1 / HALF_WIDTH_WORLD;
+    capture.WorldToClip.Columns[1].Y = 1 / HALF_HEIGHT_WORLD;
+    capture.WorldToClip.Columns[3].Z = -CAMERA_DEPTH_WORLD;
+    capture.CameraPosition = {0, 0, CAMERA_DEPTH_WORLD};
+    // Spectral paths need an optical wavelength; 550 nm light at metre scale leaves the unobstructed relayed chain's
+    // power at one.
+    capture.OpticalWavelengthWorld = 550e-9F;
+    capture.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Visible;
+    rr::ReferenceCaptureDescription tall = capture;
+    tall.Height = ANALYTIC_ROWS;
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    Array<rr::ReferencePixel> converged;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    rr::ReferenceCaptureInfo convergedInfo;
+    Capture(cpu, capture, surface, oracle, oracleInfo);
+    Capture(gpu, capture, surface, compute, computeInfo);
+    Capture(gpu, tall, surface, converged, convergedInfo);
+    CHECK(oracleInfo.InvalidContributions == 0);
+    CHECK(computeInfo.InvalidContributions == 0);
+    CHECK(convergedInfo.InvalidContributions == 0);
+    // CPU and GPU follow the same wavelengths and Fresnel choices; their indices and directions differ by binary32
+    // rounding only. A sample whose landing point meets a strip edge can fall on either side of it, so a pixel may
+    // differ by one sample's range * sensor * emission / SAMPLES (2.4e-3 was seen on an Apple M5).
+    constexpr float32 ONE_SAMPLE_RADIANCE = 4e-3F;
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance));
+    CHECK(comparison.MaximumRadiance <= ONE_SAMPLE_RADIANCE);
+    CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+    // Analytic reference per column: midpoint quadrature over the spectrum of the sensor times the uplifted white
+    // emission and the column's throughput at that wavelength. The bound is four standard errors of the one-wavelength
+    // estimates plus a quadrature and binary32 tolerance for the wavelengths whose landing points meet a strip edge.
+    constexpr usize SPECTRUM_STEPS = 2000;
+    constexpr float64 STANDARD_ERRORS = 4;
+    constexpr float64 EDGE_TOLERANCE = 0.01;
+    constexpr float64 MINIMUM_TINT = 0.1;
+    const auto checkAgainstAnalytic = [&](const rr::ReferenceCaptureDescription& description,
+                                          const Array<rr::ReferencePixel>& pixels,
+                                          const char* name) {
+        const uint32 rows = description.Height;
+        CAPTURE(name, rows);
+        float64 reddest = 0;
+        float64 bluest = 0;
+        float64 estimatedReddest = 0;
+        float64 estimatedBluest = 0;
+        for (uint32 column = 0; column < COLUMNS; ++column)
+        {
+            const float64 columnWorld =
+                (2 * (static_cast<float64>(column) + 0.5) / COLUMNS - 1) * static_cast<float64>(HALF_WIDTH_WORLD);
+            // Centred rays: one position per column.
+            const fixtures::PrismPixelMoments moments =
+                fixtures::IntegratePrismPixel(prism, columnWorld, columnWorld, 1, SPECTRUM_STEPS, emission);
+            const math::Vector3d expected = moments.Mean;
+            const math::Vector3d meanSquares = moments.MeanSquares;
+            math::Vector3d actual{};
+            for (uint32 row = 0; row < rows; ++row)
+            {
+                const rr::ReferencePixel& pixel = pixels[usize{row} * COLUMNS + column];
+                REQUIRE(pixel.Samples == description.TargetSamples);
+                actual = actual + math::Vector3d{static_cast<float64>(pixel.Radiance.X),
+                                                 static_cast<float64>(pixel.Radiance.Y),
+                                                 static_cast<float64>(pixel.Radiance.Z)} *
+                                      (1.0 / rows);
+            }
+            const float64 standardErrorScale =
+                STANDARD_ERRORS / math::Sqrt(static_cast<float64>(description.TargetSamples) * rows);
+            const math::Vector3d bound =
+                math::Vector3d{math::Sqrt(math::Max(meanSquares.X - expected.X * expected.X, 0.0)),
+                               math::Sqrt(math::Max(meanSquares.Y - expected.Y * expected.Y, 0.0)),
+                               math::Sqrt(math::Max(meanSquares.Z - expected.Z * expected.Z, 0.0))} *
+                    standardErrorScale +
+                math::Vector3d{EDGE_TOLERANCE, EDGE_TOLERANCE, EDGE_TOLERANCE};
+            INFO("column " << column << " analytic " << expected.X << "," << expected.Y << "," << expected.Z
+                           << " estimated " << actual.X << "," << actual.Y << "," << actual.Z << " bound " << bound.X
+                           << "," << bound.Y << "," << bound.Z);
+            CHECK(math::Abs(actual.X - expected.X) <= bound.X);
+            CHECK(math::Abs(actual.Y - expected.Y) <= bound.Y);
+            CHECK(math::Abs(actual.Z - expected.Z) <= bound.Z);
+            if (expected.X - expected.Z > reddest)
+            {
+                reddest = expected.X - expected.Z;
+                estimatedReddest = actual.X - actual.Z;
+            }
+            if (expected.Z - expected.X > bluest)
+            {
+                bluest = expected.Z - expected.X;
+                estimatedBluest = actual.Z - actual.X;
+            }
+        }
+        CAPTURE(reddest, bluest, estimatedReddest, estimatedBluest);
+        if (isDispersive == true)
+        {
+            // The prism separates colours: some columns are distinctly red and others blue, and the capture agrees.
+            CHECK(reddest > MINIMUM_TINT);
+            CHECK(bluest > MINIMUM_TINT);
+            CHECK(estimatedReddest > MINIMUM_TINT / 2);
+            CHECK(estimatedBluest > MINIMUM_TINT / 2);
+        }
+        else
+        {
+            // Every wavelength lands together: a column sees white or nothing.
+            CHECK(reddest < MINIMUM_TINT / 10);
+            CHECK(bluest < MINIMUM_TINT / 10);
+        }
+    };
+    checkAgainstAnalytic(capture, oracle, "CPU oracle");
+    checkAgainstAnalytic(tall, converged, "GPU compute");
+    if (isDispersive == false)
+    {
+        return;
+    }
+    // RGB transport carries no wavelength and explicitly refracts at n_d: the dispersive prism's geometric capture
+    // equals the nondispersive prism's on both traversals, bit for bit.
+    rr::ReferenceCaptureDescription rgb = capture;
+    rgb.OpticalWavelengthWorld = 0;
+    rgb.OpticalSpectrum = rr::ReferenceOpticalSpectrum::Monochromatic;
+    for (Session* session : {&cpu, &gpu})
+    {
+        Array<rr::ReferencePixel> dispersive;
+        Array<rr::ReferencePixel> plain;
+        rr::ReferenceCaptureInfo info;
+        Capture(*session, rgb, surface, dispersive, info);
+        CHECK(info.InvalidContributions == 0);
+        StaticArray<QuadItem, PRISM_QUAD_COUNT> nondispersive = quads;
+        nondispersive[0].AbbeNumber = 0;
+        nondispersive[1].AbbeNumber = 0;
+        REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+        REQUIRE(BuildQuadSnapshot(session->Renderer,
+                                  session->Program,
+                                  nondispersive.GetData(),
+                                  PRISM_QUAD_COUNT,
+                                  session->Snapshot) == S::Ready);
+        Capture(*session, rgb, surface, plain, info);
+        REQUIRE(dispersive.GetSize() == plain.GetSize());
+        float32 lit = 0;
+        for (usize pixel = 0; pixel < plain.GetSize(); ++pixel)
+        {
+            CAPTURE(pixel);
+            CHECK(dispersive[pixel].Radiance == plain[pixel].Radiance);
+            lit += plain[pixel].Radiance.Y;
+        }
+        // At n_d the strip is visible through the prism in some columns.
+        CHECK(lit > 0);
+    }
 }
 
 TEST_CASE("A grain-masked closure program matches between CPU and GPU reference transport",

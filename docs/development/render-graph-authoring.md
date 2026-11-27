@@ -11656,7 +11656,7 @@ scattering of uplifted spectra at rough surfaces and coherent relays through gla
 It is not the paper's full polarimetric bidirectional cone path tracer: multiple
 edge diffraction, UTD corner diffraction, interference-aware material-direction
 rejection sampling, diffraction by the edges of glass and mirrors, polarization and
-dispersive materials are not implemented here. The [UTD](#utd-edge-diffraction-connections) and
+absorbing glass are not implemented here. The [UTD](#utd-edge-diffraction-connections) and
 [Fraunhofer](#fraunhofer-edge-diffraction-connections) connections cover single
 edge diffraction.
 
@@ -12007,9 +12007,12 @@ L(lambda) = sum over paths of (product of U[f_i](lambda)) * U[L_e](lambda) * |u(
   equation is unchanged when all lengths and the wavelength scale together, so a `W`
   above 550 nm renders the colours of the scene shrunk by `550 nm / W`. The UTD
   checks below use this to keep fringe phases exact in binary32.
-- Glass relays propagate each leg at `lambda/n`. The standard `Dielectric` and
-  `ThinDielectric` models store one real index for all channels, so `n` does not vary
-  with `lambda`: no standard material declares dispersion yet.
+- Glass relays propagate each leg at `lambda/n(lambda)`, and glass reflects and
+  refracts at `n(lambda)`. A `Dielectric` or `ThinDielectric` declares its index as
+  `n_d` and an Abbe number, evaluated by the two-term Cauchy equation
+  ([dispersive dielectrics](../architecture/renderer-systems.md#dispersive-dielectrics)).
+  Glass with a zero Abbe number keeps one index, and RGB transport (`WT_SPECTRUM` `0`,
+  monochromatic captures) uses `n_d`.
 
 Each path draws one wavelength, uniform over the 400 nm range, from its own random
 dimension (`LUDUS_REFERENCE_WAVELENGTH_DIMENSION` in captures; after every vertex's
@@ -12027,7 +12030,8 @@ The implementation is original. It departs from the paper in three ways:
   at the path rate.
 - **Uplifted RGB inputs.** Emission and reflection spectra come from the three-band
   uplift, not from measured or analytic spectra.
-- **No dispersion.** See above.
+- **Catalogue dispersion.** Dielectrics declare `n_d` and an Abbe number (two Cauchy
+  terms), not measured or Sellmeier spectra.
 
 Evidence for spectral connections, on an Apple M5 with Metal:
 
@@ -12056,6 +12060,14 @@ Evidence for spectral connections, on an Apple M5 with Metal:
   run spectral captures with each operator. CPU oracle and GPU compute meet the same
   bounds as their monochromatic cases; on the raw-AOV scene every radiance component
   agreed within `1e-5`.
+- Dispersion: `reference_compute_tests.cpp` and `wave_scene_graph_tests.cpp`
+  (`[dispersion]`) render a white strip through a flint prism (pbrt-v4's `glass-F11`)
+  with the CPU oracle, the GPU reference and the template. Each column matches the
+  analytic spectral integral of the refracted rays that land on the strip within four
+  standard errors plus 0.01 (captures) or 0.02 (template), and the columns sweep from
+  violet to red. A nondispersive control at the same `n_d` stays white, and RGB
+  captures equal the nondispersive glass's bit for bit
+  ([dispersive dielectrics](../architecture/renderer-systems.md#dispersive-dielectrics)).
 - `wave_scene_graph_tests.cpp` renders the spectral template. A single spectral sample can leave a channel dark where
   the sensor does not respond, so these checks use the channel sum, and the glass-relay case compares image means. The
   unobstructed Optical and Geometric outputs sample the same wavelengths and agree within 1%.

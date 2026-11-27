@@ -1831,15 +1831,30 @@ struct StandardBsdfTransportSample
     bool IsSpecular;     ///< Delta event; never combine Pdf with a light density.
     bool IsTransmission; ///< Refracted to the other side of the surface.
 };
+/// Index of refraction of a dielectric (glass) material at a vacuum wavelength in nanometres: its declared index n_d
+/// (Eta.x) and Abbe number (K.x) through the Cauchy equation of dielectric.slang's ComputeDielectricIndex. A zero
+/// wavelength, which RGB transport passes, explicitly selects n_d.
+float GetDielectricIndex(MaterialSample material, float wavelengthNanometers)
+{
+    return ComputeDielectricIndex(material.Eta.x, material.K.x, wavelengthNanometers);
+}
 /// Glass continuation (dielectric.slang): samples.x chooses reflection with the Fresnel probability, so each weight is
-/// one, or 1/eta^2 when refracted into a solid dielectric. isViewerInside selects the inverse index of a solid.
-StandardBsdfTransportSample
-SampleDielectricTransport(MaterialSample material, float3 viewDirectionWorld, float3 samples, bool isViewerInside)
+/// one, or 1/eta^2 when refracted into a solid dielectric. isViewerInside selects the inverse index of a solid. A
+/// spectral path passes its vacuum wavelength in nanometres and refracts at that wavelength's index; zero uses n_d.
+StandardBsdfTransportSample SampleDielectricTransport(MaterialSample material,
+                                                      float3 viewDirectionWorld,
+                                                      float3 samples,
+                                                      bool isViewerInside,
+                                                      float wavelengthNanometers)
 {
     StandardBsdfTransportSample result = (StandardBsdfTransportSample)0;
     float3 normalWorld = OrientDielectricNormal(material, viewDirectionWorld);
-    DielectricSample sampled =
-        SampleDielectric(material.Model, material.Eta.x, isViewerInside, normalWorld, viewDirectionWorld, samples.x);
+    DielectricSample sampled = SampleDielectric(material.Model,
+                                                GetDielectricIndex(material, wavelengthNanometers),
+                                                isViewerInside,
+                                                normalWorld,
+                                                viewDirectionWorld,
+                                                samples.x);
     result.HasSample = sampled.HasSample;
     if (result.HasSample == false)
         return result;
@@ -1850,14 +1865,21 @@ SampleDielectricTransport(MaterialSample material, float3 viewDirectionWorld, fl
     result.IsTransmission = dot(normalWorld, sampled.DirectionWorld) < 0;
     return result;
 }
-/// Glass continuation that decides the side from the shading normal, for callers without a hit.
+/// RGB glass continuation: refracts at the declared index n_d.
+StandardBsdfTransportSample
+SampleDielectricTransport(MaterialSample material, float3 viewDirectionWorld, float3 samples, bool isViewerInside)
+{
+    return SampleDielectricTransport(material, viewDirectionWorld, samples, isViewerInside, 0);
+}
+/// Glass continuation that decides the side from the shading normal, for callers without a hit; RGB (n_d).
 StandardBsdfTransportSample
 SampleDielectricTransport(MaterialSample material, float3 viewDirectionWorld, float3 samples)
 {
     return SampleDielectricTransport(material,
                                      viewDirectionWorld,
                                      samples,
-                                     dot(material.ShadingNormalWorld, viewDirectionWorld) < 0);
+                                     dot(material.ShadingNormalWorld, viewDirectionWorld) < 0,
+                                     0);
 }
 CoatingMaterial MakeCoatingMaterial(MaterialSample material)
 {
@@ -1894,14 +1916,21 @@ void EvaluateStandardBsdf(MaterialSample material,
 /// Sample typed reference transport. Coatings use their bounded internal random
 /// walk; its path ratio must not be reconstructed from a fresh EvaluateStandardBsdf call.
 /// Requires a valid supported material and unit directions; material event is 0..255.
+/// A spectral path passes its vacuum wavelength in nanometres: glass refracts at that wavelength's index, and every
+/// other model ignores it. Zero, which the overload without a wavelength passes, is RGB transport at n_d.
 StandardBsdfTransportSample SampleStandardBsdfTransport(MaterialSample material,
                                                         float3 viewDirectionWorld,
                                                         float3 samples,
-                                                        CoatingRandomContext random)
+                                                        CoatingRandomContext random,
+                                                        float wavelengthNanometers)
 {
     StandardBsdfTransportSample result = (StandardBsdfTransportSample)0;
     if (IsDielectricMaterial(material) == true)
-        return SampleDielectricTransport(material, viewDirectionWorld, samples);
+        return SampleDielectricTransport(material,
+                                         viewDirectionWorld,
+                                         samples,
+                                         dot(material.ShadingNormalWorld, viewDirectionWorld) < 0,
+                                         wavelengthNanometers);
     if (material.Model == MaterialModel::CoatedDiffuse)
     {
         CoatingSample sampled = SampleCoatedDiffuse(MakeCoatingMaterial(material),
@@ -1924,6 +1953,14 @@ StandardBsdfTransportSample SampleStandardBsdfTransport(MaterialSample material,
     result.Weight =
         result.HasSample == true ? value * (dot(material.ShadingNormalWorld, result.DirectionWorld) / pdf) : float3(0);
     return result;
+}
+/// RGB typed reference transport: glass refracts at its declared index n_d.
+StandardBsdfTransportSample SampleStandardBsdfTransport(MaterialSample material,
+                                                        float3 viewDirectionWorld,
+                                                        float3 samples,
+                                                        CoatingRandomContext random)
+{
+    return SampleStandardBsdfTransport(material, viewDirectionWorld, samples, random, 0);
 }
 
 /// Glass events FollowSpecularChain follows at most; each one costs a surface query.

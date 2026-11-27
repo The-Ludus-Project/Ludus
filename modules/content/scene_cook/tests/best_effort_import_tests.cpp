@@ -807,18 +807,27 @@ TEST_CASE("pbrt coateddiffuse imports as a typed rough coating when the referenc
 TEST_CASE("pbrt dielectrics import as typed smooth interfaces", "[scene_cook][pbrt]")
 {
     namespace format = ludus::content::scene_format;
+    namespace math = ludus::foundation::math;
+    using ludus::foundation::core::float64;
+    using ludus::foundation::core::usize;
     SceneIr scene;
     DiagnosticLog log;
     const std::string_view text =
         "WorldBegin\n"
         "MakeNamedMaterial \"Pane\" \"string type\" \"thindielectric\" \"float eta\" 1.33\n"
         "MakeNamedMaterial \"Frosted\" \"string type\" \"dielectric\" \"float roughness\" 0.25\n"
-        "MakeNamedMaterial \"Crown\" \"string type\" \"dielectric\" \"spectrum eta\" \"glass-BK7\"\n";
+        "MakeNamedMaterial \"Crown\" \"string type\" \"dielectric\" \"spectrum eta\" \"glass-BK7\"\n"
+        "MakeNamedMaterial \"Tabulated\" \"string type\" \"dielectric\" \"spectrum eta\" [400 1.53 500 1.52 600 1.515 "
+        "700 1.512]\n"
+        "MakeNamedMaterial \"Constant\" \"string type\" \"thindielectric\" \"spectrum eta\" [300 1.4 800 1.4]\n"
+        "MakeNamedMaterial \"Unknown\" \"string type\" \"dielectric\" \"spectrum eta\" \"glass-unknown\"\n"
+        "MakeNamedMaterial \"Narrow\" \"string type\" \"dielectric\" \"spectrum eta\" [500 1.52 600 1.515]\n";
     REQUIRE(pbrt::ReadSceneFromMemory({AsBytes(text), {}, "memory.pbrt"}, scene, log) == ludus::content::Status::Ok);
-    REQUIRE(scene.Materials.GetSize() == 3);
+    REQUIRE(scene.Materials.GetSize() == 7);
     const IrMaterial& pane = scene.Materials[0];
     CHECK(pane.Scattering.Model == format::MaterialModel::ThinDielectric);
     CHECK(pane.Scattering.Eta[1] == 1.33F);
+    CHECK(pane.Scattering.K[0] == 0);
     CHECK(pane.IsApproximated == false);
     // pbrt remaps by default: alpha = sqrt(0.25) is rough, imported smooth with a warning.
     const IrMaterial& frosted = scene.Materials[1];
@@ -827,11 +836,39 @@ TEST_CASE("pbrt dielectrics import as typed smooth interfaces", "[scene_cook][pb
     CHECK(frosted.Scattering.AlphaV == format::MIN_MATERIAL_ALPHA);
     CHECK(frosted.IsApproximated == true);
     CHECK(log.CountOccurrences(codes::ROUGH_TRANSMISSION_APPROXIMATED) == 1);
-    // A named spectrum keeps the default index and reports it.
+    // A pbrt-v4 named glass declares its catalogue index n_d and Abbe number (spectrum_tables.cpp).
     const IrMaterial& crown = scene.Materials[2];
-    CHECK(crown.Scattering.Eta[0] == format::DEFAULT_DIELECTRIC_ETA);
-    CHECK(crown.IsApproximated == true);
-    CHECK(HasCode(log, codes::SPECTRUM_APPROXIMATED) == true);
+    CHECK(crown.Scattering.Eta[0] == 1.516803F);
+    CHECK(crown.Scattering.Eta[2] == 1.516803F);
+    CHECK(format::GetDielectricDispersion(crown.Scattering).AbbeNumber == 63.99F);
+    CHECK(crown.IsApproximated == false);
+    CHECK(format::IsMaterialScatteringValid(crown.Scattering) == true);
+    // A tabulated spectrum is interpolated linearly at the F, d and C lines: n_d = 1.52 - 0.005 * 0.875618 and
+    // V_d = (n_d - 1) / (n_F - n_C) with n_F = 1.53 - 0.01 * 0.861327 and n_C = 1.515 - 0.003 * 0.562725.
+    constexpr float64 TABULATED_INDEX_D = 1.51562191;
+    constexpr float64 TABULATED_ABBE = 0.51562191 / (1.52138673 - 1.513311825);
+    constexpr float64 TABULATED_TOLERANCE = 1e-5;
+    const format::DielectricDispersion tabulated = format::GetDielectricDispersion(scene.Materials[3].Scattering);
+    CHECK(math::Abs(static_cast<float64>(tabulated.IndexD) - TABULATED_INDEX_D) <= TABULATED_TOLERANCE);
+    CHECK(math::Abs(static_cast<float64>(tabulated.AbbeNumber) - TABULATED_ABBE) <=
+          TABULATED_ABBE * TABULATED_TOLERANCE);
+    CHECK(scene.Materials[3].IsApproximated == false);
+    // A constant spectrum is a nondispersive index.
+    const format::DielectricDispersion constant = format::GetDielectricDispersion(scene.Materials[4].Scattering);
+    CHECK(constant.IndexD == 1.4F);
+    CHECK(constant.AbbeNumber == 0);
+    CHECK(scene.Materials[4].IsApproximated == false);
+    // An unknown name and a spectrum missing the F and C lines keep the nondispersive default and report it.
+    for (const usize index : {usize{5}, usize{6}})
+    {
+        CAPTURE(index);
+        const format::DielectricDispersion fallback =
+            format::GetDielectricDispersion(scene.Materials[index].Scattering);
+        CHECK(fallback.IndexD == format::DEFAULT_DIELECTRIC_ETA);
+        CHECK(fallback.AbbeNumber == 0);
+        CHECK(scene.Materials[index].IsApproximated == true);
+    }
+    CHECK(log.CountOccurrences(codes::SPECTRUM_APPROXIMATED) == 2);
 }
 
 TEST_CASE("syntax errors fail with a located error; include errors stay local", "[scene_cook][pbrt]")

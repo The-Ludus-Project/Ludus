@@ -1588,13 +1588,41 @@ Status SceneReader::defineMaterial(Directive& inoutDirective, std::string_view t
         const float64 alpha = readRoughness(inoutDirective, 0.0, material.Roughness);
         material.Scattering.Model =
             type == "dielectric" ? format::MaterialModel::Dielectric : format::MaterialModel::ThinDielectric;
-        float64 eta = static_cast<float64>(format::DEFAULT_DIELECTRIC_ETA);
+        format::DielectricDispersion dispersion;
         const Parameter* etaOrNull = findParameter(inoutDirective, "eta");
-        if (etaOrNull != nullptr && etaOrNull->Value.Numbers.IsEmpty() == false &&
-            math::IsFinite(etaOrNull->Value.Numbers[0]) == true && etaOrNull->Value.Numbers[0] > 0 &&
-            etaOrNull->Value.Numbers[0] <= static_cast<float64>(format::MAX_MATERIAL_OPTICAL_CONSTANT))
+        if (etaOrNull != nullptr && etaOrNull->Type.GetView() == "spectrum")
         {
-            eta = etaOrNull->Value.Numbers[0];
+            // A named glass or a tabulated (wavelength, index) spectrum declares n_d and its Abbe number.
+            DielectricIndex index;
+            const bool isNamed = etaOrNull->Value.Strings.IsEmpty() == false;
+            const bool isRead =
+                isNamed == true
+                    ? LookUpGlassIndex(etaOrNull->Value.Strings[0].GetView(), index)
+                    : FitGlassIndex(foundation::BorrowedView<const float64>(etaOrNull->Value.Numbers.GetData(),
+                                                                            etaOrNull->Value.Numbers.GetSize()),
+                                    index);
+            const format::DielectricDispersion declared =
+            {
+                .IndexD = static_cast<float32>(index.IndexD),
+                .AbbeNumber = static_cast<float32>(index.AbbeNumber),
+            };
+            if (isRead == true && format::IsDielectricDispersionValid(declared) == true)
+            {
+                dispersion = declared;
+            }
+            else
+            {
+                material.IsApproximated = true;
+                inform(codes::SPECTRUM_APPROXIMATED,
+                       inoutDirective.Line,
+                       "dielectric eta spectrum replaced by the nondispersive default 1.5");
+            }
+        }
+        else if (etaOrNull != nullptr && etaOrNull->Value.Numbers.IsEmpty() == false &&
+                 math::IsFinite(etaOrNull->Value.Numbers[0]) == true && etaOrNull->Value.Numbers[0] > 0 &&
+                 etaOrNull->Value.Numbers[0] <= static_cast<float64>(format::MAX_MATERIAL_OPTICAL_CONSTANT))
+        {
+            dispersion.IndexD = static_cast<float32>(etaOrNull->Value.Numbers[0]);
         }
         else if (etaOrNull != nullptr)
         {
@@ -1603,8 +1631,9 @@ Status SceneReader::defineMaterial(Directive& inoutDirective, std::string_view t
         }
         for (float32& channel : material.Scattering.Eta)
         {
-            channel = static_cast<float32>(eta);
+            channel = dispersion.IndexD;
         }
+        material.Scattering.K = {{dispersion.AbbeNumber, 0, 0}};
         material.Scattering.AlphaU = format::MIN_MATERIAL_ALPHA;
         material.Scattering.AlphaV = format::MIN_MATERIAL_ALPHA;
         if (alpha >= static_cast<float64>(format::LUDUS_SMOOTH_INTERFACE_ALPHA))
