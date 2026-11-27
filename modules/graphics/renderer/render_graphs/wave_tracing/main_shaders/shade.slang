@@ -4,14 +4,14 @@
 // e70322 (2026), Sections3, 4.2 and 5.2, https://doi.org/10.1111/cgf.70322 . Diffraction depends on the wavelength
 // (Section 3, "Dispersion and color"), so with WT_SPECTRUM 1 each path draws one wavelength over 380-780 nm: its
 // authored RGB emission, reflection and transmission factors are uplifted to spectra at that wavelength, its
-// connections and glass relays diffract at it, and the renderer's CIE 1931 camera (spectral_sensor.slang) reads the
-// spectral radiance. WT_SPECTRUM 0 keeps one scalar wavelength scaling RGB transport. WT_OPTICAL_CONNECTION selects
-// the Gaussian angular-spectrum connection (wave_connection.cpp), the UTD edge connection
-// (wave_edge_diffraction.cpp) or the Fraunhofer edge connection (wave_fraunhofer_diffraction.cpp).
-// All geometry, lights, textures and supported typed reflection materials come from the current World.
-// Rough surface vertices sample light endpoints only by NEE; emitter/environment hits after them are omitted, so
-// the scalar optical visibility and classical continuation visibility cannot receive inconsistent MIS. Glass
-// reflection and refraction are delta events that no light sample reaches: emission found after them keeps full
+// connections and glass relays diffract at it, glass refracts at its declared index for it (dispersion), and the
+// renderer's CIE 1931 camera (spectral_sensor.slang) reads the spectral radiance. WT_SPECTRUM 0 keeps one scalar
+// wavelength scaling RGB transport. WT_OPTICAL_CONNECTION selects the Gaussian angular-spectrum connection
+// (wave_connection.cpp), the UTD edge connection (wave_edge_diffraction.cpp) or the Fraunhofer edge connection
+// (wave_fraunhofer_diffraction.cpp). All geometry, lights, textures and supported typed reflection materials come from
+// the current World. Rough surface vertices sample light endpoints only by NEE; emitter/environment hits after them are
+// omitted, so the scalar optical visibility and classical continuation visibility cannot receive inconsistent MIS.
+// Glass reflection and refraction are delta events that no light sample reaches: emission found after them keeps full
 // weight, and its connection is relayed coherently back through the glass events (wave_relay.slang) to the vertex
 // whose rough scattering ended coherence, or to the camera.
 static const float WAVE_METRES_PER_NANOMETRE = 0.000000001;
@@ -250,8 +250,11 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
         float3 samples = float3(SampleUniformFloat01(launch, dimension + WAVE_CONTINUATION_FIRST),
                                 SampleUniformFloat01(launch, dimension + WAVE_CONTINUATION_FIRST + 1),
                                 SampleUniformFloat01(launch, dimension + WAVE_CONTINUATION_FIRST + 2));
-        StandardBsdfTransportSample continuation =
-            SampleStandardBsdfTransport(material, viewWorld, samples, MakeWaveMaterialRandom(launch, depth));
+        StandardBsdfTransportSample continuation = SampleStandardBsdfTransport(material,
+                                                                               viewWorld,
+                                                                               samples,
+                                                                               MakeWaveMaterialRandom(launch, depth),
+                                                                               wavelengthNanometers);
         // Refraction must also leave through the geometric back side.
         bool isContinuationAbove = dot(geometricNormalWorld, continuation.DirectionWorld) > 0;
         if (continuation.HasSample == false || isContinuationAbove == continuation.IsTransmission)
@@ -261,7 +264,7 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
         if (continuation.IsSpecular == true)
             AppendWaveRelayEvent(relay,
                                  material.Model == MaterialModel::Dielectric,
-                                 material.Eta.x,
+                                 GetDielectricIndex(material, wavelengthNanometers),
                                  dot(material.ShadingNormalWorld, viewWorld) < 0,
                                  continuation.IsTransmission == false,
                                  hit.PositionWorld);

@@ -1,4 +1,5 @@
 #include "../src/internal/scene_material_validation.h"
+#include "dispersive_prism_fixture.h"
 #include "material_program_fixtures.h"
 #include "renderer_composite.h"
 #include <cstdio>
@@ -24,6 +25,7 @@
 #include <ludus/graphics/rhi/lifetime.h>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 namespace
 {
@@ -632,6 +634,192 @@ TEST_CASE("Scene wave graph with Fraunhofer edge diffraction relays a lamp throu
 }
 
 #if defined(LUDUS_PLATFORM_MACOS)
+namespace
+{
+/// Capture the prism fixture (dispersive_prism_fixture.h) through one exported pass: parallel camera rays along +z
+/// cross the glass and find the white strip, at `samples` jittered samples per pixel.
+void CapturePrism(const WaveDevice& device,
+                  const ludus::renderer_tests::PrismFixture& prism,
+                  uint32 pass,
+                  uint32 samples,
+                  uint32 width,
+                  uint32 height,
+                  float32 halfWidthWorld,
+                  float32 halfHeightWorld,
+                  Array<math::Vector3>& outPixels)
+{
+    namespace fixtures = ludus::renderer_tests;
+    constexpr usize PRISM_TABLE_COUNT = 3;
+    constexpr float32 FACE_HALF_EXTENT_WORLD = 1;
+    const auto exitDepth = [&](float32 xWorld) {
+        return static_cast<float32>(fixtures::GetPrismExitDepthWorld(prism, static_cast<float64>(xWorld)));
+    };
+    const float32 stripLower = static_cast<float32>(prism.StripLowerWorld);
+    const float32 stripUpper = static_cast<float32>(prism.StripUpperWorld);
+    const float32 stripDepth = static_cast<float32>(prism.StripDepthWorld);
+    // Each quad's corners are (x-, y-), (x+, y-), (x-, y+), (x+, y+). The exit face winds counterclockwise about its
+    // outward normal (-sin(apex), 0, cos(apex)); the entry face and the strip wind the other way, facing the camera.
+    const StaticArray<math::Vector3, QUAD_VERTICES> entryWorld{{{-FACE_HALF_EXTENT_WORLD, -FACE_HALF_EXTENT_WORLD, 0},
+                                                                {FACE_HALF_EXTENT_WORLD, -FACE_HALF_EXTENT_WORLD, 0},
+                                                                {-FACE_HALF_EXTENT_WORLD, FACE_HALF_EXTENT_WORLD, 0},
+                                                                {FACE_HALF_EXTENT_WORLD, FACE_HALF_EXTENT_WORLD, 0}}};
+    const StaticArray<math::Vector3, QUAD_VERTICES> exitWorld{
+        {{-FACE_HALF_EXTENT_WORLD, -FACE_HALF_EXTENT_WORLD, exitDepth(-FACE_HALF_EXTENT_WORLD)},
+         {FACE_HALF_EXTENT_WORLD, -FACE_HALF_EXTENT_WORLD, exitDepth(FACE_HALF_EXTENT_WORLD)},
+         {-FACE_HALF_EXTENT_WORLD, FACE_HALF_EXTENT_WORLD, exitDepth(-FACE_HALF_EXTENT_WORLD)},
+         {FACE_HALF_EXTENT_WORLD, FACE_HALF_EXTENT_WORLD, exitDepth(FACE_HALF_EXTENT_WORLD)}}};
+    const StaticArray<math::Vector3, QUAD_VERTICES> stripWorld{{{stripLower, -FACE_HALF_EXTENT_WORLD, stripDepth},
+                                                                {stripUpper, -FACE_HALF_EXTENT_WORLD, stripDepth},
+                                                                {stripLower, FACE_HALF_EXTENT_WORLD, stripDepth},
+                                                                {stripUpper, FACE_HALF_EXTENT_WORLD, stripDepth}}};
+    const StaticArray<uint32, QUAD_INDICES> outwardIndices{{0, 1, 2, 1, 3, 2}};
+    const StaticArray<uint32, QUAD_INDICES> facingIndices{{0, 2, 1, 1, 2, 3}};
+    StaticArray<renderer::RenderGraphMesh, PRISM_TABLE_COUNT> meshes;
+    meshes[0].Geometry = {entryWorld.GetData(), entryWorld.GetSize(), facingIndices.GetData(), facingIndices.GetSize()};
+    meshes[1].Geometry = {exitWorld.GetData(), exitWorld.GetSize(), outwardIndices.GetData(), outwardIndices.GetSize()};
+    meshes[2].Geometry = {stripWorld.GetData(), stripWorld.GetSize(), facingIndices.GetData(), facingIndices.GetSize()};
+    StaticArray<renderer::SceneShaderMaterial, 2> materials;
+    materials[0].Scattering =
+        ludus::content::scene_format::MakeDielectricScattering(MaterialModel::Dielectric, prism.Glass);
+    materials[1].BaseColor = {0, 0, 0};
+    materials[1].Scattering.Model = MaterialModel::Diffuse;
+    materials[1].Emission = {1, 1, 1};
+    const StaticArray<uint32, PRISM_TABLE_COUNT> materialIndices{{0, 0, 1}};
+    StaticArray<renderer::RenderGraphItem, PRISM_TABLE_COUNT> items;
+    for (usize item = 0; item < PRISM_TABLE_COUNT; ++item)
+    {
+        items[item].SourceId = static_cast<uint32>(item + 1);
+        items[item].MeshIndex = static_cast<uint32>(item);
+        items[item].Material.Color = {1, 1, 1, 1};
+        items[item].MaterialOverrides = {&materialIndices[item], 1};
+    }
+    // Orthographic rays along +z between the near plane z = -0.5 and the far plane z = 9.5.
+    constexpr float32 DEPTH_SCALE = 0.1F;
+    constexpr float32 DEPTH_OFFSET = 0.05F;
+    StaticArray<renderer::ViewDescription, CAMERA_COUNT> cameras;
+    cameras[0].OrthographicCamera = true;
+    cameras[0].WorldToClip.Columns[0].X = 1 / halfWidthWorld;
+    cameras[0].WorldToClip.Columns[1].Y = 1 / halfHeightWorld;
+    cameras[0].WorldToClip.Columns[2].Z = DEPTH_SCALE;
+    cameras[0].WorldToClip.Columns[3].Z = DEPTH_OFFSET;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    RunSceneWaveCapture(device,
+                        {meshes.GetData(), PRISM_TABLE_COUNT},
+                        {items.GetData(), PRISM_TABLE_COUNT},
+                        {cameras.GetData(), CAMERA_COUNT},
+                        inputs,
+                        pass,
+                        samples,
+                        outPixels,
+                        width,
+                        height);
+}
+} // namespace
+
+TEST_CASE("Scene wave graph disperses white light through a flint prism by each wavelength's index",
+          "[renderer][gpu][wave-tracing][wave-spectral][dispersion][graph]")
+{
+    // The template's spectral paths refract at the index of their own wavelength (Steinberg and Pharr, "Wave
+    // Tracing", CGF 45(2), e70322, 2026, Section 3), so the white strip behind the prism appears as a spectrum across
+    // the columns. The nondispersive control at the same n_d shows each column white or dark.
+    namespace fixtures = ludus::renderer_tests;
+    const bool isDispersive = GENERATE(true, false);
+    CAPTURE(isDispersive);
+    fixtures::PrismFixture prism;
+    if (isDispersive == false)
+    {
+        prism.Glass.AbbeNumber = 0;
+    }
+    constexpr uint32 COLUMNS = 16;
+    constexpr uint32 ROWS = 4;
+    constexpr uint32 SAMPLES = 1024;
+    constexpr float32 HALF_WIDTH_WORLD = 0.25F;
+    constexpr float32 HALF_HEIGHT_WORLD = 0.05F;
+    WaveDevice device;
+    CreateWaveDevice(device);
+    Array<math::Vector3> geometric;
+    Array<math::Vector3> optical;
+    CapturePrism(device, prism, GEOMETRIC_PASS, SAMPLES, COLUMNS, ROWS, HALF_WIDTH_WORLD, HALF_HEIGHT_WORLD, geometric);
+    CapturePrism(device, prism, WAVE_PASS, SAMPLES, COLUMNS, ROWS, HALF_WIDTH_WORLD, HALF_HEIGHT_WORLD, optical);
+    // Analytic reference per column over its jittered footprint: the sensor-weighted spectral integral of the white
+    // strip seen through both interfaces. The bound is four standard errors plus a tolerance for the wavelengths
+    // whose landing points meet a strip edge.
+    constexpr usize FOOTPRINT_POSITIONS = 32;
+    constexpr usize SPECTRUM_STEPS = 1000;
+    constexpr float64 STANDARD_ERRORS = 4;
+    constexpr float64 EDGE_TOLERANCE = 0.02;
+    constexpr float64 MINIMUM_TINT = 0.1;
+    // Unobstructed, the relayed field equals the free beam at every wavelength, so the optical export, which samples
+    // the same wavelengths and Fresnel choices, matches the geometric one to float32 rounding.
+    constexpr float32 RELAY_TOLERANCE = 0.01F;
+    const float64 pixelWidthWorld = 2 * static_cast<float64>(HALF_WIDTH_WORLD) / COLUMNS;
+    float64 reddest = 0;
+    float64 bluest = 0;
+    float64 estimatedReddest = 0;
+    float64 estimatedBluest = 0;
+    for (uint32 column = 0; column < COLUMNS; ++column)
+    {
+        const float64 lowerWorld = -static_cast<float64>(HALF_WIDTH_WORLD) + pixelWidthWorld * column;
+        const fixtures::PrismPixelMoments moments = fixtures::IntegratePrismPixel(prism,
+                                                                                  lowerWorld,
+                                                                                  lowerWorld + pixelWidthWorld,
+                                                                                  FOOTPRINT_POSITIONS,
+                                                                                  SPECTRUM_STEPS,
+                                                                                  {1, 1, 1});
+        math::Vector3d actual{};
+        for (uint32 row = 0; row < ROWS; ++row)
+        {
+            const usize pixel = usize{row} * COLUMNS + column;
+            CAPTURE(column, row, SumChannels(optical[pixel]), SumChannels(geometric[pixel]));
+            REQUIRE(math::IsFinite(SumChannels(geometric[pixel])) == true);
+            CHECK(math::Abs(SumChannels(optical[pixel]) - SumChannels(geometric[pixel])) <=
+                  RELAY_TOLERANCE * math::Max(SumChannels(geometric[pixel]), 1.0F));
+            actual = actual + math::Vector3d{static_cast<float64>(geometric[pixel].X),
+                                             static_cast<float64>(geometric[pixel].Y),
+                                             static_cast<float64>(geometric[pixel].Z)} *
+                                  (1.0 / ROWS);
+        }
+        const math::Vector3d expected = moments.Mean;
+        const float64 standardErrorScale = STANDARD_ERRORS / math::Sqrt(static_cast<float64>(SAMPLES) * ROWS);
+        const math::Vector3d bound =
+            math::Vector3d{math::Sqrt(math::Max(moments.MeanSquares.X - expected.X * expected.X, 0.0)),
+                           math::Sqrt(math::Max(moments.MeanSquares.Y - expected.Y * expected.Y, 0.0)),
+                           math::Sqrt(math::Max(moments.MeanSquares.Z - expected.Z * expected.Z, 0.0))} *
+                standardErrorScale +
+            math::Vector3d{EDGE_TOLERANCE, EDGE_TOLERANCE, EDGE_TOLERANCE};
+        INFO("column " << column << " analytic " << expected.X << "," << expected.Y << "," << expected.Z
+                       << " estimated " << actual.X << "," << actual.Y << "," << actual.Z << " bound " << bound.X << ","
+                       << bound.Y << "," << bound.Z);
+        CHECK(math::Abs(actual.X - expected.X) <= bound.X);
+        CHECK(math::Abs(actual.Y - expected.Y) <= bound.Y);
+        CHECK(math::Abs(actual.Z - expected.Z) <= bound.Z);
+        if (expected.X - expected.Z > reddest)
+        {
+            reddest = expected.X - expected.Z;
+            estimatedReddest = actual.X - actual.Z;
+        }
+        if (expected.Z - expected.X > bluest)
+        {
+            bluest = expected.Z - expected.X;
+            estimatedBluest = actual.Z - actual.X;
+        }
+    }
+    CAPTURE(reddest, bluest, estimatedReddest, estimatedBluest);
+    if (isDispersive == true)
+    {
+        CHECK(reddest > MINIMUM_TINT);
+        CHECK(bluest > MINIMUM_TINT);
+        CHECK(estimatedReddest > MINIMUM_TINT / 2);
+        CHECK(estimatedBluest > MINIMUM_TINT / 2);
+    }
+    else
+    {
+        CHECK(reddest < MINIMUM_TINT / 10);
+        CHECK(bluest < MINIMUM_TINT / 10);
+    }
+}
+
 TEST_CASE("Scene wave graph reaches an unobstructed receiver without Metal multiply-add contraction",
           "[renderer][gpu][wave-tracing][graph][reference-compute]")
 {

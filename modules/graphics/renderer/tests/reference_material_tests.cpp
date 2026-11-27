@@ -554,14 +554,17 @@ TEST_CASE("Reference dielectrics admit one real index and a smooth interface onl
     REQUIRE(rr::SampleReferenceBsdf(glass, normalWorld, normalWorld, {0.5F, 0, 0}, sampled) ==
             rhi::RasterStatus::Ready);
     const rr::ReferenceBsdfSample previous = sampled;
-    rr::ReferenceBsdf dispersive = glass;
-    dispersive.Scattering.Eta[2] = 1.52F;
+    // Channel-wise indices are not a declared dispersion; K[1..2] would be absorption, and K[0] is an Abbe number.
+    rr::ReferenceBsdf unequalChannels = glass;
+    unequalChannels.Scattering.Eta[2] = 1.52F;
     rr::ReferenceBsdf absorbing = glass;
-    absorbing.Scattering.K[0] = 0.1F;
+    absorbing.Scattering.K[1] = 0.1F;
+    rr::ReferenceBsdf belowAbbeRange = glass;
+    belowAbbeRange.Scattering.K[0] = format::MIN_DIELECTRIC_ABBE_NUMBER * 0.5F;
     rr::ReferenceBsdf rough = glass;
     rough.Scattering.AlphaU = format::LUDUS_SMOOTH_INTERFACE_ALPHA;
     rough.Scattering.AlphaV = format::LUDUS_SMOOTH_INTERFACE_ALPHA;
-    for (const rr::ReferenceBsdf& rejected : {dispersive, absorbing, rough})
+    for (const rr::ReferenceBsdf& rejected : {unequalChannels, absorbing, belowAbbeRange, rough})
     {
         CHECK(rr::SampleReferenceBsdf(rejected, normalWorld, normalWorld, {0.9F, 0, 0}, sampled) ==
               rhi::RasterStatus::InvalidDescription);
@@ -573,6 +576,75 @@ TEST_CASE("Reference dielectrics admit one real index and a smooth interface onl
             rhi::RasterStatus::Ready);
     CHECK(sampled.Direction.X == Catch::Approx(-0.6F));
     CHECK(sampled.Direction.Z == Catch::Approx(-0.8F));
+}
+
+TEST_CASE("A dispersive dielectric refracts each wavelength by Snell's law at its own index",
+          "[renderer][rt1][dielectric][dispersion]")
+{
+    namespace format = ludus::content::scene_format;
+    const math::Vector3 normalWorld{0, 0, 1};
+    // pbrt-v4's glass-F11 as the importers declare it.
+    constexpr format::DielectricDispersion FLINT{ .IndexD = 1.784743F, .AbbeNumber = 25.7F };
+    rr::ReferenceBsdf glass;
+    glass.Scattering = format::MakeDielectricScattering(format::MaterialModel::Dielectric, FLINT);
+    const float32 incidentSine = 0.6F;
+    const math::Vector3 viewWorld{incidentSine, 0, 0.8F};
+    // The index of each wavelength in float64 from the Cauchy coefficients that n_d and V_d determine, solved here
+    // from n_F - n_C = (n_d - 1) / V_d instead of evaluated through ComputeDielectricIndex. Zero is RGB transport.
+    const float64 lineF = static_cast<float64>(format::LUDUS_DIELECTRIC_F_LINE_NANOMETERS);
+    const float64 lineD = static_cast<float64>(format::LUDUS_DIELECTRIC_D_LINE_NANOMETERS);
+    const float64 lineC = static_cast<float64>(format::LUDUS_DIELECTRIC_C_LINE_NANOMETERS);
+    const float64 indexD = static_cast<float64>(FLINT.IndexD);
+    const float64 cauchyB =
+        (indexD - 1) / static_cast<float64>(FLINT.AbbeNumber) / (1 / (lineF * lineF) - 1 / (lineC * lineC));
+    const float64 cauchyA = indexD - cauchyB / (lineD * lineD);
+    float64 previousSine = 0;
+    for (const float32 wavelength : {0.0F, 780.0F, 656.2725F, 587.5618F, 486.1327F, 380.0F})
+    {
+        CAPTURE(wavelength);
+        glass.WavelengthNanometers = wavelength;
+        const float64 lambda = static_cast<float64>(wavelength);
+        const float64 eta = wavelength == 0 ? indexD : cauchyA + cauchyB / (lambda * lambda);
+        rr::ReferenceBsdfSample transmitted;
+        // 0.999 exceeds every Fresnel reflectance at this incidence, so each sample refracts.
+        REQUIRE(rr::SampleReferenceBsdf(glass, normalWorld, viewWorld, {0.999F, 0.5F, 0.5F}, transmitted) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(transmitted.Accepted == true);
+        const float64 transmittedSine = static_cast<float64>(incidentSine) / eta;
+        CHECK(transmitted.Direction.X == Catch::Approx(-transmittedSine).margin(1e-6));
+        CHECK(transmitted.Direction.Z ==
+              Catch::Approx(-math::Sqrt(1 - transmittedSine * transmittedSine)).margin(1e-6));
+        CHECK(transmitted.Weight.Y == Catch::Approx(1 / (eta * eta)).epsilon(1e-5));
+        // Normal dispersion: shorter wavelengths bend more, toward the normal.
+        if (wavelength > 0)
+        {
+            const float64 sine = static_cast<float64>(-transmitted.Direction.X);
+            CHECK((previousSine == 0 || sine < previousSine) == true);
+            previousSine = sine;
+        }
+    }
+    // RGB transport at zero wavelength and the d line both refract at n_d.
+    rr::ReferenceBsdfSample atRgb;
+    rr::ReferenceBsdfSample atLineD;
+    glass.WavelengthNanometers = 0;
+    REQUIRE(rr::SampleReferenceBsdf(glass, normalWorld, viewWorld, {0.999F, 0.5F, 0.5F}, atRgb) ==
+            rhi::RasterStatus::Ready);
+    glass.WavelengthNanometers = format::LUDUS_DIELECTRIC_D_LINE_NANOMETERS;
+    REQUIRE(rr::SampleReferenceBsdf(glass, normalWorld, viewWorld, {0.999F, 0.5F, 0.5F}, atLineD) ==
+            rhi::RasterStatus::Ready);
+    CHECK(atRgb.Direction.X == Catch::Approx(atLineD.Direction.X).margin(1e-6));
+    // A nondispersive index ignores the wavelength.
+    rr::ReferenceBsdf plain = glass;
+    plain.Scattering.K[0] = 0;
+    rr::ReferenceBsdfSample atBlue;
+    plain.WavelengthNanometers = 400;
+    REQUIRE(rr::SampleReferenceBsdf(plain, normalWorld, viewWorld, {0.999F, 0.5F, 0.5F}, atBlue) ==
+            rhi::RasterStatus::Ready);
+    plain.WavelengthNanometers = 0;
+    rr::ReferenceBsdfSample atNone;
+    REQUIRE(rr::SampleReferenceBsdf(plain, normalWorld, viewWorld, {0.999F, 0.5F, 0.5F}, atNone) ==
+            rhi::RasterStatus::Ready);
+    CHECK(atBlue.Direction == atNone.Direction);
 }
 
 TEST_CASE("Diffuse conductor Mix samples the full weighted directional density", "[renderer][rt1][materials][mix]")

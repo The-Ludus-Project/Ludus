@@ -6,8 +6,11 @@ namespace ludus::graphics::renderer::internal
 {
 /// True for the perfectly specular dielectric models, whose lobes are directional deltas.
 [[nodiscard]] bool IsReferenceDielectric(content::scene_format::MaterialModel model) noexcept;
-/// Other models pass; dielectrics need one real index (equal Eta channels, zero K) and a smooth interface.
+/// Other models pass; dielectrics need one declared real index (equal Eta channels, a valid Abbe number or zero in
+/// K[0], zero K[1..2]) and a smooth interface.
 [[nodiscard]] bool IsReferenceDielectricSupported(const content::scene_format::MaterialScattering& scattering) noexcept;
+/// The dielectric's index at bsdf.WavelengthNanometers: n_d for RGB transport or a nondispersive index.
+[[nodiscard]] foundation::float32 GetReferenceDielectricIndex(const ReferenceBsdf& bsdf) noexcept;
 /// Unpolarized Fresnel reflectance of a dielectric interface with relative index eta; cosine is signed.
 [[nodiscard]] foundation::float32 ComputeDielectricFresnel(foundation::float32 cosine,
                                                            foundation::float32 eta) noexcept;

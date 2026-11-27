@@ -460,7 +460,16 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
     else if (scattering.Model == format::MaterialModel::Dielectric ||
              scattering.Model == format::MaterialModel::ThinDielectric)
     {
-        rows.append({QStringLiteral("IOR η"), FormatScalar(scattering.Eta[0])});
+        const format::DielectricDispersion dispersion = format::GetDielectricDispersion(scattering);
+        MaterialPropertyRow index{QStringLiteral("IOR η"), FormatScalar(dispersion.IndexD)};
+        index.Detail = QStringLiteral("Index n_d at the 587.6 nm d line; RGB renderers use it for every channel");
+        rows.append(index);
+        MaterialPropertyRow abbe{QStringLiteral("Abbe number"),
+                                 dispersion.AbbeNumber == 0 ? QStringLiteral("Nondispersive")
+                                                            : FormatScalar(dispersion.AbbeNumber)};
+        abbe.Detail = QStringLiteral("Dispersion (n_d - 1) / (n_F - n_C); spectral renderers refract each wavelength "
+                                     "at its own index");
+        rows.append(abbe);
     }
     else if (scattering.Model == format::MaterialModel::HairCard)
     {
