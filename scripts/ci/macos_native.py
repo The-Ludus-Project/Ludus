@@ -260,6 +260,18 @@ out/host-tools/venv/bin/ctest --test-dir out/composite-recipe-sdk -V --no-tests=
   out/renderer-sdk/environment/ludus_sdk_environment --case world \
   --editor out/build/macos-clang-development/apps/editor/ludus_editor_tests
 """),
+    # Issue 1400: the Editor exports one saved character-bust World; the Qt-free standalone game
+    # built against a relocated copy of the installed SDK must draw its hair cards (forward-lit)
+    # and skin (clustered-deferred) like the Editor. The workflow uploads out/hair-skin-bust/.
+    # See docs/development/hair-skin-standalone-qualification.md.
+    Check('hair-skin-bust', 'Qualify hair cards and skin in the standalone SDK game against the Editor (Metal)', needs=('sdk-install',), timeout_minutes=20,
+          run=r"""out/host-tools/venv/bin/python -m venv out/hair-skin-analysis
+out/hair-skin-analysis/bin/python -m pip install numpy==2.5.5 Pillow==12.3.0
+out/hair-skin-analysis/bin/python tests/sdk_consumer/hair_skin_bust/verify.py \
+  --tools "$PWD" --sdk out/install/macos-clang-development \
+  --editor out/build/macos-clang-development/apps/editor/ludus_editor_tests \
+  --evidence out/hair-skin-bust
+"""),
     Check('world-renderer', 'Verify native World renderer and camera authoring', needs=('build',), env={'QT_QPA_PLATFORM': 'cocoa'}, timeout_minutes=15,
           run=r"""out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.render-native],[.level-native]'
 out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.authored-pooling-viewport]'

@@ -1563,6 +1563,36 @@ class BatchJobCheckPlanTests(unittest.TestCase):
                 self.assertTrue(set(check.needs) & reaches, "a check that does not need the build runs without one")
                 reaches.add(check.id)
 
+    def test_hair_skin_bust_qualifies_from_the_installed_sdk_and_uploads_its_evidence(self):
+        # Issue 1400: the standalone hair/skin game ran only locally while its composite action
+        # had no caller. The plan owns the command; the workflow uploads the evidence directory.
+        check = next(check for check in load_macos_native_plan() if check.id == "hair-skin-bust")
+        self.assertEqual(check.needs, ("sdk-install",))
+        self.assertIsNotNone(check.timeout_minutes)
+        self.assertIn("tests/sdk_consumer/hair_skin_bust/verify.py", check.run)
+        self.assertIn("--sdk out/install/macos-clang-development", check.run)
+        self.assertIn("--editor out/build/macos-clang-development/apps/editor/ludus_editor_tests", check.run)
+        self.assertIn("--evidence out/hair-skin-bust", check.run)
+        # Pinned analysis packages in the check's own environment, not the shared host-tools venv.
+        self.assertRegex(check.run, r"pip install numpy==\S+ Pillow==\S+")
+        self.assertNotIn("out/host-tools/venv/bin/python -m pip", check.run)
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job = re.split(r"\n  [A-Za-z0-9_-]+:\n", workflow.split("\n  macos-compile:\n", 1)[1], maxsplit=1)[0]
+        upload = next(step for step in re.split(r"\n      - ", job) if "path: out/hair-skin-bust/" in step)
+        self.assertIn("if: always()", upload)
+        self.assertIn("uses: actions/upload-artifact@", upload)
+
+    def test_every_composite_action_has_a_caller(self):
+        # An action no workflow uses looks like CI coverage that does not exist.
+        github = self.ROOT / ".github"
+        sources = {path: path.read_text(encoding="utf-8") for path in sorted(github.rglob("*.yml"))}
+        for action in sorted((github / "actions").glob("*/action.yml")):
+            reference = f"./.github/actions/{action.parent.name}"
+            callers = [path for path, text in sources.items()
+                       if path.parent != action.parent and re.search(re.escape(reference) + r"(?![\w-])", text)]
+            with self.subTest(action=action.parent.name):
+                self.assertTrue(callers, f"no workflow or action uses {reference}")
+
 
 class MacosReferencePlanTests(unittest.TestCase):
     """The CPU/GPU reference oracle cases run in their own macOS job, exactly once."""
