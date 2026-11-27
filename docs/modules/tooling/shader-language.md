@@ -944,8 +944,9 @@ ludus_compile_shader(TARGET my_game NAME composite
   for built-in LUSL recipes with the recipe roots; the renderer binds
   `renderer_composite`, `renderer_overlay`, `renderer_grid`, the selection
   recipes, `renderer_point_neighbors` and the three Light Transformer compute
-  recipes this way, from the same sources its callers compile. It compiles the skin diffusion recipes itself and binds their
-  slot tables.
+  recipes this way, from the same sources its callers compile. It compiles the skin diffusion and atmosphere recipes
+  itself and binds their slot tables. `renderer_material` keeps the renderer's fixed material slots 0, 1 and 2, which
+  its declaration order produces.
 - **Evidence:** a GPU test composites `rg2_bound` with the LUSL
   `renderer_composite` recipe and with its Slang original
   (`modules/graphics/renderer/shaders/renderer_composite.slang`), compares every pixel,
@@ -955,7 +956,8 @@ Renderer recipes can include `point_search_layout.luslh`,
 `scene_shader_layout.luslh`, `renderer_gpu_preview_layout.luslh`,
 `renderer_reference_layout.luslh`, `deferred_layout.luslh` (with its
 `deferred_binding_slots.luslh`), `skin_diffusion_layout.luslh`,
-`light_transformer_layout.luslh` and `light_transformer_encoder_layout.luslh`. These headers
+`light_transformer_layout.luslh`, `light_transformer_encoder_layout.luslh`, `lighting_layout.luslh` and
+`renderer_atmosphere_layout.luslh`. These headers
 expose shared layout macros, function-like ones included, and `static const` layout constants from the
 corresponding C++ headers. After changing an owner, run
 `python3 cmake/shaders/generate_lusl_layouts.py` and commit the regenerated

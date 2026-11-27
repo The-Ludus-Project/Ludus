@@ -508,9 +508,11 @@ TEST_CASE("The LUSL overlay recipe renders its Slang original's pixels", "[rende
     CHECK(lusl[red] == 255);
     CHECK(lusl[red + 1] == 0);
 }
+#include "baseline_renderer_material.h"
 #include "l3_color.h"
 #include "l3_scene.h"
 #include "renderer_material.h"
+#include "renderer_material_slots.h"
 TEST_CASE("L3 native material reload, color mips, mask and prewarmed targets preserve independent pixels",
           "[renderer][gpu][l3]")
 {
@@ -687,6 +689,142 @@ TEST_CASE("L3 native material reload, color mips, mask and prewarmed targets pre
             REQUIRE(rhi::Destroy(device, target) == rhi::RasterStatus::Ready);
         }
     }
+}
+namespace
+{
+constexpr uint32 L3_WIDTH = 96;
+constexpr uint32 L3_HEIGHT = 64;
+using L3Image = uint8[usize{L3_WIDTH} * L3_HEIGHT * 4];
+
+// Draw the L3 material scene (implicit and explicit LOD, masked and painter alpha) with one material program.
+void RenderL3Materials(rhi::DeviceHandle device,
+                       rhi::SurfaceHandle surface,
+                       const rhi::RasterShaderDescription& vertex,
+                       const rhi::RasterShaderDescription& fragment,
+                       L3Image& outImage)
+{
+    rr::Renderer renderer;
+    REQUIRE(renderer.Initialize(device,
+                                ludus::shaders::renderer_flat::Vertex(),
+                                ludus::shaders::renderer_flat::Fragment()) == rhi::RasterStatus::Ready);
+    REQUIRE(renderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
+                                     ludus::shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+    const auto wait = [&](auto handle) {
+        auto status = renderer.GetStatus(handle);
+        for (usize i = 0; i < 100000 && status == rhi::RasterStatus::Pending; ++i)
+        {
+            status = renderer.GetStatus(handle);
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    rr::MaterialProgram program;
+    const rhi::RasterStatus warmed = renderer.PrewarmMaterialProgram(vertex, fragment, program);
+    REQUIRE((warmed == rhi::RasterStatus::Pending || warmed == rhi::RasterStatus::Ready));
+    wait(program);
+    rhi::TextureHandle texture;
+    rhi::TextureHandle mask;
+    const rhi::RasterStatus uploaded = rhi::CreateTexture(device,
+                                                          ludus::textures::l3_color::Description(),
+                                                          ludus::textures::l3_color::Upload(),
+                                                          texture);
+    REQUIRE((uploaded == rhi::RasterStatus::Pending || uploaded == rhi::RasterStatus::Ready));
+    rhi::RasterStatus ready = rhi::GetStatus(device, texture);
+    for (usize i = 0; i < 100000 && ready == rhi::RasterStatus::Pending; ++i)
+    {
+        REQUIRE(rhi::PollLifetime(device) == rhi::RasterStatus::Ready);
+        ready = rhi::GetStatus(device, texture);
+    }
+    REQUIRE(ready == rhi::RasterStatus::Ready);
+    const uint8 maskBytes[]{255, 255, 255, 0, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255, 0};
+    REQUIRE(rhi::CreateTexture(device, {2, 2, rhi::RasterFormat::Rgba8Unorm}, {maskBytes, 8}, mask) ==
+            rhi::RasterStatus::Ready);
+    rr::MaterialVersion materials[ludus::qa::L3_MATERIALS];
+    for (usize i = 0; i < ludus::qa::L3_MATERIALS; ++i)
+    {
+        const rhi::RasterStatus status =
+            renderer.CreateMaterial(program, ludus::qa::L3Material(i, i == 4 ? mask : texture), materials[i]);
+        REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
+        wait(materials[i]);
+    }
+    REQUIRE(rhi::Destroy(device, texture) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, mask) == rhi::RasterStatus::Ready);
+    rr::Mesh mesh;
+    REQUIRE(ludus::qa::L3Mesh(renderer, mesh) == rhi::RasterStatus::Ready);
+    rr::SceneItem items[8];
+    ludus::qa::L3Items(mesh, materials, items);
+    rr::Snapshot snapshot;
+    REQUIRE(renderer.CreateSnapshot(items, 8, snapshot) == rhi::RasterStatus::Ready);
+    rr::PreparedView view;
+    rr::ViewReport report;
+    REQUIRE(renderer.PrepareView(snapshot, {}, view, report) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(renderer.DrawView(view, {}) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::EndFrame(device, completion) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(outImage));
+    REQUIRE(renderer.Release(view) == rhi::RasterStatus::Ready);
+    REQUIRE(renderer.Release(snapshot) == rhi::RasterStatus::Ready);
+}
+} // namespace
+TEST_CASE("The LUSL material recipe renders its Slang original's pixels", "[renderer][gpu][l3][lusl]")
+{
+    // LUSL L5d wave 2: the L3 material scene drawn by renderer_material and by its Slang original
+    // (shaders/renderer_material.slang) on one device; every byte must match.
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::StartupInfo failure;
+    rhi::DeviceDescription required;
+    required.Required.PortableRaster = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = L3_WIDTH, .Height = L3_HEIGHT }, required, device, surface, &failure);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    // The renderer's L3 schema fixes the material's uniform, texture and sampler slots; the port's declaration order
+    // produces them.
+    static_assert(ludus::shaders::renderer_material::slots::MATERIAL == 0 &&
+                  ludus::shaders::renderer_material::slots::COLOR_TEXTURE == 1 &&
+                  ludus::shaders::renderer_material::slots::COLOR_SAMPLER == 2);
+    L3Image slang{};
+    L3Image lusl{};
+    RenderL3Materials(device,
+                      surface,
+                      ludus::shaders::baseline_renderer_material::Vertex(),
+                      ludus::shaders::baseline_renderer_material::Fragment(),
+                      slang);
+    RenderL3Materials(device,
+                      surface,
+                      ludus::shaders::renderer_material::Vertex(),
+                      ludus::shaders::renderer_material::Fragment(),
+                      lusl);
+    usize differing = 0;
+    for (usize i = 0; i < sizeof(L3Image); ++i)
+    {
+        differing += slang[i] != lusl[i] ? 1 : 0;
+    }
+    CHECK(differing == 0);
+    // Equality is not vacuous: the scene draws the red texel, the explicit-LOD grey and the painter blend's half-weight
+    // blue.
+    const usize red = (usize{48} * L3_WIDTH + 16) * 4;
+    CHECK(lusl[red] == 255);
+    CHECK(lusl[red + 1] == 0);
+    const usize mip = (usize{8} * L3_WIDTH + 16) * 4;
+    CHECK(lusl[mip] >= 127);
+    CHECK(lusl[mip] <= 129);
+    const usize blend = (usize{48} * L3_WIDTH + 48) * 4;
+    CHECK(lusl[blend + 2] == 128);
 }
 TEST_CASE("L4 GGX lighting and linear HDR/LDR output match independent interior references", "[renderer][l4][gpu]")
 {

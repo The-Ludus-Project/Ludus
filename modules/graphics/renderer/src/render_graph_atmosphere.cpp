@@ -16,6 +16,7 @@
 #    include "renderer_atmosphere_sky.h"
 #    include "renderer_atmosphere_transmittance.h"
 #endif
+#include "renderer_atmosphere_display_slots.h"
 
 namespace ludus::graphics::renderer
 {
@@ -100,10 +101,13 @@ constexpr usize VERTEX_COUNT = 4;
 constexpr usize INDEX_COUNT = 6;
 constexpr uint32 SKY_WIDTH = LUDUS_ATMOSPHERE_SKY_WIDTH;
 constexpr uint32 SKY_HEIGHT = 2 * LUDUS_ATMOSPHERE_SKY_HALF_HEIGHT;
-constexpr uint32 UNIFORM_SLOT = 0;
-constexpr uint32 TRANSMITTANCE_SLOT = 1;
-constexpr uint32 SKY_SLOT = 2;
-constexpr uint32 MULTIPLE_SLOT = 3;
+// The four table and display recipes share renderer_atmosphere.lusl, so its declaration order gives every one
+// of them this slot table.
+namespace atmosphere_slots = ludus::shaders::renderer_atmosphere_display::slots;
+constexpr uint32 UNIFORM_SLOT = atmosphere_slots::ATMOSPHERE_VIEW;
+constexpr uint32 TRANSMITTANCE_SLOT = atmosphere_slots::ATMOSPHERE_TRANSMITTANCE;
+constexpr uint32 SKY_SLOT = atmosphere_slots::ATMOSPHERE_SKY;
+constexpr uint32 MULTIPLE_SLOT = atmosphere_slots::ATMOSPHERE_MULTIPLE;
 constexpr usize TABLE_BINDING_COUNT = 3;
 constexpr usize DISPLAY_BINDING_COUNT = 4;
 constexpr usize MULTIPLE_BINDING_COUNT = 1;
@@ -112,7 +116,22 @@ bool IsAccepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
 }
+#if defined(LUDUS_RENDERER_TEST_READBACK) && defined(LUDUS_RENDERER_ATMOSPHERE_SHADERS)
+bool hasAtmosphereShadersForTesting = false;
+AtmosphereTableShaders atmosphereShadersForTesting{};
+#endif
 } // namespace
+
+#if defined(LUDUS_RENDERER_TEST_READBACK)
+void SetAtmosphereTableShadersForTesting([[maybe_unused]] const AtmosphereTableShaders* shadersOrNull) noexcept
+{
+    // Without offline shader tools the renderer builds no atmosphere programs, so there is nothing to override.
+#    if defined(LUDUS_RENDERER_ATMOSPHERE_SHADERS)
+    hasAtmosphereShadersForTesting = shadersOrNull != nullptr;
+    atmosphereShadersForTesting = shadersOrNull != nullptr ? *shadersOrNull : AtmosphereTableShaders{};
+#    endif
+}
+#endif
 
 // The shaders read the layer as this many float4 rows (renderer_cloud_layer.slang).
 static_assert(sizeof(CloudLayerUniform) == LUDUS_CLOUD_LAYER_UNIFORM_ROWS * sizeof(math::Vector4));
@@ -454,13 +473,24 @@ Status RenderGraphAtmosphereProgram::Prepare(rhi::DeviceHandle device) noexcept
         constexpr uint32 TRANSMITTANCE_WIDTH = LUDUS_ATMOSPHERE_TRANSMITTANCE_WIDTH;
         constexpr uint32 TRANSMITTANCE_HEIGHT = LUDUS_ATMOSPHERE_TRANSMITTANCE_HEIGHT;
         mDevice = device;
-        const StaticArray<rhi::RasterShaderDescription, static_cast<usize>(Stage::Count)> descriptions{
+        StaticArray<rhi::RasterShaderDescription, static_cast<usize>(Stage::Count)> descriptions{
             {shaders::renderer_atmosphere_transmittance::Fragment(),
              shaders::renderer_atmosphere_multiple::Fragment(),
              shaders::renderer_atmosphere_sky::Fragment(),
              shaders::renderer_atmosphere_display::Fragment(),
              shaders::renderer_atmosphere_deferred::Fragment()}};
-        Status status = rhi::CreateRasterShader(device, shaders::renderer_atmosphere_transmittance::Vertex(), mVertex);
+        rhi::RasterShaderDescription vertex = shaders::renderer_atmosphere_transmittance::Vertex();
+#    if defined(LUDUS_RENDERER_TEST_READBACK)
+        if (hasAtmosphereShadersForTesting == true)
+        {
+            vertex = atmosphereShadersForTesting.Vertex;
+            descriptions[static_cast<usize>(Stage::Transmittance)] = atmosphereShadersForTesting.Transmittance;
+            descriptions[static_cast<usize>(Stage::Multiple)] = atmosphereShadersForTesting.Multiple;
+            descriptions[static_cast<usize>(Stage::Sky)] = atmosphereShadersForTesting.Sky;
+            descriptions[static_cast<usize>(Stage::Display)] = atmosphereShadersForTesting.Display;
+        }
+#    endif
+        Status status = rhi::CreateRasterShader(device, vertex, mVertex);
         for (usize index = 0; index < mPasses.GetSize() && IsAccepted(status) == true; ++index)
         {
             PassResources& pass = mPasses[index];

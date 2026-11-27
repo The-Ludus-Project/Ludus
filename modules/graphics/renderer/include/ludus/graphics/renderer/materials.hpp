@@ -42,7 +42,7 @@ enum class MaterialAlpha : ludus::foundation::uint8
     /// Straight authored color/texture alpha, premultiplied once; painter Overlay layer.
     Painter,
 };
-/// Copied unlit instance schema for the installed renderer_material.slang program.
+/// Copied unlit instance schema for the installed renderer_material.lusl program.
 /// Color textures are linear RGBA8 or sRGB RGBA8; data/coverage formats reject.
 struct MaterialDescription final
 {

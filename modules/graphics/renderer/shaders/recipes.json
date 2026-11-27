@@ -50,9 +50,9 @@
     "fragment": "EdgeFragmentMain"
   },
   "renderer_material": {
-    "source": "renderer_material.slang",
-    "vertex": "vertexMain",
-    "fragment": "fragmentMain"
+    "source": "renderer_material.lusl",
+    "vertex": "VertexMain",
+    "fragment": "FragmentMain"
   },
   "renderer_shadow": {
     "source": "renderer_shadow.slang",
@@ -225,12 +225,12 @@
     "fragment": "GBufferMain"
   },
   "renderer_atmosphere_transmittance": {
-    "source": "renderer_atmosphere.slang",
+    "source": "renderer_atmosphere.lusl",
     "vertex": "DeferredVertexMain",
     "fragment": "AtmosphereTransmittanceMain"
   },
   "renderer_atmosphere_multiple": {
-    "source": "renderer_atmosphere.slang",
+    "source": "renderer_atmosphere.lusl",
     "vertex": "DeferredVertexMain",
     "fragment": "AtmosphereMultipleMain"
   },
@@ -241,12 +241,12 @@
     "fragment_storage": true
   },
   "renderer_atmosphere_sky": {
-    "source": "renderer_atmosphere.slang",
+    "source": "renderer_atmosphere.lusl",
     "vertex": "DeferredVertexMain",
     "fragment": "AtmosphereSkyMain"
   },
   "renderer_atmosphere_display": {
-    "source": "renderer_atmosphere.slang",
+    "source": "renderer_atmosphere.lusl",
     "vertex": "DeferredVertexMain",
     "fragment": "AtmosphereDisplayMain"
   },

@@ -5,12 +5,20 @@
 #include "../src/internal/atmosphere_sky_tables.h"
 #include "../src/internal/camera_inverse.h"
 #include "../src/internal/raster_mesh_lights.h"
+#include "../src/internal/render_graph_atmosphere.h"
 #include "../src/internal/render_graph_metalfx.h"
 #include "../src/internal/render_graph_upscale.h"
+#include "baseline_renderer_atmosphere_display.h"
+#include "baseline_renderer_atmosphere_multiple.h"
+#include "baseline_renderer_atmosphere_sky.h"
+#include "baseline_renderer_atmosphere_transmittance.h"
 #include "earth_sky_quadrature.hpp"
 #include "hair_card_coverage_fixture.h"
 #include "orbital_atmosphere_probes.hpp"
+#include "recipe_ab_timing.h"
 #include "render_graph_readback_fixture.h"
+#include "renderer_atmosphere_display.h"
+#include "renderer_atmosphere_display_slots.h"
 #include "renderer_composite.h"
 #include "rg2_forward_lit.h"
 #include "rg2_offscreen.h"
@@ -4666,4 +4674,417 @@ TEST_CASE("Auroral curtains animate, attenuate and respect opaque depth in the d
     aurora.IsEnabled = false;
     capture(false);
     CHECK(fixture.Pixels == ground);
+}
+
+namespace
+{
+// LUSL L5d wave 2: the atmosphere tables and display drawn by renderer_atmosphere.lusl and by its Slang original
+// (shaders/renderer_atmosphere.slang).
+enum class AtmosphereParityScene : uint8
+{
+    DaySky,       ///< Ground view across the horizon, single scattering only.
+    LitDaySky,    ///< The same view with the multiple-scattering table.
+    Night,        ///< Stars, the Milky Way, a planet and a lit Moon.
+    Clouds,       ///< A cloud slab above the eye.
+    CloudlessSky, ///< Clouds's view without the slab.
+    Aurora,       ///< Auroral curtains in the night sky.
+    AuroraOff,    ///< Aurora's view without the curtains, a dark night sky.
+    Orbit,        ///< An orbital view of the Moon through the limb.
+    Count,
+};
+constexpr usize ATMOSPHERE_PARITY_SCENES = static_cast<usize>(AtmosphereParityScene::Count);
+constexpr uint32 ATMOSPHERE_BENCHMARK_WIDTH = 1920;
+constexpr uint32 ATMOSPHERE_BENCHMARK_HEIGHT = 1080;
+
+renderer::internal::AtmosphereTableShaders GetSlangAtmosphereShaders() noexcept
+{
+    return {shaders::baseline_renderer_atmosphere_transmittance::Vertex(),
+            shaders::baseline_renderer_atmosphere_transmittance::Fragment(),
+            shaders::baseline_renderer_atmosphere_multiple::Fragment(),
+            shaders::baseline_renderer_atmosphere_sky::Fragment(),
+            shaders::baseline_renderer_atmosphere_display::Fragment()};
+}
+
+// Atmosphere programs prepared while this lives draw the given shaders.
+class AtmosphereShaderOverride final
+{
+public:
+    explicit AtmosphereShaderOverride(const renderer::internal::AtmosphereTableShaders& programs) noexcept
+    {
+        renderer::internal::SetAtmosphereTableShadersForTesting(&programs);
+    }
+    ~AtmosphereShaderOverride() noexcept
+    {
+        Reset();
+    }
+    AtmosphereShaderOverride(const AtmosphereShaderOverride&) = delete;
+    AtmosphereShaderOverride& operator=(const AtmosphereShaderOverride&) = delete;
+    void Reset() noexcept
+    {
+        renderer::internal::SetAtmosphereTableShadersForTesting(nullptr);
+    }
+};
+
+void SetWideCamera(renderer::ViewDescription& inoutCamera,
+                   math::Vector3 directionWorld,
+                   math::Vector3 upWorld,
+                   uint32 width,
+                   uint32 height)
+{
+    constexpr float32 TARGET_OFFSET_METRES = 1000;
+    constexpr float32 NEAR_METRES = 1;
+    constexpr float32 FAR_METRES = 200000;
+    constexpr float32 FIELD_OF_VIEW_RADIANS = 1.2F;
+    math::Matrix4 worldToView;
+    math::Matrix4 viewToClip;
+    REQUIRE(math::TryLookAt(inoutCamera.CameraPosition,
+                            inoutCamera.CameraPosition + directionWorld * TARGET_OFFSET_METRES,
+                            upWorld,
+                            worldToView) == math::MathStatus::Success);
+    REQUIRE(math::TryPerspectiveReverseZ(FIELD_OF_VIEW_RADIANS,
+                                         static_cast<float32>(width) / static_cast<float32>(height),
+                                         NEAR_METRES,
+                                         FAR_METRES,
+                                         viewToClip) == math::MathStatus::Success);
+    for (math::Vector4& column : viewToClip.Columns)
+    {
+        column.Z = column.W - column.Z;
+    }
+    inoutCamera.OrthographicCamera = false;
+    inoutCamera.Depth = renderer::DepthConvention::Conventional;
+    inoutCamera.InfiniteFar = false;
+    inoutCamera.CameraForward = directionWorld;
+    inoutCamera.WorldToClip = viewToClip * worldToView;
+}
+
+math::Vector3 Normalize(math::Vector3 value)
+{
+    math::Vector3 direction;
+    REQUIRE(math::TryNormalize(value, direction) == math::MathStatus::Success);
+    return direction;
+}
+
+// A fresh camera of `scene`, for an export of width by height pixels.
+renderer::ViewDescription MakeAtmosphereParityCamera(AtmosphereParityScene scene, uint32 width, uint32 height)
+{
+    constexpr float32 EYE_HEIGHT_METRES = 2;
+    constexpr float32 LOOK_SLOPE = 0.32F;
+    constexpr float32 LUNAR_PEAK = 0.5F;
+    constexpr float32 LUNAR_RADIUS_RADIANS = 0.15F;
+    constexpr float32 MILKY_WAY_RADIANCE = 0.045F;
+    constexpr float32 PLANET_ILLUMINANCE_LUX = 2e-7F;
+    constexpr float32 CLOUD_EXTINCTION_PER_METRE = 0.002F;
+    constexpr float32 AURORA_EMISSION_PER_METRE = 0.000005F;
+    constexpr float32 ORBIT_FIELD_OF_VIEW_RADIANS = 0.5F;
+    constexpr float64 LIMB_IMPACT_KILOMETRES = EARTH_GROUND_RADIUS_KILOMETRES + 15;
+    constexpr float64 ORBIT_RADIUS_KILOMETRES =
+        EARTH_GROUND_RADIUS_KILOMETRES + static_cast<float64>(ORBIT_HEIGHT_METRES) / 1000;
+    renderer::ViewDescription camera;
+    renderer::AtmosphereDescription& atmosphere = camera.Atmosphere;
+    atmosphere.IsEnabled = true;
+    atmosphere.SolarIlluminance = {1, 1, 1};
+    atmosphere.DirectionToSunWorld = Normalize({0.3F, 0.25F, -1});
+    camera.CameraPosition = {0, EYE_HEIGHT_METRES, 0};
+    switch (scene)
+    {
+        case AtmosphereParityScene::LitDaySky:
+            atmosphere.ShouldLightScene = true;
+            [[fallthrough]];
+        case AtmosphereParityScene::DaySky:
+            SetWideCamera(camera, Normalize({0, 0.05F, -1}), {0, 1, 0}, width, height);
+            break;
+        case AtmosphereParityScene::Night:
+            SetWideCamera(camera, Normalize({0, 1, -0.3F}), {0, 0, -1}, width, height);
+            atmosphere.SolarIlluminance = {};
+            atmosphere.DirectionToSunWorld = Normalize({1, -0.2F, 0});
+            atmosphere.Celestial.IsEnabled = true;
+            atmosphere.Celestial.StarRadiance = 1;
+            atmosphere.Celestial.MilkyWayRadiance = MILKY_WAY_RADIANCE;
+            atmosphere.Celestial.GalacticNorthWorld = {1, 0, 0};
+            atmosphere.Celestial.GalacticCenterWorld = {0, 1, 0};
+            atmosphere.Celestial.Planets[1] =
+            {
+                .DirectionWorld = Normalize({0.2F, 1, -0.3F}),
+                .Illuminance = {0, 0, PLANET_ILLUMINANCE_LUX},
+            };
+            atmosphere.Celestial.DirectionToMoonWorld = Normalize({-0.3F, 1, -0.4F});
+            atmosphere.Celestial.LunarPeakRadiance = {LUNAR_PEAK, LUNAR_PEAK, LUNAR_PEAK};
+            atmosphere.Celestial.LunarAngularRadiusRadians = LUNAR_RADIUS_RADIANS;
+            atmosphere.Celestial.DirectionToSunAtMoonWorld = Normalize({-1, 0.5F, 0});
+            break;
+        case AtmosphereParityScene::Clouds:
+            atmosphere.Clouds = MakeCloudLayer(CLOUD_EXTINCTION_PER_METRE);
+            [[fallthrough]];
+        case AtmosphereParityScene::CloudlessSky:
+            atmosphere.ShouldLightScene = true;
+            atmosphere.DirectionToSunWorld = Normalize({0.3F, 0.8F, -0.5F});
+            SetCloudCamera(camera, Normalize({0, LOOK_SLOPE, -1}), {0, 1, 0});
+            break;
+        case AtmosphereParityScene::Aurora:
+            atmosphere.Aurora.IsEnabled = true;
+            atmosphere.Aurora.AxisXWorld = {-1, 0, 0};
+            atmosphere.Aurora.EmissionPerMetre = AURORA_EMISSION_PER_METRE;
+            [[fallthrough]];
+        case AtmosphereParityScene::AuroraOff:
+            atmosphere.ShouldLightScene = true;
+            atmosphere.DirectionToSunWorld = {0, -1, 0};
+            SetCloudCamera(camera, Normalize({0, LOOK_SLOPE, -1}), {0, 1, 0});
+            break;
+        case AtmosphereParityScene::Orbit: {
+            atmosphere.ShouldLightScene = true;
+            camera.CameraPosition = {0, ORBIT_HEIGHT_METRES, 0};
+            const math::Vector3 directionWorld{
+                static_cast<float32>(LIMB_IMPACT_KILOMETRES / ORBIT_RADIUS_KILOMETRES),
+                -static_cast<float32>(std::sqrt(1 - LIMB_IMPACT_KILOMETRES * LIMB_IMPACT_KILOMETRES /
+                                                        (ORBIT_RADIUS_KILOMETRES * ORBIT_RADIUS_KILOMETRES))),
+                0};
+            SetOrbitalCamera(camera, directionWorld, {0, 0, 1}, ORBIT_FIELD_OF_VIEW_RADIANS);
+            // The Moon behind the limb, lit from behind the camera, is seen through the shell's transmittance.
+            atmosphere.DirectionToSunWorld = -directionWorld;
+            atmosphere.Celestial.IsEnabled = true;
+            atmosphere.Celestial.DirectionToMoonWorld = directionWorld;
+            atmosphere.Celestial.LunarPeakRadiance = {LUNAR_PEAK, LUNAR_PEAK, LUNAR_PEAK};
+            atmosphere.Celestial.LunarAngularRadiusRadians = LUNAR_RADIUS_RADIANS;
+            break;
+        }
+        case AtmosphereParityScene::Count:
+            break;
+    }
+    return camera;
+}
+
+using AtmosphereImages = StaticArray<StaticArray<uint8, PIXEL_BYTES>, ATMOSPHERE_PARITY_SCENES>;
+
+// Draw every parity scene with a new default graph, whose atmosphere program uses the shaders in effect.
+void RenderAtmosphereScenes(AtmosphereImages& outImages)
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(PollAtmosphereGraph(
+                fixture,
+                fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    const renderer::SceneShaderInputs inputs;
+    for (usize scene = 0; scene < ATMOSPHERE_PARITY_SCENES; ++scene)
+    {
+        INFO("scene " << scene);
+        const renderer::ViewDescription camera =
+            MakeAtmosphereParityCamera(static_cast<AtmosphereParityScene>(scene), WIDTH, HEIGHT);
+        renderer::RenderGraphReport report;
+        REQUIRE(PollAtmosphereGraph(fixture,
+                                    fixture.Graph.Update({},
+                                                         {},
+                                                         {&camera, 1},
+                                                         scene + 1,
+                                                         renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                         report,
+                                                         &inputs)) == rhi::RasterStatus::Ready);
+        REQUIRE(report.UnrenderedWorldFeatures == 0);
+        ReadAtmosphereFrame(fixture);
+        outImages[scene] = fixture.Pixels;
+    }
+}
+
+usize CountDifferingBytes(const StaticArray<uint8, PIXEL_BYTES>& left, const StaticArray<uint8, PIXEL_BYTES>& right)
+{
+    usize differing = 0;
+    for (usize i = 0; i < PIXEL_BYTES; ++i)
+    {
+        differing += left[i] != right[i] ? 1 : 0;
+    }
+    return differing;
+}
+
+usize CountLitBytes(const StaticArray<uint8, PIXEL_BYTES>& image)
+{
+    usize lit = 0;
+    for (usize i = 0; i < PIXEL_BYTES; ++i)
+    {
+        lit += (i % TEXEL_BYTES) != TEXEL_BYTES - 1 && image[i] != 0 ? 1 : 0;
+    }
+    return lit;
+}
+
+// One default graph at the benchmark extent, for the A/B timing of the atmosphere programs.
+struct AtmosphereBenchmarkGraph final
+{
+    explicit AtmosphereBenchmarkGraph(rhi::DeviceHandle device)
+        : Device(device), Package(LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"}))
+    {
+        Programs = Package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+        REQUIRE(poll(Graph.Initialize(Device,
+                                      Package->GetPlan(),
+                                      Programs,
+                                      nullptr,
+                                      ATMOSPHERE_BENCHMARK_WIDTH,
+                                      ATMOSPHERE_BENCHMARK_HEIGHT)) == rhi::RasterStatus::Ready);
+        Camera = MakeAtmosphereParityCamera(AtmosphereParityScene::LitDaySky,
+                                            ATMOSPHERE_BENCHMARK_WIDTH,
+                                            ATMOSPHERE_BENCHMARK_HEIGHT);
+    }
+    // Move the Sun each frame, so the sky-view table is drawn again with the display.
+    void Draw(rhi::SurfaceHandle surface)
+    {
+        constexpr float32 SUN_STEP_RADIANS = 0.001F;
+        ++Revision;
+        const float32 angle = SUN_STEP_RADIANS * static_cast<float32>(Revision % 2);
+        Camera.Atmosphere.DirectionToSunWorld = Normalize({0.3F + angle, 0.25F, -1});
+        renderer::RenderGraphReport report;
+        REQUIRE(poll(Graph.Update({},
+                                  {},
+                                  {&Camera, 1},
+                                  Revision,
+                                  renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                  report,
+                                  &Inputs)) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken submission;
+        REQUIRE(Graph.Render(surface, ATMOSPHERE_BENCHMARK_WIDTH, ATMOSPHERE_BENCHMARK_HEIGHT, submission) ==
+                rhi::RasterStatus::Ready);
+        rhi::RasterStatus status = rhi::GetStatus(Device, submission);
+        while (status == rhi::RasterStatus::Pending)
+        {
+            REQUIRE(rhi::PollLifetime(Device) == rhi::RasterStatus::Ready);
+            status = rhi::GetStatus(Device, submission);
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    }
+
+    rhi::DeviceHandle Device{};
+    core::UniquePtr<renderer::RenderGraphPackage> Package;
+    renderer::RenderGraphPrograms Programs{};
+    renderer::RenderGraph Graph;
+    renderer::ViewDescription Camera{};
+    renderer::SceneShaderInputs Inputs{};
+    uint64 Revision = 0;
+
+private:
+    rhi::RasterStatus poll(rhi::RasterStatus status)
+    {
+        while (status == rhi::RasterStatus::Pending)
+        {
+            threading::SleepFor(timing::Milliseconds(1));
+            status = Graph.Poll();
+        }
+        return status;
+    }
+};
+} // namespace
+
+TEST_CASE("The LUSL atmosphere recipes render their Slang original's pixels", "[render-graph][atmosphere][gpu][lusl]")
+{
+    // LUSL L5d wave 2: every scene drawn with renderer_atmosphere_transmittance, _multiple, _sky and _display and with
+    // their Slang original (shaders/renderer_atmosphere.slang) on one device; every byte must match. With
+    // LUDUS_RENDERER_BENCHMARK set it also times the two programs A/B in 1080p frames.
+    namespace display_slots = shaders::renderer_atmosphere_display::slots;
+    const rhi::RasterShaderDescription display = shaders::renderer_atmosphere_display::Fragment();
+    REQUIRE(display.Bindings.GetSize() == 4);
+    for (const rhi::RasterBinding& binding : shaders::baseline_renderer_atmosphere_display::Fragment().Bindings)
+    {
+        bool isDeclared = false;
+        for (const rhi::RasterBinding& candidate : display.Bindings)
+        {
+            isDeclared = isDeclared || (candidate.Binding == binding.Binding && candidate.Kind == binding.Kind);
+        }
+        CHECK(isDeclared == true);
+    }
+    static_assert(display_slots::ATMOSPHERE_VIEW == 0 && display_slots::ATMOSPHERE_TRANSMITTANCE == 1 &&
+                  display_slots::ATMOSPHERE_SKY == 2 && display_slots::ATMOSPHERE_MULTIPLE == 3);
+    const renderer::internal::AtmosphereTableShaders slangShaders = GetSlangAtmosphereShaders();
+    AtmosphereImages lusl{};
+    RenderAtmosphereScenes(lusl);
+    AtmosphereImages slang{};
+    {
+        const AtmosphereShaderOverride slangOverride(slangShaders);
+        RenderAtmosphereScenes(slang);
+    }
+    for (usize scene = 0; scene < ATMOSPHERE_PARITY_SCENES; ++scene)
+    {
+        INFO("scene " << scene);
+        CHECK(CountDifferingBytes(lusl[scene], slang[scene]) == 0);
+        // Equality is not vacuous: every scene but the dark aurora control draws radiance.
+        if (static_cast<AtmosphereParityScene>(scene) != AtmosphereParityScene::AuroraOff)
+        {
+            CHECK(CountLitBytes(lusl[scene]) > 0);
+        }
+    }
+    // Each feature reaches the display: multiple scattering, the cloud slab and the aurora change their views.
+    const auto image = [&](AtmosphereParityScene scene) -> const StaticArray<uint8, PIXEL_BYTES>& {
+        return lusl[static_cast<usize>(scene)];
+    };
+    CHECK(CountDifferingBytes(image(AtmosphereParityScene::DaySky), image(AtmosphereParityScene::LitDaySky)) > 0);
+    CHECK(CountDifferingBytes(image(AtmosphereParityScene::Clouds), image(AtmosphereParityScene::CloudlessSky)) > 0);
+    CHECK(CountDifferingBytes(image(AtmosphereParityScene::Aurora), image(AtmosphereParityScene::AuroraOff)) > 0);
+
+    // And the override reaches the programs: the sky table's fragment in the display stage, whose binding table lacks
+    // the sky view, fails the graph or changes the image.
+    renderer::internal::AtmosphereTableShaders mutant = slangShaders;
+    mutant.Display = shaders::baseline_renderer_atmosphere_sky::Fragment();
+    {
+        const AtmosphereShaderOverride mutantOverride(mutant);
+        GraphGpuFixture fixture;
+        const core::UniquePtr<renderer::RenderGraphPackage> package =
+            LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+        const renderer::RenderGraphPrograms programs =
+            package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+        rhi::RasterStatus status = PollAtmosphereGraph(
+            fixture,
+            fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT));
+        const renderer::ViewDescription camera =
+            MakeAtmosphereParityCamera(AtmosphereParityScene::DaySky, WIDTH, HEIGHT);
+        const renderer::SceneShaderInputs inputs;
+        renderer::RenderGraphReport report;
+        if (status == rhi::RasterStatus::Ready)
+        {
+            status = PollAtmosphereGraph(fixture,
+                                         fixture.Graph.Update({},
+                                                              {},
+                                                              {&camera, 1},
+                                                              1,
+                                                              renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                              report,
+                                                              &inputs));
+        }
+        bool isMutated = status != rhi::RasterStatus::Ready || report.UnrenderedWorldFeatures != 0;
+        if (isMutated == false)
+        {
+            ReadAtmosphereFrame(fixture);
+            isMutated = CountDifferingBytes(fixture.Pixels, image(AtmosphereParityScene::DaySky)) > 0;
+        }
+        CHECK(isMutated == true);
+    }
+
+    if (IsRecipeBenchmark() == false)
+    {
+        return;
+    }
+    RhiGuard session;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.EnableGpuTiming = true;
+    rhi::StartupInfo failure;
+    REQUIRE(rhi::CreateDevice({},
+                              { .Width = ATMOSPHERE_BENCHMARK_WIDTH, .Height = ATMOSPHERE_BENCHMARK_HEIGHT },
+                              description,
+                              device,
+                              surface,
+                              &failure) == rhi::DeviceStatus::Ready);
+    // Each graph creates its atmosphere program on first use, so the Slang graph draws once under the override.
+    AtmosphereShaderOverride slangOverride(slangShaders);
+    AtmosphereBenchmarkGraph slangGraph(device);
+    slangGraph.Draw(surface);
+    slangOverride.Reset();
+    AtmosphereBenchmarkGraph luslGraph(device);
+    StaticArray<AtmosphereBenchmarkGraph*, RECIPE_AB_VARIANTS> graphs{};
+    graphs[RECIPE_AB_SLANG] = &slangGraph;
+    graphs[RECIPE_AB_LUSL] = &luslGraph;
+    RunRecipeAbTiming(device,
+                      "atmosphere_sky_and_display",
+                      ATMOSPHERE_BENCHMARK_WIDTH,
+                      ATMOSPHERE_BENCHMARK_HEIGHT,
+                      [&](usize variant) { graphs[variant]->Draw(surface); });
 }

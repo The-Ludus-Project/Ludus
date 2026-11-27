@@ -1,0 +1,436 @@
+// Atmosphere table and display passes: the transmittance, multiple-scattering and sky-view tables,
+// and the background display. Port of renderer_atmosphere.slang (LUSL L5d wave 2). The four
+// recipes share one slot table: the view uniform, then the transmittance, sky and multiple tables.
+// The transport, celestial, cloud and aurora libraries stay Slang, because the deferred lighting
+// recipes and render-graph helpers include them, and are reached through `extern slang`.
+#include "lighting_layout.luslh"
+#include "math.luslh"
+#include "renderer_atmosphere_layout.luslh"
+#include "renderer_deferred_fullscreen.luslh"
+
+// Float4 rows of the packed layers and of the clip-to-eye matrix in AtmosphereViewParameters. The Slang
+// libraries name the layer counts CLOUD_LAYER_UNIFORM_ROWS and AURORA_LAYER_UNIFORM_ROWS.
+static const uint32 CLOUD_LAYER_ROWS = LUDUS_CLOUD_LAYER_UNIFORM_ROWS;
+static const uint32 AURORA_LAYER_ROWS = LUDUS_AURORA_LAYER_UNIFORM_ROWS;
+static const uint32 CLIP_TO_EYE_ROWS = 4;
+
+extern slang "display_tone_mapping.slang"
+{
+    float32x3 MapSceneToDisplay(in float32x3 sceneColor, in float32 exposure, in uint32 curve);
+};
+
+extern slang "renderer_atmosphere_transport.slang"
+{
+    static const float32 GROUND_RADIUS;
+    static const float32 SHELL_HEIGHT;
+    static const float32 TOP_RADIUS;
+    static const float32 DIRECTION_EPSILON;
+    static const uint32 SKY_STEPS;
+    static const uint32 SKY_HALF_HEIGHT;
+    static const int32x2 TRANSMITTANCE_SIZE;
+    static const int32x2 SKY_REGION_SIZE;
+    static const int32 ATMOSPHERE_MULTIPLE_SIZE;
+
+    struct AtmosphereSegment
+    {
+        float32x3 Radiance;
+        float32x3 Transmittance;
+        float32x3 ScatteringFraction;
+    };
+
+    float32 ComputeSquaredHeightDifference(in float32 height, in float32 radius);
+    float32 ComputeHorizonCosine(in float32 height);
+    float32 GetDistanceToTop(in float32 height, in float32 zenithCosine);
+    float32 GetDistanceToGround(in float32 height, in float32 zenithCosine);
+    float32x3 IntegrateTransmittance(in float32 height, in float32 zenithCosine, in float32 distance);
+    float32x3 SampleTransmittance(in Texture2D<float32x4> table, in float32 height, in float32 zenithCosine);
+    AtmosphereSegment IntegrateAtmosphere(in Texture2D<float32x4> transmittanceTable,
+                                          in Texture2D<float32x4> multipleTable,
+                                          in float32 height,
+                                          in float32 zenithCosine,
+                                          in float32 solarZenithCosine,
+                                          in float32 scatteringCosine,
+                                          in float32 distance,
+                                          in uint32 stepCount,
+                                          in bool hasMultiple);
+    float32x3 SampleAtmosphereSky(in Texture2D<float32x4> skyTable,
+                                  in float32x3 directionWorld,
+                                  in float32x3 upWorld,
+                                  in float32x3 sunWorld,
+                                  in float32 height);
+};
+
+extern slang "renderer_atmosphere_celestial.slang"
+{
+    float32x3 EvaluateCelestialStars(in float32x3 directionCelestial,
+                                     in float32 angularFootprint,
+                                     in float32 peakRadiance);
+    float32x3 EvaluateMilkyWay(in float32x3 directionGalactic, in float32 radiance);
+    float32 ComputePlanetPointWeight(in float32x3 directionWorld, in float32x3 planetWorld, in float32 angularFootprint);
+    float32 ComputeCelestialDiskCoverage(in float32 chord, in float32 chordRadius, in float32 chordWidth);
+    float32x3 EvaluateSolarDisk(in float32 chord,
+                                in float32 chordRadius,
+                                in float32 chordWidth,
+                                in float32 angularFootprint,
+                                out float32 outCoverage);
+    float32 EvaluateLunarPhase(in float32x3 directionWorld,
+                               in float32x3 moonWorld,
+                               in float32x3 sunWorld,
+                               in float32 sineRadius);
+};
+
+extern slang "renderer_aurora_layer.slang"
+{
+    static const float32 AURORA_TOP_KILOMETRES;
+
+    struct AuroraLayerParameters
+    {
+        float32x4 AxisXWorld;
+        float32x4 AxisZWorld;
+    };
+
+    AuroraLayerParameters UnpackAuroraLayer(in float32x4 rows[AURORA_LAYER_ROWS]);
+    float32x3 IntegrateAuroraLayer(in AuroraLayerParameters aurora,
+                                   in float32x3 upWorld,
+                                   in float32x3 directionWorld,
+                                   in float32 height,
+                                   in float32 maximumKilometres);
+};
+
+extern slang "renderer_cloud_layer.slang"
+{
+    static const uint32 CLOUD_LAYER_AIR_STEPS;
+    static const float32 CLOUD_LAYER_METRES_PER_KILOMETRE;
+
+    struct CloudLayerParameters;
+
+    struct CloudLayerSegment
+    {
+        float32x3 Radiance;
+        float32 Transmittance;
+        float32 EntryMetres;
+        float32 ExitMetres;
+    };
+
+    CloudLayerParameters UnpackCloudLayer(in float32x4 rows[CLOUD_LAYER_ROWS]);
+    CloudLayerSegment IntegrateCloudLayer(in Texture2D<float32x4> transmittanceTable,
+                                          in CloudLayerParameters cloud,
+                                          in float32x3 directionWorld,
+                                          in float32x3 sunWorld,
+                                          in float32x3 solarIlluminance,
+                                          in float32 height,
+                                          in float32 zenithCosine,
+                                          in float32 solarZenithCosine,
+                                          in float32 maximumMetres);
+    float32x3 ComposeCloudLayer(in CloudLayerSegment cloud,
+                                in float32x3 airRadiance,
+                                in float32x3 airTransmittance,
+                                in float32x3 clearRadiance);
+};
+
+static const uint32 ZENITH_SAMPLES = LUDUS_ATMOSPHERE_MULTIPLE_ZENITH_SAMPLES;
+static const uint32 AZIMUTH_SAMPLES = LUDUS_ATMOSPHERE_MULTIPLE_AZIMUTH_SAMPLES;
+static const uint32 MULTIPLE_STEPS = LUDUS_ATMOSPHERE_MULTIPLE_STEPS;
+static const float32 MINIMUM_ESCAPE = LUDUS_ATMOSPHERE_MULTIPLE_MINIMUM_ESCAPE;
+// Quadrature of the orbital view's single crossing of the shell.
+static const uint32 ORBITAL_STEPS = 64;
+// Midpoint of a pixel, from its SV_Position-style coordinate.
+static const float32 PIXEL_CENTER = 0.5;
+
+struct AtmosphereViewParameters
+{
+    float32x4 ClipToEyeRows[CLIP_TO_EYE_ROWS];
+    float32x4 RadialUpWorld; // xyz: unit radial up, w: altitude in kilometres
+    float32x4 DirectionToSunWorld; // xyz: direction, w: solar zenith cosine
+    float32x4 SolarIlluminance; // xyz: linear RGB perpendicular illuminance, w: disk chord radius
+    float32x4 CameraForwardWorld; // xyz: orthographic ray, w: radiance per unit disk illuminance
+    float32x4 Lighting; // x enables multiple scattering.
+    float32x4 MoonDirectionWorld; // xyz: direction, w: sine of the angular radius.
+    float32x4 LunarRadiance; // xyz: luminance at unit lighting cosine, w: disk chord radius.
+    float32x4 DirectionToSunAtMoonWorld; // xyz: optional lunar lighting direction, w: presence flag.
+    float32x4 Celestial; // Observer altitude (km), star peak luminance, orbital flag, planet count.
+    float32x4 Output; // xy: viewport dimensions, z: exposure multiplier, w: display curve
+    float32x4 GalacticNorthWorld; // xyz: north galactic pole, w: Milky Way brightness.
+    float32x4 GalacticCenterWorld; // xyz: galactic center, orthogonal to GalacticNorthWorld.
+    float32x4 PlanetDirectionsWorld[ATMOSPHERE_PLANET_CAPACITY];
+    float32x4 PlanetIlluminance[ATMOSPHERE_PLANET_CAPACITY];
+    float32x4 CloudLayer[CLOUD_LAYER_ROWS];
+    float32x4 AuroraLayer[AURORA_LAYER_ROWS];
+};
+
+ConstantBuffer<AtmosphereViewParameters> atmosphereView;
+Texture2D<float32x4> atmosphereTransmittance;
+Texture2D<float32x4> atmosphereSky;
+Texture2D<float32x4> atmosphereMultiple;
+
+[stage(fragment)]
+float32x4 AtmosphereTransmittanceMain(in DeferredVarying input)
+{
+    float32x2 coordinates = (input.PositionClip.xy - PIXEL_CENTER) / float32x2(TRANSMITTANCE_SIZE - 1);
+    float32 topHorizonDistance = sqrt(ComputeSquaredHeightDifference(SHELL_HEIGHT, TOP_RADIUS));
+    float32 horizonDistance = coordinates.y * topHorizonDistance;
+    float32 height = horizonDistance * horizonDistance /
+        (sqrt(GROUND_RADIUS * GROUND_RADIUS + horizonDistance * horizonDistance) + GROUND_RADIUS);
+    height = min(height, SHELL_HEIGHT);
+    float32 radius = GROUND_RADIUS + height;
+    float32 distance = lerp(SHELL_HEIGHT - height, horizonDistance + topHorizonDistance, coordinates.x);
+    float32 squaredDifference = (SHELL_HEIGHT - height) * (TOP_RADIUS + radius);
+    float32 zenithCosine = distance > 0.0
+        ? clamp((squaredDifference - distance * distance) / (2.0 * radius * distance), -1.0, 1.0)
+        : 1.0;
+    return float32x4(IntegrateTransmittance(height, zenithCosine, distance), 1.0);
+}
+
+[stage(fragment)]
+float32x4 AtmosphereSkyMain(in DeferredVarying input)
+{
+    float32x2 positionPixel = input.PositionClip.xy - PIXEL_CENTER;
+    bool isGroundHit = positionPixel.y >= float32(SKY_HALF_HEIGHT);
+    float32x2 coordinates = (positionPixel - float32x2(0.0, isGroundHit == true ? float32(SKY_HALF_HEIGHT) : 0.0)) /
+        float32x2(SKY_REGION_SIZE - 1);
+    float32 height = atmosphereView.RadialUpWorld.w;
+    float32 horizon = ComputeHorizonCosine(height);
+    float32 zenithCosine = lerp(horizon, isGroundHit == true ? -1.0 : 1.0, coordinates.y * coordinates.y);
+    float32 solarZenithCosine = atmosphereView.DirectionToSunWorld.w;
+    float32 sine = sqrt(saturate(1.0 - zenithCosine * zenithCosine));
+    float32 solarSine = sqrt(saturate(1.0 - solarZenithCosine * solarZenithCosine));
+    float32 scatteringCosine =
+        clamp(zenithCosine * solarZenithCosine + sine * solarSine * cos(PI * coordinates.x), -1.0, 1.0);
+    float32 distance =
+        isGroundHit == true ? GetDistanceToGround(height, zenithCosine) : GetDistanceToTop(height, zenithCosine);
+    AtmosphereSegment segment = IntegrateAtmosphere(atmosphereTransmittance,
+                                                    atmosphereMultiple,
+                                                    height,
+                                                    zenithCosine,
+                                                    solarZenithCosine,
+                                                    scatteringCosine,
+                                                    distance,
+                                                    SKY_STEPS,
+                                                    atmosphereView.Lighting.x > 0.0);
+    return float32x4(segment.Radiance, 1.0);
+}
+
+float32x3 GetViewDirectionWorld(in float32x2 positionPixel)
+{
+    if (any(atmosphereView.CameraForwardWorld.xyz != float32x3(0.0)) == true)
+    {
+        return atmosphereView.CameraForwardWorld.xyz;
+    }
+    float32x2 positionClip = positionPixel / atmosphereView.Output.xy * float32x2(2.0, -2.0) + float32x2(-1.0, 1.0);
+    float32x4 positionHomogeneousClip = float32x4(positionClip, 0.5, 1.0);
+    return normalize(float32x3(dot(atmosphereView.ClipToEyeRows[0], positionHomogeneousClip),
+                               dot(atmosphereView.ClipToEyeRows[1], positionHomogeneousClip),
+                               dot(atmosphereView.ClipToEyeRows[2], positionHomogeneousClip)) *
+                     float32(sign(dot(atmosphereView.ClipToEyeRows[3], positionHomogeneousClip))));
+}
+
+// Thanks to Sébastien Hillaire, A Scalable and Production Ready Sky and
+// Atmosphere Rendering Technique, CGF 2020, §5.5, doi:10.1111/cgf.14050.
+// Average first-order radiance and the return fraction over a uniform sphere.
+// Close higher orders locally with the isotropic geometric series and a dark ground.
+[stage(fragment)]
+float32x4 AtmosphereMultipleMain(in DeferredVarying input)
+{
+    float32x2 coordinates = (input.PositionClip.xy - PIXEL_CENTER) / float32(ATMOSPHERE_MULTIPLE_SIZE - 1);
+    float32 height = coordinates.y * SHELL_HEIGHT;
+    float32 solarZenithCosine = coordinates.x * 2.0 - 1.0;
+    float32 solarSine = sqrt(saturate(1.0 - solarZenithCosine * solarZenithCosine));
+    float32 horizon = ComputeHorizonCosine(height);
+    float32x3 radiance = 0;
+    float32x3 fraction = 0;
+    for (uint32 row = 0; row < ZENITH_SAMPLES; ++row)
+    {
+        float32 zenithCosine = (float32(row) + 0.5) * 2.0 / float32(ZENITH_SAMPLES) - 1.0;
+        float32 sine = sqrt(saturate(1.0 - zenithCosine * zenithCosine));
+        float32 distance = zenithCosine < horizon ? GetDistanceToGround(height, zenithCosine)
+            : GetDistanceToTop(height, zenithCosine);
+        for (uint32 column = 0; column < AZIMUTH_SAMPLES; ++column)
+        {
+            float32 azimuth = (float32(column) + 0.5) * 2.0 * PI / float32(AZIMUTH_SAMPLES);
+            float32 scatteringCosine =
+                clamp(zenithCosine * solarZenithCosine + sine * solarSine * cos(azimuth), -1.0, 1.0);
+            AtmosphereSegment segment = IntegrateAtmosphere(atmosphereTransmittance,
+                                                            atmosphereTransmittance,
+                                                            height,
+                                                            zenithCosine,
+                                                            solarZenithCosine,
+                                                            scatteringCosine,
+                                                            distance,
+                                                            MULTIPLE_STEPS,
+                                                            false);
+            radiance += segment.Radiance;
+            fraction += segment.ScatteringFraction;
+        }
+    }
+    float32 sampleCount = float32(ZENITH_SAMPLES * AZIMUTH_SAMPLES);
+    return float32x4(radiance / max(sampleCount - fraction, float32x3(sampleCount * MINIMUM_ESCAPE)), 1.0);
+}
+
+struct AtmosphereBackgroundTransport
+{
+    float32x3 Radiance;
+    float32x3 Transmittance;
+};
+
+AtmosphereBackgroundTransport EvaluateAtmosphereBackground(in float32x3 directionWorld)
+{
+    AtmosphereBackgroundTransport result = { .Radiance = float32x3(0.0), .Transmittance = float32x3(1.0) };
+    float32x3 upWorld = atmosphereView.RadialUpWorld.xyz;
+    float32x3 sunWorld = atmosphereView.DirectionToSunWorld.xyz;
+    float32 height = atmosphereView.Celestial.x;
+    float32 zenithCosine = clamp(dot(directionWorld, upWorld), -1.0, 1.0);
+    if (atmosphereView.Celestial.z == 0.0)
+    {
+        result.Radiance = SampleAtmosphereSky(atmosphereSky, directionWorld, upWorld, sunWorld, height);
+        result.Transmittance = zenithCosine < ComputeHorizonCosine(height)
+            ? float32x3(0.0)
+            : SampleTransmittance(atmosphereTransmittance, height, zenithCosine);
+        return result;
+    }
+
+    // Work from the perpendicular point and near root, which avoids subtracting
+    // two long distances when reconstructing the radial direction at shell entry.
+    float32 radius = GROUND_RADIUS + height;
+    float32 projection = radius * zenithCosine;
+    float32 discriminant = projection * projection - (height - SHELL_HEIGHT) * (radius + TOP_RADIUS);
+    if (projection >= 0.0 || discriminant <= 0.0)
+    {
+        return result;
+    }
+    float32 root = sqrt(discriminant);
+    float32x3 perpendicularWorld = radius * (upWorld - zenithCosine * directionWorld);
+    float32x3 entryUpWorld = normalize(perpendicularWorld - root * directionWorld);
+    float32 entryCosine = -root / TOP_RADIUS;
+    bool isGroundHit = entryCosine < ComputeHorizonCosine(SHELL_HEIGHT);
+    float32 distance = isGroundHit == true ? GetDistanceToGround(SHELL_HEIGHT, entryCosine) : 2.0 * root;
+    AtmosphereSegment segment = IntegrateAtmosphere(atmosphereTransmittance,
+                                                    atmosphereMultiple,
+                                                    SHELL_HEIGHT,
+                                                    entryCosine,
+                                                    clamp(dot(entryUpWorld, sunWorld), -1.0, 1.0),
+                                                    clamp(dot(directionWorld, sunWorld), -1.0, 1.0),
+                                                    distance,
+                                                    ORBITAL_STEPS,
+                                                    atmosphereView.Lighting.x > 0.0);
+    result.Radiance = segment.Radiance;
+    result.Transmittance = isGroundHit == true ? float32x3(0.0) : segment.Transmittance;
+    return result;
+}
+
+float32x3 EvaluateNightSky(in float32x3 directionWorld, in float32 angularFootprint)
+{
+    float32x3 background = 0;
+    float32x3 directionCelestial = directionWorld;
+    if (atmosphereView.GalacticNorthWorld.w > 0.0)
+    {
+        float32x3 northWorld = atmosphereView.GalacticNorthWorld.xyz;
+        float32x3 centerWorld = atmosphereView.GalacticCenterWorld.xyz;
+        directionCelestial = float32x3(dot(directionWorld, centerWorld),
+                                       dot(directionWorld, cross(northWorld, centerWorld)),
+                                       dot(directionWorld, northWorld));
+        background += EvaluateMilkyWay(directionCelestial, atmosphereView.GalacticNorthWorld.w);
+    }
+    if (atmosphereView.Celestial.y > 0.0)
+    {
+        background += EvaluateCelestialStars(directionCelestial, angularFootprint, atmosphereView.Celestial.y);
+    }
+    uint32 planetCount = uint32(atmosphereView.Celestial.w);
+    for (uint32 i = 0; i < planetCount; ++i)
+    {
+        float32 weight =
+            ComputePlanetPointWeight(directionWorld, atmosphereView.PlanetDirectionsWorld[i].xyz, angularFootprint);
+        background += weight * atmosphereView.PlanetIlluminance[i].xyz;
+    }
+    return background;
+}
+
+// The background ray continues to the ground or the top of the shell; the material resolve redraws covered pixels.
+float32x3 ComposeSkyCloudLayer(in float32x3 directionWorld, in float32x3 clearRadiance)
+{
+    float32 height = atmosphereView.RadialUpWorld.w;
+    float32x3 upWorld = atmosphereView.RadialUpWorld.xyz;
+    float32x3 sunWorld = atmosphereView.DirectionToSunWorld.xyz;
+    float32 zenithCosine = clamp(dot(directionWorld, upWorld), -1.0, 1.0);
+    float32 solarZenithCosine = atmosphereView.DirectionToSunWorld.w;
+    bool isGroundHit = zenithCosine < ComputeHorizonCosine(height);
+    float32 boundary =
+        isGroundHit == true ? GetDistanceToGround(height, zenithCosine) : GetDistanceToTop(height, zenithCosine);
+    CloudLayerSegment cloud = IntegrateCloudLayer(atmosphereTransmittance,
+                                                  UnpackCloudLayer(atmosphereView.CloudLayer),
+                                                  directionWorld,
+                                                  sunWorld,
+                                                  atmosphereView.SolarIlluminance.xyz,
+                                                  height,
+                                                  zenithCosine,
+                                                  solarZenithCosine,
+                                                  boundary * CLOUD_LAYER_METRES_PER_KILOMETRE);
+    if (cloud.ExitMetres <= cloud.EntryMetres)
+    {
+        return clearRadiance;
+    }
+    AtmosphereSegment air = IntegrateAtmosphere(atmosphereTransmittance,
+                                                atmosphereMultiple,
+                                                height,
+                                                zenithCosine,
+                                                solarZenithCosine,
+                                                clamp(dot(directionWorld, sunWorld), -1.0, 1.0),
+                                                cloud.EntryMetres / CLOUD_LAYER_METRES_PER_KILOMETRE,
+                                                CLOUD_LAYER_AIR_STEPS,
+                                                atmosphereView.Lighting.x > 0.0);
+    return ComposeCloudLayer(cloud,
+                             air.Radiance * atmosphereView.SolarIlluminance.xyz,
+                             air.Transmittance,
+                             clearRadiance);
+}
+
+[stage(fragment)]
+float32x4 AtmosphereDisplayMain(in DeferredVarying input)
+{
+    float32x3 directionWorld = GetViewDirectionWorld(input.PositionClip.xy);
+    float32x3 sunWorld = atmosphereView.DirectionToSunWorld.xyz;
+    float32x3 moonWorld = atmosphereView.MoonDirectionWorld.xyz;
+    float32 angularFootprint = max(length(ddx(directionWorld)), length(ddy(directionWorld)));
+    float32 sunCoverage = void;
+    float32 sunChord = length(directionWorld - sunWorld);
+    float32x3 solarDisk = EvaluateSolarDisk(sunChord,
+                                            atmosphereView.SolarIlluminance.w,
+                                            max(fwidth(sunChord), DIRECTION_EPSILON),
+                                            angularFootprint,
+                                            out sunCoverage);
+    float32 moonChord = length(directionWorld - moonWorld);
+    float32 moonCoverage = ComputeCelestialDiskCoverage(moonChord,
+                                                        atmosphereView.LunarRadiance.w,
+                                                        max(fwidth(moonChord), DIRECTION_EPSILON));
+    float32x3 boundary = solarDisk * atmosphereView.CameraForwardWorld.w * atmosphereView.SolarIlluminance.xyz;
+    boundary += (1.0 - sunCoverage) * EvaluateNightSky(directionWorld, angularFootprint);
+    if (atmosphereView.MoonDirectionWorld.w > 0.0 && moonCoverage > 0.0)
+    {
+        float32x3 moonToSunWorld = atmosphereView.DirectionToSunAtMoonWorld.w > 0.0
+            ? atmosphereView.DirectionToSunAtMoonWorld.xyz
+            : sunWorld;
+        float32 phase =
+            EvaluateLunarPhase(directionWorld, moonWorld, moonToSunWorld, atmosphereView.MoonDirectionWorld.w);
+        boundary = lerp(boundary, phase * atmosphereView.LunarRadiance.xyz, moonCoverage);
+    }
+    AtmosphereBackgroundTransport transport = EvaluateAtmosphereBackground(directionWorld);
+    float32x3 radiance = transport.Radiance * atmosphereView.SolarIlluminance.xyz + transport.Transmittance * boundary;
+    AuroraLayerParameters aurora = UnpackAuroraLayer(atmosphereView.AuroraLayer);
+    if (aurora.AxisXWorld.w > 0.0)
+    {
+        float32 unboundedAuroraRay = 2.0 * (GROUND_RADIUS + AURORA_TOP_KILOMETRES);
+        radiance += transport.Transmittance * IntegrateAuroraLayer(aurora,
+                                                                   atmosphereView.RadialUpWorld.xyz,
+                                                                   directionWorld,
+                                                                   atmosphereView.RadialUpWorld.w,
+                                                                   unboundedAuroraRay);
+    }
+    if (atmosphereView.CloudLayer[0].w > 0.0)
+    {
+        radiance = ComposeSkyCloudLayer(directionWorld, radiance);
+    }
+    if (atmosphereView.Output.z > 0.0)
+    {
+        radiance = MapSceneToDisplay(radiance, atmosphereView.Output.z, uint32(atmosphereView.Output.w + 0.5));
+    }
+    return float32x4(radiance, 1.0);
+}

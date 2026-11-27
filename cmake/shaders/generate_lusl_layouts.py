@@ -19,6 +19,8 @@ OWNERS = (
     (RENDERER_SHADERS / 'skin_diffusion_layout.h', ()),
     (RENDER_GRAPH_HEADERS / 'light_transformer_layout.h', ()),
     (RENDER_GRAPH_HEADERS / 'light_transformer_encoder_layout.h', ()),
+    (RENDERER_HEADERS / 'lighting_layout.h', ()),
+    (RENDERER_SHADERS / 'renderer_atmosphere_layout.h', ()),
 )
 # The preview owner includes the scene failure reason count for C++ and Slang.
 # The generated view includes its LUSL counterpart through OWNERS.
@@ -41,7 +43,8 @@ PREVIEW_DEFAULT = re.compile(
 )
 # The deferred owner selects its binding-slot include, opens its C++ namespace and checks the
 # authored binding count under __cplusplus. The generated view includes deferred_binding_slots.luslh
-# through OWNERS; its constants use only that header and each other.
+# through OWNERS; its constants use only that header and each other. The lighting owner's
+# __cplusplus blocks choose LightingLayoutValue and open and close its namespace.
 CPLUSPLUS_BLOCK = re.compile(r'#ifdef __cplusplus\n.*?#endif\n', re.S)
 LIGHTING_INCLUDE = '#include "lighting_layout.h"\n'
 # A shared constant, `static const LightingLayoutValue NAME = expression;`, possibly over several lines.
@@ -58,6 +61,8 @@ def render(source, owner, includes):
         source = PREVIEW_DEFAULT.sub(r'#define \1 \2\n', source)
     if owner.name == 'deferred_layout.h':
         source = CPLUSPLUS_BLOCK.sub('', source.replace(LIGHTING_INCLUDE, ''))
+    if owner.name == 'lighting_layout.h':
+        source = CPLUSPLUS_BLOCK.sub('', source)
 
     lines = [f'// Generated from {owner.name} by generate_lusl_layouts.py. Edit the owner.',
              '#pragma once', '']

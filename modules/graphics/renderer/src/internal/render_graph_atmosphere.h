@@ -69,6 +69,24 @@ struct AtmosphereSkyTable;
 struct AtmosphereViewUniform;
 class RenderGraphAtmosphereView;
 
+/// Atmosphere table and display programs a test draws in place of the built-in renderer_atmosphere_transmittance,
+/// renderer_atmosphere_multiple, renderer_atmosphere_sky and renderer_atmosphere_display recipes, such as their
+/// retained Slang original (LUSL L5d wave 2).
+struct AtmosphereTableShaders final
+{
+    rhi::RasterShaderDescription Vertex{};        ///< Fullscreen vertex stage shared by every table and the display.
+    rhi::RasterShaderDescription Transmittance{}; ///< Transmittance table fragment.
+    rhi::RasterShaderDescription Multiple{};      ///< Multiple-scattering table fragment.
+    rhi::RasterShaderDescription Sky{};           ///< Sky-view table fragment.
+    rhi::RasterShaderDescription Display{};       ///< Background display fragment.
+};
+/// Test builds only (LUDUS_RENDERER_TEST_READBACK): atmosphere programs prepared after this call draw with
+/// shadersOrNull's programs instead of the built-in recipes; nullptr restores the recipes. The programs must keep the
+/// recipes' binding slots (renderer_atmosphere_display_slots.h). The descriptions are copied; the artifacts they
+/// borrow must outlive the programs. Owner thread only, between graph preparations. Without offline shader tools
+/// (LUDUS_RENDERER_ATMOSPHERE_SHADERS undefined) the renderer has no atmosphere programs and the call does nothing.
+void SetAtmosphereTableShadersForTesting(const AtmosphereTableShaders* shadersOrNull) noexcept;
+
 class RenderGraphAtmosphereProgram final
 {
 public:
