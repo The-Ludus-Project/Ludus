@@ -95,7 +95,7 @@ struct ViewportReferenceSettings final
     /// it. A non-finite or nonpositive exposure, or an unknown curve, rejects Start.
     ViewportDisplayTransform Display{};
     /// Optional row-major fixed primary rays. Start copies these before asynchronous preparation.
-    foundation::BorrowedView<const graphics::renderer::ReferenceProbeRay> ProbeRays{};
+    foundation::BorrowedView<const graphics::renderer::ReferenceProbeRay> ProbeRays = {nullptr, 0};
 };
 
 /// Progress of one ViewportReferenceCapture.

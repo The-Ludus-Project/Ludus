@@ -398,7 +398,7 @@ struct ReferenceCaptureDescription final
     /// The ray at each output index is reused for every sample. Its interval starts at zero and ends at
     /// SecondaryDistance. The scene, BSDF, light sampling and continuation integrals use the normal RT1 pipeline.
     /// CpuOracle and GpuCompute support this mode. Pixel readback returns radiance; LUHDR camera export is unsupported.
-    foundation::BorrowedView<const ReferenceProbeRay> ProbeRays{};
+    foundation::BorrowedView<const ReferenceProbeRay> ProbeRays = {nullptr, 0};
 };
 /// Renderer-scoped progressive job identity; copies borrow, Release cancels future
 /// work and detaches accepted query uses through their native completion.
