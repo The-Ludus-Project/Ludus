@@ -1,6 +1,9 @@
 #include "internal/builtin_world.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/captured_image_view.h"
 #    include "internal/celestial_time_lapse_window.h"
+#    include "internal/world_power_budget.h"
+#    include <ludus/content/render_graph_format/capture.h>
 #endif
 #include "internal/light_switches.h"
 #include "internal/reference_capture_window.h"
@@ -43,6 +46,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -50,6 +54,7 @@
 #include <QImage>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
@@ -69,6 +74,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 
 using namespace ludus::editor;
@@ -1059,6 +1065,394 @@ TEST_CASE("Reference capture window explains a missing viewport device without s
     REQUIRE(stop != nullptr);
     CHECK(stop->isEnabled() == false);
 }
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+namespace
+{
+RenderScene MakePowerFixture()
+{
+    RenderScene scene;
+    scene.Identity = QByteArrayLiteral("power-fixture");
+    PreviewSurface emitter;
+    emitter.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    emitter.Emission = {1, 1, 1};
+    scene.Surfaces.append(emitter);
+    PreviewMesh mesh;
+    mesh.Positions = {{-0.25F, -0.25F, 0}, {0.25F, -0.25F, 0}, {-0.25F, 0.25F, 0}};
+    mesh.Indices = {0, 1, 2};
+    scene.Meshes.append(mesh);
+    PreviewObject object;
+    object.Id = QStringLiteral("emitter");
+    object.Surface = 0;
+    scene.Objects.append(object);
+    return scene;
+}
+
+void AddPowerFixtureEnclosure(RenderScene& inoutScene, math::Vector4 reflectance)
+{
+    PreviewSurface wall;
+    wall.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    wall.Tint = reflectance;
+    PreviewMesh cube;
+    cube.Positions =
+        {{-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1}, {-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}};
+    cube.Indices = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4,
+                    1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7};
+    PreviewObject object;
+    object.Id = QStringLiteral("enclosure");
+    object.Mesh = 1;
+    object.Surface = 1;
+    inoutScene.Meshes.append(cube);
+    inoutScene.Surfaces.append(wall);
+    inoutScene.Objects.append(object);
+}
+} // namespace
+
+TEST_CASE("World power probes integrate source flux and reject unsupported input", "[editor][world-power]")
+{
+    RenderScene scene = MakePowerFixture();
+    WorldPowerProbes probes;
+    const float64 expected = math::kPi * 0.125;
+
+    SECTION("two-sided source flux scales with placed emitter area")
+    {
+        scene.Objects[0].Transform.Columns[0].X = 2;
+        scene.Surfaces[0].IsEmissionTwoSided = true;
+        REQUIRE(BuildWorldPowerProbes(scene, 1, probes).isEmpty() == true);
+        CHECK(probes.Emitted.X == Catch::Approx(4 * expected));
+        CHECK(probes.Rays.GetSize() == probes.EscapeRayCount);
+        CHECK(probes.Weights.GetSize() == probes.Rays.GetSize());
+        CHECK(probes.Rays.GetSize() % probes.RowWidth == 0);
+    }
+    SECTION("authored flux is measured per placement")
+    {
+        scene.Surfaces[0].HasEmissionPower = true;
+        scene.Surfaces[0].IsEmissionTwoSided = true;
+        scene.Surfaces[0].EmissionPower = 25;
+        REQUIRE(BuildWorldPowerProbes(scene, 1, probes).isEmpty() == true);
+        CHECK(probes.Emitted.X == Catch::Approx(25));
+    }
+    SECTION("the probe integrals are independent")
+    {
+        AddPowerFixtureEnclosure(scene, {0, 0, 0, 1});
+        REQUIRE(BuildWorldPowerProbes(scene, 1, probes).isEmpty() == true);
+        Array<renderer::ReferencePixel> pixels;
+        REQUIRE(pixels.TryResize(probes.Rays.GetSize()) == true);
+        WorldPowerFlux flux;
+        CHECK(IntegrateWorldPower(probes, {pixels.GetData(), pixels.GetSize()}, flux) == false);
+        for (usize index = 0; index < pixels.GetSize(); ++index)
+        {
+            pixels[index].Radiance = index < probes.EscapeRayCount ? math::Vector3{} : math::Vector3{1, 1, 1};
+            pixels[index].Samples = 1;
+        }
+        REQUIRE(IntegrateWorldPower(probes, {pixels.GetData(), pixels.GetSize()}, flux) == true);
+        CHECK(flux.Emitted.X == Catch::Approx(expected));
+        CHECK(flux.Escaped == math::Vector3d{});
+        CHECK(flux.Absorbed.X > flux.Emitted.X);
+    }
+    SECTION("directional and other analytic lights require repair")
+    {
+        scene.AuthoredLights.Count = 1;
+        CHECK(BuildWorldPowerProbes(scene, 1, probes).contains(QStringLiteral("Disable analytic lights")) == true);
+    }
+    SECTION("non-diffuse transport requires repair")
+    {
+        scene.Surfaces[0].Scattering.Model = ludus::content::scene_format::MaterialModel::Dielectric;
+        CHECK(BuildWorldPowerProbes(scene, 1, probes).contains(QStringLiteral("emitter")) == true);
+    }
+}
+
+namespace
+{
+void PublishPowerFixtureDefinition(RenderScene& inoutScene)
+{
+    using ludus::resources::SceneDefinition;
+    using ludus::resources::SceneMesh;
+    using ludus::resources::SceneObject;
+    SharedPtr<SceneDefinition> definition;
+    REQUIRE(TryMakeShared<SceneDefinition>(GetSystemAllocationDomain(), definition) == OwnershipStatus::Ok);
+    REQUIRE(definition->Meshes.TryResize(static_cast<usize>(inoutScene.Meshes.size())) == true);
+    REQUIRE(definition->Objects.TryResize(static_cast<usize>(inoutScene.Objects.size())) == true);
+    REQUIRE(definition->Materials.TryResize(static_cast<usize>(inoutScene.Surfaces.size())) == true);
+    for (qsizetype index = 0; index < inoutScene.Meshes.size(); ++index)
+    {
+        const PreviewMesh& source = inoutScene.Meshes[index];
+        SceneMesh& target = definition->Meshes[static_cast<usize>(index)];
+        for (const math::Vector3 point : source.Positions)
+        {
+            REQUIRE(target.Positions.TryAdd(point) == true);
+            REQUIRE(target.Normals.TryAdd({0, 0, 1}) == true);
+            REQUIRE(target.Texcoords.TryAdd({0, 0}) == true);
+        }
+        for (const uint32 vertex : source.Indices)
+        {
+            REQUIRE(target.Indices.TryAdd(vertex) == true);
+        }
+        const PreviewSurface& surface = inoutScene.Surfaces[index];
+        definition->Materials[static_cast<usize>(index)].Emission = surface.Emission;
+        definition->Materials[static_cast<usize>(index)].IsEmissionTwoSided = surface.IsEmissionTwoSided;
+        definition->Materials[static_cast<usize>(index)].Scattering = surface.Scattering;
+        const PreviewObject& object = inoutScene.Objects[index];
+        SceneObject& placed = definition->Objects[static_cast<usize>(index)];
+        placed.SourceId = static_cast<uint64>(index) + 1;
+        placed.Mesh = static_cast<uint32>(object.Mesh);
+        placed.Material = static_cast<uint32>(object.Surface);
+        placed.Transform = object.Transform;
+    }
+    inoutScene.Lit = true;
+    inoutScene.LogicalId = QStringLiteral("level/power-fixture");
+    inoutScene.AssetsIdentity = inoutScene.Identity;
+    inoutScene.Definition = definition;
+}
+} // namespace
+
+TEST_CASE("The World power tab measures both RT1 tracers and clears stale results", "[editor][world-power][gpu]")
+{
+    rhi::Shutdown();
+    RenderScene scene = MakePowerFixture();
+    bool isEnclosed = false;
+    SECTION("an open emitter lets its power escape") {}
+    SECTION("an enclosed emitter sends its power to black walls")
+    {
+        isEnclosed = true;
+        scene.Objects[0].Transform.Columns[0].X = 3;
+        scene.Objects[0].Transform.Columns[1].Y = 3;
+        AddPowerFixtureEnclosure(scene, {0, 0, 0, 1});
+    }
+    PublishPowerFixtureDefinition(scene);
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.Resize(TEST_LONG_SIDE, TEST_LONG_SIDE);
+    REQUIRE(preview.Start() == true);
+    if (preview.AdmitOffscreenDevice() == false)
+    {
+        SKIP("no offscreen viewport GPU adapter");
+    }
+    ReferenceCaptureWindow window(&preview);
+    QTabWidget* tabsOrNull = window.findChild<QTabWidget*>(QStringLiteral("referenceImages"));
+    REQUIRE(tabsOrNull != nullptr);
+    QWidget* tabOrNull = tabsOrNull->findChild<QWidget*>(QStringLiteral("worldPowerBudgetTab"));
+    REQUIRE(tabOrNull != nullptr);
+    tabsOrNull->setCurrentWidget(tabOrNull);
+    QPushButton* measureOrNull = tabOrNull->findChild<QPushButton*>(QStringLiteral("measureWorldPower"));
+    QLabel* statusOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("worldPowerStatus"));
+    QLabel* cpuEscapeOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("cpuWorldPowerEscaped"));
+    QLabel* gpuEscapeOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("gpuWorldPowerEscaped"));
+    QLabel* cpuAbsorbedOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("cpuWorldPowerAbsorbed"));
+    QLabel* gpuAbsorbedOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("gpuWorldPowerAbsorbed"));
+    QLabel* cpuStatusOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("cpuWorldPowerStatus"));
+    QLabel* gpuStatusOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("gpuWorldPowerStatus"));
+    REQUIRE(cpuAbsorbedOrNull != nullptr);
+    REQUIRE(gpuAbsorbedOrNull != nullptr);
+    REQUIRE(cpuStatusOrNull != nullptr);
+    REQUIRE(gpuStatusOrNull != nullptr);
+    REQUIRE(measureOrNull != nullptr);
+    REQUIRE(statusOrNull != nullptr);
+    REQUIRE(cpuEscapeOrNull != nullptr);
+    REQUIRE(gpuEscapeOrNull != nullptr);
+    REQUIRE(measureOrNull->isEnabled() == true);
+    if (isEnclosed == true)
+    {
+        QSpinBox* densityOrNull = tabOrNull->findChild<QSpinBox*>(QStringLiteral("worldPowerProbeDensity"));
+        REQUIRE(densityOrNull != nullptr);
+        densityOrNull->setValue(static_cast<int32>(MAX_WORLD_POWER_PROBE_DENSITY));
+    }
+    measureOrNull->click();
+    REQUIRE(
+        QTest::qWaitFor([measureOrNull]() { return measureOrNull->isEnabled(); }, GPU_CAPTURE_TIMEOUT_MILLISECONDS));
+    INFO(cpuStatusOrNull->text().toStdString());
+    INFO(gpuStatusOrNull->text().toStdString());
+    REQUIRE(cpuStatusOrNull->text().startsWith(QStringLiteral("Complete")) == true);
+    REQUIRE(gpuStatusOrNull->text().startsWith(QStringLiteral("Complete")) == true);
+    const float64 cpuEscape = cpuEscapeOrNull->text().section(QStringLiteral(" "), 0, 0).toDouble();
+    const float64 gpuEscape = gpuEscapeOrNull->text().section(QStringLiteral(" "), 0, 0).toDouble();
+    const float64 cpuAbsorbed = cpuAbsorbedOrNull->text().section(QStringLiteral(" "), 0, 0).toDouble();
+    const float64 gpuAbsorbed = gpuAbsorbedOrNull->text().section(QStringLiteral(" "), 0, 0).toDouble();
+    const float64 emitted = math::kPi * 0.125 * (isEnclosed == true ? 9 : 1);
+    if (isEnclosed == true)
+    {
+        CHECK(cpuAbsorbed == Catch::Approx(emitted).epsilon(0.35));
+        CHECK(gpuAbsorbed == Catch::Approx(cpuAbsorbed).epsilon(0.001));
+        CHECK(cpuEscape == 0);
+        CHECK(gpuEscape == 0);
+    }
+    else
+    {
+        CHECK(cpuEscape == Catch::Approx(emitted).epsilon(0.08));
+        CHECK(gpuEscape == Catch::Approx(cpuEscape).epsilon(0.001));
+        CHECK(cpuAbsorbed == 0);
+        CHECK(gpuAbsorbed == 0);
+    }
+
+    measureOrNull->click();
+    scene.Identity = QByteArrayLiteral("world-power-edited");
+    scene.AuthoredLights.Count = 1;
+    REQUIRE(preview.SetScene(scene) == true);
+    CHECK(measureOrNull->isEnabled() == true);
+    CHECK(cpuEscapeOrNull->text().isEmpty() == true);
+    CHECK(gpuEscapeOrNull->text().isEmpty() == true);
+    measureOrNull->click();
+    CHECK(statusOrNull->text().contains(QStringLiteral("Disable analytic lights")) == true);
+    preview.Stop();
+}
+
+TEST_CASE("Reference capture shows a saved power budget and its signed heatmap", "[editor][reference-power]")
+{
+    namespace format = ludus::content::render_graph_format;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const auto writeCapture = [&directory](const QString& name, uint32 width, const QVector<float32>& pixels) {
+        const QString path = directory.filePath(name);
+        REQUIRE(pixels.size() % width == 0);
+        const qsizetype bytesToWrite = format::CAPTURE_HEADER_BYTES + pixels.size() * format::CAPTURE_PIXEL_BYTES;
+        QByteArray bytes(bytesToWrite, '\0');
+        std::memcpy(bytes.data(), format::CAPTURE_MAGIC, format::CAPTURE_MAGIC_BYTES);
+        const auto writeWord = [&bytes](usize offset, uint32 value) { qToLittleEndian(value, bytes.data() + offset); };
+        writeWord(format::CAPTURE_VERSION_OFFSET, format::CAPTURE_VERSION);
+        writeWord(format::CAPTURE_HEADER_SIZE_OFFSET, format::CAPTURE_HEADER_BYTES);
+        writeWord(format::CAPTURE_PIXEL_SIZE_OFFSET, format::CAPTURE_PIXEL_BYTES);
+        writeWord(format::CAPTURE_WIDTH_OFFSET, width);
+        writeWord(format::CAPTURE_HEIGHT_OFFSET, static_cast<uint32>(pixels.size() / width));
+        writeWord(format::CAPTURE_TARGET_SAMPLES_OFFSET, 1);
+        writeWord(format::CAPTURE_SUBMITTED_SAMPLES_OFFSET, 1);
+        // Orthographic projection with a clip-depth offset so the plane at Z=-1 is visible.
+        constexpr StaticArray<float32, format::CAPTURE_MATRIX_VALUES> PROJECTION{
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            1.5F,
+            1,
+        };
+        for (usize i = 0; i < PROJECTION.GetSize(); ++i)
+        {
+            writeWord(format::CAPTURE_WORLD_TO_CLIP_OFFSET + i * sizeof(float32), std::bit_cast<uint32>(PROJECTION[i]));
+        }
+        for (qsizetype i = 0; i < pixels.size(); ++i)
+        {
+            const usize offset = format::CAPTURE_HEADER_BYTES + static_cast<usize>(i) * format::CAPTURE_PIXEL_BYTES;
+            writeWord(offset, std::bit_cast<uint32>(pixels[i]));
+            writeWord(offset + LUHDR_SAMPLE_COUNT_OFFSET, 1);
+        }
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly) == true);
+        REQUIRE(file.write(bytes) == bytes.size());
+        return path;
+    };
+
+    ReferenceCaptureWindow window(nullptr);
+    QTabWidget* tabsOrNull = window.findChild<QTabWidget*>(QStringLiteral("referenceImages"));
+    REQUIRE(tabsOrNull != nullptr);
+    QWidget* tabOrNull = tabsOrNull->findChild<QWidget*>(QStringLiteral("referencePowerTab"));
+    REQUIRE(tabOrNull != nullptr);
+    tabsOrNull->setCurrentWidget(tabOrNull);
+    QLineEdit* measuredOrNull = tabOrNull->findChild<QLineEdit*>(QStringLiteral("powerMeasured"));
+    QLineEdit* openOrNull = tabOrNull->findChild<QLineEdit*>(QStringLiteral("powerOpen"));
+    QLineEdit* expectedOrNull = tabOrNull->findChild<QLineEdit*>(QStringLiteral("powerExpected"));
+    QPushButton* measureOrNull = tabOrNull->findChild<QPushButton*>(QStringLiteral("measureReferencePower"));
+    CapturedImageView* imageOrNull = tabOrNull->findChild<CapturedImageView*>(QStringLiteral("referencePowerImage"));
+    QLabel* statusOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("referencePowerStatus"));
+    REQUIRE(measuredOrNull != nullptr);
+    REQUIRE(openOrNull != nullptr);
+    REQUIRE(expectedOrNull != nullptr);
+    REQUIRE(measureOrNull != nullptr);
+    REQUIRE(imageOrNull != nullptr);
+    REQUIRE(statusOrNull != nullptr);
+
+    measuredOrNull->setText(writeCapture(QStringLiteral("measured.lurgcap"), 2, {1, 0}));
+    openOrNull->setText(writeCapture(QStringLiteral("open.lurgcap"), 2, {1, 1}));
+    expectedOrNull->setText(writeCapture(QStringLiteral("expected.lurgcap"), 2, {0, 1}));
+    measureOrNull->click();
+    constexpr int32 WAIT_MILLISECONDS = 5000;
+    REQUIRE(QTest::qWaitFor([imageOrNull]() { return imageOrNull->GetImage().isNull() == false; }, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text().contains(QStringLiteral("Within tolerance")) == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Excess 50.000%")) == true);
+    const QImage& image = imageOrNull->GetImage();
+    CHECK(qRed(image.pixel(0, 0)) > qBlue(image.pixel(0, 0)));
+    CHECK(qBlue(image.pixel(1, 0)) > qRed(image.pixel(1, 0)));
+
+    expectedOrNull->setText(directory.filePath(QStringLiteral("missing.lurgcap")));
+    CHECK(imageOrNull->GetImage().isNull() == true);
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor(
+        [statusOrNull]() { return statusOrNull->text().contains(QStringLiteral("Choose a readable raw capture")); },
+        WAIT_MILLISECONDS));
+    CHECK(imageOrNull->GetImage().isNull() == true);
+
+    QComboBox* modelOrNull = tabOrNull->findChild<QComboBox*>(QStringLiteral("referencePowerModel"));
+    REQUIRE(modelOrNull != nullptr);
+    QDoubleSpinBox* emittedOrNull = tabOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("powerEmittedWatts"));
+    REQUIRE(emittedOrNull != nullptr);
+    modelOrNull->setCurrentText(QStringLiteral("Gaussian knife edge"));
+    emittedOrNull->setValue(10);
+    expectedOrNull->clear();
+    measureOrNull->click();
+    const auto waitForBudget = [measureOrNull]() { return measureOrNull->isEnabled(); };
+    REQUIRE(QTest::qWaitFor(waitForBudget, WAIT_MILLISECONDS));
+    // Both pixels are in the outer band. Even an exactly closing sum needs more receiver coverage.
+    CHECK(statusOrNull->text().contains(QStringLiteral("Widen the receiver")) == true);
+    CHECK(imageOrNull->GetImage().isNull() == true);
+
+    constexpr uint32 WIDE_SIDE = 8;
+    constexpr qsizetype CENTRE_PIXEL = 4 * WIDE_SIDE + 4;
+    QVector<float32> beam(WIDE_SIDE * WIDE_SIDE, 0);
+    beam[CENTRE_PIXEL] = 1;
+    openOrNull->setText(writeCapture(QStringLiteral("wide-open.lurgcap"), WIDE_SIDE, beam));
+    beam[CENTRE_PIXEL] = 0.5F;
+    measuredOrNull->setText(writeCapture(QStringLiteral("wide-measured.lurgcap"), WIDE_SIDE, beam));
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor(waitForBudget, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text().contains(QStringLiteral("Emitted 10 W")) == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Absorbed by mask 5 W")) == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Escaped in frame 5 W")) == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("closes within tolerance")) == true);
+
+    beam[CENTRE_PIXEL] = 0.6F;
+    measuredOrNull->setText(writeCapture(QStringLiteral("wide-bright.lurgcap"), WIDE_SIDE, beam));
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor(waitForBudget, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text().contains(QStringLiteral("measured escape exceeds")) == true);
+
+    emittedOrNull->setValue(0);
+    modelOrNull->setCurrentText(QStringLiteral("Gaussian single slit"));
+    QDoubleSpinBox* radiusOrNull = tabOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("powerMaskRadius"));
+    QDoubleSpinBox* heightOrNull = tabOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("powerSlitHeight"));
+    REQUIRE(radiusOrNull != nullptr);
+    REQUIRE(heightOrNull != nullptr);
+    radiusOrNull->setValue(0.5);
+    heightOrNull->setValue(1);
+    QDoubleSpinBox* slitWidthOrNull = tabOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("powerSlitWidth"));
+    REQUIRE(slitWidthOrNull != nullptr);
+    slitWidthOrNull->setValue(1);
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor(waitForBudget, WAIT_MILLISECONDS));
+    // Independent Gaussian integral for a 1 m square at a radius of 0.5 m.
+    CHECK(statusOrNull->text().contains(QStringLiteral("Absorbed by mask 8.893%")) == true);
+
+    modelOrNull->setCurrentText(QStringLiteral("Gaussian double slit"));
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor(waitForBudget, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text().contains(QStringLiteral("openings overlap")) == true);
+
+    QDoubleSpinBox* separationOrNull = tabOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("powerSlitSeparation"));
+    REQUIRE(separationOrNull != nullptr);
+    separationOrNull->setValue(1);
+    slitWidthOrNull->setValue(0.5);
+    measureOrNull->click();
+    REQUIRE(QTest::qWaitFor(waitForBudget, WAIT_MILLISECONDS));
+    CHECK(statusOrNull->text().contains(QStringLiteral("Absorbed by mask 69.970%")) == true);
+}
+#endif
 
 TEST_CASE("Reference capture releases viewport GPU admission on stop and completion", "[editor][reference-capture]")
 {

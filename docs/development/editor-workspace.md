@@ -3661,6 +3661,76 @@ when its capture needs bands. `scripts/reference-hdr` converts the file to PFM w
 as it does reference captures. See the
 [frame capture design](../architecture/render-graph-frame-capture.md).
 
+#### Inspect a diffraction power budget
+
+In the native **Reference capture** window, open the **Power budget** tab.
+Choose the measured render, an unobstructed control, and an independent
+expected diffraction pattern with the mask in place. Use completed linear
+`.luhdr` or `.lurgcap` captures from the same view and resolution, with a uniform
+Lambertian receiver on the world XY plane filling the image.
+
+Set **Receiver Z**, choose the channel, and enter the expected transmission and
+tolerance as percentages of open power. Select **Measure power**. The tab
+reports the integrated comparison and shows the area-weighted heatmap. Orange
+marks excess, blue marks deficits, and black marks a match. Right-click the
+heatmap to copy or save it at capture resolution. The expected pattern is
+scaled to the supplied transmission before comparison. See the
+[power budget setup](render-graph-authoring.md#check-a-diffraction-renders-power-budget).
+
+To audit a single absorbing diffraction mask, choose **Gaussian knife edge**,
+**Gaussian single slit** or **Gaussian double slit** as the **Budget model**.
+These models use a circular, centred, forward-propagating Gaussian beam and an
+ideal thin screen that absorbs everywhere outside the openings. The knife
+edge opens one half-plane through the centre. Single-slit openings are
+centred rectangles. Double-slit openings are identical rectangles placed
+symmetrically along world X. Use a face-on camera aligned with world X and
+Y and a uniform XY receiver that fills the frame. Keep the background black
+and include only direct illumination on the receiver.
+
+Load matched **Measured** and **Open control** captures. Enter the open beam's
+irradiance radius at the receiver and, for slits, the beam radius and opening
+dimensions at the mask. The irradiance radius is where the beam falls to
+1/e² of its central value. Leave **Emitted power** at **Relative power** for
+fractions of the source or enter independently calibrated watts. An
+**Expected pattern** is optional for these models and adds the spatial heatmap.
+
+The report derives **Absorbed by mask** from the beam and openings, calibrates
+the open control's integrated radiance using the predicted Gaussian power in
+its frame, and measures **Escaped in frame** from the masked capture. It
+reports the signed remainder and the power in the outer band. Repeat with a
+wider frame and finer sampling before attributing a deficit to the renderer.
+The audit covers the declared forward fixture. A scene with reflections, other
+absorbers or illumination from the environment needs a budget that measures
+those paths as well.
+
+#### Measure the World power budget
+
+In the native World viewport, open **Reference… → World power**, choose a
+**Bounce depth**, and select **Measure both tracers**. The CPU oracle and
+GPU-compute reference tracers run the same fixed radiance probes on the loaded
+World. The table shows each backend's emitted, absorbed and escaped
+scene-linear flux and percentages of emission. If a backend is unavailable,
+its column gives the reason. World changes clear the measurement.
+
+Use up to 256 nondegenerate triangles with untextured, opaque **Diffuse**
+materials, one- or two-sided emissive meshes and a black environment. Disable
+analytic lights, panel luminaires, atmosphere and absorbing media. Emission
+integrates the resolved source radiance over each emitting side, using
+\(\pi A L_e\). For absorption, probes integrate incident radiance over
+each side of each triangle and weight by the material's RGB absorptance.
+For escape, probes integrate outward flux over a sphere enclosing the World.
+Both sets of probes call the production reference transport, shading and
+accumulation paths.
+
+The signed residual is emitted minus absorbed minus escaped. A positive
+residual can include power from paths beyond the bounce limit. The finite
+direction and area samples introduce additional uncertainty in either
+direction. At 1× density the audit uses 8,192 boundary probes, 128 probes per
+absorbing triangle side, and eight transport samples per probe. Increase
+**Probe density** to refine the surface and boundary estimates. Compare both columns and repeat at a larger bounce depth when
+investigating a deficit. The flux uses the scene's linear scale and the
+displayed total uses Rec. 709 weighting.
+
 #### Compare with the viewport's render graph
 
 In the native editor, **Compare with the render graph** is on by default. Each

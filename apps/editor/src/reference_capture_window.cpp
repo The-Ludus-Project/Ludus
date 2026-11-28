@@ -9,6 +9,7 @@
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/celestial_time_lapse_window.h"
 #    include "internal/graph_comparison_window.h"
+#    include "internal/reference_power_view.h"
 #    include "internal/render_graph_capture_profile.h"
 #    include "internal/render_graph_preview.h"
 #endif
@@ -20,6 +21,7 @@
 #    include "internal/renderer_workspace.h"
 #    include "internal/viewport_graph_capture.h"
 #    include "internal/viewport_raster_capture.h"
+#    include "internal/world_power_budget.h"
 #endif
 
 #include <ludus/foundation/containers/array.hpp>
@@ -368,6 +370,10 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mImages->addTab(mImageView, QStringLiteral("Reference"));
     mImages->addTab(mRasterView, QStringLiteral("Render graph"));
     mImages->addTab(mDifferenceView, QStringLiteral("Difference"));
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mImages->addTab(new ReferencePowerView(mImages), QStringLiteral("Power budget"));
+    mImages->addTab(CreateWorldPowerBudgetView(preview, mImages), QStringLiteral("World power"));
+#endif
 
     mImages->setMinimumSize(PREVIEW_MINIMUM_WIDTH, PREVIEW_MINIMUM_HEIGHT);
 

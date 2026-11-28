@@ -328,6 +328,7 @@ struct ReferenceJob final
     /// World-feature tables of a graph ray scene (RenderGraphSceneDescription), packed after the scene words.
     Array<math::Vector4> AtmosphereSkyTable;
     Array<math::Vector4> AerialPerspectiveTable;
+    Array<ReferenceProbeRay> ProbeRayStorage;
     Array<ReferenceAccumulator> Pixels;
     Array<ReferencePath> Paths;
     Array<rhi::RayInput> Rays;

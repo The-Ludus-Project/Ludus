@@ -12224,6 +12224,70 @@ not qualify physical Vulkan, browser or editor interaction paths.
 (Eqs. 20–21) and a float64 Fresnel aperture oracle. These retain independent
 numerical checks; an aperture-only result does not establish scene capability.
 
+### Check a diffraction render's power budget
+
+Render an absorbing mask and an unobstructed control with the same source,
+camera and uniform Lambertian receiver on a world XY plane. Use a finite beam
+and frame a receiver large enough to capture it and the diffracted lobes. The
+receiver must fill the image and have the same reflectance in both scenes.
+Exclude other surfaces from the camera view and disable environment light,
+receiver emission and indirect lighting. Choose the radiance output and turn off
+debug colouring. Use the [capture workflow](editor-workspace.md#capture-the-render-graph)
+to export completed scene-linear `.luhdr` or `.lurgcap` files.
+
+Supply the fraction of incident power that passes through the mask, determined
+independently from illumination on the aperture plane. Integrate the incident
+irradiance over the openings and divide by its integral over the whole beam.
+A straight half-plane through the centre of a symmetric beam gives 0.5. The
+physical width of a slit alone does not determine this fraction.
+
+```sh
+python3 scripts/check-render-power masked.lurgcap open.luhdr \
+  --receiver-z -1 --channel red --expected-fraction 0.5 --tolerance 0.01
+```
+
+The tool projects the pixel corners onto the receiver and sums scene-linear
+radiance times the resulting world-space pixel area. On a uniform Lambertian
+receiver, reflected radiance in a channel is incident irradiance times the same
+reflectance over pi in both captures, so this factor cancels in the power ratio.
+Choose a channel with signal in the open capture. The JSON report gives the measured
+and expected fractions of open power and the signed residual. A tolerance of
+0.01 allows one percentage point of open power on either side of the expected
+fraction. Exit codes are 0 within tolerance, 1
+outside it, and 2 for invalid inputs.
+
+The border fraction reports the share of measured power in the outer 5% of rows
+and columns on each side, rounded up to whole pixels. Widen the camera and
+receiver until the integrated fractions stabilize, and verify convergence with
+resolution and sample count. The budget covers the framed receiver and uses
+one radiance value per pixel. See [Steinberg et al., *A Free-Space Diffraction BSDF*,
+supplemental Eq. S1.4](https://research.nvidia.com/labs/rtr/publication/steinberg2024diffraction/steinberg2024_fsd_supplemental.pdf).
+
+To locate excesses and deficits, add a third capture using **`--expected-capture`**.
+Use an independent expected diffraction pattern for the same mask, source,
+receiver, camera and resolution, exported as a completed linear capture. The
+unobstructed control sets the overall scale. The expected diffraction capture
+sets how the transmitted power should be distributed.
+
+```sh
+python3 -m pip install Pillow
+python3 scripts/check-render-power masked.lurgcap open.luhdr \
+  --receiver-z -1 --channel red --expected-fraction 0.5 --tolerance 0.01 \
+  --expected-capture expected-masked.luhdr --heatmap residual.png
+```
+
+The tool scales the expected pattern to the independently supplied transmitted
+fraction. Each pixel's residual is the difference from that pattern times its
+receiver footprint area, divided by the open capture's integral. Orange is
+excess, blue is deficit, and black is an exact match. The brightest colour in
+each report uses a common scale for both signs, set by the largest absolute
+pixel residual. The JSON gives this scale, the locations of the strongest
+excess and deficit, and their totals across the image. Their difference is the
+whole-image residual, so a passing power budget can still have visible
+mismatches. The unscaled integral of the expected capture is reported for
+checking its original normalization. Omit `--heatmap` to get the spatial
+numbers without Pillow.
+
 ## Use the forward-lit template
 
 Choose **New Render Graph → Template → Forward lit**, or create an editable package:

@@ -436,6 +436,16 @@ Hit TraceScene(Ray ray, bool isVisibility)
 // --- Camera (CameraRay/GenerateReferencePrimary) -----------------------------
 bool GenerateCameraRay(uint pixel, uint sample, out Ray outRay)
 {
+    uint firstProbeWord = asuint(Options.w);
+    if (firstProbeWord != 0)
+    {
+        uint probeWord = firstProbeWord - 1 + LUDUS_REFERENCE_PROBE_RAY_WORDS * pixel;
+        outRay.OriginWorld = SceneValue(probeWord).xyz;
+        outRay.DirectionWorld = SceneValue(probeWord + 1).xyz;
+        outRay.MinimumDistanceWorld = 0;
+        outRay.MaximumDistanceWorld = Options.x;
+        return true;
+    }
     outRay.OriginWorld = 0;
     outRay.DirectionWorld = 0;
     outRay.MinimumDistanceWorld = 0;

@@ -5,6 +5,7 @@
 
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <ludus/content/scene_format/luscn.h>
@@ -93,6 +94,8 @@ struct ViewportReferenceSettings final
     /// compared with; ComputeReferenceDisplayTransform finds it. The linear means and the LUHDR01 file never use
     /// it. A non-finite or nonpositive exposure, or an unknown curve, rejects Start.
     ViewportDisplayTransform Display{};
+    /// Optional row-major fixed primary rays. Start copies these before asynchronous preparation.
+    foundation::BorrowedView<const graphics::renderer::ReferenceProbeRay> ProbeRays = {nullptr, 0};
 };
 
 /// Progress of one ViewportReferenceCapture.
@@ -256,6 +259,7 @@ private:
     foundation::UniquePtr<PreviewGpuGeneration> mGeneration;
     graphics::rhi::SurfaceHandle mSurface{};
     graphics::renderer::ReferenceCaptureDescription mDescription{};
+    foundation::Array<graphics::renderer::ReferenceProbeRay> mProbeRays;
     graphics::renderer::ReferenceCapture mCapture{};
     /// The frozen scene's absorbing medium, borrowing the generation's boundary corners.
     graphics::renderer::ReferenceMediumDescription mMedium{};

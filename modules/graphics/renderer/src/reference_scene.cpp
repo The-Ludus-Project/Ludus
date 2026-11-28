@@ -877,6 +877,12 @@ rhi::RasterStatus PrepareReferenceCamera(ReferenceJob& job) noexcept
 rhi::RasterStatus GenerateReferencePrimary(const ReferenceJob& job, ReferencePath& path, rhi::RayInput& output) noexcept
 {
     const auto& d = job.Description;
+    if (d.ProbeRays.GetSize() != 0)
+    {
+        const ReferenceProbeRay& ray = d.ProbeRays[path.Pixel];
+        output = ReferenceRay(ray.OriginWorld, ray.DirectionWorld, d.SecondaryDistance);
+        return rhi::RasterStatus::Ready;
+    }
     const auto x = path.Pixel % d.Width, y = path.Pixel / d.Width;
     const auto jitterX = d.CenterRays ? 0.5F : ReferenceRandom(job, path, 0);
     const auto jitterY = d.CenterRays ? 0.5F : ReferenceRandom(job, path, 1);

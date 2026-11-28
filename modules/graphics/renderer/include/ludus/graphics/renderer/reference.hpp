@@ -288,6 +288,16 @@ struct ReferenceMediumDescription final
     /// is finite and in [0, content::scene_format::MAX_MEDIUM_ABSORPTION_PER_WORLD]; zero is vacuum.
     ludus::foundation::math::Vector3 AbsorptionPerWorld{};
 };
+/// A fixed world-space sensor ray for measuring directional scene radiance with RT1.
+struct ReferenceProbeRay final
+{
+    /// Origin in world metres, within the reference world-coordinate range.
+    foundation::math::Vector3 OriginWorld{};
+    /// Unit direction from the sensor into the scene.
+    foundation::math::Vector3 DirectionWorld{0, 0, 1};
+    /// Test two frozen sensor inputs for equality when deciding whether accumulation can continue.
+    [[nodiscard]] friend constexpr bool operator==(const ReferenceProbeRay&, const ReferenceProbeRay&) = default;
+};
 /// Immutable reference integral and stop target. Camera coordinates and matrices
 /// match raster canonical XY [-1,1], depth [0,1], Y up, top-left image rows.
 struct ReferenceCaptureDescription final
@@ -384,6 +394,11 @@ struct ReferenceCaptureDescription final
     /// Camera misses then reconstruct its RGB radiance with bilinear filtering.
     /// Null or disabled leaves the ordinary background. Invalid active fields reject the capture.
     const AtmosphereDescription* AtmosphereBackgroundOrNull = nullptr;
+    /// Optional row-major sensor primary rays, exactly Width * Height when present, copied on Begin/Update.
+    /// The ray at each output index is reused for every sample. Its interval starts at zero and ends at
+    /// SecondaryDistance. The scene, BSDF, light sampling and continuation integrals use the normal RT1 pipeline.
+    /// CpuOracle and GpuCompute support this mode. Pixel readback returns radiance; LUHDR camera export is unsupported.
+    foundation::BorrowedView<const ReferenceProbeRay> ProbeRays = {nullptr, 0};
 };
 /// Renderer-scoped progressive job identity; copies borrow, Release cancels future
 /// work and detaches accepted query uses through their native completion.

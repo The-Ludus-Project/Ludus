@@ -75,10 +75,10 @@ math::Vector4 GpuVector(math::Vector3 value, float32 w = 0) noexcept
     return {value.X, value.Y, value.Z, w};
 }
 // AreCapturesEqual names every field; extend it whenever ReferenceCaptureDescription changes.
-// The description holds four borrowed pointers and a usize, so its size follows the pointer width:
-// 192 bytes on 64-bit targets and 168 bytes on 32-bit targets such as wasm32 (eight-byte aligned).
-constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_64_BIT = 192;
-constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_32_BIT = 168;
+// The description holds borrowed pointers and counts, so its size follows the pointer width:
+// 208 bytes on 64-bit targets and 176 bytes on 32-bit targets such as wasm32 (eight-byte aligned).
+constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_64_BIT = 208;
+constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_32_BIT = 176;
 constexpr usize POINTER_BYTES_64_BIT = 8;
 constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES = sizeof(void*) == POINTER_BYTES_64_BIT
                                                          ? EXPECTED_CAPTURE_DESCRIPTION_BYTES_64_BIT
@@ -101,7 +101,9 @@ bool AreCapturesEqual(const ReferenceCaptureDescription& left, const ReferenceCa
            left.OpticalWavelengthWorld == right.OpticalWavelengthWorld &&
            left.OpticalConnection == right.OpticalConnection && left.OpticalSpectrum == right.OpticalSpectrum &&
            left.MediumOrNull == right.MediumOrNull &&
-           left.AtmosphereBackgroundOrNull == right.AtmosphereBackgroundOrNull;
+           left.AtmosphereBackgroundOrNull == right.AtmosphereBackgroundOrNull &&
+           left.ProbeRays.GetDataOrNull() == right.ProbeRays.GetDataOrNull() &&
+           left.ProbeRays.GetSize() == right.ProbeRays.GetSize();
 }
 bool SameGpuTexture(const rhi::TextureCpuContent& a, const rhi::TextureCpuContent& b) noexcept
 {

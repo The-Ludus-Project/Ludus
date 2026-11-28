@@ -22,6 +22,8 @@
 // word with the absorption per world metre in XYZ, then LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS corner words per
 // boundary triangle. Parameters Tile.y holds the header's word offset and Tile.z the triangle count; zero
 // triangles is vacuum.
+// A fixed primary ray uses two scene words (world-space origin and unit direction).
+#define LUDUS_REFERENCE_PROBE_RAY_WORDS 2
 #define LUDUS_REFERENCE_MEDIUM_HEADER_WORDS 1
 #define LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS 3
 
