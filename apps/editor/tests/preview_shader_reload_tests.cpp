@@ -744,8 +744,8 @@ TEST_CASE("Live shaders rebuild through ludus-shader-worker and swap into the vi
           "[editor][shader-reload][worker][gpu]")
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
-    // Upper bound for real worker builds of every viewport stage plus lit preparation on lavapipe.
-    constexpr int32 WORKER_TIMEOUT_MILLISECONDS = 600000;
+    // Leave headroom within the 600-second CTest shard. A wait that misses its expected state must report it.
+    constexpr int32 WORKER_TEST_BUDGET_MILLISECONDS = 480'000;
     // Directory for PNG captures of the live shader overlay; captures are skipped when unset.
     constexpr const char* SHOT_DIRECTORY_VARIABLE = "LUDUS_VIEWPORT_DEBUG_SHOTS";
     // Pause before grabbing the viewport so the canvas has painted the newest frame and overlay.
@@ -757,6 +757,12 @@ TEST_CASE("Live shaders rebuild through ludus-shader-worker and swap into the vi
     {
         SKIP("Configure with -DLUDUS_BUILD_SHADER_WORKER=ON to run the live shader worker test");
     }
+    QElapsedTimer workerClock;
+    workerClock.start();
+    const auto remainingWorkerTime = [&workerClock]() {
+        const qint64 remaining = WORKER_TEST_BUDGET_MILLISECONDS - workerClock.elapsed();
+        return remaining > 0 ? static_cast<int32>(remaining) : 0;
+    };
     const QByteArray previousViewport = qgetenv("LUDUS_EDITOR_VIEWPORT");
     const QByteArray previousSocket = qgetenv("LUDUS_SHADER_WORKER_SOCKET");
     qputenv("LUDUS_EDITOR_VIEWPORT", QByteArrayLiteral("offscreen"));
@@ -802,7 +808,7 @@ TEST_CASE("Live shaders rebuild through ludus-shader-worker and swap into the vi
     REQUIRE(preview.Start() == true);
     REQUIRE(QTest::qWaitFor(
                 [&viewport, &preview]() { return viewport.PresentedFrames() >= 2 || preview.Running() == false; },
-                WORKER_TIMEOUT_MILLISECONDS) == true);
+                remainingWorkerTime()) == true);
     if (preview.HasDevice() == false)
     {
         SKIP("No Vulkan device (install lavapipe for this smoke test)");
@@ -825,8 +831,9 @@ TEST_CASE("Live shaders rebuild through ludus-shader-worker and swap into the vi
     QToolButton* toggle = viewport.findChild<QToolButton*>(QStringLiteral("viewportLiveShaders"));
     REQUIRE(toggle != nullptr);
     toggle->click();
-    REQUIRE(WaitForSettled(*reload, WORKER_TIMEOUT_MILLISECONDS) == true);
+    const bool hasInitialBuildSettled = WaitForSettled(*reload, remainingWorkerTime());
     INFO(reload->GetStatusText().toStdString());
+    REQUIRE(hasInitialBuildSettled == true);
     REQUIRE(reload->GetState() == PreviewShaderReloadState::Idle);
     // The worker reproduces the build's artifacts, so turning live shaders on swaps nothing.
     // Name any stage whose worker output differs from the build's compiled bytes.
@@ -845,10 +852,15 @@ TEST_CASE("Live shaders rebuild through ludus-shader-worker and swap into the vi
     tinted.replace(finalReturn,
                    "    result = result * float32x3(1, 0.25, 0.25) + float32x3(0.35, 0, 0);\n" + finalReturn);
     tests::WriteText(lit, tinted);
-    REQUIRE(
-        QTest::qWaitFor([&reload]() { return reload->GetStatusText().startsWith(QStringLiteral("Shader reloaded")); },
-                        WORKER_TIMEOUT_MILLISECONDS) == true);
-    CHECK(viewport.GetShaderStatusText().startsWith(QStringLiteral("Shader reloaded")) == true);
+    const bool hasTintSettled = QTest::qWaitFor(
+        [&reload]() {
+            return reload->HasError() == true ||
+                   reload->GetStatusText().startsWith(QStringLiteral("Shader reloaded")) == true;
+        },
+        remainingWorkerTime());
+    INFO(reload->GetStatusText().toStdString());
+    REQUIRE(hasTintSettled == true);
+    REQUIRE(viewport.GetShaderStatusText().startsWith(QStringLiteral("Shader reloaded")) == true);
     CHECK(preview.GetShaders().HasArtifact(PreviewShaderProgram::Lit, PreviewShaderStage::Fragment) == true);
     const QImage after = capture(QStringLiteral("live-shaders-after-tint"));
     REQUIRE(after.size() == before.size());
@@ -867,7 +879,7 @@ TEST_CASE("Live shaders rebuild through ludus-shader-worker and swap into the vi
     QByteArray broken = tinted;
     broken.replace(finalReturn, "    float32 typo = undefinedLiveShaderName;\n" + finalReturn);
     tests::WriteText(lit, broken);
-    REQUIRE(QTest::qWaitFor([&reload]() { return reload->HasError() == true; }, WORKER_TIMEOUT_MILLISECONDS) == true);
+    REQUIRE(QTest::qWaitFor([&reload]() { return reload->HasError() == true; }, remainingWorkerTime()) == true);
     CHECK(reload->GetState() == PreviewShaderReloadState::Failed);
     CHECK(viewport.GetShaderStatusText().contains(QDir::toNativeSeparators(lit) + QLatin1Char(':')) == true);
     CHECK(viewport.GetShaderStatusText().contains(QStringLiteral("undefinedLiveShaderName")) == true);
@@ -877,16 +889,19 @@ TEST_CASE("Live shaders rebuild through ludus-shader-worker and swap into the vi
 
     // Fixing the typo clears the error without another swap.
     tests::WriteText(lit, tinted);
-    REQUIRE(QTest::qWaitFor([&reload]() { return reload->HasError() == false; }, WORKER_TIMEOUT_MILLISECONDS) == true);
-    REQUIRE(WaitForSettled(*reload, WORKER_TIMEOUT_MILLISECONDS) == true);
+    REQUIRE(QTest::qWaitFor([&reload]() { return reload->HasError() == false; }, remainingWorkerTime()) == true);
+    REQUIRE(WaitForSettled(*reload, remainingWorkerTime()) == true);
     CHECK(reload->GetState() == PreviewShaderReloadState::Idle);
 
-    // A new resource needs new pipeline layouts: the editor asks for a restart instead.
+    // Expanding the material buffer changes the interface. Adding an auto-assigned LUSL texture would instead
+    // overlap the lit recipe's manually assigned external color texture at slot 1.
     QByteArray extended = tinted;
-    extended.replace(finalReturn, "    result += liveExtraTexture.Load(int32x3(0, 0, 0)).rgb * 1e-6;\n" + finalReturn);
-    extended.replace("struct Input\n", "Texture2D<float32x4> liveExtraTexture;\nstruct Input\n");
+    const QByteArray materialBufferEnd = "};\nConstantBuffer<Parameters> material;";
+    REQUIRE(extended.contains(materialBufferEnd) == true);
+    extended.replace(materialBufferEnd, "    float32x4 LiveExtraTint;\n" + materialBufferEnd);
+    extended.replace(finalReturn, "    result += material.LiveExtraTint.rgb * 1e-6;\n" + finalReturn);
     tests::WriteText(lit, extended);
-    REQUIRE(QTest::qWaitFor([&reload]() { return reload->HasError() == true; }, WORKER_TIMEOUT_MILLISECONDS) == true);
+    REQUIRE(QTest::qWaitFor([&reload]() { return reload->HasError() == true; }, remainingWorkerTime()) == true);
     CHECK(reload->GetState() == PreviewShaderReloadState::RestartRequired);
     CHECK(viewport.GetShaderStatusText().contains(QStringLiteral("restart required")) == true);
     static_cast<void>(capture(QStringLiteral("live-shaders-restart-required")));
