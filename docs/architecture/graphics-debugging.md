@@ -380,7 +380,11 @@ framework and macOS versions.
 `MTL_CAPTURE_ENABLED=1`. Those cases capture two offscreen frames and check the
 report, manifest and trace contents. A frame holds either the legacy fullscreen
 draw or raster passes, so one capture checks the drawn MSL source and the other
-the named texture and pass. They also check that a skipped
+the named texture and pass. The hosted Apple Paravirtual Metal adapter can
+produce a bundle containing only a library store, index and metadata. The RHI
+tests verify publication and the request lifecycle for that bundle. Use a
+physical Metal adapter to qualify recorded commands, labels and shader source.
+The tests also check that a skipped
 zero-size frame keeps the request armed and that destroying the device ends an
 armed request without writing a file. With `LUDUS_TEST_COCOA=1` they also check
 that a hidden window's skipped acquisition discards its empty trace.
