@@ -3705,35 +3705,31 @@ those paths as well.
 
 #### Measure the World power budget
 
-In the native World viewport, open **Reference… → World power** and select
-**Measure World power**. The tool snapshots the World loaded in the viewport.
-It runs without a camera capture or GPU readback. Measure again after editing
-the World.
+In the native World viewport, open **Reference… → World power**, choose a
+**Bounce depth**, and select **Measure both tracers**. The CPU oracle and
+GPU-compute reference tracers run the same fixed radiance probes on the loaded
+World. The table shows each backend's emitted, absorbed and escaped
+scene-linear flux and percentages of emission. If a backend is unavailable,
+its column gives the reason. World changes clear the measurement.
 
-This budget covers up to 256 nondegenerate triangles with untextured, opaque
-**Diffuse** materials, one- or two-sided emissive meshes, and a black
-environment. Use a small fixture and disable analytic lights, panel luminaires,
-atmosphere, and absorbing media. The geometric surface normal defines the
-diffuse hemispheres. Each side receives and reflects light independently.
+Use up to 256 nondegenerate triangles with untextured, opaque **Diffuse**
+materials, one- or two-sided emissive meshes and a black environment. Disable
+analytic lights, panel luminaires, atmosphere and absorbing media. Emission
+integrates the resolved source radiance over each emitting side, using
+\(\pi A L_e\). For absorption, probes integrate incident radiance over
+each side of each triangle and weight by the material's RGB absorptance.
+For escape, probes integrate outward flux over a sphere enclosing the World.
+Both sets of probes call the production reference transport, shading and
+accumulation paths.
 
-The tool integrates mesh emission over placed area and direction, using
-\(\pi A L_e\) for each emitting side. It estimates which surface each
-outgoing direction reaches or whether it escapes, then applies the receiving
-surface's RGB reflectance to split absorbed and reflected flux. The readout
-shows scene-linear Rec. 709-weighted flux and percentages of emission.
-
-**Remaining in transport** is flux carried past the final simulated bounce.
-**Accounting residual** is emitted minus absorbed, escaped and remaining
-flux. This checks the budget's internal accounting. **Largest sampling shift**
-reports the largest change across RGB channels and buckets between two
-independent visibility sample sets. Large shifts indicate sensitivity to
-sampling. Surface reflectance is assumed uniform and flux is redistributed
-uniformly across each triangle after a hit, so small sampling shifts can
-still accompany spatial discretization error.
-
-This is an independent diffuse transport estimate for the authored World.
-[Capture and compare](#compare-with-the-viewports-render-graph) to test a
-particular renderer's output against a reference.
+The signed residual is emitted minus absorbed minus escaped. A positive
+residual can include power from paths beyond the bounce limit. The finite
+direction and area samples introduce additional uncertainty in either
+direction. At 1× density the audit uses 8,192 boundary probes, 128 probes per
+absorbing triangle side, and eight transport samples per probe. Increase
+**Probe density** to refine the surface and boundary estimates. Compare both columns and repeat at a larger bounce depth when
+investigating a deficit. The flux uses the scene's linear scale and the
+displayed total uses Rec. 709 weighting.
 
 #### Compare with the viewport's render graph
 

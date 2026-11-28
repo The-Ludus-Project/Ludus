@@ -1108,91 +1108,126 @@ void AddPowerFixtureEnclosure(RenderScene& inoutScene, math::Vector4 reflectance
 }
 } // namespace
 
-TEST_CASE("World power classifies emission, escape, absorption and trapped transport", "[editor][world-power]")
+TEST_CASE("World power probes integrate source flux and reject unsupported input", "[editor][world-power]")
 {
     RenderScene scene = MakePowerFixture();
+    WorldPowerProbes probes;
     const float64 expected = math::kPi * 0.125;
 
-    SECTION("an unobstructed emitter escapes from both sides with transformed area")
+    SECTION("two-sided source flux scales with placed emitter area")
     {
         scene.Objects[0].Transform.Columns[0].X = 2;
         scene.Surfaces[0].IsEmissionTwoSided = true;
-        const WorldPowerBudget budget = MeasureWorldPower(scene);
-        REQUIRE(budget.Error.isEmpty() == true);
-        CHECK(budget.Flux.Emitted.X == Catch::Approx(4 * expected));
-        CHECK(budget.Flux.Escaped == budget.Flux.Emitted);
-        CHECK(budget.Flux.Absorbed == math::Vector3d{});
-        CHECK(budget.Flux.Unresolved == math::Vector3d{});
-        CHECK(budget.SamplingChange == 0);
+        REQUIRE(BuildWorldPowerProbes(scene, 1, probes).isEmpty() == true);
+        CHECK(probes.Emitted.X == Catch::Approx(4 * expected));
+        CHECK(probes.Rays.GetSize() == probes.EscapeRayCount);
+        CHECK(probes.Weights.GetSize() == probes.Rays.GetSize());
+        CHECK(probes.Rays.GetSize() % probes.RowWidth == 0);
     }
-    SECTION("a closed opaque enclosure absorbs emission and its diffuse interreflection")
-    {
-        AddPowerFixtureEnclosure(scene, {0.5F, 0, 0, 1});
-        const WorldPowerBudget budget = MeasureWorldPower(scene);
-        REQUIRE(budget.Error.isEmpty() == true);
-        CHECK(budget.Flux.Emitted.X == Catch::Approx(expected));
-        CHECK(budget.Flux.Absorbed.Y == Catch::Approx(expected));
-        CHECK(budget.Flux.Absorbed.X < expected);
-        CHECK(budget.Flux.Absorbed.X > 0.9999 * expected);
-        CHECK(budget.Flux.Unresolved.X > 0);
-        CHECK(budget.Flux.Absorbed.X + budget.Flux.Unresolved.X == Catch::Approx(expected));
-        CHECK(budget.Flux.Escaped == math::Vector3d{});
-    }
-    SECTION("a closed lossless enclosure retains unresolved flux")
-    {
-        AddPowerFixtureEnclosure(scene, {1, 1, 1, 1});
-        const WorldPowerBudget budget = MeasureWorldPower(scene);
-        REQUIRE(budget.Error.isEmpty() == true);
-        CHECK(budget.Flux.Absorbed == math::Vector3d{});
-        CHECK(budget.Flux.Escaped == math::Vector3d{});
-        CHECK(budget.Flux.Unresolved.X == Catch::Approx(expected));
-    }
-    SECTION("a power-authored emitter integrates to its authored flux")
+    SECTION("authored flux is measured per placement")
     {
         scene.Surfaces[0].HasEmissionPower = true;
         scene.Surfaces[0].IsEmissionTwoSided = true;
         scene.Surfaces[0].EmissionPower = 25;
-        const WorldPowerBudget budget = MeasureWorldPower(scene);
-        REQUIRE(budget.Error.isEmpty() == true);
-        CHECK(budget.Flux.Emitted.X == Catch::Approx(25));
-        CHECK(budget.Flux.Escaped.X == Catch::Approx(25));
+        REQUIRE(BuildWorldPowerProbes(scene, 1, probes).isEmpty() == true);
+        CHECK(probes.Emitted.X == Catch::Approx(25));
     }
-    SECTION("a flux-authored emitter needs nonzero area")
+    SECTION("the probe integrals are independent")
     {
-        scene.Meshes[0].Positions[2] = scene.Meshes[0].Positions[1];
-        scene.Surfaces[0].HasEmissionPower = true;
-        scene.Surfaces[0].EmissionPower = 25;
-        CHECK(MeasureWorldPower(scene).Error.contains(QStringLiteral("nonzero world-space area")) == true);
+        AddPowerFixtureEnclosure(scene, {0, 0, 0, 1});
+        REQUIRE(BuildWorldPowerProbes(scene, 1, probes).isEmpty() == true);
+        Array<renderer::ReferencePixel> pixels;
+        REQUIRE(pixels.TryResize(probes.Rays.GetSize()) == true);
+        WorldPowerFlux flux;
+        CHECK(IntegrateWorldPower(probes, {pixels.GetData(), pixels.GetSize()}, flux) == false);
+        for (usize index = 0; index < pixels.GetSize(); ++index)
+        {
+            pixels[index].Radiance = index < probes.EscapeRayCount ? math::Vector3{} : math::Vector3{1, 1, 1};
+            pixels[index].Samples = 1;
+        }
+        REQUIRE(IntegrateWorldPower(probes, {pixels.GetData(), pixels.GetSize()}, flux) == true);
+        CHECK(flux.Emitted.X == Catch::Approx(expected));
+        CHECK(flux.Escaped == math::Vector3d{});
+        CHECK(flux.Absorbed.X > flux.Emitted.X);
     }
     SECTION("directional and other analytic lights require repair")
     {
         scene.AuthoredLights.Count = 1;
-        CHECK(MeasureWorldPower(scene).Error.contains(QStringLiteral("Disable analytic lights")) == true);
+        CHECK(BuildWorldPowerProbes(scene, 1, probes).contains(QStringLiteral("Disable analytic lights")) == true);
     }
     SECTION("non-diffuse transport requires repair")
     {
         scene.Surfaces[0].Scattering.Model = ludus::content::scene_format::MaterialModel::Dielectric;
-        CHECK(MeasureWorldPower(scene).Error.contains(QStringLiteral("emitter")) == true);
+        CHECK(BuildWorldPowerProbes(scene, 1, probes).contains(QStringLiteral("emitter")) == true);
     }
 }
 
-TEST_CASE("The World power tab measures the loaded scene and clears stale results", "[editor][world-power]")
+namespace
 {
-    QTemporaryDir root;
-    REQUIRE(root.isValid() == true);
-    RenderScene scene;
-    tests::MakeLitScene(root.path(), scene);
-    REQUIRE(scene.Objects.isEmpty() == false);
-    scene.Objects.resize(1);
-    scene.AuthoredLights = {};
-    PreviewObject& object = scene.Objects[0];
-    object.Texture = -1;
-    PreviewSurface& surface = scene.Surfaces[object.Surface];
-    surface = {};
-    surface.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
-    surface.Emission = {1, 1, 1};
+void PublishPowerFixtureDefinition(RenderScene& inoutScene)
+{
+    using ludus::resources::SceneDefinition;
+    using ludus::resources::SceneMesh;
+    using ludus::resources::SceneObject;
+    SharedPtr<SceneDefinition> definition;
+    REQUIRE(TryMakeShared<SceneDefinition>(GetSystemAllocationDomain(), definition) == OwnershipStatus::Ok);
+    REQUIRE(definition->Meshes.TryResize(static_cast<usize>(inoutScene.Meshes.size())) == true);
+    REQUIRE(definition->Objects.TryResize(static_cast<usize>(inoutScene.Objects.size())) == true);
+    REQUIRE(definition->Materials.TryResize(static_cast<usize>(inoutScene.Surfaces.size())) == true);
+    for (qsizetype index = 0; index < inoutScene.Meshes.size(); ++index)
+    {
+        const PreviewMesh& source = inoutScene.Meshes[index];
+        SceneMesh& target = definition->Meshes[static_cast<usize>(index)];
+        for (const math::Vector3 point : source.Positions)
+        {
+            REQUIRE(target.Positions.TryAdd(point) == true);
+            REQUIRE(target.Normals.TryAdd({0, 0, 1}) == true);
+            REQUIRE(target.Texcoords.TryAdd({0, 0}) == true);
+        }
+        for (const uint32 vertex : source.Indices)
+        {
+            REQUIRE(target.Indices.TryAdd(vertex) == true);
+        }
+        const PreviewSurface& surface = inoutScene.Surfaces[index];
+        definition->Materials[static_cast<usize>(index)].Emission = surface.Emission;
+        definition->Materials[static_cast<usize>(index)].IsEmissionTwoSided = surface.IsEmissionTwoSided;
+        definition->Materials[static_cast<usize>(index)].Scattering = surface.Scattering;
+        const PreviewObject& object = inoutScene.Objects[index];
+        SceneObject& placed = definition->Objects[static_cast<usize>(index)];
+        placed.SourceId = static_cast<uint64>(index) + 1;
+        placed.Mesh = static_cast<uint32>(object.Mesh);
+        placed.Material = static_cast<uint32>(object.Surface);
+        placed.Transform = object.Transform;
+    }
+    inoutScene.Lit = true;
+    inoutScene.LogicalId = QStringLiteral("level/power-fixture");
+    inoutScene.AssetsIdentity = inoutScene.Identity;
+    inoutScene.Definition = definition;
+}
+} // namespace
+
+TEST_CASE("The World power tab measures both RT1 tracers and clears stale results", "[editor][world-power][gpu]")
+{
+    rhi::Shutdown();
+    RenderScene scene = MakePowerFixture();
+    bool isEnclosed = false;
+    SECTION("an open emitter lets its power escape") {}
+    SECTION("an enclosed emitter sends its power to black walls")
+    {
+        isEnclosed = true;
+        scene.Objects[0].Transform.Columns[0].X = 3;
+        scene.Objects[0].Transform.Columns[1].Y = 3;
+        AddPowerFixtureEnclosure(scene, {0, 0, 0, 1});
+    }
+    PublishPowerFixtureDefinition(scene);
     RenderPreview preview;
     REQUIRE(preview.SetScene(scene) == true);
+    preview.Resize(TEST_LONG_SIDE, TEST_LONG_SIDE);
+    REQUIRE(preview.Start() == true);
+    if (preview.AdmitOffscreenDevice() == false)
+    {
+        SKIP("no offscreen viewport GPU adapter");
+    }
     ReferenceCaptureWindow window(&preview);
     QTabWidget* tabsOrNull = window.findChild<QTabWidget*>(QStringLiteral("referenceImages"));
     REQUIRE(tabsOrNull != nullptr);
@@ -1201,28 +1236,64 @@ TEST_CASE("The World power tab measures the loaded scene and clears stale result
     tabsOrNull->setCurrentWidget(tabOrNull);
     QPushButton* measureOrNull = tabOrNull->findChild<QPushButton*>(QStringLiteral("measureWorldPower"));
     QLabel* statusOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("worldPowerStatus"));
-    QLabel* escapedOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("worldPowerEscaped"));
+    QLabel* cpuEscapeOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("cpuWorldPowerEscaped"));
+    QLabel* gpuEscapeOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("gpuWorldPowerEscaped"));
+    QLabel* cpuAbsorbedOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("cpuWorldPowerAbsorbed"));
+    QLabel* gpuAbsorbedOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("gpuWorldPowerAbsorbed"));
+    QLabel* cpuStatusOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("cpuWorldPowerStatus"));
+    QLabel* gpuStatusOrNull = tabOrNull->findChild<QLabel*>(QStringLiteral("gpuWorldPowerStatus"));
+    REQUIRE(cpuAbsorbedOrNull != nullptr);
+    REQUIRE(gpuAbsorbedOrNull != nullptr);
+    REQUIRE(cpuStatusOrNull != nullptr);
+    REQUIRE(gpuStatusOrNull != nullptr);
     REQUIRE(measureOrNull != nullptr);
     REQUIRE(statusOrNull != nullptr);
-    REQUIRE(escapedOrNull != nullptr);
+    REQUIRE(cpuEscapeOrNull != nullptr);
+    REQUIRE(gpuEscapeOrNull != nullptr);
     REQUIRE(measureOrNull->isEnabled() == true);
+    if (isEnclosed == true)
+    {
+        QSpinBox* densityOrNull = tabOrNull->findChild<QSpinBox*>(QStringLiteral("worldPowerProbeDensity"));
+        REQUIRE(densityOrNull != nullptr);
+        densityOrNull->setValue(static_cast<int32>(MAX_WORLD_POWER_PROBE_DENSITY));
+    }
     measureOrNull->click();
-    constexpr int32 WAIT_MILLISECONDS = 5000;
-    REQUIRE(QTest::qWaitFor([measureOrNull]() { return measureOrNull->isEnabled(); }, WAIT_MILLISECONDS));
-    CHECK(statusOrNull->text() == QStringLiteral("Measured the loaded World."));
-    CHECK(escapedOrNull->text().contains(QStringLiteral("100.0000%")) == true);
+    REQUIRE(
+        QTest::qWaitFor([measureOrNull]() { return measureOrNull->isEnabled(); }, GPU_CAPTURE_TIMEOUT_MILLISECONDS));
+    INFO(cpuStatusOrNull->text().toStdString());
+    INFO(gpuStatusOrNull->text().toStdString());
+    REQUIRE(cpuStatusOrNull->text().startsWith(QStringLiteral("Complete")) == true);
+    REQUIRE(gpuStatusOrNull->text().startsWith(QStringLiteral("Complete")) == true);
+    const float64 cpuEscape = cpuEscapeOrNull->text().section(QStringLiteral(" "), 0, 0).toDouble();
+    const float64 gpuEscape = gpuEscapeOrNull->text().section(QStringLiteral(" "), 0, 0).toDouble();
+    const float64 cpuAbsorbed = cpuAbsorbedOrNull->text().section(QStringLiteral(" "), 0, 0).toDouble();
+    const float64 gpuAbsorbed = gpuAbsorbedOrNull->text().section(QStringLiteral(" "), 0, 0).toDouble();
+    const float64 emitted = math::kPi * 0.125 * (isEnclosed == true ? 9 : 1);
+    if (isEnclosed == true)
+    {
+        CHECK(cpuAbsorbed == Catch::Approx(emitted).epsilon(0.35));
+        CHECK(gpuAbsorbed == Catch::Approx(cpuAbsorbed).epsilon(0.001));
+        CHECK(cpuEscape == 0);
+        CHECK(gpuEscape == 0);
+    }
+    else
+    {
+        CHECK(cpuEscape == Catch::Approx(emitted).epsilon(0.08));
+        CHECK(gpuEscape == Catch::Approx(cpuEscape).epsilon(0.001));
+        CHECK(cpuAbsorbed == 0);
+        CHECK(gpuAbsorbed == 0);
+    }
 
     measureOrNull->click();
     scene.Identity = QByteArrayLiteral("world-power-edited");
     scene.AuthoredLights.Count = 1;
     REQUIRE(preview.SetScene(scene) == true);
-    REQUIRE(QTest::qWaitFor([measureOrNull]() { return measureOrNull->isEnabled(); }, WAIT_MILLISECONDS));
-    CHECK(statusOrNull->text() == QStringLiteral("Measure the currently loaded World."));
-    CHECK(escapedOrNull->isVisibleTo(tabOrNull) == false);
+    CHECK(measureOrNull->isEnabled() == true);
+    CHECK(cpuEscapeOrNull->text().isEmpty() == true);
+    CHECK(gpuEscapeOrNull->text().isEmpty() == true);
     measureOrNull->click();
-    REQUIRE(QTest::qWaitFor([measureOrNull]() { return measureOrNull->isEnabled(); }, WAIT_MILLISECONDS));
     CHECK(statusOrNull->text().contains(QStringLiteral("Disable analytic lights")) == true);
-    CHECK(escapedOrNull->isVisibleTo(tabOrNull) == false);
+    preview.Stop();
 }
 
 TEST_CASE("Reference capture shows a saved power budget and its signed heatmap", "[editor][reference-power]")

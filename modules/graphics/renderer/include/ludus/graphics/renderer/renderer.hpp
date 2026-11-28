@@ -722,6 +722,7 @@ public:
     /// profile metadata into caller storage. Required bytes and PFM conversion are
     /// documented in the renderer guide. Capacity/other failure preserves output
     /// and written; partial images retain exact per-pixel counts. No file I/O/wait.
+    /// Fixed-probe captures return Unsupported because the format describes a camera raster.
     [[nodiscard]] rhi::RasterStatus EncodeReferenceHdr(ReferenceCapture,
                                                        ludus::foundation::uint8* output,
                                                        ludus::foundation::usize capacity,

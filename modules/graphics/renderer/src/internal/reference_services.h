@@ -223,6 +223,30 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
         }
         uniform.Tile[LUDUS_REFERENCE_SKY_TILE_COMPONENT] = static_cast<uint32>(first) + 1;
     }
+    // The reference shader reserves Options.w for the one-based start of its optional primary-ray words.
+    uniform.Options.W = 0;
+    if (inoutJob.Description.ProbeRays.IsEmpty() == false)
+    {
+        const usize first = data.GetSize();
+        const usize words = inoutJob.Description.ProbeRays.GetSize() * LUDUS_REFERENCE_PROBE_RAY_WORDS;
+        const usize remainingWords = cpuRemaining / sizeof(math::Vector4);
+        if (first > ~uint32{0} - words || first + words > remainingWords ||
+            texels.GetSize() > remainingWords - (first + words))
+        {
+            return Status::CapacityExceeded;
+        }
+        if (data.TryResize(first + words) == false)
+        {
+            return Status::OutOfMemory;
+        }
+        usize at = first;
+        for (const ReferenceProbeRay& ray : inoutJob.Description.ProbeRays)
+        {
+            data[at++] = {ray.OriginWorld.X, ray.OriginWorld.Y, ray.OriginWorld.Z, 0};
+            data[at++] = {ray.DirectionWorld.X, ray.DirectionWorld.Y, ray.DirectionWorld.Z, 0};
+        }
+        uniform.Options.W = GpuBits(static_cast<uint32>(first) + 1);
+    }
     const usize packedBytes = (data.GetSize() + texels.GetSize()) * sizeof(math::Vector4);
     const usize pixels = usize(inoutJob.Description.Width) * inoutJob.Description.Height;
     usize zeroBytes = 0;
@@ -273,6 +297,17 @@ bool SameReferenceIntegral(const ReferenceJob& a,
     {
         return false;
     }
+    if (d.ProbeRays.GetSize() != b.ProbeRays.GetSize())
+    {
+        return false;
+    }
+    for (usize index = 0; index < d.ProbeRays.GetSize(); ++index)
+    {
+        if (d.ProbeRays[index] != b.ProbeRays[index])
+        {
+            return false;
+        }
+    }
     for (usize i = 0; i < lights.Count; ++i)
     {
         if (SameReferenceLight(a.Lights[i], lights.Lights[i]) == false)
@@ -291,6 +326,26 @@ Status ValidateReferenceDescription(const ReferenceCaptureDescription& d, LightS
         internal::ReferenceColor(d.Environment, 10000) == false || d.TextureMip >= 16)
     {
         return Status::InvalidDescription;
+    }
+    if (d.ProbeRays.IsEmpty() == false)
+    {
+        constexpr float32 UNIT_LENGTH_TOLERANCE = 0.00001F;
+        if (d.ProbeRays.IsValid() == false || d.ProbeRays.GetSize() != static_cast<usize>(d.Width) * d.Height)
+        {
+            return Status::InvalidDescription;
+        }
+        for (const ReferenceProbeRay& ray : d.ProbeRays)
+        {
+            const math::Vector3 pointWorld = ray.OriginWorld;
+            if (math::IsFinite(pointWorld) == false || math::IsFinite(ray.DirectionWorld) == false ||
+                math::Abs(pointWorld.X) > MAX_REFERENCE_MEDIUM_COORDINATE_WORLD ||
+                math::Abs(pointWorld.Y) > MAX_REFERENCE_MEDIUM_COORDINATE_WORLD ||
+                math::Abs(pointWorld.Z) > MAX_REFERENCE_MEDIUM_COORDINATE_WORLD ||
+                math::Abs(math::LengthSquared(ray.DirectionWorld) - 1) > UNIT_LENGTH_TOLERANCE)
+            {
+                return Status::InvalidDescription;
+            }
+        }
     }
     if (d.LightSampling != ReferenceLightSampling::UniformArea &&
         d.LightSampling != ReferenceLightSampling::SeparateDirectional &&
@@ -1008,6 +1063,11 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     {
         return Status::Unsupported;
     }
+    if (description.ProbeRays.IsEmpty() == false &&
+        (gpuSetup == true || Reference->Options.Traversal == ReferenceTraversal::NativeQueries))
+    {
+        return Status::Unsupported;
+    }
     const usize mediumTriangles =
         description.MediumOrNull != nullptr
             ? description.MediumOrNull->BoundaryCornersWorld.GetSize() / REFERENCE_MEDIUM_TRIANGLE_CORNERS
@@ -1129,7 +1189,8 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         uint64(pixels) * sizeof(internal::ReferenceAccumulator) + uint64(tile) * sizeof(internal::ReferencePath) +
         uint64(tile) * raysPerPath * (sizeof(rhi::RayInput) + sizeof(rhi::RayResult)) +
         uint64(triangles) * sizeof(ReferenceTriangle) + bvhBytes + uint64(emitters) * 2 * sizeof(uint32) +
-        uint64(mediumTriangles) * REFERENCE_MEDIUM_TRIANGLE_CORNERS * sizeof(math::Vector3);
+        uint64(mediumTriangles) * REFERENCE_MEDIUM_TRIANGLE_CORNERS * sizeof(math::Vector3) +
+        uint64(description.ProbeRays.GetSize()) * sizeof(ReferenceProbeRay);
     const uint64 signatureBytes =
         uint64(triangles) * FINGERPRINT_TRIANGLE_BYTES + uint64(instances) * FINGERPRINT_INSTANCE_BYTES +
         uint64(typedMaterials) *
@@ -1169,6 +1230,11 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     internal::RetainEnvironment(environmentOrNull);
     job->Device = Device;
     job->Description = description;
+    if (job->ProbeRayStorage.TryAddRange(description.ProbeRays) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    job->Description.ProbeRays = {job->ProbeRayStorage.GetData(), job->ProbeRayStorage.GetSize()};
     job->Description.EnvironmentTextureOrNull = nullptr;
     job->Description.MediumOrNull = nullptr;
     job->Description.AtmosphereBackgroundOrNull = nullptr;
@@ -1414,7 +1480,8 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     job->Info.CpuBytes =
         sizeof(ReferenceJob) + sceneCpuBytes + job->Pixels.GetCapacity() * sizeof(internal::ReferenceAccumulator) +
         job->Paths.GetCapacity() * sizeof(internal::ReferencePath) + job->Rays.GetCapacity() * sizeof(rhi::RayInput) +
-        job->Hits.GetCapacity() * sizeof(rhi::RayResult);
+        job->Hits.GetCapacity() * sizeof(rhi::RayResult) +
+        job->ProbeRayStorage.GetCapacity() * sizeof(ReferenceProbeRay);
     if (job->Info.CpuBytes > remaining || transient > remaining - job->Info.CpuBytes)
     {
         return Status::CapacityExceeded;
@@ -2086,6 +2153,10 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
         return Status::InvalidHandle;
     }
     const auto& job = *record->Job;
+    if (job.Description.ProbeRays.IsEmpty() == false)
+    {
+        return Status::Unsupported;
+    }
     constexpr usize headerBytes = 256;
     constexpr usize pixelBytes = 16;
     if (job.Pixels.GetSize() > (~usize{0} - headerBytes) / pixelBytes)

@@ -397,6 +397,13 @@ bool ViewportReferenceCapture::Start(rhi::DeviceHandle device,
         outError = QStringLiteral("Reference renderer allocation failed.");
         return false;
     }
+    if (settings.ProbeRays.IsValid() == false || mProbeRays.TryAddRange(settings.ProbeRays) == false)
+    {
+        mGeneration.Reset();
+        outError = QStringLiteral("Could not copy the reference measurement rays.");
+        return false;
+    }
+    description.ProbeRays = {mProbeRays.GetData(), mProbeRays.GetSize()};
     mDescription = description;
     mDisplay = settings.Display;
     mExtent = extent;
@@ -565,6 +572,8 @@ void ViewportReferenceCapture::Release() noexcept
     {
         static_cast<void>(mGeneration->Renderer.Release(mCapture));
     }
+    mDescription.ProbeRays = {};
+    mProbeRays = {};
     mHasCapture = false;
     mGeneration.Reset();
 #if !defined(Q_OS_WASM)

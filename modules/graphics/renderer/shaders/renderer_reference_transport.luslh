@@ -404,6 +404,16 @@ float32 RandomValue(uint32 pixel, uint32 sample, uint32 dimension);
 bool GenerateCameraRay(uint32 pixel, uint32 sample, out Ray outRay)
 {
     outRay = 0;
+    uint32 firstProbeWord = asuint(Options.w);
+    if (firstProbeWord != 0)
+    {
+        uint32 probeWord = firstProbeWord - 1 + LUDUS_REFERENCE_PROBE_RAY_WORDS * pixel;
+        outRay.OriginWorld = SceneValue(probeWord).xyz;
+        outRay.DirectionWorld = SceneValue(probeWord + 1).xyz;
+        outRay.MinimumDistanceWorld = 0;
+        outRay.MaximumDistanceWorld = Options.x;
+        return true;
+    }
     bool isCentered = (Sampling.z & CENTER_RAYS_FLAG) != 0;
     float32 jitterX = isCentered == true ? .5 : RandomValue(pixel, sample, 0);
     float32 jitterY = isCentered == true ? .5 : RandomValue(pixel, sample, 1);

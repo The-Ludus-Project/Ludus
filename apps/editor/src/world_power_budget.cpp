@@ -6,6 +6,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/geometry.hpp>
+#include <ludus/foundation/math/queries.hpp>
 #include <ludus/foundation/math/random.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/status.hpp>
@@ -24,11 +25,11 @@ namespace renderer = graphics::renderer;
 namespace format = content::scene_format;
 
 constexpr qsizetype MAX_TRIANGLES = 256;
-constexpr int32 COARSE_SAMPLES_PER_SIDE = 128;
-constexpr int32 FINE_SAMPLES_PER_SIDE = 512;
-constexpr int32 MAX_BOUNCE_STEPS = 64;
-constexpr qsizetype SIDES_PER_TRIANGLE = 2;
-constexpr float64 REMAINING_FRACTION = 0.0001;
+constexpr uint32 ESCAPE_RAY_COUNT = 8192;
+constexpr uint32 ABSORPTION_RAYS_PER_SIDE = 128;
+constexpr uint32 PROBE_ROW_WIDTH = 128;
+constexpr float32 SPHERE_PADDING_SCALE = 1.025F;
+constexpr float32 ORIGIN_ROUNDING_SCALE = 0.000001F;
 constexpr math::Vector3d UNIT_REFLECTANCE{1, 1, 1};
 
 struct PowerTriangle final
@@ -39,18 +40,6 @@ struct PowerTriangle final
     math::Vector3d Emission;
     float64 AreaWorld = 0;
     bool IsEmissionTwoSided = false;
-};
-
-struct PowerTransfer final
-{
-    qsizetype DestinationSide = 0;
-    float64 Fraction = 0;
-};
-
-struct PowerTransferRow final
-{
-    QVector<PowerTransfer> Hits;
-    float64 EscapeFraction = 0;
 };
 
 bool IsNonnegative(math::Vector3 value) noexcept
@@ -191,174 +180,152 @@ QString BuildPowerTriangles(const RenderScene& scene, QVector<PowerTriangle>& ou
     return {};
 }
 
-qsizetype
-TraceTransfer(const QVector<PowerTriangle>& triangles, qsizetype sourceTriangle, const math::Ray3& rayWorld) noexcept
+// Thanks to Pharr, Jakob and Humphreys, "Physically Based Rendering", 4th ed. §§4.1 and A.5.3,
+// https://pbr-book.org/4ed/Sampling_Algorithms/Sampling_Multidimensional_Functions.
+// Cosine-weighted rays estimate flux as area times pi times mean directional radiance.
+math::Vector3 SamplePowerDirection(math::Vector3 normalWorld, math::RandomStream& inoutStream) noexcept
 {
-    qsizetype destination = -1;
-    float64 nearestWorld = 0;
-    for (qsizetype i = 0; i < triangles.size(); ++i)
-    {
-        if (i == sourceTriangle)
-        {
-            continue;
-        }
-        const PowerTriangle& triangle = triangles[i];
-        float64 distanceWorld = 0;
-        if (IntersectRenderSceneTriangle(rayWorld,
-                                         triangle.CornersWorld[0],
-                                         triangle.CornersWorld[1],
-                                         triangle.CornersWorld[2],
-                                         distanceWorld) == true &&
-            distanceWorld > 0 && (destination < 0 || distanceWorld < nearestWorld))
-        {
-            const bool isBack = math::Dot(triangle.NormalWorld, rayWorld.Direction) > 0;
-            destination = SIDES_PER_TRIANGLE * i + (isBack == true ? 1 : 0);
-            nearestWorld = distanceWorld;
-        }
-    }
-    return destination;
-}
-
-PowerTransferRow MeasureTransferRow(const QVector<PowerTriangle>& triangles, qsizetype side, int32 samples, uint64 seed)
-{
-    const qsizetype sourceTriangle = side / SIDES_PER_TRIANGLE;
-    const PowerTriangle& source = triangles[sourceTriangle];
-    const math::Vector3 normalWorld = side % SIDES_PER_TRIANGLE == 0 ? source.NormalWorld : -source.NormalWorld;
     const math::Vector3 axisWorld =
         math::Abs(normalWorld.X) < math::Abs(normalWorld.Z) ? math::Vector3{1, 0, 0} : math::Vector3{0, 0, 1};
     math::Vector3 tangentWorld;
     static_cast<void>(math::TryNormalize(math::Cross(normalWorld, axisWorld), tangentWorld));
     const math::Vector3 bitangentWorld = math::Cross(normalWorld, tangentWorld);
-    QVector<int32> hitCounts(triangles.size() * SIDES_PER_TRIANGLE, 0);
-    int32 escapeCount = 0;
+    const float32 radiusSquared = inoutStream.NextFloat01();
+    const float32 radius = math::Sqrt(radiusSquared);
+    const float32 azimuth = math::kTauF * inoutStream.NextFloat01();
+    return tangentWorld * (radius * math::Cos(azimuth)) + bitangentWorld * (radius * math::Sin(azimuth)) +
+           normalWorld * math::Sqrt(1 - radiusSquared);
+}
+
+bool AppendEscapeProbes(const math::Aabb3& boundsWorld, uint32 count, WorldPowerProbes& inoutProbes)
+{
+    constexpr float64 SPHERE_AREA_SCALE = 4;
+    const math::Vector3 halfExtentWorld = (boundsWorld.Max - boundsWorld.Min) * 0.5F;
+    const math::Vector3 centerWorld = boundsWorld.Min + halfExtentWorld;
+    const float32 radiusWorld = math::Length(halfExtentWorld) * SPHERE_PADDING_SCALE;
+    const float64 radius = static_cast<float64>(radiusWorld);
+    const float64 weight = SPHERE_AREA_SCALE * math::kPi * radius * radius * math::kPi / count;
     math::RandomStream stream;
-    static_cast<void>(stream.TryReseed(seed, static_cast<uint64>(side)));
-    for (int32 sample = 0; sample < samples; ++sample)
+    for (uint32 index = 0; index < count; ++index)
     {
-        // Square-root warps map uniform draws to triangle area and to the projected hemisphere disk.
-        const float32 root = math::Sqrt(stream.NextFloat01());
-        const float32 alongEdge = stream.NextFloat01();
-        const math::Vector3 cornerWorld = source.CornersWorld[0];
-        const math::Vector3 originWorld = cornerWorld +
-                                          (source.CornersWorld[1] - cornerWorld) * (root * (1 - alongEdge)) +
-                                          (source.CornersWorld[2] - cornerWorld) * (root * alongEdge);
-        const float32 radiusSquared = stream.NextFloat01();
-        const float32 radius = math::Sqrt(radiusSquared);
+        const float32 z = 2 * stream.NextFloat01() - 1;
         const float32 azimuth = math::kTauF * stream.NextFloat01();
-        const math::Vector3 directionWorld = tangentWorld * (radius * math::Cos(azimuth)) +
-                                             bitangentWorld * (radius * math::Sin(azimuth)) +
-                                             normalWorld * math::Sqrt(1 - radiusSquared);
-        const qsizetype destination = TraceTransfer(triangles, sourceTriangle, {originWorld, directionWorld});
-        if (destination < 0)
+        const float32 radial = math::Sqrt(1 - z * z);
+        const math::Vector3 outwardWorld{radial * math::Cos(azimuth), radial * math::Sin(azimuth), z};
+        const math::Vector3 originWorld = centerWorld + outwardWorld * radiusWorld;
+        if (inoutProbes.Rays.TryAdd({originWorld, SamplePowerDirection(-outwardWorld, stream)}) == false ||
+            inoutProbes.Weights.TryAdd({weight, weight, weight}) == false)
         {
-            ++escapeCount;
-        }
-        else
-        {
-            ++hitCounts[destination];
+            return false;
         }
     }
-    const float64 inverseSamples = 1.0 / static_cast<float64>(samples);
-    PowerTransferRow result;
-    result.EscapeFraction = static_cast<float64>(escapeCount) * inverseSamples;
-    for (qsizetype destination = 0; destination < hitCounts.size(); ++destination)
-    {
-        if (hitCounts[destination] > 0)
-        {
-            result.Hits.append({destination, static_cast<float64>(hitCounts[destination]) * inverseSamples});
-        }
-    }
-    return result;
+    inoutProbes.EscapeRayCount = inoutProbes.Rays.GetSize();
+    return true;
 }
 
-float64 GetLargestFraction(math::Vector3d flux, math::Vector3d emitted) noexcept
+bool AppendAbsorptionProbes(const PowerTriangle& triangle,
+                            uint32 countPerSide,
+                            math::RandomStream& inoutStream,
+                            WorldPowerProbes& inoutProbes)
 {
-    return math::Max(emitted.X > 0 ? math::Abs(flux.X) / emitted.X : 0,
-                     math::Max(emitted.Y > 0 ? math::Abs(flux.Y) / emitted.Y : 0,
-                               emitted.Z > 0 ? math::Abs(flux.Z) / emitted.Z : 0));
-}
-
-// Thanks to Michael F. Cohen, Shenchang Eric Chen, John R. Wallace and Donald P. Greenberg,
-// "A Progressive Refinement Approach to Fast Radiosity Image Generation", SIGGRAPH 1988, §3,
-// https://doi.org/10.1145/378456.378487. We distribute unshot diffuse flux with form factors.
-// Single-segment visibility samples replace the hemicube. Cache a row per side and update by bounce.
-WorldPowerFlux
-SolvePower(const QVector<PowerTriangle>& triangles, const QVector<math::Vector3d>& emission, int32 samples, uint64 seed)
-{
-    WorldPowerFlux result;
-    for (const math::Vector3d flux : emission)
+    const math::Vector3d weight =
+        (UNIT_REFLECTANCE - triangle.Reflectance) * (math::kPi * triangle.AreaWorld / countPerSide);
+    if (weight == math::Vector3d{})
     {
-        result.Emitted = result.Emitted + flux;
+        return true;
     }
-    QVector<math::Vector3d> outgoing = emission;
-    QVector<math::Vector3d> incoming(emission.size());
-    QVector<PowerTransferRow> transfer(emission.size());
-    QVector<bool> hasTransfer(emission.size(), false);
-    for (int32 bounce = 0; bounce < MAX_BOUNCE_STEPS; ++bounce)
+    math::Vector3 errorWorld;
+    for (const math::Vector3 cornerWorld : triangle.CornersWorld)
     {
-        incoming.fill({});
-        for (qsizetype side = 0; side < outgoing.size(); ++side)
+        errorWorld.X += math::Abs(cornerWorld.X) * ORIGIN_ROUNDING_SCALE;
+        errorWorld.Y += math::Abs(cornerWorld.Y) * ORIGIN_ROUNDING_SCALE;
+        errorWorld.Z += math::Abs(cornerWorld.Z) * ORIGIN_ROUNDING_SCALE;
+    }
+    const math::Vector3 cornerWorld = triangle.CornersWorld[0];
+    for (const math::Vector3 normalWorld : {triangle.NormalWorld, -triangle.NormalWorld})
+    {
+        for (uint32 index = 0; index < countPerSide; ++index)
         {
-            const math::Vector3d flux = outgoing[side];
-            if (flux == math::Vector3d{})
+            const float32 root = math::Sqrt(inoutStream.NextFloat01());
+            const float32 alongEdge = inoutStream.NextFloat01();
+            const math::Vector3 pointWorld = cornerWorld * (1 - root) +
+                                             triangle.CornersWorld[1] * (root * (1 - alongEdge)) +
+                                             triangle.CornersWorld[2] * (root * alongEdge);
+            const math::Vector3 directionWorld = SamplePowerDirection(normalWorld, inoutStream);
+            math::Vector3 originWorld;
+            if (math::TryOffsetRayOrigin({pointWorld, errorWorld, normalWorld, directionWorld}, originWorld) !=
+                    math::MathStatus::Success ||
+                inoutProbes.Rays.TryAdd({originWorld, directionWorld}) == false ||
+                inoutProbes.Weights.TryAdd(weight) == false)
             {
-                continue;
+                return false;
             }
-            if (hasTransfer[side] == false)
-            {
-                transfer[side] = MeasureTransferRow(triangles, side, samples, seed);
-                hasTransfer[side] = true;
-            }
-            const PowerTransferRow& row = transfer[side];
-            result.Escaped = result.Escaped + flux * row.EscapeFraction;
-            for (const PowerTransfer& hit : row.Hits)
-            {
-                incoming[hit.DestinationSide] = incoming[hit.DestinationSide] + flux * hit.Fraction;
-            }
-        }
-        result.Unresolved = {};
-        for (qsizetype side = 0; side < incoming.size(); ++side)
-        {
-            const math::Vector3d reflectance = triangles[side / SIDES_PER_TRIANGLE].Reflectance;
-            const math::Vector3d flux = incoming[side];
-            result.Absorbed = result.Absorbed + math::Hadamard(flux, UNIT_REFLECTANCE - reflectance);
-            outgoing[side] = math::Hadamard(flux, reflectance);
-            result.Unresolved = result.Unresolved + outgoing[side];
-        }
-        if (GetLargestFraction(result.Unresolved, result.Emitted) <= REMAINING_FRACTION)
-        {
-            break;
         }
     }
-    return result;
+    return true;
 }
 } // namespace
 
-WorldPowerBudget MeasureWorldPower(const RenderScene& scene)
+QString BuildWorldPowerProbes(const RenderScene& scene, uint32 probeDensity, WorldPowerProbes& outProbes)
 {
-    QVector<PowerTriangle> triangles;
-    WorldPowerBudget result;
-    result.Error = BuildPowerTriangles(scene, triangles);
-    if (result.Error.isEmpty() == false)
+    if (probeDensity == 0 || probeDensity > MAX_WORLD_POWER_PROBE_DENSITY)
     {
-        return result;
+        return QStringLiteral("Choose a supported probe density and measure again.");
     }
-    QVector<math::Vector3d> emission(triangles.size() * SIDES_PER_TRIANGLE);
-    for (qsizetype i = 0; i < triangles.size(); ++i)
+    QVector<PowerTriangle> triangles;
+    const QString error = BuildPowerTriangles(scene, triangles);
+    if (error.isEmpty() == false)
     {
-        const PowerTriangle& triangle = triangles[i];
-        emission[SIDES_PER_TRIANGLE * i] = triangle.Emission;
-        if (triangle.IsEmissionTwoSided == true)
+        return error;
+    }
+    math::Aabb3 boundsWorld;
+    if (triangles.isEmpty() == true || scene.TryGetBounds({}, boundsWorld) == false)
+    {
+        return QStringLiteral("Add a nondegenerate diffuse mesh with emission, then measure again.");
+    }
+    WorldPowerProbes probes;
+    if (AppendEscapeProbes(boundsWorld, ESCAPE_RAY_COUNT * probeDensity, probes) == false)
+    {
+        return QStringLiteral("Could not allocate reference escape probes. Close other captures and try again.");
+    }
+    math::RandomStream stream;
+    static_cast<void>(stream.TryReseed(1, 0));
+    for (const PowerTriangle& triangle : triangles)
+    {
+        probes.Emitted = probes.Emitted + triangle.Emission * (triangle.IsEmissionTwoSided == true ? 2 : 1);
+        if (AppendAbsorptionProbes(triangle, ABSORPTION_RAYS_PER_SIDE * probeDensity, stream, probes) == false)
         {
-            emission[SIDES_PER_TRIANGLE * i + 1] = triangle.Emission;
+            return QStringLiteral("Could not place reference absorption probes. Check World bounds and try again.");
         }
     }
-    const WorldPowerFlux coarse = SolvePower(triangles, emission, COARSE_SAMPLES_PER_SIDE, 0);
-    result.Flux = SolvePower(triangles, emission, FINE_SAMPLES_PER_SIDE, 1);
-    result.SamplingChange =
-        math::Max(GetLargestFraction(result.Flux.Absorbed - coarse.Absorbed, result.Flux.Emitted),
-                  math::Max(GetLargestFraction(result.Flux.Escaped - coarse.Escaped, result.Flux.Emitted),
-                            GetLargestFraction(result.Flux.Unresolved - coarse.Unresolved, result.Flux.Emitted)));
-    return result;
+    probes.RowWidth = PROBE_ROW_WIDTH;
+    outProbes = foundation::Move(probes);
+    return {};
+}
+
+bool IntegrateWorldPower(const WorldPowerProbes& probes,
+                         BorrowedView<const renderer::ReferencePixel> pixels,
+                         WorldPowerFlux& outFlux) noexcept
+{
+    if (pixels.IsValid() == false || pixels.GetSize() != probes.Weights.GetSize() ||
+        probes.EscapeRayCount > pixels.GetSize())
+    {
+        return false;
+    }
+    WorldPowerFlux flux;
+    flux.Emitted = probes.Emitted;
+    for (usize index = 0; index < pixels.GetSize(); ++index)
+    {
+        const renderer::ReferencePixel& pixel = pixels[index];
+        if (pixel.Samples == 0 || IsNonnegative(pixel.Radiance) == false)
+        {
+            return false;
+        }
+        const math::Vector3d power = math::Hadamard(probes.Weights[index], WidenColor(pixel.Radiance));
+        math::Vector3d& bucket = index < probes.EscapeRayCount ? flux.Escaped : flux.Absorbed;
+        bucket = bucket + power;
+    }
+    outFlux = flux;
+    return true;
 }
 } // namespace ludus::editor
