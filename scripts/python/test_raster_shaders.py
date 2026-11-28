@@ -2,6 +2,7 @@
 import copy
 import importlib.util
 from pathlib import Path
+import os
 import sys
 import struct
 import unittest
@@ -35,6 +36,27 @@ class NativeWorkerSnapshotTests(unittest.TestCase):
             self.assertEqual(set(files), {'root.slang', 'local.slang', 'shared.slang', 'guarded.h',
                                           'detail/near.h', 'detail/sibling.h', 'detail/slots.inc'})
             self.assertEqual(origins['shared.slang'], shared / 'shared.slang')
+
+    def test_lowered_includes_are_relocated_only_inside_explicit_roots(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            generated = root / 'build' / 'shader'
+            shared = root / 'sdk' / 'shaders'
+            outside = root / 'other'
+            binding = shared / 'detail' / 'binding.slang'
+            relocated = os.path.relpath(binding, generated).replace(os.sep, '/')
+            excluded = os.path.relpath(outside / 'outside.slang', generated).replace(os.sep, '/')
+            self.write(shared, 'detail/binding.slang', '#include "slots.h"\n')
+            self.write(shared, 'detail/slots.h', '// from the same directory\n')
+            self.write(outside, 'outside.slang', '// not a supplied input\n')
+            for include in (relocated, binding.as_posix()):
+                with self.subTest(include=include):
+                    self.write(generated, 'root.slang', f'#include "{include}"\n#include "{excluded}"\n')
+                    files, origins = capture_include_closure('root.slang', [generated, shared])
+                    self.assertEqual(set(files), {'root.slang', 'detail/binding.slang', 'detail/slots.h'})
+                    self.assertEqual(files['root.slang'], f'#include "detail/binding.slang"\n#include "{excluded}"\n')
+                    self.assertEqual(origins['detail/binding.slang'], binding)
 
     def test_ambiguity_and_bounds_apply_to_the_closure(self):
         import tempfile

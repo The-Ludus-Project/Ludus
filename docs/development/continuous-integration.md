@@ -1153,11 +1153,13 @@ render-graph lifecycle/capture and template cases are registered individually
 through Catch2 discovery before CTest runs. Their names start with
 `ludus_renderer_reference:`, `ludus_render_graph_ray:` and `ludus_render_graph_template:`;
 renderer/GPU/ray labels and explicit unsupported-adapter skips remain available.
-Each reference-compute or graph lifecycle/capture case has a 300-second deadline
+Reference-compute and graph lifecycle/capture cases default to a 300-second deadline
 (600 seconds with ASan/UBSan); each template case has a
 600-second deadline for its convergence captures. Each raw-AOV camera, lighting
 and optical fixture is also an independent case, preserving its samples, seed,
-CPU oracle and numerical assertions. Polygon sampling, Metropolis
+CPU oracle and numerical assertions. The monochromatic UTD raw-AOV case has
+900 seconds on Linux with ASan/UBSan, where the two cold optical captures for
+the LUSL and Slang comparison reached the 600-second deadline. Polygon sampling, Metropolis
 and physical-optics parity also have separate named tests. Metropolis parity has
 a 300-second case deadline (600 seconds with ASan/UBSan), allowing its
 material/estimator variants to share the cold shader setup. Its readiness helper yields between polls and allows

@@ -879,6 +879,35 @@ NSString* DescribeTrace(NSString* bundle)
     }
     return description;
 }
+
+/// The hosted macOS 15 Paravirtual adapter writes a Metal trace index, metadata and a library store, with no
+/// command/resource records to inspect. Require this specific bundle shape before limiting the checks to capture I/O.
+bool IsParavirtualLibraryTrace(NSString* bundle, const rhi::AdapterInfo& adapter)
+{
+    if (adapter.Name.GetView() != "Apple Paravirtual device")
+    {
+        return false;
+    }
+    NSArray<NSString*>* files = GetTraceFiles(bundle);
+    constexpr usize PARAVIRTUAL_TRACE_FILE_COUNT = 3;
+    if (files.count != PARAVIRTUAL_TRACE_FILE_COUNT)
+    {
+        return false;
+    }
+    for (NSString* entry in @[ @"index", @"metadata", @"store0" ])
+    {
+        if ([files containsObject:entry] == NO)
+        {
+            return false;
+        }
+        NSData* bytesOrNil = [NSData dataWithContentsOfFile:[bundle stringByAppendingPathComponent:entry]];
+        if (bytesOrNil == nil || bytesOrNil.length == 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
 } // namespace
 
 TEST_CASE("G2 Metal capture requires startup enablement and never writes without it",
@@ -943,6 +972,8 @@ TEST_CASE("G2 Metal captures named offscreen frames to verified .gputrace docume
                                   description,
                                   device,
                                   surface) == rhi::DeviceStatus::Ready);
+        rhi::DeviceInfo deviceInfo;
+        REQUIRE(rhi::GetDeviceInfo(device, deviceInfo) == rhi::DeviceStatus::Ready);
         rhi::ShaderHandle vertex;
         rhi::ShaderHandle fragment;
         rhi::UniformHandle uniform;
@@ -1014,10 +1045,17 @@ TEST_CASE("G2 Metal captures named offscreen frames to verified .gputrace docume
         REQUIRE([[NSFileManager defaultManager] fileExistsAtPath:bundle isDirectory:&isDirectory] == YES);
         CHECK(isDirectory == YES);
         CAPTURE(DescribeTrace(bundle).UTF8String);
-        // The trace holds the frame's command buffer, its scope and the drawn MSL source.
-        CHECK(DoesTraceContain(bundle, "Ludus/Frame") == true);
-        CHECK(DoesTraceContain(bundle, CAPTURE_VIEW) == true);
-        CHECK(DoesTraceContain(bundle, "fragmentMain") == true);
+        if (IsParavirtualLibraryTrace(bundle, deviceInfo.Adapter) == true)
+        {
+            WARN("Apple Paravirtual Metal trace contains only the library store, index and metadata. "
+                 "Verify the frame, scope and shader on a physical Metal adapter.");
+        }
+        else
+        {
+            CHECK(DoesTraceContain(bundle, "Ludus/Frame") == true);
+            CHECK(DoesTraceContain(bundle, CAPTURE_VIEW) == true);
+            CHECK(DoesTraceContain(bundle, "fragmentMain") == true);
+        }
         NSString* manifest = [NSString stringWithContentsOfFile:directory.GetPath(report.Manifest.GetData())
                                                        encoding:NSUTF8StringEncoding
                                                           error:nil];
@@ -1038,11 +1076,18 @@ TEST_CASE("G2 Metal captures named offscreen frames to verified .gputrace docume
         CHECK(directory.GetEntries().count == 4);
         bundle = directory.GetPath(report.Artifact.GetData());
         CAPTURE(DescribeTrace(bundle).UTF8String);
-        CHECK(DoesTraceContain(bundle, CAPTURE_VIEW) == true);
-        CHECK(DoesTraceContain(bundle, CAPTURE_PASS) == true);
-        CHECK(DoesTraceContain(bundle, CAPTURE_TEXTURE) == true);
-        // The depth backing carries its own label beside the color texture's.
-        CHECK(DoesTraceContain(bundle, CAPTURE_DEPTH) == true);
+        if (IsParavirtualLibraryTrace(bundle, deviceInfo.Adapter) == true)
+        {
+            WARN("Apple Paravirtual Metal trace contains only the library store, index and metadata. "
+                 "Verify the pass, color and depth labels on a physical Metal adapter.");
+        }
+        else
+        {
+            CHECK(DoesTraceContain(bundle, CAPTURE_VIEW) == true);
+            CHECK(DoesTraceContain(bundle, CAPTURE_PASS) == true);
+            CHECK(DoesTraceContain(bundle, CAPTURE_TEXTURE) == true);
+            CHECK(DoesTraceContain(bundle, CAPTURE_DEPTH) == true);
+        }
         // Destroying the device with an armed request ends it without writing anything.
         rhi::GraphicsCaptureIdentity armed;
         REQUIRE(rhi::RequestGraphicsCapture(device, directory.MakeRequest(), armed) == rhi::GraphicsCaptureError::None);
