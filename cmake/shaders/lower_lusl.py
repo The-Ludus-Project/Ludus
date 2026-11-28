@@ -93,6 +93,10 @@ def stage_snapshot(root, source, include_directories, snapshot):
 
 def remap_slang_includes(generated, files, output_directory):
     """Point emitted extern Slang includes at the original files, beyond the temp snapshot."""
+    # The file origins already use physical paths. Use the same basis for the generated
+    # module, including when CMake writes it below a symlink such as macOS /tmp.
+    output_directory = output_directory.resolve()
+
     def remap(match):
         physical = files[posixpath.normpath(match[1])]
         try:
