@@ -674,8 +674,10 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
         math(EXPR renderer_utd_case_timeout_seconds
             "${renderer_test_case_timeout_seconds} + ${renderer_test_reference_cold_gpu_timeout_seconds}")
         set(renderer_utd_test "ludus_renderer_reference: GPU-compute raw AOVs match the CPU oracle: UTD edge diffraction scene connections")
+        # CTest reads this file without the project's CMake policies, including CMP0057 for IN_LIST.
         file(APPEND "${renderer_reference_labels_file}"
-            "if(\"${renderer_utd_test}\" IN_LIST LUDUS_RENDERER_REFERENCE_CASES)\n"
+            "list(FIND LUDUS_RENDERER_REFERENCE_CASES \"${renderer_utd_test}\" renderer_utd_test_index)\n"
+            "if(NOT renderer_utd_test_index EQUAL -1)\n"
             "    set_tests_properties(\"${renderer_utd_test}\" PROPERTIES TIMEOUT ${renderer_utd_case_timeout_seconds})\n"
             "endif()\n")
     endif()
