@@ -147,12 +147,11 @@ jobs:
             --target ludus_renderer_render_tests --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
       - name: Compare both GPU kernels and the CPU oracle on Mesa Vulkan
         env:
+          GALLIVM_PERF: nopt
           VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
         run: |
           out/build/linux-clang-development/modules/graphics/renderer/ludus_renderer_render_tests \
             'Angular-spectrum connections relayed through glass match between CPU and GPU reference transport'
-
-          if-no-files-found: warn
 
   # Thanks to GitHub Actions runner-images, macOS 14 deprecation announcement #13518:
   # https://github.com/actions/runner-images/issues/13518
