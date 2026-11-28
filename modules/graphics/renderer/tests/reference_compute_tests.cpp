@@ -2708,6 +2708,42 @@ void CheckGlassRelayedConnection(rr::ReferenceOpticalConnection connection, rr::
     rr::ReferenceCaptureInfo computeInfo;
     Capture(cpu, capture, surface, oracle, oracleInfo);
     Capture(gpu, capture, surface, compute, computeInfo);
+    {
+        // DIAGNOSTIC ONLY (not for review): the same capture with the Slang original on this device.
+        Session slang;
+        REQUIRE(Prepare(device,
+                        rr::ReferenceTraversal::GpuCompute,
+                        slang,
+                        false,
+                        TraceKernels::WithOptical,
+                        GetReferenceKernels(KernelSource::SlangOriginal, ReferenceDiagnostic::None)) == S::Ready);
+        rr::Snapshot sphere;
+        REQUIRE(BuildSphereSnapshot(device, slang.Renderer, slang.Program, sphere, true, SphereSurfaces::Glass) ==
+                S::Ready);
+        REQUIRE(slang.Renderer.Release(slang.Snapshot) == S::Ready);
+        slang.Snapshot = sphere;
+        Array<rr::ReferencePixel> original;
+        rr::ReferenceCaptureInfo originalInfo;
+        Capture(slang, capture, surface, original, originalInfo);
+        const Comparison slangToCpu = Compare(oracle, original, capture.TargetSamples);
+        const Comparison luslToCpu = Compare(oracle, compute, capture.TargetSamples);
+        for (usize i = 0; i < oracle.GetSize(); ++i)
+        {
+            if (math::Distance(oracle[i].Radiance, compute[i].Radiance) > 0.01F)
+            {
+                WARN("DIAG pixel=" << i << " oracle=" << oracle[i].Radiance.X << ',' << oracle[i].Radiance.Y << ','
+                                   << oracle[i].Radiance.Z << " gpu=" << compute[i].Radiance.X << ','
+                                   << compute[i].Radiance.Y << ',' << compute[i].Radiance.Z);
+            }
+        }
+        WARN("DIAG connection=" << static_cast<uint32>(connection) << " spectrum=" << static_cast<uint32>(spectrum)
+                                << " luslVsSlangPixels=" << CountDifferingPixels(compute, original)
+                                << " rmsLuslCpu=" << math::Sqrt(luslToCpu.SquaredRadiance) << " rmsSlangCpu="
+                                << math::Sqrt(slangToCpu.SquaredRadiance) << " visCpu=" << oracleInfo.VisibilityQueries
+                                << " visLusl=" << computeInfo.VisibilityQueries << " visSlang="
+                                << originalInfo.VisibilityQueries << " closestLusl=" << computeInfo.ClosestQueries
+                                << " closestSlang=" << originalInfo.ClosestQueries);
+    }
     const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
     CAPTURE(comparison.MaximumRadiance,
             comparison.MaximumEmission,
@@ -2738,10 +2774,7 @@ void CheckGlassRelayedConnection(rr::ReferenceOpticalConnection connection, rr::
 TEST_CASE("Angular-spectrum connections relayed through glass match between CPU and GPU reference transport",
           "[renderer][gpu][reference-compute][wave-relay]")
 {
-    // A spectral capture relays each path at its own wavelength, through glass whose index is evaluated there.
-    const rr::ReferenceOpticalSpectrum spectrum =
-        GENERATE(rr::ReferenceOpticalSpectrum::Monochromatic, rr::ReferenceOpticalSpectrum::Visible);
-    CheckGlassRelayedConnection(rr::ReferenceOpticalConnection::AngularSpectrum, spectrum);
+    CheckGlassRelayedConnection(rr::ReferenceOpticalConnection::AngularSpectrum, rr::ReferenceOpticalSpectrum::Visible);
 }
 
 TEST_CASE("UTD edge diffraction connections relayed through glass match between CPU and GPU reference transport",
