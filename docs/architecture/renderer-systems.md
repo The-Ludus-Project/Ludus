@@ -3737,6 +3737,37 @@ removes. RGB optical constants remain a declared proxy for spectral Fresnel.
 The CPU and GPU checks are in `tests/reference_multiple_scattering_tests.cpp`
 and `tests/reference_compute_tests.cpp`.
 
+#### White furnace sphere scene
+
+The paired white furnace scene places one smooth-shaded triangle sphere in a
+constant linear RGB `(1, 1, 1)` environment. It has no other lights or geometry.
+A single orthographic view covers a range of viewing angles across the sphere.
+The expected scene-linear radiance is `(1, 1, 1)` for lossless white
+metal with compensated GGX at roughness 0.25, 0.5 and 1. A typed Lambertian
+sphere with 0.5 reflectance in the same scene must return `(0.5, 0.5, 0.5)`.
+[Juan Diego Fdez-Agüera, *A Multiple-scattering Microfacet Model for Real-time Image-based Lighting*, §1.2](https://jcgt.org/published/0008/01/03/)
+
+Each traversal renders 48 × 48 center rays at 128 samples per pixel with seeds
+23 and 59 and depth limits 1 and 4. Per-channel means must be within 0.02 of
+the analytic target in four projected radial bands ending at 35%, 70%, 89% and
+96% of the radius. The analytical check excludes the tessellated silhouette
+and checks the white background from 105% of the radius. The raw AOVs distinguish
+sphere hits (direct only) from background rays (emission only). CPU and GPU
+must also agree within RGB distance 0.001 per pixel in each raw AOV and total
+radiance, with complete sample counts and zero invalid contributions.
+
+On Apple M5 Metal with Clang 23.1.3, the maximum per-channel band error was
+0.00751 on each traversal. The largest CPU/GPU per-pixel RGB distance was
+8.26 × 10⁻⁷.
+
+The procedural fixture is exercised by the CTest case *RT1 white furnace sphere
+preserves energy on CPU and GPU*. From a configured native build with GPU-compute
+tests enabled, run it with the matching preset.
+
+```bash
+ctest --preset macos-clang-development -R 'RT1 white furnace sphere' --verbose
+```
+
 ### Raw capture and installed SDK
 
 `CopyReferencePixels` copies raw linear means and committed counts without

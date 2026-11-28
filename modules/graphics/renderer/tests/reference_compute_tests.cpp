@@ -216,6 +216,73 @@ enum class SphereSurfaces : uint8
 
 /// Every SPHERE_INWARD_ROW_PERIOD-th sphere ring of a Mixed layout points its normals inwards.
 constexpr uint32 SPHERE_INWARD_ROW_PERIOD = 8;
+constexpr float32 REFERENCE_SPHERE_RADIUS_WORLD = 0.45F;
+
+enum class SpherePoles : uint8
+{
+    Open,
+    Closed,
+};
+
+S CreateSphereMesh(rr::Renderer& inoutRenderer, NormalLayout normalLayout, SpherePoles poles, rr::Mesh& outMesh)
+{
+    constexpr uint32 LONGITUDES = 96;
+    constexpr uint32 LATITUDES = 48;
+    Array<math::Vector3> positions;
+    Array<math::Vector3> normals;
+    Array<uint32> indices;
+    for (uint32 row = 0; row <= LATITUDES; ++row)
+    {
+        const float32 polar = math::kPiF * float32(row) / float32(LATITUDES);
+        const bool isPole = poles == SpherePoles::Closed && (row == 0 || row == LATITUDES);
+        const float32 sine = isPole == true ? 0 : math::Sin(polar);
+        for (uint32 column = 0; column <= LONGITUDES; ++column)
+        {
+            const float32 azimuth = poles == SpherePoles::Closed && column == LONGITUDES
+                                        ? 0
+                                        : math::kTauF * float32(column) / float32(LONGITUDES);
+            const math::Vector3 normalWorld{sine * math::Cos(azimuth), math::Cos(polar), sine * math::Sin(azimuth)};
+            REQUIRE(positions.TryAdd(normalWorld * REFERENCE_SPHERE_RADIUS_WORLD) == true);
+            const bool isInward =
+                normalLayout == NormalLayout::Mixed && row % SPHERE_INWARD_ROW_PERIOD == SPHERE_INWARD_ROW_PERIOD / 2;
+            REQUIRE(normals.TryAdd(isInward == true ? -normalWorld : normalWorld) == true);
+        }
+    }
+    const bool isOutward = normalLayout == NormalLayout::Matched;
+    const uint32 firstRow = poles == SpherePoles::Closed ? 0 : 1;
+    const uint32 endRow = poles == SpherePoles::Closed ? LATITUDES : LATITUDES - 1;
+    for (uint32 row = firstRow; row < endRow; ++row)
+    {
+        for (uint32 column = 0; column < LONGITUDES; ++column)
+        {
+            const uint32 upper = row * (LONGITUDES + 1) + column;
+            const uint32 lower = upper + LONGITUDES + 1;
+            if (row > 0)
+            {
+                REQUIRE(indices.TryAdd(upper) == true);
+                REQUIRE(indices.TryAdd(isOutward == true ? upper + 1 : lower) == true);
+                REQUIRE(indices.TryAdd(isOutward == true ? lower : upper + 1) == true);
+            }
+            if (row + 1 < LATITUDES)
+            {
+                REQUIRE(indices.TryAdd(upper + 1) == true);
+                REQUIRE(indices.TryAdd(isOutward == true ? lower + 1 : lower) == true);
+                REQUIRE(indices.TryAdd(isOutward == true ? lower : lower + 1) == true);
+            }
+        }
+    }
+    rr::MeshDescription description{positions.GetData(), positions.GetSize(), indices.GetData(), indices.GetSize()};
+    description.Normals = normals.GetData();
+    S status = inoutRenderer.CreateMesh(description, outMesh);
+    const uint64 startedTicks = time::NowTicks();
+    while (status == S::Pending && time::NowTicks() - startedTicks < TIMEOUT)
+    {
+        threading::SleepFor(COMPLETION_POLL_INTERVAL);
+        status = inoutRenderer.GetStatus(outMesh);
+    }
+    return status;
+}
+
 // A tessellated glossy metal sphere in front of a diffuse wall and two emitters of
 // unequal area: thousands of triangles exercise deep BVH traversal and visible-GGX
 // sampling, and the unequal emitters exercise the power-weighted emitter CDF.
@@ -227,46 +294,6 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
                       SphereSurfaces surfaces = SphereSurfaces::Opaque,
                       NormalLayout normalLayout = NormalLayout::Matched)
 {
-    constexpr uint32 LONGITUDES = 96;
-    constexpr uint32 LATITUDES = 48;
-    constexpr float32 RADIUS = .45F;
-    Array<math::Vector3> positions;
-    Array<math::Vector3> normals;
-    Array<uint32> indices;
-    for (uint32 row = 0; row <= LATITUDES; ++row)
-    {
-        const float32 polar = math::kPiF * float32(row) / float32(LATITUDES);
-        for (uint32 column = 0; column <= LONGITUDES; ++column)
-        {
-            const float32 azimuth = math::kTauF * float32(column) / float32(LONGITUDES);
-            const math::Vector3 normal{math::Sin(polar) * math::Cos(azimuth),
-                                       math::Cos(polar),
-                                       math::Sin(polar) * math::Sin(azimuth)};
-            REQUIRE(positions.TryAdd(normal * RADIUS) == true);
-            const bool isInward =
-                normalLayout == NormalLayout::Mixed && row % SPHERE_INWARD_ROW_PERIOD == SPHERE_INWARD_ROW_PERIOD / 2;
-            REQUIRE(normals.TryAdd(isInward == true ? -normal : normal) == true);
-        }
-    }
-    for (uint32 row = 1; row + 1 < LATITUDES; ++row)
-    {
-        for (uint32 column = 0; column < LONGITUDES; ++column)
-        {
-            const uint32 a = row * (LONGITUDES + 1) + column;
-            const uint32 b = a + LONGITUDES + 1;
-            const uint32 quad[]{a, a + 1, b, a + 1, b + 1, b};
-            const uint32 reversedQuad[]{a, b, a + 1, a + 1, b, b + 1};
-            for (const uint32 index : normalLayout == NormalLayout::Matched ? quad : reversedQuad)
-            {
-                REQUIRE(indices.TryAdd(index) == true);
-            }
-        }
-    }
-    rr::MeshDescription sphereDescription{positions.GetData(),
-                                          positions.GetSize(),
-                                          indices.GetData(),
-                                          indices.GetSize()};
-    sphereDescription.Normals = normals.GetData();
     const math::Vector3 quadPositions[]{{-2, -2, 0}, {2, -2, 0}, {2, 2, 0}, {-2, 2, 0}};
     const math::Vector3 quadNormals[]{{0, 0, -1}, {0, 0, -1}, {0, 0, -1}, {0, 0, -1}};
     const math::Vector3 straddlingQuadNormals[]{{0, 0, -1}, {0, 0, -1}, {0, 0, 1}, {0, 0, 1}};
@@ -276,17 +303,14 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
     quadDescription.Normals = normalLayout == NormalLayout::Mixed ? straddlingQuadNormals : quadNormals;
     quadDescription.Texcoords = quadUvs;
     rr::Mesh meshes[2];
-    const rr::MeshDescription* descriptions[]{&sphereDescription, &quadDescription};
-    for (usize i = 0; i < 2; ++i)
+    REQUIRE(CreateSphereMesh(inoutRenderer, normalLayout, SpherePoles::Open, meshes[0]) == S::Ready);
+    S quadStatus = inoutRenderer.CreateMesh(quadDescription, meshes[1]);
+    const uint64 quadStartedTicks = time::NowTicks();
+    while (quadStatus == S::Pending && time::NowTicks() - quadStartedTicks < TIMEOUT)
     {
-        S status = inoutRenderer.CreateMesh(*descriptions[i], meshes[i]);
-        const uint64 start = time::NowTicks();
-        while (status == S::Pending && time::NowTicks() - start < TIMEOUT)
-        {
-            status = inoutRenderer.GetStatus(meshes[i]);
-        }
-        REQUIRE(status == S::Ready);
+        quadStatus = inoutRenderer.GetStatus(meshes[1]);
     }
+    REQUIRE(quadStatus == S::Ready);
     // sRGB checker whose alpha cuts every other cell: masked, linearly filtered and repeated.
     constexpr usize CHECKER_EXTENT = 4;
     constexpr usize CHECKER_TEXEL_BYTES = 4;
@@ -4407,6 +4431,216 @@ TEST_CASE("RT1 multiple-scattering GGX white furnace approaches unit radiance on
         }
     }
     WARN("Largest multiple-scattering furnace capture error: " << largestError);
+}
+
+namespace
+{
+// Thanks to Juan Diego Fdez-Agüera, "A Multiple-scattering Microfacet Model for Real-time Image-based Lighting",
+// JCGT 8(1), 2019, §1.2, https://jcgt.org/published/0008/01/03/. Uniform illumination turns the sphere's
+// raw radiance into a measurement of directional albedo across its visible normals.
+constexpr math::Vector3 FURNACE_ENVIRONMENT{1, 1, 1};
+constexpr float32 FURNACE_HALF_EXTENT_WORLD = 1.25F * REFERENCE_SPHERE_RADIUS_WORLD;
+constexpr uint32 FURNACE_EXTENT = 48;
+constexpr usize FURNACE_BAND_COUNT = 4;
+constexpr StaticArray<float32, FURNACE_BAND_COUNT> FURNACE_BAND_RADII{{0.35F, 0.70F, 0.89F, 0.96F}};
+constexpr float32 FURNACE_BACKGROUND_RADIUS = 1.05F;
+constexpr float32 FURNACE_CONTROL_ALBEDO = 0.5F;
+
+void UseWhiteFurnaceSphere(PairedSessions& inoutSessions, float32 roughness, bool isDiffuseControl)
+{
+    for (Session* session : {&inoutSessions.Cpu, &inoutSessions.Gpu})
+    {
+        rr::Renderer& renderer = session->Renderer;
+        rr::Mesh mesh;
+        REQUIRE(CreateSphereMesh(renderer, NormalLayout::Matched, SpherePoles::Closed, mesh) == S::Ready);
+        rr::LitMaterialDescription material;
+        material.Surface.Tint = {1, 1, 1, 1};
+        material.Metallic = 1;
+        material.Roughness = roughness;
+        if (isDiffuseControl == true)
+        {
+            material.Surface.Tint = {FURNACE_CONTROL_ALBEDO, FURNACE_CONTROL_ALBEDO, FURNACE_CONTROL_ALBEDO, 1};
+            material.Metallic = 0;
+            material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+        }
+        rr::MaterialVersion version;
+        rr::LightSelection selection;
+        S status = renderer.CreateLitMaterial(session->Program, material, version, selection);
+        const uint64 startedTicks = time::NowTicks();
+        while (status == S::Pending && time::NowTicks() - startedTicks < TIMEOUT)
+        {
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
+            status = renderer.GetStatus(version);
+        }
+        REQUIRE(status == S::Ready);
+        rr::SceneItem item;
+        item.SourceId = 1;
+        item.Geometry = mesh;
+        item.Surface = version;
+        REQUIRE(renderer.Release(session->Snapshot) == S::Ready);
+        REQUIRE(renderer.CreateSnapshot(&item, 1, session->Snapshot) == S::Ready);
+        REQUIRE(renderer.Release(version) == S::Ready);
+        REQUIRE(renderer.Release(mesh) == S::Ready);
+    }
+}
+
+float32 MeasureWhiteFurnaceError(const Array<rr::ReferencePixel>& pixels, float32 expectedRadiance)
+{
+    struct Band final
+    {
+        math::Vector3d Sum{};
+        usize Count = 0;
+    };
+    StaticArray<Band, FURNACE_BAND_COUNT> bands{};
+    usize backgroundCount = 0;
+    float32 largestBackgroundError = 0;
+    float32 largestSphereEmission = 0;
+    float32 largestSphereIndirect = 0;
+    float32 largestSphereAovError = 0;
+    constexpr float32 SPHERE_RADIUS_PIXELS =
+        0.5F * float32(FURNACE_EXTENT) * REFERENCE_SPHERE_RADIUS_WORLD / FURNACE_HALF_EXTENT_WORLD;
+    for (uint32 y = 0; y < FURNACE_EXTENT; ++y)
+    {
+        for (uint32 x = 0; x < FURNACE_EXTENT; ++x)
+        {
+            const float32 xPixels = float32(x) + 0.5F - 0.5F * float32(FURNACE_EXTENT);
+            const float32 yPixels = float32(y) + 0.5F - 0.5F * float32(FURNACE_EXTENT);
+            const float32 radius = math::Sqrt(xPixels * xPixels + yPixels * yPixels) / SPHERE_RADIUS_PIXELS;
+            const rr::ReferencePixel& pixel = pixels[usize(y) * FURNACE_EXTENT + x];
+            if (radius >= FURNACE_BACKGROUND_RADIUS)
+            {
+                ++backgroundCount;
+                largestBackgroundError =
+                    math::Max(largestBackgroundError, math::Distance(pixel.Radiance, FURNACE_ENVIRONMENT));
+                largestBackgroundError =
+                    math::Max(largestBackgroundError, math::Distance(pixel.Emission, FURNACE_ENVIRONMENT));
+                largestBackgroundError = math::Max(largestBackgroundError, math::Length(pixel.Direct));
+                largestBackgroundError = math::Max(largestBackgroundError, math::Length(pixel.Indirect));
+                continue;
+            }
+            for (usize band = 0; band < FURNACE_BAND_COUNT; ++band)
+            {
+                if (radius < FURNACE_BAND_RADII[band])
+                {
+                    bands[band].Sum =
+                        bands[band].Sum +
+                        math::Vector3d{Widen(pixel.Radiance.X), Widen(pixel.Radiance.Y), Widen(pixel.Radiance.Z)};
+                    ++bands[band].Count;
+                    largestSphereEmission = math::Max(largestSphereEmission, math::Length(pixel.Emission));
+                    largestSphereIndirect = math::Max(largestSphereIndirect, math::Length(pixel.Indirect));
+                    largestSphereAovError =
+                        math::Max(largestSphereAovError, math::Distance(pixel.Direct, pixel.Radiance));
+                    break;
+                }
+            }
+        }
+    }
+    REQUIRE(backgroundCount > 0);
+    CHECK(largestBackgroundError == 0);
+    CHECK(largestSphereEmission == 0);
+    CHECK(largestSphereIndirect == 0);
+    CHECK(largestSphereAovError == 0);
+
+    float64 largestError = 0;
+    for (const Band& band : bands)
+    {
+        REQUIRE(band.Count > 0);
+        const math::Vector3d mean = band.Sum * (1 / static_cast<float64>(band.Count));
+        REQUIRE(math::IsFinite(mean) == true);
+        largestError = math::Max(largestError, math::Abs(mean.X - Widen(expectedRadiance)));
+        largestError = math::Max(largestError, math::Abs(mean.Y - Widen(expectedRadiance)));
+        largestError = math::Max(largestError, math::Abs(mean.Z - Widen(expectedRadiance)));
+    }
+    return static_cast<float32>(largestError);
+}
+} // namespace
+
+TEST_CASE("RT1 white furnace sphere preserves energy on CPU and GPU",
+          "[renderer][gpu][reference-compute][materials][white-furnace]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    PairedSessions sessions;
+    if (const char* skipReasonOrNull = StartPairedSessions(sessions); skipReasonOrNull != nullptr)
+    {
+        SKIP(skipReasonOrNull);
+    }
+
+    constexpr uint32 SAMPLES_PER_PIXEL = 128;
+    constexpr uint32 DEEP_PATH_LIMIT = 4;
+    constexpr uint64 SEEDS[]{23, 59};
+    constexpr float32 BAND_RADIANCE_TOLERANCE = 0.02F;
+    constexpr float32 MATCHED_PIXEL_TOLERANCE = 1e-3F;
+    struct FurnaceMaterial final
+    {
+        float32 Roughness;
+        bool IsDiffuseControl;
+        float32 ExpectedRadiance;
+    };
+    constexpr FurnaceMaterial MATERIALS[]{
+        {0.25F, false, FURNACE_ENVIRONMENT.X},
+        {0.5F, false, FURNACE_ENVIRONMENT.X},
+        {1, false, FURNACE_ENVIRONMENT.X},
+        {1, true, FURNACE_ENVIRONMENT.X * FURNACE_CONTROL_ALBEDO},
+    };
+    rr::ReferenceCaptureDescription capture = MakeTiltedCapture({0, 0, 1}, FURNACE_HALF_EXTENT_WORLD, FURNACE_EXTENT);
+    capture.Environment = FURNACE_ENVIRONMENT;
+    capture.TargetSamples = SAMPLES_PER_PIXEL;
+    capture.RouletteDepth = DEEP_PATH_LIMIT;
+    capture.MaterialProfile = MULTIPLE_SCATTERING;
+
+    float32 largestCpuError = 0;
+    float32 largestGpuError = 0;
+    float32 largestParityError = 0;
+    for (const FurnaceMaterial& material : MATERIALS)
+    {
+        UseWhiteFurnaceSphere(sessions, material.Roughness, material.IsDiffuseControl);
+        for (const uint64 seed : SEEDS)
+        {
+            capture.Seed = seed;
+            for (const uint32 depth : {uint32{1}, DEEP_PATH_LIMIT})
+            {
+                capture.MaxDepth = depth;
+                CAPTURE(material.Roughness, material.IsDiffuseControl, seed, depth);
+                Array<rr::ReferencePixel> oracle;
+                Array<rr::ReferencePixel> compute;
+                rr::ReferenceCaptureInfo oracleInfo;
+                rr::ReferenceCaptureInfo computeInfo;
+                Capture(sessions.Cpu, capture, sessions.Surface, oracle, oracleInfo);
+                Capture(sessions.Gpu, capture, sessions.Surface, compute, computeInfo);
+                CHECK(oracleInfo.MaterialProfile == MULTIPLE_SCATTERING);
+                CHECK(computeInfo.MaterialProfile == MULTIPLE_SCATTERING);
+                CHECK(oracleInfo.InvalidContributions == 0);
+                CHECK(computeInfo.InvalidContributions == 0);
+                const Comparison comparison = Compare(oracle, compute, SAMPLES_PER_PIXEL);
+                CAPTURE(comparison.MaximumRadiance,
+                        comparison.MaximumEmission,
+                        comparison.MaximumDirect,
+                        comparison.MaximumIndirect);
+                CHECK(comparison.MaximumRadiance <= MATCHED_PIXEL_TOLERANCE);
+                CHECK(comparison.MaximumEmission <= MATCHED_PIXEL_TOLERANCE);
+                CHECK(comparison.MaximumDirect <= MATCHED_PIXEL_TOLERANCE);
+                CHECK(comparison.MaximumIndirect <= MATCHED_PIXEL_TOLERANCE);
+                largestParityError = math::Max(largestParityError, comparison.MaximumRadiance);
+
+                const float32 cpuError = MeasureWhiteFurnaceError(oracle, material.ExpectedRadiance);
+                const float32 gpuError = MeasureWhiteFurnaceError(compute, material.ExpectedRadiance);
+                CHECK(cpuError <= BAND_RADIANCE_TOLERANCE);
+                CHECK(gpuError <= BAND_RADIANCE_TOLERANCE);
+                largestCpuError = math::Max(largestCpuError, cpuError);
+                largestGpuError = math::Max(largestGpuError, gpuError);
+            }
+        }
+    }
+    WARN("White furnace sphere maximum channel error by viewing band: CPU "
+         << largestCpuError << ", GPU " << largestGpuError << ". Maximum paired pixel RGB distance "
+         << largestParityError);
 }
 
 TEST_CASE("RT1 multiple-scattering GGX resolves the directional lobe of absorbing metals on CPU and GPU",
