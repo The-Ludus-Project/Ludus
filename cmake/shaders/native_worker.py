@@ -3,6 +3,7 @@ import json
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
+import posixpath
 import re
 import socket
 import struct
@@ -14,7 +15,7 @@ MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 MAX_SOURCE_FILES = 64
 MAX_SOURCE_BYTES = 4 * 1024 * 1024
 DEFINES_ROOT = '__ludus_defines.slang'
-INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s+"([^"\n]+)"', re.M)
+INCLUDE_PATTERN = re.compile(r'^(\s*#\s*include\s+")([^"\n]+)"', re.M)
 # Include files a shader may reach: Slang sources, and the C headers and .inc fragments shared with
 # C++ (for example renderer/detail/deferred_binding_slots.inc). The Editor's preview snapshot
 # (apps/editor/src/preview_shader_build.cpp, GetPreviewShaderIncludePatterns) captures the same suffixes.
@@ -139,8 +140,11 @@ def capture_include_closure(source, roots):
     Unrelated files under the roots are not captured, so renderer growth does not reach
     the worker's file limit. Names keep their root-relative spelling; a name with
     different contents under two roots is rejected when the closure reaches it.
+    Lowered LUSL may name a physical path relative to its generated directory.
+    Map those includes to captured names only when the file is under a supplied root.
     """
     candidates = {}
+    names_by_path = {}
     for root in roots:
         for path in sorted(root.rglob('*')):
             if path.suffix not in SHADER_INCLUDE_SUFFIXES or not path.is_file():
@@ -148,7 +152,9 @@ def capture_include_closure(source, roots):
             relative = path.relative_to(root)
             if any(part.startswith('.') or part == 'out' for part in relative.parts):
                 continue
-            candidates.setdefault(relative.as_posix(), []).append(path)
+            name = relative.as_posix()
+            candidates.setdefault(name, []).append(path)
+            names_by_path.setdefault(path, name)
     if source not in candidates or DEFINES_ROOT in candidates:
         raise RuntimeError('Native shader root is missing or uses a reserved filename')
     files = {}
@@ -166,17 +172,31 @@ def capture_include_closure(source, roots):
         if len(texts) != 1:
             raise RuntimeError('Ambiguous native shader include: ' + name)
         text = texts.pop()
+
+        def capture_include(match):
+            include = match[2]
+            beside = posixpath.normpath((PurePosixPath(name).parent / include).as_posix())
+            if beside in candidates:
+                pending.append(beside)
+            elif include in candidates:
+                pending.append(include)
+            elif Path(include).is_absolute() or '..' in PurePosixPath(include).parts:
+                relocated = {names_by_path.get(Path(os.path.abspath(path.parent / include))) for path in paths}
+                if len(relocated) != 1:
+                    raise RuntimeError('Ambiguous native shader include: ' + include)
+                target = relocated.pop()
+                if target is not None:
+                    pending.append(target)
+                    virtual_include = posixpath.relpath(target, PurePosixPath(name).parent.as_posix())
+                    return f'{match[1]}{virtual_include}"'
+            return match[0]
+
+        text = INCLUDE_PATTERN.sub(capture_include, text)
         total += len(text.encode('utf-8'))
         if len(files) + 1 >= MAX_SOURCE_FILES or total > MAX_SOURCE_BYTES:
             raise RuntimeError('Native shader include closure exceeds the worker request bounds')
         files[name] = text
         origins[name] = paths[0]
-        for include in INCLUDE_PATTERN.findall(text):
-            beside = (PurePosixPath(name).parent / include).as_posix()
-            if beside in candidates:
-                pending.append(beside)
-            elif include in candidates:
-                pending.append(include)
     return files, origins
 
 
